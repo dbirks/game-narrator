@@ -1,8 +1,9 @@
 // Package api implements the /api/v1 HTTP surface (docs/spec/08-api-and-events.md).
 //
 // Milestone 0 covers process/system introspection routes, RFC 9457
-// problem+json errors and request correlation. Auth, SSE, session, game,
-// voice, onboarding, job and dev routes are added by later milestones.
+// problem+json errors and request correlation, plus the SSE event stream.
+// Auth, session, game, voice, onboarding, job and dev routes are added by later
+// milestones; the runtime that publishes events into the hub arrives with them.
 package api
 
 import (
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/bootstrap"
+	"github.com/dbirks/game-narrator/internal/events"
 	"github.com/dbirks/game-narrator/internal/webassets"
 )
 
@@ -53,6 +55,10 @@ type Server struct {
 	// build has no dependencies wired, which is reported as an empty check
 	// map rather than a claim that everything works.
 	readiness ReadinessFunc
+
+	// hub fans events out to SSE clients. nil means no event log is wired yet,
+	// which GET /api/v1/events reports as 503 rather than pretending to stream.
+	hub *events.Hub
 }
 
 // ReadinessFunc answers GET /api/v1/health/ready. It returns the per-dependency
@@ -78,6 +84,14 @@ func WithWebAssets(filesystem fs.FS) Option {
 // inject a failing checker to prove the 503 path.
 func WithReadiness(f ReadinessFunc) Option {
 	return func(s *Server) { s.readiness = f }
+}
+
+// WithEvents wires the event hub behind GET /api/v1/events. Without it the
+// endpoint answers 503 problem+json: an API that looked like a working stream
+// would let the UI believe it was watching a session it was not (docs/spec/13
+// "no generic success on an unprobed service").
+func WithEvents(h *events.Hub) Option {
+	return func(s *Server) { s.hub = h }
 }
 
 // New constructs an API server. A zero BuildInfo or nil logger is tolerated.
@@ -118,6 +132,7 @@ func (s *Server) Handler() http.Handler {
 	routes.register(mux, http.MethodGet, "/api/v1/health/live", s.handleLive)
 	routes.register(mux, http.MethodGet, "/api/v1/health/ready", s.handleReady)
 	routes.register(mux, http.MethodGet, "/api/v1/system/info", s.handleSystemInfo)
+	routes.register(mux, http.MethodGet, "/api/v1/events", s.handleEvents)
 
 	// "/" is the least specific pattern, so it only receives requests that no
 	// method+path pattern above matched.
