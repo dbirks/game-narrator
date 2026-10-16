@@ -78,18 +78,18 @@ func TestRunMigrateEndToEnd(t *testing.T) {
 	if first.code != 0 {
 		t.Fatalf("exit code = %d, want 0", first.code)
 	}
-	if want := "applied 0001_init.sql\nschema version 1\n"; first.output != want {
+	if want := "applied 0001_init.sql\napplied 0002_content.sql\napplied 0003_jobs_events.sql\nschema version 3\n"; first.output != want {
 		t.Fatalf("first run output =\n%q\nwant\n%q", first.output, want)
 	}
 
 	// The database really exists at the conventional path and really is at
-	// version 1: verify through the store, not by parsing our own stdout.
+	// version 3: verify through the store, not by parsing our own stdout.
 	st, err := store.Open(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("Open after migrate: %v", err)
 	}
-	if v, err := st.SchemaVersion(context.Background()); err != nil || v != 1 {
-		t.Fatalf("SchemaVersion after migrate = %d, %v; want 1", v, err)
+	if v, err := st.SchemaVersion(context.Background()); err != nil || v != 3 {
+		t.Fatalf("SchemaVersion after migrate = %d, %v; want 3", v, err)
 	}
 	if err := st.IntegrityCheck(context.Background()); err != nil {
 		t.Fatalf("IntegrityCheck after migrate: %v", err)
@@ -106,7 +106,7 @@ func TestRunMigrateEndToEnd(t *testing.T) {
 	if second.code != 0 {
 		t.Fatalf("second exit code = %d, want 0", second.code)
 	}
-	if want := "schema version 1\n"; second.output != want {
+	if want := "schema version 3\n"; second.output != want {
 		t.Fatalf("second run output =\n%q\nwant\n%q", second.output, want)
 	}
 }
@@ -383,8 +383,8 @@ func TestStoreReadinessTracksTheLiveDatabase(t *testing.T) {
 		t.Fatalf("readiness = not ready with a healthy store: %v", checks)
 	}
 	database, _ := checks["database"].(map[string]any)
-	if database == nil || database["status"] != "ok" || database["schema_version"] != 1 {
-		t.Fatalf("checks.database = %v, want status ok at schema version 1", checks)
+	if database == nil || database["status"] != "ok" || database["schema_version"] != 3 {
+		t.Fatalf("checks.database = %v, want status ok at schema version 3", checks)
 	}
 
 	// A closed pool is the cheapest reliable way to make the ping fail; the
@@ -440,7 +440,7 @@ func TestServeMigratesBeforeListening(t *testing.T) {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	if !strings.Contains(last, `"schema_version":1`) {
+	if !strings.Contains(last, `"schema_version":3`) {
 		syscall.Kill(os.Getpid(), syscall.SIGTERM)
 		t.Fatalf("readiness never reported the migrated database: %s", last)
 	}
@@ -470,8 +470,8 @@ func TestServeMigratesBeforeListening(t *testing.T) {
 		t.Fatalf("reopening after shutdown: %v", err)
 	}
 	defer st.Close()
-	if v, err := st.SchemaVersion(context.Background()); err != nil || v != 1 {
-		t.Fatalf("schema version after restart = %d (%v), want 1", v, err)
+	if v, err := st.SchemaVersion(context.Background()); err != nil || v != 3 {
+		t.Fatalf("schema version after restart = %d (%v), want 3", v, err)
 	}
 }
 

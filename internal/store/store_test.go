@@ -85,8 +85,10 @@ func TestOpenRequiresPath(t *testing.T) {
 	}
 }
 
-// TestCatalogTablesAreExactlyTheFirstFive: docs/spec/02 "Entity catalog" lists
-// the first five tables; anything else in this migration is drift.
+// TestCatalogTablesAreExactlyTheFirstFive pins the shipped table set: docs/spec/02
+// "Entity catalog" names every one of these, the messages_fts* group is the
+// FTS5 virtual table plus the shadow tables SQLite creates beside it, and
+// anything else is drift.
 func TestCatalogTablesAreExactlyTheFirstFive(t *testing.T) {
 	s := migratedStore(t)
 	ctx := testCtx(t)
@@ -110,7 +112,18 @@ func TestCatalogTablesAreExactlyTheFirstFive(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := []string{"editions", "games", "profiles", "schema_migrations", "source_blobs", "sources"}
+	// Listed in the ORDER BY name order the query returns: 0001_init.sql's
+	// catalogue (editions, games, profiles, schema_migrations, source_blobs,
+	// sources) plus 0002_content.sql's content tables and FTS5 index (the
+	// messages_fts* group is the virtual table and its four shadow tables) plus
+	// 0003_jobs_events.sql's queue and log.
+	want := []string{
+		"characters", "corrections", "editions", "events", "games",
+		"job_attempts", "jobs", "message_edges", "message_pages", "messages",
+		"messages_fts", "messages_fts_config", "messages_fts_data",
+		"messages_fts_docsize", "messages_fts_idx", "profiles", "regions", "scenes",
+		"schema_migrations", "source_blobs", "sources", "speaker_assertions",
+	}
 	if strings.Join(found, ",") != strings.Join(want, ",") {
 		t.Fatalf("tables = %v, want %v", found, want)
 	}

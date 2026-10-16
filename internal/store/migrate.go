@@ -247,11 +247,22 @@ func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
 // splitSQL cuts a migration file into individual statements on semicolons that
 // are not inside a string, a quoted identifier or a comment.
 //
-// Limitation, deliberate and documented: compound statements that contain their
-// own semicolons (CREATE TRIGGER ... BEGIN ... END) are not recognised and would
-// be split in half. No Game Narrator migration uses triggers; if one ever does,
-// that migration must be executed as a single statement by extending this
-// function, and the unit test here must fail first to prove it was noticed.
+// CREATE TRIGGER is the one compound statement SQLite allows in a migration and
+// it carries its own semicolons ("BEGIN stmt; stmt; END;"), so its body is
+// tracked: while a trigger body is open a semicolon separates the body's
+// statements and does not terminate the CREATE TRIGGER. ADR-0008 flagged this
+// as the case that would require extending the splitter; 0002_content.sql needs
+// the FTS5 sync triggers, so that is what this does. Recognising the body needs
+// a keyword at a time, not a byte at a time, hence the word scanner below: it
+// only ever answers "is this statement a trigger, and is its END here yet?" and
+// never tries to parse SQL.
+//
+// Remaining limitation, deliberately narrow: only BEGIN/END (with CASE/END
+// nested inside the body counted separately) are tracked. A future compound
+// statement with another nesting keyword needs the same treatment, and
+// TestSplitSQLRejectsAnUnterminatedTriggerBody shows a trigger whose END is
+// missing fails loudly (the whole rest of the file becomes one invalid
+// statement, the migration transaction rolls back) instead of half-applying.
 func splitSQL(script string) ([]string, error) {
 	const (
 		stateCode = iota
@@ -268,6 +279,69 @@ func splitSQL(script string) ([]string, error) {
 		state = stateCode
 		code  bool
 	)
+
+	// Trigger-body state, reset with every statement.
+	var (
+		// leadWord is how far the current statement's leading keyword run has
+		// got towards "CREATE [TEMP|TEMPORARY] TRIGGER": 0 = nothing seen, 1 =
+		// CREATE, 2 = CREATE TEMP[ORARY], 3 = trigger confirmed, -1 = some other
+		// statement.
+		leadWord  int
+		bodyOpen  bool
+		caseDepth int
+		word      []byte
+	)
+	// endWord feeds one completed keyword to the trigger tracker.
+	endWord := func() {
+		if len(word) == 0 {
+			return
+		}
+		w := strings.ToUpper(string(word))
+		word = word[:0]
+
+		switch {
+		case bodyOpen:
+			// Inside a body, END closes a CASE expression first; the END that
+			// does not is the end of the trigger itself.
+			switch w {
+			case "CASE":
+				caseDepth++
+			case "END":
+				if caseDepth > 0 {
+					caseDepth--
+				} else {
+					bodyOpen = false
+				}
+			}
+		case leadWord == 3:
+			// Confirmed trigger, body not yet open: BEGIN starts it.
+			if w == "BEGIN" {
+				bodyOpen = true
+			}
+		case leadWord == 0:
+			if w == "CREATE" {
+				leadWord = 1
+			} else {
+				leadWord = -1
+			}
+		case leadWord == 1:
+			switch w {
+			case "TRIGGER":
+				leadWord = 3
+			case "TEMP", "TEMPORARY":
+				leadWord = 2
+			default:
+				leadWord = -1
+			}
+		case leadWord == 2:
+			if w == "TRIGGER" {
+				leadWord = 3
+			} else {
+				leadWord = -1
+			}
+		}
+	}
+
 	flush := func() {
 		stmt := strings.TrimSpace(cur.String())
 		if code && stmt != "" {
@@ -275,6 +349,7 @@ func splitSQL(script string) ([]string, error) {
 		}
 		cur.Reset()
 		code = false
+		leadWord, bodyOpen, caseDepth = 0, false, 0
 	}
 
 	for i := 0; i < len(script); i++ {
@@ -323,32 +398,50 @@ func splitSQL(script string) ([]string, error) {
 		// stateCode
 		switch {
 		case c == '-' && next == '-':
+			endWord()
 			cur.WriteByte(c)
 			cur.WriteByte(next)
 			i++
 			state = stateLineComment
 		case c == '/' && next == '*':
+			endWord()
 			cur.WriteByte(c)
 			cur.WriteByte(next)
 			i++
 			state = stateBlockComment
 		case c == '\'':
+			endWord()
 			code = true
 			cur.WriteByte(c)
 			state = stateString
 		case c == '"':
+			endWord()
 			code = true
 			cur.WriteByte(c)
 			state = stateQuotedIdent
 		case c == '`':
+			endWord()
 			code = true
 			cur.WriteByte(c)
 			state = stateBacktick
 		case c == ';':
+			endWord()
+			if bodyOpen {
+				// A semicolon between statements inside a trigger body. The
+				// CREATE TRIGGER is not finished until its END.
+				code = true
+				cur.WriteByte(c)
+				continue
+			}
 			flush()
 		default:
 			if !isSpaceByte(c) {
 				code = true
+			}
+			if isWordByte(c) {
+				word = append(word, c)
+			} else {
+				endWord()
 			}
 			cur.WriteByte(c)
 		}
@@ -360,11 +453,26 @@ func splitSQL(script string) ([]string, error) {
 	case stateBlockComment:
 		return nil, errors.New("unterminated block comment")
 	}
+	endWord()
 	flush()
 	if len(out) == 0 {
 		return nil, errors.New("migration contains no statements")
 	}
 	return out, nil
+}
+
+// isWordByte reports whether c can appear in a bare SQL keyword or identifier.
+// SQLite also allows '$' and '#' inside identifiers, so they count as word bytes
+// here: treating them as separators could otherwise split a keyword-looking
+// identifier into pieces that match BEGIN or END by accident.
+func isWordByte(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		return true
+	case c == '_' || c == '$' || c == '#':
+		return true
+	}
+	return false
 }
 
 func isSpaceByte(c byte) bool {

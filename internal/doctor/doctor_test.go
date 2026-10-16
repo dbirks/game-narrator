@@ -490,7 +490,7 @@ func TestDatabaseCheckAppliesMigrationsOnAFreshDir(t *testing.T) {
 	h := newFakeHost(t)
 	c := h.check(h.run(), "storage.database")
 	mustStatus(t, c, StatusOK)
-	if !strings.Contains(c.Summary, "schema version 1") {
+	if !strings.Contains(c.Summary, "schema version 3") {
 		t.Fatalf("summary = %q, want the schema version", c.Summary)
 	}
 	if !strings.Contains(c.Detail, "applied 0001_init.sql") {

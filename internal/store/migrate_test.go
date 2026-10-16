@@ -22,11 +22,11 @@ func TestMigrateFromBlankDBIsRepeatable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Migrate: %v", err)
 	}
-	if len(applied) != 1 || applied[0] != "0001_init.sql" {
-		t.Fatalf("first Migrate applied %v, want [0001_init.sql]", applied)
+	if want := []string{"0001_init.sql", "0002_content.sql", "0003_jobs_events.sql"}; strings.Join(applied, ",") != strings.Join(want, ",") {
+		t.Fatalf("first Migrate applied %v, want %v", applied, want)
 	}
-	if v, err := s.SchemaVersion(ctx); err != nil || v != 1 {
-		t.Fatalf("SchemaVersion = %d, %v; want 1", v, err)
+	if v, err := s.SchemaVersion(ctx); err != nil || v != 3 {
+		t.Fatalf("SchemaVersion = %d, %v; want 3", v, err)
 	}
 
 	applied, err = s.Migrate(ctx)
@@ -36,8 +36,8 @@ func TestMigrateFromBlankDBIsRepeatable(t *testing.T) {
 	if len(applied) != 0 {
 		t.Fatalf("second Migrate applied %v, want nothing", applied)
 	}
-	if v, _ := s.SchemaVersion(ctx); v != 1 {
-		t.Fatalf("SchemaVersion after a no-op run = %d, want 1", v)
+	if v, _ := s.SchemaVersion(ctx); v != 3 {
+		t.Fatalf("SchemaVersion after a no-op run = %d, want 3", v)
 	}
 
 	// The bookkeeping row records who applied what, when, and with which hash.
@@ -58,15 +58,15 @@ func TestMigrateFromBlankDBIsRepeatable(t *testing.T) {
 	}
 }
 
-// TestMigrationsAreDenseAndNamed pins the embedded set: exactly one migration
-// right now, named and hashed.
+// TestMigrationsAreDenseAndNamed pins the embedded set: the three migrations
+// shipped so far, named and hashed.
 func TestMigrationsAreDenseAndNamed(t *testing.T) {
 	migs, err := Migrations()
 	if err != nil {
 		t.Fatalf("Migrations: %v", err)
 	}
-	if len(migs) != 1 {
-		t.Fatalf("embedded migrations = %d, want 1 (%v)", len(migs), names(migs))
+	if len(migs) != 3 {
+		t.Fatalf("embedded migrations = %d, want 3 (%v)", len(migs), names(migs))
 	}
 	if migs[0].Version != 1 || migs[0].Name != "0001_init.sql" {
 		t.Fatalf("first migration = %d/%s, want 1/0001_init.sql", migs[0].Version, migs[0].Name)
@@ -135,25 +135,25 @@ func TestApplyMigrationRollsBackCompletely(t *testing.T) {
 	ctx := testCtx(t)
 
 	breaking := Migration{
-		Version:  2,
-		Name:     "0002_breaking.sql",
+		Version:  4,
+		Name:     "0004_breaking.sql",
 		Checksum: strings.Repeat("1", 64),
 		SQL:      "CREATE TABLE interrupted_here (id TEXT PRIMARY KEY); INSERT INTO no_such_table VALUES (1);",
 	}
 	if err := applyMigration(ctx, s.db, breaking); err == nil {
 		t.Fatal("applyMigration accepted a failing migration")
-	} else if !strings.Contains(err.Error(), "0002_breaking.sql") {
+	} else if !strings.Contains(err.Error(), "0004_breaking.sql") {
 		t.Fatalf("error %v does not name the failing migration", err)
 	}
 
 	if n := countTablesNamed(t, s, "interrupted_here"); n != 0 {
 		t.Fatalf("interrupted migration left %d interrupted_here object(s) behind", n)
 	}
-	if n := countRows(t, s.db, "schema_migrations"); n != 1 {
-		t.Fatalf("schema_migrations rows = %d, want the single applied 0001 row", n)
+	if n := countRows(t, s.db, "schema_migrations"); n != 3 {
+		t.Fatalf("schema_migrations rows = %d, want the three applied rows", n)
 	}
-	if v, _ := s.SchemaVersion(ctx); v != 1 {
-		t.Fatalf("SchemaVersion = %d after a rolled-back migration, want 1", v)
+	if v, _ := s.SchemaVersion(ctx); v != 3 {
+		t.Fatalf("SchemaVersion = %d after a rolled-back migration, want 3", v)
 	}
 }
 
