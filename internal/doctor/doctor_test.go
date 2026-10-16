@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/bootstrap"
+	"github.com/dbirks/game-narrator/internal/store"
 )
 
 // The doctor suite must pass on a host with none of the tools installed, so
@@ -490,10 +491,13 @@ func TestDatabaseCheckAppliesMigrationsOnAFreshDir(t *testing.T) {
 	h := newFakeHost(t)
 	c := h.check(h.run(), "storage.database")
 	mustStatus(t, c, StatusOK)
-	if !strings.Contains(c.Summary, "schema version 3") {
-		t.Fatalf("summary = %q, want the schema version", c.Summary)
+	// The version is whatever this build's migrations end at, not a number typed
+	// into the test: a hardcoded 3 here would make the next migration file report
+	// a perfectly healthy database as a doctor failure.
+	if want := fmt.Sprintf("schema version %d", store.LatestSchemaVersion()); !strings.Contains(c.Summary, want) {
+		t.Fatalf("summary = %q, want it to state %q", c.Summary, want)
 	}
-	if !strings.Contains(c.Detail, "applied 0001_init.sql") {
+	if !strings.Contains(c.Detail, "applied "+store.MigrationNames()[0]) {
 		t.Fatalf("detail = %q, want the migration it applied", c.Detail)
 	}
 	if _, err := os.Stat(filepath.Join(h.dataDir(), "game-narrator.sqlite")); err != nil {

@@ -103,6 +103,33 @@ func Migrations() ([]Migration, error) {
 	return out, nil
 }
 
+// LatestSchemaVersion returns the version a fully migrated database is at — the
+// highest embedded migration version, or 0 if this build embeds none. It exists so
+// callers (the CLI's own reporting, and every test that checks a migration ran)
+// can state the requirement this build actually ships instead of hardcoding a
+// number that changes with every migration file and then reports a correct
+// database as corrupt.
+func LatestSchemaVersion() int {
+	migrations, err := Migrations()
+	if err != nil || len(migrations) == 0 {
+		return 0
+	}
+	return migrations[len(migrations)-1].Version
+}
+
+// MigrationNames returns the embedded migration file names in version order.
+func MigrationNames() []string {
+	migrations, err := Migrations()
+	if err != nil {
+		return nil
+	}
+	out := make([]string, len(migrations))
+	for i, mig := range migrations {
+		out[i] = mig.Name
+	}
+	return out
+}
+
 // appliedMigration is a schema_migrations row.
 type appliedMigration struct {
 	version  int

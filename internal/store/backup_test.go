@@ -35,8 +35,8 @@ func TestBackupProducesAnIndependentUsableCopy(t *testing.T) {
 	if err := backup.IntegrityCheck(ctx); err != nil {
 		t.Fatalf("IntegrityCheck on the backup: %v", err)
 	}
-	if v, err := backup.SchemaVersion(ctx); err != nil || v != 3 {
-		t.Fatalf("backup SchemaVersion = %d, %v; want 3", v, err)
+	if v, err := backup.SchemaVersion(ctx); err != nil || v != LatestSchemaVersion() {
+		t.Fatalf("backup SchemaVersion = %d, %v; want %d", v, err, LatestSchemaVersion())
 	}
 	for table, want := range map[string]int{
 		"games":        1, // game-2 landed after the snapshot was taken
@@ -182,8 +182,8 @@ func TestCorruptThenRestore(t *testing.T) {
 	if err := restored.IntegrityCheck(ctx); err != nil {
 		t.Fatalf("IntegrityCheck after restore: %v", err)
 	}
-	if v, err := restored.SchemaVersion(ctx); err != nil || v != 3 {
-		t.Fatalf("restored SchemaVersion = %d, %v; want 3", v, err)
+	if v, err := restored.SchemaVersion(ctx); err != nil || v != LatestSchemaVersion() {
+		t.Fatalf("restored SchemaVersion = %d, %v; want %d", v, err, LatestSchemaVersion())
 	}
 	var title string
 	if err := restored.db.QueryRow(`SELECT title FROM games WHERE id = 'game-keep'`).Scan(&title); err != nil {
@@ -192,8 +192,8 @@ func TestCorruptThenRestore(t *testing.T) {
 	if title != "Wind Waker (synthetic)" {
 		t.Fatalf("restored title = %q, want the value written before the backup", title)
 	}
-	if n := countRows(t, restored.db, "schema_migrations"); n != 3 {
-		t.Fatalf("restored schema_migrations rows = %d, want 3", n)
+	if n := countRows(t, restored.db, "schema_migrations"); n != LatestSchemaVersion() {
+		t.Fatalf("restored schema_migrations rows = %d, want %d", n, LatestSchemaVersion())
 	}
 
 	// 4. Restoring must not consume or mutate the backup: it is the only copy.

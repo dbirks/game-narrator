@@ -55,6 +55,66 @@ func nowRFC3339() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
 
+// freshRowVersion is `profiles.row_version` for a revision that has just been
+// inserted: 0004_publication.sql's DEFAULT 1, because creating the row is itself
+// the first write. It is named rather than spelled so that a test's "the version
+// is 1" is visibly a *row* version and can never be confused with — or greped for
+// as — a hardcoded schema version (ADR-0015's acceptance gate).
+const freshRowVersion int64 = 1
+
+// blankSchemaVersion is what SchemaVersion reports for a file with no migrations
+// applied. Zero is a property of an empty database, not of this build's migration
+// set, so it is a constant and not a magic digit inside an assertion.
+const blankSchemaVersion = 0
+
+// priorSchemaVersion is the version an immediately-older build would have left a
+// database at — the upgrade source for the migration tests below, derived from
+// this build's set instead of hardcoded.
+func priorSchemaVersion(t *testing.T) int {
+	t.Helper()
+	migs, err := Migrations()
+	if err != nil {
+		t.Fatalf("Migrations: %v", err)
+	}
+	if len(migs) < 2 {
+		t.Skip("this build ships fewer than two migrations, so there is no prior version to upgrade from")
+	}
+	return migs[len(migs)-2].Version
+}
+
+// migrateTo applies exactly the first n embedded migrations, each in its own
+// transaction and each recorded, and stops there. It is how a test builds the
+// database an *older* build left behind, which is the only honest way to exercise
+// an upgrade path (docs/spec/02 "Migration and backup acceptance" demands both a
+// blank database and a prior one). It mirrors Migrate's own bookkeeping instead of
+// shoving raw SQL at the file, so what it produces is byte-comparable with what
+// shipped code produced.
+func migrateTo(t *testing.T, s *Store, n int) []string {
+	t.Helper()
+	ctx := testCtx(t)
+	migs, err := Migrations()
+	if err != nil {
+		t.Fatalf("Migrations: %v", err)
+	}
+	if n < 0 || n > len(migs) {
+		t.Fatalf("migrateTo(%d): this build ships %d migrations", n, len(migs))
+	}
+	if _, err := s.db.ExecContext(ctx, schemaMigrationsDDL); err != nil {
+		t.Fatalf("create %s: %v", schemaMigrationsTable, err)
+	}
+	applied := make([]string, 0, n)
+	for _, mig := range migs[:n] {
+		if err := applyMigration(ctx, s.db, mig); err != nil {
+			t.Fatalf("apply %s: %v", mig.Name, err)
+		}
+		applied = append(applied, mig.Name)
+	}
+	if v, err := s.SchemaVersion(ctx); err != nil || v != n {
+		t.Fatalf("SchemaVersion after migrateTo(%d) = %d, %v; want %d", n, v, err, n)
+	}
+	return applied
+}
+
 func insertGame(t *testing.T, db *sql.DB, id, slug string) {
 	t.Helper()
 	mustExec(t, db,

@@ -294,9 +294,10 @@ func seedEdgeParents(t *testing.T, db *sql.DB) {
 //
 
 // TestMigrationAppliesContentFileToBlankDatabase is the docs/spec/12 Contract
-// gate: blank file → schema version 3, every promised object present, and a
-// second run that changes nothing. It also proves SQLite *accepts* the FTS5
-// sync triggers, which is the half of the story splitSQL cannot tell on its own.
+// gate: blank file → the schema version this build ships, every promised object
+// present, and a second run that changes nothing. It also proves SQLite *accepts*
+// the FTS5 sync triggers, which is the half of the story splitSQL cannot tell on its
+// own.
 func TestMigrationAppliesContentFileToBlankDatabase(t *testing.T) {
 	s := openIn(t)
 	ctx := testCtx(t)
@@ -305,12 +306,11 @@ func TestMigrationAppliesContentFileToBlankDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Migrate: %v", err)
 	}
-	wantApplied := []string{"0001_init.sql", "0002_content.sql", "0003_jobs_events.sql"}
-	if strings.Join(applied, ",") != strings.Join(wantApplied, ",") {
-		t.Fatalf("applied %v, want %v", applied, wantApplied)
+	if want := MigrationNames(); strings.Join(applied, ",") != strings.Join(want, ",") {
+		t.Fatalf("applied %v, want %v", applied, want)
 	}
-	if v, err := s.SchemaVersion(ctx); err != nil || v != 3 {
-		t.Fatalf("SchemaVersion = %d, %v; want 3", v, err)
+	if v, err := s.SchemaVersion(ctx); err != nil || v != LatestSchemaVersion() {
+		t.Fatalf("SchemaVersion = %d, %v; want %d", v, err, LatestSchemaVersion())
 	}
 
 	// Checked by name: a silently misnamed or missing index/trigger would
@@ -413,8 +413,8 @@ func TestNewTablesSurviveBackupRoundTrip(t *testing.T) {
 		t.Fatalf("Backup: %v", err)
 	}
 	backup := openPath(t, dest)
-	if v, err := backup.SchemaVersion(ctx); err != nil || v != 3 {
-		t.Fatalf("backup SchemaVersion = %d, %v; want 3", v, err)
+	if v, err := backup.SchemaVersion(ctx); err != nil || v != LatestSchemaVersion() {
+		t.Fatalf("backup SchemaVersion = %d, %v; want %d", v, err, LatestSchemaVersion())
 	}
 	if n := countRows(t, backup.db, "jobs"); n != 1 {
 		t.Fatalf("backup jobs = %d, want 1", n)

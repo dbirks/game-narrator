@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -10,23 +11,27 @@ import (
 // TestMigrateFromBlankDBIsRepeatable is the contract-mode gate from
 // docs/spec/12: migrate a blank database, prove 0001 landed, prove a second run
 // changes nothing, and prove the recorded version says so.
+//
+// "The" schema version is never spelled as a number here: it is whatever this
+// build's embedded migrations end at (LatestSchemaVersion), so adding a migration
+// is a schema decision and not an edit to this test.
 func TestMigrateFromBlankDBIsRepeatable(t *testing.T) {
 	s := openIn(t)
 	ctx := testCtx(t)
 
-	if v, err := s.SchemaVersion(ctx); err != nil || v != 0 {
-		t.Fatalf("SchemaVersion of a blank database = %d, %v", v, err)
+	if v, err := s.SchemaVersion(ctx); err != nil || v != blankSchemaVersion {
+		t.Fatalf("SchemaVersion of a blank database = %d, %v; want %d", v, err, blankSchemaVersion)
 	}
 
 	applied, err := s.Migrate(ctx)
 	if err != nil {
 		t.Fatalf("first Migrate: %v", err)
 	}
-	if want := []string{"0001_init.sql", "0002_content.sql", "0003_jobs_events.sql"}; strings.Join(applied, ",") != strings.Join(want, ",") {
+	if want := MigrationNames(); strings.Join(applied, ",") != strings.Join(want, ",") {
 		t.Fatalf("first Migrate applied %v, want %v", applied, want)
 	}
-	if v, err := s.SchemaVersion(ctx); err != nil || v != 3 {
-		t.Fatalf("SchemaVersion = %d, %v; want 3", v, err)
+	if v, err := s.SchemaVersion(ctx); err != nil || v != LatestSchemaVersion() {
+		t.Fatalf("SchemaVersion = %d, %v; want %d", v, err, LatestSchemaVersion())
 	}
 
 	applied, err = s.Migrate(ctx)
@@ -36,8 +41,8 @@ func TestMigrateFromBlankDBIsRepeatable(t *testing.T) {
 	if len(applied) != 0 {
 		t.Fatalf("second Migrate applied %v, want nothing", applied)
 	}
-	if v, _ := s.SchemaVersion(ctx); v != 3 {
-		t.Fatalf("SchemaVersion after a no-op run = %d, want 3", v)
+	if v, _ := s.SchemaVersion(ctx); v != LatestSchemaVersion() {
+		t.Fatalf("SchemaVersion after a no-op run = %d, want %d", v, LatestSchemaVersion())
 	}
 
 	// The bookkeeping row records who applied what, when, and with which hash.
@@ -58,24 +63,49 @@ func TestMigrateFromBlankDBIsRepeatable(t *testing.T) {
 	}
 }
 
-// TestMigrationsAreDenseAndNamed pins the embedded set: the three migrations
-// shipped so far, named and hashed.
+// TestMigrationsAreDenseAndNamed pins the properties an embedded migration set has
+// to have for "schema version N" to mean one thing across builds: the versions are
+// dense from 1, every file is named after its own version, every checksum is a
+// lowercase SHA-256, and the first file is still the catalogue.
+//
+// It deliberately does *not* pin how many migrations there are. That number is
+// whatever the schema has grown to, and a test that asserts it turns every additive
+// migration into an edit to an unrelated test file — which is how a worker adding a
+// real column gets talked into hiding the fact in a table that was not meant for it.
 func TestMigrationsAreDenseAndNamed(t *testing.T) {
 	migs, err := Migrations()
 	if err != nil {
 		t.Fatalf("Migrations: %v", err)
 	}
-	if len(migs) != 3 {
-		t.Fatalf("embedded migrations = %d, want 3 (%v)", len(migs), names(migs))
+	if len(migs) == 0 {
+		t.Fatal("this build embeds no migrations")
 	}
-	if migs[0].Version != 1 || migs[0].Name != "0001_init.sql" {
+	for i, mig := range migs {
+		if mig.Version != i+1 {
+			t.Fatalf("migration %s is version %d at position %d: the sequence must be dense from 1", mig.Name, mig.Version, i+1)
+		}
+		if !strings.HasPrefix(mig.Name, fmt.Sprintf("%04d_", mig.Version)) || !strings.HasSuffix(mig.Name, ".sql") {
+			t.Fatalf("migration %q is not named after its version (%d)", mig.Name, mig.Version)
+		}
+		if len(mig.Checksum) != 64 || mig.Checksum != strings.ToLower(mig.Checksum) {
+			t.Fatalf("checksum %q is not 64 lowercase hex characters", mig.Checksum)
+		}
+		if strings.TrimSpace(mig.SQL) == "" {
+			t.Fatalf("migration %s is empty", mig.Name)
+		}
+	}
+	if migs[0].Name != "0001_init.sql" {
 		t.Fatalf("first migration = %d/%s, want 1/0001_init.sql", migs[0].Version, migs[0].Name)
-	}
-	if len(migs[0].Checksum) != 64 || migs[0].Checksum != strings.ToLower(migs[0].Checksum) {
-		t.Fatalf("checksum %q is not 64 lowercase hex characters", migs[0].Checksum)
 	}
 	if !strings.Contains(migs[0].SQL, "CREATE TABLE games") {
 		t.Fatal("0001_init.sql does not create the games table")
+	}
+	// The helper every other test now uses has to agree with the list it summarizes.
+	if got := LatestSchemaVersion(); got != migs[len(migs)-1].Version {
+		t.Fatalf("LatestSchemaVersion() = %d, want the last embedded version %d", got, migs[len(migs)-1].Version)
+	}
+	if got, want := MigrationNames(), names(migs); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("MigrationNames() = %v, want %v", got, want)
 	}
 }
 
@@ -134,26 +164,27 @@ func TestApplyMigrationRollsBackCompletely(t *testing.T) {
 	s := migratedStore(t)
 	ctx := testCtx(t)
 
+	next := LatestSchemaVersion() + 1
 	breaking := Migration{
-		Version:  4,
-		Name:     "0004_breaking.sql",
+		Version:  next,
+		Name:     fmt.Sprintf("%04d_breaking.sql", next),
 		Checksum: strings.Repeat("1", 64),
 		SQL:      "CREATE TABLE interrupted_here (id TEXT PRIMARY KEY); INSERT INTO no_such_table VALUES (1);",
 	}
 	if err := applyMigration(ctx, s.db, breaking); err == nil {
 		t.Fatal("applyMigration accepted a failing migration")
-	} else if !strings.Contains(err.Error(), "0004_breaking.sql") {
+	} else if !strings.Contains(err.Error(), breaking.Name) {
 		t.Fatalf("error %v does not name the failing migration", err)
 	}
 
 	if n := countTablesNamed(t, s, "interrupted_here"); n != 0 {
 		t.Fatalf("interrupted migration left %d interrupted_here object(s) behind", n)
 	}
-	if n := countRows(t, s.db, "schema_migrations"); n != 3 {
-		t.Fatalf("schema_migrations rows = %d, want the three applied rows", n)
+	if n := countRows(t, s.db, "schema_migrations"); n != LatestSchemaVersion() {
+		t.Fatalf("schema_migrations rows = %d, want the %d applied rows", n, LatestSchemaVersion())
 	}
-	if v, _ := s.SchemaVersion(ctx); v != 3 {
-		t.Fatalf("SchemaVersion = %d after a rolled-back migration, want 3", v)
+	if v, _ := s.SchemaVersion(ctx); v != LatestSchemaVersion() {
+		t.Fatalf("SchemaVersion = %d after a rolled-back migration, want %d", v, LatestSchemaVersion())
 	}
 }
 

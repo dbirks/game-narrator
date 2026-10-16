@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -85,13 +87,67 @@ func TestOpenRequiresPath(t *testing.T) {
 	}
 }
 
-// TestCatalogTablesAreExactlyTheFirstFive pins the shipped table set: docs/spec/02
-// "Entity catalog" names every one of these, the messages_fts* group is the
-// FTS5 virtual table plus the shadow tables SQLite creates beside it, and
-// anything else is drift.
+// TestCatalogTablesAreExactlyTheFirstFive pins 0001_init.sql to docs/spec/02 "Entity
+// catalog": the first migration creates exactly the five catalogue tables that
+// document names for it, no more and no less, and they are all present after a
+// migrate.
+//
+// It is a statement about *that file*, deliberately not about the whole database.
+// The earlier version of this test compared the whole table set of a migrated
+// database against a hardcoded list, which meant any additive migration — 0002's
+// content tables, 0004's publish_actions — had to be accompanied by an edit to an
+// unrelated schema test. That coupling is how a worker adding a real column gets
+// talked into storing it somewhere the schema does not name it (ADR-0015), so the
+// whole-database drift check lives in TestMigratedDatabaseHoldsExactlyTheMigrationTables
+// instead, where it is derived from the migrations rather than typed out by hand.
 func TestCatalogTablesAreExactlyTheFirstFive(t *testing.T) {
+	const firstMigration = "0001_init.sql"
+	// docs/spec/02's catalogue in this file, sorted; `schema_migrations` is
+	// bookkeeping that migrate.go creates outside any migration file.
+	want := []string{"editions", "games", "profiles", "source_blobs", "sources"}
+
+	got := append([]string(nil), migrationTables(t).byFile["0001_init.sql"]...)
+	slices.Sort(got)
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("%s creates %v, want the five catalog tables %v", firstMigration, got, want)
+	}
+
+	// And they really exist in a migrated database — a file that names a table in a
+	// comment but never creates it would otherwise pass a pure text comparison.
 	s := migratedStore(t)
 	ctx := testCtx(t)
+	for _, name := range want {
+		var n int
+		if err := s.db.QueryRowContext(ctx,
+			"SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?", name).Scan(&n); err != nil {
+			t.Fatalf("look for %s: %v", name, err)
+		}
+		if n != 1 {
+			t.Errorf("%s is not exactly one table of the migrated database (found %d)", name, n)
+		}
+	}
+}
+
+// TestMigratedDatabaseHoldsExactlyTheMigrationTables is the drift check the
+// hardcoded list was reaching for, expressed as a rule instead of a snapshot: every
+// table in the database was created by some embedded migration (or by migrate.go's
+// own bookkeeping), every table some migration creates is present, and the only
+// extras are the shadow tables SQLite maintains beside an FTS5 virtual table.
+func TestMigratedDatabaseHoldsExactlyTheMigrationTables(t *testing.T) {
+	s := migratedStore(t)
+	ctx := testCtx(t)
+
+	want := map[string]bool{schemaMigrationsTable: true}
+	virtual := []string{}
+	created := migrationTables(t)
+	for file, tables := range created.byFile {
+		for _, name := range tables {
+			want[name] = true
+			if created.virtual[file][name] {
+				virtual = append(virtual, name)
+			}
+		}
+	}
 
 	rows, err := s.db.QueryContext(ctx,
 		"SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
@@ -112,21 +168,75 @@ func TestCatalogTablesAreExactlyTheFirstFive(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Listed in the ORDER BY name order the query returns: 0001_init.sql's
-	// catalogue (editions, games, profiles, schema_migrations, source_blobs,
-	// sources) plus 0002_content.sql's content tables and FTS5 index (the
-	// messages_fts* group is the virtual table and its four shadow tables) plus
-	// 0003_jobs_events.sql's queue and log.
-	want := []string{
-		"characters", "corrections", "editions", "events", "games",
-		"job_attempts", "jobs", "message_edges", "message_pages", "messages",
-		"messages_fts", "messages_fts_config", "messages_fts_data",
-		"messages_fts_docsize", "messages_fts_idx", "profiles", "regions", "scenes",
-		"schema_migrations", "source_blobs", "sources", "speaker_assertions",
+	for _, name := range found {
+		if want[name] {
+			continue
+		}
+		// An FTS5 virtual table is named by its CREATE statement; its shadow tables
+		// are not, and they are SQLite's, not this schema's.
+		shadow := false
+		for _, base := range virtual {
+			if strings.HasPrefix(name, base+"_") {
+				shadow = true
+				break
+			}
+		}
+		if !shadow {
+			t.Errorf("table %q exists in the migrated database but no embedded migration creates it", name)
+		}
 	}
-	if strings.Join(found, ",") != strings.Join(want, ",") {
-		t.Fatalf("tables = %v, want %v", found, want)
+	for name := range want {
+		if !slices.Contains(found, name) {
+			t.Errorf("a migration creates %q but the migrated database has no such table", name)
+		}
 	}
+}
+
+// createTablePattern matches the table a CREATE TABLE statement names, with or
+// without the VIRTUAL/IF NOT EXISTS noise in between.
+var createTablePattern = regexp.MustCompile("(?i)^CREATE\\s+(?:VIRTUAL\\s+)?TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?([A-Za-z0-9_]+)")
+
+// createdTables answers "which tables does each embedded migration create?", plus the
+// subset that came from a CREATE VIRTUAL TABLE statement — whose shadow tables SQLite
+// adds by itself and no migration names.
+type createdTables struct {
+	byFile  map[string][]string
+	virtual map[string]map[string]bool
+}
+
+// migrationTables reads those names out of the *statements* splitSQL produces rather
+// than out of the raw text: a migration whose comments discuss a table it does not
+// create is the normal case in this schema, and a text search would count the
+// discussion.
+func migrationTables(t *testing.T) createdTables {
+	t.Helper()
+	migs, err := Migrations()
+	if err != nil {
+		t.Fatalf("Migrations: %v", err)
+	}
+	out := createdTables{
+		byFile:  map[string][]string{},
+		virtual: map[string]map[string]bool{},
+	}
+	for _, mig := range migs {
+		statements, err := splitSQL(mig.SQL)
+		if err != nil {
+			t.Fatalf("splitSQL(%s): %v", mig.Name, err)
+		}
+		out.virtual[mig.Name] = map[string]bool{}
+		for _, stmt := range statements {
+			code := stripLeadComments(stmt)
+			m := createTablePattern.FindStringSubmatch(code)
+			if m == nil {
+				continue
+			}
+			out.byFile[mig.Name] = append(out.byFile[mig.Name], m[1])
+			if strings.HasPrefix(strings.ToUpper(code), "CREATE VIRTUAL TABLE") {
+				out.virtual[mig.Name][m[1]] = true
+			}
+		}
+	}
+	return out
 }
 
 // TestForeignKeyEnforcement proves `PRAGMA foreign_keys = ON` actually bites:

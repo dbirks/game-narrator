@@ -171,3 +171,26 @@ exists to add, so it is not offered as an option. To unwind the schema itself:
 - When FTS5 tables arrive (M2), record here whether
   `tokenize='trigram'` or an app-side prefix index wins on 4 GB RAM.
 - Review when Milestone 1 schema work starts.
+
+## Follow-up 2026-10-16: the splitter now understands trigger bodies
+
+The risk recorded above — "`splitSQL` deliberately does not understand
+`CREATE TRIGGER ... BEGIN ... END` bodies; a migration that needs one must extend
+the splitter, and `TestSplitSQL` must fail first to prove the limitation was
+noticed" — is closed. `0002_content.sql` needed the FTS5 synchronisation triggers,
+which is precisely the case the note named, so `splitSQL` tracks a trigger body:
+a semicolon inside `BEGIN ... END` separates the body's statements and does not
+terminate the `CREATE TRIGGER`. Detection runs over *words*, not bytes (a trigger
+body full of string literals must not be fooled by the text inside them), and the
+handling is deliberately narrow — only `BEGIN`/`END` nesting is tracked, with a
+`CASE ... END` inside a body counted separately. A trigger whose `END` never
+arrives fails the whole migration loudly and atomically (the remaining file
+becomes one invalid statement, the transaction rolls back) rather than
+half-applying: `TestSplitSQLUnderstandsTriggerBodies` and
+`TestSplitSQLRejectsAnUnterminatedTriggerBody` cover both, and
+`TestMigrationAppliesContentFileToBlankDatabase` proves SQLite itself accepts the
+resulting FTS5 triggers, which no amount of splitting on its own can show. The
+rest of this ADR stands unchanged; the migration-count claims in "Evidence and
+test plan" describe version 1, and schema-version expectations in tests and in the
+CLI now derive from `store.Migrations()` / `store.LatestSchemaVersion()` rather
+than a typed number (ADR-0015).
