@@ -279,6 +279,23 @@ func requestID(h http.Header) string {
 // transportError classifies a transport-level failure, distinguishing caller
 // cancellation from an expired deadline from an unreachable endpoint.
 func (c *Client) transportError(err error, status int) *providers.Error {
+	// A transport that has already classified its own failure into the shared
+	// taxonomy (for example a recorded-cassette miss from
+	// internal/providers/recorded) is respected rather than flattened into a
+	// generic transport failure: the classification and the correlation handle
+	// in its message are the useful part. The original error is kept as the
+	// cause so transport-specific types stay reachable with errors.As.
+	var classified *providers.Error
+	if errors.As(err, &classified) {
+		out := *classified
+		if out.Model == "" {
+			out.Model = c.Model
+		}
+		if _, isTaxonomy := err.(*providers.Error); !isTaxonomy {
+			out.Err = err
+		}
+		return &out
+	}
 	var e *providers.Error
 	switch {
 	case errors.Is(err, context.Canceled):
