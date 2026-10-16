@@ -48,7 +48,20 @@ type Server struct {
 
 	// webFS holds the built SPA (rooted so index.html is "index.html").
 	webFS fs.FS
+
+	// readiness reports dependency state for /health/ready. nil means this
+	// build has no dependencies wired, which is reported as an empty check
+	// map rather than a claim that everything works.
+	readiness ReadinessFunc
 }
+
+// ReadinessFunc answers GET /api/v1/health/ready. It returns the per-dependency
+// check map (keyed by dependency name, e.g. "database") and whether the service
+// is ready; ok=false makes the endpoint answer 503 with "status":"fail".
+//
+// A readiness probe runs on the request path, so it must be cheap and must
+// honour ctx. Returned values must not contain paths, URLs or credentials.
+type ReadinessFunc func(ctx context.Context) (checks map[string]any, ok bool)
 
 // Option customises a Server. Production wiring needs none of them; tests
 // inject an in-memory UI build (docs/spec/12 "Unit" mode).
@@ -58,6 +71,13 @@ type Option func(*Server)
 // is treated as an empty build, which answers 503 on UI paths.
 func WithWebAssets(filesystem fs.FS) Option {
 	return func(s *Server) { s.webFS = filesystem }
+}
+
+// WithReadiness wires the dependency probe behind /api/v1/health/ready, so the
+// process can never answer "ok" about a service it has not exercised. Tests
+// inject a failing checker to prove the 503 path.
+func WithReadiness(f ReadinessFunc) Option {
+	return func(s *Server) { s.readiness = f }
 }
 
 // New constructs an API server. A zero BuildInfo or nil logger is tolerated.
@@ -125,17 +145,50 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// healthResponse is the readiness payload. checks stays an (initially empty)
-// map so dependency checks can be added without a breaking change.
+// healthResponse is the readiness payload. checks stays a map (initially empty)
+// so dependency checks are additive, and each entry is an object rather than a
+// bare string so a check can carry evidence such as schema_version.
 type healthResponse struct {
-	Status string            `json:"status"`
-	Checks map[string]string `json:"checks"`
+	Status string         `json:"status"`
+	Checks map[string]any `json:"checks"`
 }
 
-// handleReady reports dependency readiness. No dependencies are wired yet, so
-// the check map is empty, which is reported as ready.
+// readinessTimeout bounds one readiness probe. A stuck dependency must make the
+// endpoint answer "not ready" quickly rather than hold the request open.
+const readinessTimeout = 2 * time.Second
+
+// handleReady reports dependency readiness. With no checker wired it reports an
+// empty check map, which is the honest "nothing is wired yet" state; with one,
+// a failing dependency yields HTTP 503 and "status":"fail" (docs/spec/08,
+// docs/spec/13 "no generic success on an unprobed service").
 func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, healthResponse{Status: "ok", Checks: map[string]string{}})
+	checks, ok := map[string]any{}, true
+	if s.readiness != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), readinessTimeout)
+		defer cancel()
+		var body map[string]any
+		// A panicking checker must not take the process down: an unreachable
+		// dependency is exactly what a readiness probe exists to report.
+		body, ok = safeReadiness(ctx, s.readiness, s.log)
+		if body != nil {
+			checks = body
+		}
+	}
+	status, code := "ok", http.StatusOK
+	if !ok {
+		status, code = "fail", http.StatusServiceUnavailable
+	}
+	writeJSON(w, code, healthResponse{Status: status, Checks: checks})
+}
+
+func safeReadiness(ctx context.Context, f ReadinessFunc, log *slog.Logger) (checks map[string]any, ok bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Error("readiness checker panicked", "panic", rec)
+			checks, ok = nil, false
+		}
+	}()
+	return f(ctx)
 }
 
 // systemInfoResponse exposes build/OS capacity only: no hostnames, paths,

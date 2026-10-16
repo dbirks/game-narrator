@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -42,8 +43,8 @@ func TestHealthReadyHasEmptyChecksMap(t *testing.T) {
 		t.Fatalf("body = %s, want empty checks object", rec.Body.String())
 	}
 	var body struct {
-		Status string            `json:"status"`
-		Checks map[string]string `json:"checks"`
+		Status string         `json:"status"`
+		Checks map[string]any `json:"checks"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -53,6 +54,127 @@ func TestHealthReadyHasEmptyChecksMap(t *testing.T) {
 	}
 	if body.Checks == nil || len(body.Checks) != 0 {
 		t.Fatalf("checks = %v, want empty non-nil map", body.Checks)
+	}
+}
+
+// TestHealthReadyReportsTheDatabaseCheck is the docs/spec/13 rule that a
+// dependency is only reported once something probed it: with a checker wired,
+// its evidence (schema version) must reach the payload.
+func TestHealthReadyReportsTheDatabaseCheck(t *testing.T) {
+	h := newHandler(WithReadiness(func(context.Context) (map[string]any, bool) {
+		return map[string]any{"database": map[string]any{"status": "ok", "schema_version": 1}}, true
+	}))
+
+	rec := do(t, h, http.MethodGet, "/api/v1/health/ready")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	requireContentType(t, rec, ContentTypeJSON)
+
+	body := decodeJSON(t, rec)
+	if body["status"] != "ok" {
+		t.Fatalf("status = %v, want ok", body["status"])
+	}
+	database, ok := body["checks"].(map[string]any)["database"].(map[string]any)
+	if !ok {
+		t.Fatalf("checks.database missing or not an object: %s", rec.Body.String())
+	}
+	if database["status"] != "ok" {
+		t.Fatalf("checks.database.status = %v, want ok", database["status"])
+	}
+	if version := database["schema_version"]; version != float64(1) {
+		t.Fatalf("checks.database.schema_version = %v, want 1", version)
+	}
+}
+
+// TestHealthReadyIs503WhenACheckerFails: a broken dependency must be visible to
+// a load balancer and to scripts, in the status code as well as the body.
+func TestHealthReadyIs503WhenACheckerFails(t *testing.T) {
+	h := newHandler(WithReadiness(func(context.Context) (map[string]any, bool) {
+		return map[string]any{"database": map[string]any{
+			"status":         "fail",
+			"schema_version": 1,
+			"error":          "database ping failed",
+		}}, false
+	}))
+
+	rec := do(t, h, http.MethodGet, "/api/v1/health/ready")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (body %s)", rec.Code, rec.Body.String())
+	}
+	// The shape stays JSON — readiness keeps one contract for both outcomes.
+	requireContentType(t, rec, ContentTypeJSON)
+
+	body := decodeJSON(t, rec)
+	if body["status"] != "fail" {
+		t.Fatalf("status = %v, want fail", body["status"])
+	}
+	database, ok := body["checks"].(map[string]any)["database"].(map[string]any)
+	if !ok || database["status"] != "fail" {
+		t.Fatalf("checks.database = %v, want a failing object", body["checks"])
+	}
+	if database["error"] != "database ping failed" {
+		t.Fatalf("checks.database.error = %v", database["error"])
+	}
+}
+
+// TestHealthReadyKeepsLivenessUnaffected documents the split: /health/live must
+// still answer 200 while readiness is 503, so a process with a sick dependency
+// is not killed by a liveness-only supervisor.
+func TestHealthReadyKeepsLivenessUnaffected(t *testing.T) {
+	h := newHandler(WithReadiness(func(context.Context) (map[string]any, bool) { return nil, false }))
+
+	if rec := do(t, h, http.MethodGet, "/api/v1/health/ready"); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("ready = %d, want 503", rec.Code)
+	}
+	if rec := do(t, h, http.MethodGet, "/api/v1/health/live"); rec.Code != http.StatusOK {
+		t.Fatalf("live = %d, want 200", rec.Code)
+	}
+}
+
+func TestHealthReadyCheckerPanicsBecomeFailNotCrash(t *testing.T) {
+	h := newHandler(WithReadiness(func(context.Context) (map[string]any, bool) {
+		panic("checker exploded")
+	}))
+
+	rec := do(t, h, http.MethodGet, "/api/v1/health/ready")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	if body := decodeJSON(t, rec); body["status"] != "fail" {
+		t.Fatalf("status = %v, want fail", body["status"])
+	}
+}
+
+// TestHealthReadyBoundsTheCheckerWithADeadline proves a hung dependency cannot
+// hold the endpoint open: the checker gets a context with a deadline, derived
+// from the request so a client disconnect cancels it too.
+func TestHealthReadyBoundsTheCheckerWithADeadline(t *testing.T) {
+	seen := make(chan time.Time, 1)
+	h := newHandler(WithReadiness(func(ctx context.Context) (map[string]any, bool) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Error("readiness checker got a context without a deadline")
+			return nil, false
+		}
+		if remaining := time.Until(deadline); remaining <= 0 || remaining > readinessTimeout {
+			t.Errorf("checker deadline is %s away, want within %s", remaining, readinessTimeout)
+		}
+		select {
+		case <-ctx.Done():
+		default:
+		}
+		seen <- deadline
+		return map[string]any{"database": map[string]any{"status": "ok"}}, true
+	}))
+
+	if rec := do(t, h, http.MethodGet, "/api/v1/health/ready"); rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	select {
+	case <-seen:
+	default:
+		t.Fatal("the readiness checker was never called")
 	}
 }
 
