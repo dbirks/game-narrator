@@ -1,0 +1,2 @@
+go test fuzz v1
+string("안녕하세요, 모험가!")

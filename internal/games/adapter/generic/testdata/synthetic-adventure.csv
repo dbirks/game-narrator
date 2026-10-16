@@ -1,0 +1,42 @@
+message_id,speaker,line,kind,area
+l-001,Marla,"Welcome to Saltmarsh, traveller. The tide is out and the boats are waiting.",dialogue,Harbour
+l-002,,The harbourmaster is counting crates again. Pay her no mind.,dialogue,Harbour
+l-003,,SALTMARSH — DEEP WATER BERTH 4,sign,Harbour
+l-004,Corvin,"You'll want the long rope. Short ones fray on the pilings.",dialogue,Harbour
+l-005,,Rope (long) — thirty fathoms of good hemp.,item,Harbour
+l-006,Marla,"Mind the gap between the second and third step.
+Nobody built these docks for tall feet.",dialogue,Harbour
+l-007,,Watchtower Notice: no lamps after the third bell.,sign,Harbour
+l-008,Corvin,Hear that? The bell is ringing early.,dialogue,Harbour
+l-009,,A gull lands on a crate and refuses to leave.,system,Harbour
+l-010,Marla,"The old wreck came in with the storm. Folk say it still has cargo aboard.",dialogue,Harbour
+l-011,,Wreck of the Galloway — entered at your own risk,sign,Wreck
+l-012,Corvin,"I'll hold the lantern. You go first, you're the one with the sword.",dialogue,Wreck
+l-013,,"Rusted Cutlass. Notched, but balanced.",item,Wreck
+l-014,,Water sloshes somewhere below the deck plates.,system,Wreck
+l-015,Marla,Nobody said a word about the smell. Nobody ever does.,dialogue,Wreck
+l-016,Corvin,Two candles down and something is still burning back there.,dialogue,Wreck
+l-017,,"Cargo Manifest (water damaged) — only the last line is legible: 'six crates, sealed'",sign,Wreck
+l-018,,Sealed Crate. The locks are new for an old ship.,item,Wreck
+l-019,Marla,"Set it down. Whatever is in there, the harbourmaster can open it.",dialogue,Wreck
+l-020,Corvin,That's not a lock. That's a warning.,dialogue,Wreck
+l-021,,Below Decks — no lanterns and no running,sign,Wreck
+l-022,,A boy in an oilskin coat watches from the far rung of the ladder.,system,Wreck
+l-023,Boy,You opened it.,dialogue,Wreck
+l-024,Marla,We opened nothing. The sea opened it.,dialogue,Wreck
+l-025,Boy,"Then the sea will want it back. My grandmother says deep water always collects.",dialogue,Wreck
+l-026,,Salt-Crusted Key. It fits nothing on this ship.,item,Wreck
+l-027,Corvin,Tide's turning. Ladder. Now.,dialogue,Wreck
+l-028,,Harbour Gate — closed between the second and third bell,sign,Town
+l-029,Têvance,"You're late, and you're wet, and the crate is already gone. Come inside anyway.",dialogue,Town
+l-030,Têvance,Tea first. Questions cost extra after the second cup.,dialogue,Town
+l-031,,"Maps of the Outer Banks, folded, and one of them is wet.",item,Town
+l-032,Boy,The harbourmaster counted the crates twice. She always counts them twice.,dialogue,Town
+l-033,Têvance,"She counts them because one is never where she left it. Don't tell her I said so.",dialogue,Town
+l-034,,"The bell rings twice, then stops, as if someone remembered it was ringing.",system,Town
+l-035,Têvance,Take the long map. The short one only shows where the safe water used to be.,dialogue,Town
+l-036,,TOWN LEDGER — balance owed to the harbourmaster: see the last page,sign,Town
+l-037,Boy,"He's asking about the sealed crate. Everyone who asks about it leaves town.",dialogue,Town
+l-038,Chef Ondine,Two fish. One burnt on purpose and one by accident.,dialogue,Market
+l-039,,"Smoked Eel — six coppers, or a favour you can name later",item,Market
+l-040,Chef Ondine,"The wreck folk pay in buttons now. Buttons don't cook.",dialogue,Market

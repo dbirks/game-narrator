@@ -1,0 +1,2 @@
+go test fuzz v1
+string("\n\n\n\n\nonly\n\nline\n\n\n")

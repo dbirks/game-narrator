@@ -1,0 +1,114 @@
+{
+  "title": "synthetic-other-game",
+  "revision": 3,
+  "notes": "Deliberately unlike the CSV fixture: every key name except the message list differs, numbers appear where the CSV uses strings, one page is addressed by an explicit leaf number, and speakers are absent where the CSV names them. docs/spec/04 Two-game portability verification requires a structurally different second game to ingest through the same core code, with mapping done by configuration rather than by a condition in shared code.",
+  "messages": [
+    {
+      "utterance_id": 1,
+      "who_speaks": "The Ferryman",
+      "line_of_dialogue": "No coin, no crossing. That is the rule and the whole of it.",
+      "stage": "The Black Water",
+      "sort_of_text": "dialogue"
+    },
+    {
+      "utterance_id": 1,
+      "who_speaks": "The Ferryman",
+      "line_of_dialogue": "Fish have no pockets and spirits do not pay.",
+      "stage": "The Black Water",
+      "sort_of_text": "dialogue",
+      "leaf_number": 2
+    },
+    {
+      "utterance_id": 2,
+      "who_speaks": null,
+      "line_of_dialogue": "A wooden sign, half sunk: 'TOLL — ONE COIN, EVERY SOUL'.",
+      "stage": "The Black Water",
+      "sort_of_text": "sign"
+    },
+    {
+      "utterance_id": 3,
+      "who_speaks": null,
+      "line_of_dialogue": "Toll Coin. Warm, like someone was holding it.",
+      "stage": "Reed Shore",
+      "sort_of_text": "item"
+    },
+    {
+      "utterance_id": 4,
+      "who_speaks": "The Ferryman",
+      "line_of_dialogue": "You paid. I did not say the coin was yours.",
+      "stage": "Reed Shore",
+      "sort_of_text": "dialogue"
+    },
+    {
+      "utterance_id": 5,
+      "who_speaks": "Wren of the Reed Shore",
+      "line_of_dialogue": "He takes a coin from everyone who crosses. Nobody has ever crossed twice.",
+      "stage": "Reed Shore",
+      "sort_of_text": "dialogue"
+    },
+    {
+      "utterance_id": 5,
+      "who_speaks": "Wren of the Reed Shore",
+      "line_of_dialogue": "So the story goes. Stories are cheaper than coins.",
+      "stage": "Reed Shore",
+      "sort_of_text": "dialogue",
+      "leaf_number": 2
+    },
+    {
+      "utterance_id": 6,
+      "who_speaks": null,
+      "line_of_dialogue": "The ferry is gone. The rope is still wet.",
+      "stage": "Reed Shore",
+      "sort_of_text": "system"
+    },
+    {
+      "utterance_id": 7,
+      "who_speaks": "Wren of the Reed Shore",
+      "line_of_dialogue": "There is a second ferry. There is always a second ferry.",
+      "stage": "The Long Reeds",
+      "sort_of_text": "dialogue"
+    },
+    {
+      "utterance_id": 8,
+      "who_speaks": null,
+      "line_of_dialogue": "Reed-cutting knife — the edge has been touched recently.",
+      "stage": "The Long Reeds",
+      "sort_of_text": "item"
+    },
+    {
+      "utterance_id": 9,
+      "who_speaks": "The Ferryman",
+      "line_of_dialogue": "Second crossing, second coin. I am not greedy. I am thorough.",
+      "stage": "The Long Reeds",
+      "sort_of_text": "dialogue"
+    },
+    {
+      "utterance_id": 10,
+      "who_speaks": "Wren of the Reed Shore",
+      "line_of_dialogue": "Ask him about the first ferryman. Watch him remember something else.",
+      "stage": "The Long Reeds",
+      "sort_of_text": "dialogue"
+    },
+    {
+      "utterance_id": 11,
+      "who_speaks": null,
+      "line_of_dialogue": "A child's drawing of a boat, nailed to a post. The boat has no oars.",
+      "stage": "The Long Reeds",
+      "sort_of_text": "sign"
+    },
+    {
+      "utterance_id": 12,
+      "who_speaks": "The Ferryman",
+      "line_of_dialogue": "This is not a toll. This is a habit.",
+      "stage": "Far Bank",
+      "sort_of_text": "dialogue"
+    },
+    {
+      "utterance_id": 13,
+      "who_speaks": null,
+      "line_of_dialogue": "Far Bank — the road continues, unbothered.",
+      "stage": "Far Bank",
+      "sort_of_text": "system"
+    }
+  ]
+}
