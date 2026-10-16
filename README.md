@@ -1,12 +1,157 @@
-# Game Narrator — implementation specification
+# Game Narrator
 
-**Status:** Proposed implementation contract · **Version:** 1.0-draft · **Prepared:** 2026-10-16
+Game Narrator watches a copy of a game's video signal, reads the dialogue that
+appears on screen, works out which character is speaking, and plays the line
+back in a consistent generated voice. For a GameCube that means an analog-to-HDMI
+converter into a powered 1×2 HDMI splitter: one leg goes straight to the TV, the
+other into a UVC HDMI capture dongle plugged into an Arduino UNO Q running Linux,
+with speech out to a USB sound device — the picture on your TV never passes
+through this app. The same pipeline also runs against Dolphin on an Arch Linux
+development host, with no UNO Q involved.
 
-Game Narrator is a self-hosted, game-agnostic AI dubbing and narration appliance. A Go service on an Arduino UNO Q (4 GB) inspects **a copy** of a game's video signal, recognizes contextual text, finds the correct character, and plays consistent generated speech. A React/Vite UI embeds into the Go executable. The development stack runs on an Arch Linux host with Dolphin, Playwright, deterministic frame replay, and real-model inference tests. An autonomous, tool-using setup agent creates portable profiles for **user-provided games/content**.
+## Status
 
-**This repository is a specification and planning kit, not a working implementation.** No emulator, physical capture, endpoint integration, or end-to-end tests have been executed as part of its creation. Example artifacts are deliberately synthetic and must not be represented as validated game data.
+Early development — Milestone 0 (environment/discovery and executable
+infrastructure) is in progress and nothing after it has started. What runs today
+is a Go service with an embedded React UI, SQLite migrations, model-role
+configuration and a Playwright-checked diagnostics page; treat everything else
+as designed but unbuilt.
 
-## Reading order
+| Milestone | Scope (see [docs/spec/16](docs/spec/16-implementation-and-acceptance.md)) | Status      |
+| --------- | ------------------------------------------------------------------------- | ----------- |
+| M0        | Environment/discovery and executable infrastructure                       | in progress |
+| M1        | Full foundation and portability                                           | not started |
+| M2        | Video + recognition engine                                                | not started |
+| M3        | Model integration and knowledge agent                                     | not started |
+| M4        | Complete voice and playback pipeline                                      | not started |
+| M5        | Complete React product                                                    | not started |
+| M6        | Dolphin live driver and fixture factory                                   | not started |
+| M7        | Full live-model and adverse-condition validation                          | not started |
+| M8        | UNO Q and distributable release                                           | not started |
+
+Unimplemented gates (`test-replay`, `test-dolphin`, `test-models`,
+`test-hardware`, `release-snapshot`, `diagnostics`) print `NOT RUN: ...` and
+fail — they can never report success before the work exists.
+
+## How it works
+
+Every runtime path shares this pipeline. It is the design from
+[`docs/spec/05`](docs/spec/05-runtime-recognition.md) and
+[`docs/spec/07`](docs/spec/07-voice-audio.md), built in M2–M4 — none of it runs
+yet.
+
+1. Capture a frame: a UVC HDMI dongle on the UNO Q, Dolphin on a dev host, or a
+   recorded fixture in CI.
+2. Detect the dialogue text box in a configured region of that frame.
+3. Run OCR over the region (local Tesseract, with a vision-model fallback).
+4. Match the recognized text against the imported game script to rank candidate
+   messages.
+5. Decide who is speaking — a fast reasoning model plus the character/scene
+   graph, with explicit abstention when it is not confident.
+6. Synthesize the line in that character's approved voice, or reuse a cached
+   clip keyed on voice and text versions.
+7. Play it to the configured audio output, and cancel playback the moment the
+   player advances the text box.
+
+Recognition and audio work happen on the device; model inference (vision
+fallback, speaker decision, speech synthesis, ASR quality checks) runs on a
+separate GPU gateway reachable over HTTP, not on the UNO Q.
+
+## Quickstart (Arch Linux dev host)
+
+Arch Linux with `sudo` is enough to start: the bootstrap script installs Go,
+Node/pnpm, make and the rest.
+
+```sh
+scripts/bootstrap-arch.sh --dry-run                    # preview pacman commands, install nothing
+scripts/bootstrap-arch.sh                              # install dev packages (idempotent, uses sudo)
+pnpm --dir web exec playwright install chromium        # browser used by make test-ui
+
+make build                                             # Vite build -> embedded into bin/game-narrator
+bin/game-narrator migrate                              # apply pending SQLite migrations
+bin/game-narrator serve                                # http://127.0.0.1:8080/diagnostics
+```
+
+Then open <http://127.0.0.1:8080/diagnostics> — it shows build version/commit,
+Go version, `os`/`arch` and readiness read live from the API.
+
+For development (Go server from source plus a Vite dev server):
+
+```sh
+make dev                                               # go run ./cmd/game-narrator serve
+```
+
+Verification gates that exist today:
+
+```sh
+make test-unit    # go vet + go test -race ./...
+make test-ui      # frontend checks, then Playwright against a real embedded binary
+make lint         # gofmt/vet + oxlint + oxfmt --check
+make test-full    # runs the gates above, exits non-zero while others are NOT RUN
+```
+
+`go test ./...` stays green with no network access: live provider tests skip
+with `NOT RUN` unless a gateway is configured.
+
+Useful knobs for `serve` and `migrate`:
+
+- `GAME_NARRATOR_LISTEN` (or `--listen`) — TCP address, default `127.0.0.1:8080`.
+- `GAME_NARRATOR_DATA_DIR` (or `--data-dir`) — durable data directory holding
+  `game-narrator.sqlite`; defaults to `$XDG_DATA_HOME/game-narrator`, else
+  `$HOME/.local/share/game-narrator`. `bin/game-narrator migrate --data-dir "$(mktemp -d)"`
+  is handy for a throwaway database.
+- `serve` never migrates on boot; run `migrate` explicitly so a running service
+  cannot be upgraded out from under itself.
+
+## Configuration
+
+Copy `.env.example` and fill it in — every value there is a placeholder on a
+`.invalid` host, so a forgotten default fails loudly instead of pointing at
+somebody else's server. Model **roles** are configured by environment variables
+(`GAME_NARRATOR_ROLE_*`), not raw URLs in a config file; a role is enabled only
+when its model is set, and preflight reports the rest as `NOT CONFIGURED` while
+the service keeps running. In this build only the chat-style roles have adapters
+(`agent_reasoning`, `fast_reasoning`, `vision_ocr_fallback`); `decision`,
+`voice_design`, `voice_clone` and `speech_asr` are representable in configuration
+but not implemented. `examples/config/` holds the illustrative YAML/env samples
+from the spec kit. Never commit `.env` — it is gitignored, and so is any real
+token.
+
+## Game content and copyright
+
+This repository ships no games, no game scripts, no art and no voices. You
+supply your own legally obtained game image through `GAME_NARRATOR_GAME_IMAGE_PATH`
+(and it is referenced read-only — never copied into the repo, the data directory
+or an evidence bundle). Disc images, savestates and input movies are gitignored;
+do not commit them, and do not commit screenshots that show copyrighted visuals.
+
+## Repository layout
+
+```
+cmd/game-narrator/      CLI entry point (serve | migrate | version)
+internal/api/           HTTP handlers, middleware, static SPA serving
+internal/bootstrap/     config, server lifecycle, build/version info
+internal/providers/     model-role registry + OpenAI-compatible chat adapter
+internal/store/         SQLite access, embedded migrations (store/migrations/)
+internal/webassets/     go:embed mount point for the built web assets
+web/                    React + TypeScript + Vite UI, Vitest tests, Playwright e2e/
+scripts/                bootstrap-arch.sh; spikes/dolphin/ capability probe
+docs/spec/              parts 00-18: the implementation contract
+docs/adr/               architecture decision records
+docs/spikes/            measured capability findings (Dolphin headless)
+docs/agents/            onboarding-agent prompts and workflow docs
+docs/reference/         primary-source links and limitations
+docs/test-plan/         scenario catalog
+examples/               nonproduction config and scenario samples
+bin/ , artifacts/       build output and evidence bundles (both gitignored)
+```
+
+## Specification
+
+The documents below are the implementation contract; code follows them, and
+substantial departures get an ADR.
+
+### Reading order
 
 | Part | File | Deliverable |
 |---|---|---|
@@ -38,7 +183,7 @@ Supporting materials:
 - [`docs/test-plan/scenario-catalog.md`](docs/test-plan/scenario-catalog.md): extensive cross-game, visual, audio, failure and hardware test catalog.
 - [`examples/`](examples/): nonproduction example configurations and illustrative scenario schema.
 
-## Non-negotiable invariants
+### Non-negotiable invariants
 
 1. The original gameplay signal **never** traverses the inference path; the TV sees the hardware splitter's other output.
 2. The UNO Q does not need HDMI input or the game to be emulated on the UNO Q; capture arrives through Linux UVC/V4L2.
@@ -51,6 +196,17 @@ Supporting materials:
 9. The agent implementing this project must create, run, inspect, and report reproducible end-to-end tests — including **real Dolphin** paths when the authorized test host is available.
 10. Release completion requires the **full scope and acceptance matrix**, not merely one demo vertical slice.
 
-## Spec-to-repo instructions
+## Contributing
 
-Use this package as initial repository documentation; keep path structure. Implementation should create `/cmd`, `/internal`, `/web`, `/migrations`, `/testdata` and deployment files in the repository root as described. Keep speculative values clearly labeled; convert to measured thresholds during benchmark calibration. No credentials or third-party game bytes go into Git.
+Read [`AGENTS.md`](AGENTS.md) first (it is also available as `CLAUDE.md`) — it is
+the working agreement: inspect before deciding, keep milestones honest, and never
+present a mocked workflow as real end-to-end. Any decision that changes
+component boundaries, persistence, protocol, dependencies, security or the
+release process needs a numbered ADR in `docs/adr/` before or alongside the
+change. Tests must prove real behaviour: browser tests assert visible state, not
+HTTP 200, and a gate that is not implemented reports `NOT RUN` rather than
+passing. `make help` lists the targets.
+
+## License
+
+Not yet chosen.

@@ -1,9 +1,11 @@
 # Game Narrator web UI
 
 Vite + React + TypeScript front end for the Go `game-narrator` service
-(docs/spec/09-ui-and-workflows.md). Built assets are embedded into the Go
-binary by a later milestone; today `web/dist` is produced by `pnpm build` and
-not yet consumed by Go.
+(docs/spec/09-ui-and-workflows.md). `pnpm build` writes `web/dist`, and
+`make build` at the repo root stages that output into
+`internal/webassets/dist`, where `go:embed` compiles it into the
+`bin/game-narrator` binary — the Go server serves the SPA itself, so no Vite
+dev server is needed to run the product.
 
 ## Requirements
 
