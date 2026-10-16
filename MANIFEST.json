@@ -1,0 +1,197 @@
+{
+  "project": "game-narrator",
+  "spec_version": "1.0-draft",
+  "created": "2026-10-16",
+  "files": [
+    {
+      "path": "AGENTS.md",
+      "bytes": 5589,
+      "sha256": "27a459cebec0a0ed3b89375a2319e17d7797fb4fc8b2b776add84e15e430c265"
+    },
+    {
+      "path": "CODING_AGENT_START_HERE.md",
+      "bytes": 2824,
+      "sha256": "6d9b92eeef1ce49f77a90d0c60b56fd50c97acaf83e840754f85106080d53644"
+    },
+    {
+      "path": "README.md",
+      "bytes": 5528,
+      "sha256": "1c29b71b439212d7c534cb3c463f3ee71ef366f21a3bf4236f7a0db9781ba242"
+    },
+    {
+      "path": "docs/adr/0000-TEMPLATE.md",
+      "bytes": 809,
+      "sha256": "58bdbb2061c5572bd606703dcefa20175cd6eeebab64934bdfb083e6bb127eda"
+    },
+    {
+      "path": "docs/adr/0001-go-react-embedded-ui.md",
+      "bytes": 1197,
+      "sha256": "913a50a4e627d78a65ed0a71167376cfa0df28984cd29ec7245cb47b2a66664a"
+    },
+    {
+      "path": "docs/adr/0002-capture-model-boundary.md",
+      "bytes": 950,
+      "sha256": "2f7e19fec49263685cb3c98b39c22d5f5276116fed69acc235f254bd933f4de7"
+    },
+    {
+      "path": "docs/adr/0003-agentic-setup-deterministic-runtime.md",
+      "bytes": 1020,
+      "sha256": "446a4f7f2ae0eb532d7809cfd9ed51a24ad35ed439290050fa822007fb9294dc"
+    },
+    {
+      "path": "docs/adr/0004-portable-e2e-testing.md",
+      "bytes": 1103,
+      "sha256": "14bb7cf97191a440687b3f2fe66676bb03accb27750aab2da3ecfcd844a1c282"
+    },
+    {
+      "path": "docs/adr/0005-voice-source-of-truth.md",
+      "bytes": 851,
+      "sha256": "4dba7032fbcc80c1743b53c7da8a7a91519a8fd04a203290ae443f83203945f7"
+    },
+    {
+      "path": "docs/adr/0006-goreleaser-multiarch.md",
+      "bytes": 723,
+      "sha256": "d744f05160feb50f48cdf67468ad069e6d3b5abc190d7615a220599a41b74853"
+    },
+    {
+      "path": "docs/adr/README.md",
+      "bytes": 1104,
+      "sha256": "62ba76eb693cb0bbe92db775a6c46f4477452c35a929560f45e00e1a57098513"
+    },
+    {
+      "path": "docs/agents/coding-agent-workflow.md",
+      "bytes": 3922,
+      "sha256": "863d95e18b59dadea02a50524a0d19a8819b1d1be65b0d854e672df4445ea207"
+    },
+    {
+      "path": "docs/agents/e2e-fixture-author.md",
+      "bytes": 2022,
+      "sha256": "85fc7bbd02303faf4406d9e27f5ccf2d27aecd7dd8b0191221d0a50925bfa155"
+    },
+    {
+      "path": "docs/agents/system-prompt-onboarding.md",
+      "bytes": 3327,
+      "sha256": "0f6f08a930f33c71ef50300c9507cbad63733f9269fcd95b14a7ad326c3e72c0"
+    },
+    {
+      "path": "docs/reference/sources.md",
+      "bytes": 6216,
+      "sha256": "a29ab366d0ec947aeb95b12a71bef383f0aa2f40367e42660561f2fd07a1ad46"
+    },
+    {
+      "path": "docs/spec/00-product-charter.md",
+      "bytes": 7581,
+      "sha256": "e9826c849af920e2f9f9bab090c195d3bc9925428ff60f5420541a34eb02b5a4"
+    },
+    {
+      "path": "docs/spec/01-system-architecture.md",
+      "bytes": 7556,
+      "sha256": "d14cc36823868175993f2487c763a683fb3af9e8a58f0fec55831c3c52c933ad"
+    },
+    {
+      "path": "docs/spec/02-data-and-storage.md",
+      "bytes": 7913,
+      "sha256": "af2976e356d2354b06c59111652af0b4f2d8128fe27513f1cd1a8db7654f26f5"
+    },
+    {
+      "path": "docs/spec/03-onboarding-agent.md",
+      "bytes": 9832,
+      "sha256": "e4088226cd2ea26f0dee81414b6d8153ea61e1f31407d092ed12ed600a256bfe"
+    },
+    {
+      "path": "docs/spec/04-game-adapters.md",
+      "bytes": 4538,
+      "sha256": "3bb12d7c2851fa01acf1c683e115866c6ff6afa00525a58860838094f3f3861c"
+    },
+    {
+      "path": "docs/spec/05-runtime-recognition.md",
+      "bytes": 7598,
+      "sha256": "da3680e65e3e4ec9924cdaed7e516d8fea41ac2510f6cf884e6db336906b5a06"
+    },
+    {
+      "path": "docs/spec/06-inference-contracts.md",
+      "bytes": 7395,
+      "sha256": "8e8e4ace41219035d9542729486116bb55f6b9d4a7469ecf7fd8f0659157b6bb"
+    },
+    {
+      "path": "docs/spec/07-voice-audio.md",
+      "bytes": 7028,
+      "sha256": "013a29491c334d4344b2e5137fa05c4f67beee71dc0bbc09c6858e638fa3e1af"
+    },
+    {
+      "path": "docs/spec/08-api-and-events.md",
+      "bytes": 5338,
+      "sha256": "917b8d42e2537f53c941546cdb5c33ca26884ff7b345c149ef406ac678c3aee0"
+    },
+    {
+      "path": "docs/spec/09-ui-and-workflows.md",
+      "bytes": 5536,
+      "sha256": "f7123c72d222bc43d41c57d997880f0c57c0e9da0edec5a5a59af0ec14c87939"
+    },
+    {
+      "path": "docs/spec/10-hardware-and-deployment.md",
+      "bytes": 5178,
+      "sha256": "df3e687c2b609918b0394dc97b1bcb180ce9eaebb0167eeb43d35624654be31e"
+    },
+    {
+      "path": "docs/spec/11-dolphin-automation.md",
+      "bytes": 8010,
+      "sha256": "0825a4772f9428ad3e2d58e5e2c917011424914ee8187a1d95c7dab676be79b5"
+    },
+    {
+      "path": "docs/spec/12-test-strategy.md",
+      "bytes": 10418,
+      "sha256": "88667943de81923bbfd20dfe68e8db9d9843e755e0f0413fa65f0d316fcf2733"
+    },
+    {
+      "path": "docs/spec/13-observability-and-resilience.md",
+      "bytes": 4546,
+      "sha256": "d6cfe2040cee18f5e3892245a2299e9dc9de2788c7863f25fd886fe0c9b0e3a9"
+    },
+    {
+      "path": "docs/spec/14-security-and-content.md",
+      "bytes": 4606,
+      "sha256": "e1827c9a52d179465652fbccd2722da8fa8ed06a0129b18f8cc8f46633aafecb"
+    },
+    {
+      "path": "docs/spec/15-release-and-goreleaser.md",
+      "bytes": 4323,
+      "sha256": "911c5146bc59741e54e2eb7e2c09ae127b6522ea1ada694f2b257e7875c7ee9b"
+    },
+    {
+      "path": "docs/spec/16-implementation-and-acceptance.md",
+      "bytes": 10138,
+      "sha256": "bac9cea59ca5994ee42584ad4793ddd95d415660c5b69985b9653f62fe81dd32"
+    },
+    {
+      "path": "docs/spec/17-example-contracts.md",
+      "bytes": 4962,
+      "sha256": "a9fe800e7ac76bb341dfa9d31579095c2b71c4162ab254685c6adf1347b2fa97"
+    },
+    {
+      "path": "docs/spec/18-decisions-and-risks.md",
+      "bytes": 4923,
+      "sha256": "0be00a2c71f62fa08475388f4387ac38e46b0b4af125a39c5364bf2dd5f9db5a"
+    },
+    {
+      "path": "docs/test-plan/scenario-catalog.md",
+      "bytes": 10569,
+      "sha256": "565b6ead82cb31a64f4f5c25b7eec9f77cecc47dc27a3dc7530de01bac369a65"
+    },
+    {
+      "path": "examples/config/config.example.yaml",
+      "bytes": 2333,
+      "sha256": "00657765a2b9a662e53d01a44035caeeca4238f9211988a057dfba98b5a5f2c9"
+    },
+    {
+      "path": "examples/config/env.example",
+      "bytes": 239,
+      "sha256": "595c91a6c972576d6f0b1ef5621f0472f8c823ef0d3c57265fb010b92ab29c46"
+    },
+    {
+      "path": "examples/scenarios/synthetic-dialogue-advance.yaml",
+      "bytes": 695,
+      "sha256": "7c20bc30015da4d4629aefffe6253dd6b4b293b5d99b1f666163094331227524"
+    }
+  ]
+}

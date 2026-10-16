@@ -1,0 +1,25 @@
+# NONEXECUTABLE example until the coding agent implements scenario loader.
+schema_version: 1
+id: synthetic/dialogue-advance-001
+origin: generated_synthetic
+profile: synthetic-adventure-v1
+mode: frame_replay
+input:
+  frames_dir: tests/fixtures/synthetic/dialogue-advance-001/frames
+  timestamps: timestamps.json
+inference:
+  decision: recorded
+  tts: recorded
+expected:
+  - event: text.observed
+    contains: "Press A"
+  - event: message.committed
+    message_id: demo-001
+  - event: speech.started
+    voice_profile: narrator-v1
+  - event: speech.cancelled
+    reason: dialogue_advanced
+assertions:
+  no_duplicate_speech: true
+  no_stale_audio_after_advance_ms: 200
+  ui_trace_correlation: true

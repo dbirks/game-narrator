@@ -1,0 +1,59 @@
+# DESIGN EXAMPLE, not yet supported by an implemented binary.
+# Adjust to real endpoint gateway and UNO Q device IDs after preflight.
+server:
+  listen: "127.0.0.1:8080"
+  public_url: "http://localhost:8080"
+  auth:
+    mode: "local-first-run"
+    allow_unauthenticated_preview: false
+storage:
+  sqlite_path: "/var/lib/game-narrator/game-narrator.sqlite"
+  asset_backend: "filesystem"  # future: s3
+  asset_root: "/var/lib/game-narrator/assets"
+  max_live_preview_mb: 128
+  max_audio_cache_gb: 10
+runtime:
+  default_mode: "conservative"
+  predictive_enabled: true
+  default_narration_kinds: ["dialogue", "sign", "item"]
+  uncertain_speaker: "narrator_if_narratable_else_silence"
+  frame_probe_hz: 7
+  active_ocr_hz: 3
+  max_ocr_workers: 2
+  background_jobs_during_play: "throttled"
+capture:
+  type: "v4l2"
+  preferred_device_identity: ""  # configure after UVC enumeration
+  ffmpeg_path: "/usr/bin/ffmpeg"
+  v4l2_ctl_path: "/usr/bin/v4l2-ctl"
+audio:
+  backend: "alsa"
+  preferred_device_identity: ""
+  output_gain_db: 0
+  fade_out_ms: 80
+providers:
+  gateway:
+    base_url: "http://inference-gateway.example.invalid"
+    auth_env_var: "GAME_NARRATOR_GATEWAY_TOKEN"
+  roles:
+    agent_reasoning: {route: "agent", protocol: "openai_chat", model: "CONFIGURE_ME"}
+    fast_reasoning: {route: "fast", protocol: "openai_chat", model: "CONFIGURE_ME"}
+    vision_ocr_fallback: {route: "vision", protocol: "openai_chat_vision", model: "CONFIGURE_ME"}
+    decision: {route: "clef", protocol: "systemone", model: "Cloudflare/clef-omni"}
+    voice_design: {route: "tts-design", protocol: "vllm_omni_speech", model: "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"}
+    voice_clone: {route: "tts-base", protocol: "vllm_omni_speech", model: "Qwen/Qwen3-TTS-12Hz-1.7B-Base"}
+    speech_asr: {route: "asr", protocol: "probe_required", model: "CONFIGURE_ME"}
+  voice_registry:
+    strategy: "per_instance_reconcile"  # dedicated/affinity/inline/precomputed fallback
+    collision_policy: "immutable"
+    consent_policy: "explicit_or_original_synthetic"
+agent:
+  search_provider: "not_configured"
+  max_searches_per_run: 40
+  max_fetch_bytes: 4000000
+  web_private_ip_access: false
+  publish_requires_approval: true
+developer:
+  enabled: false  # dev-only on isolated Arch host
+  dolphin_iso_path_env: "GAME_NARRATOR_GAME_IMAGE_PATH"
+  record_frame_media: false
