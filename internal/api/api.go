@@ -18,6 +18,7 @@ import (
 
 	"github.com/dbirks/game-narrator/internal/bootstrap"
 	"github.com/dbirks/game-narrator/internal/events"
+	"github.com/dbirks/game-narrator/internal/store"
 	"github.com/dbirks/game-narrator/internal/webassets"
 )
 
@@ -59,6 +60,11 @@ type Server struct {
 	// hub fans events out to SSE clients. nil means no event log is wired yet,
 	// which GET /api/v1/events reports as 503 rather than pretending to stream.
 	hub *events.Hub
+
+	// jobStore backs /api/v1/jobs (docs/spec/08 "durable workflow queue").
+	// nil answers 503 there for the same honest-degradation reason as hub:
+	// an empty list would claim a working appliance with no queue.
+	jobStore *store.JobsStore
 }
 
 // ReadinessFunc answers GET /api/v1/health/ready. It returns the per-dependency
@@ -92,6 +98,15 @@ func WithReadiness(f ReadinessFunc) Option {
 // "no generic success on an unprobed service").
 func WithEvents(h *events.Hub) Option {
 	return func(s *Server) { s.hub = h }
+}
+
+// WithJobs wires the durable queue behind /api/v1/jobs (list, get, cancel,
+// retry). There is no POST /jobs endpoint yet on purpose — enqueue is a
+// server-subsystem action until the auth milestone defines who may ask; see
+// internal/api/jobs.go. Like the hub, unconfigured is reported as 503, not
+// as an empty queue.
+func WithJobs(js *store.JobsStore) Option {
+	return func(s *Server) { s.jobStore = js }
 }
 
 // New constructs an API server. A zero BuildInfo or nil logger is tolerated.
@@ -133,6 +148,15 @@ func (s *Server) Handler() http.Handler {
 	routes.register(mux, http.MethodGet, "/api/v1/health/ready", s.handleReady)
 	routes.register(mux, http.MethodGet, "/api/v1/system/info", s.handleSystemInfo)
 	routes.register(mux, http.MethodGet, "/api/v1/events", s.handleEvents)
+
+	// Durable workflow queue (docs/spec/08). Wildcard patterns match only
+	// their method here; a wrong method on a concrete job path falls through
+	// to the problem+json fallback as 404 — routeTable cannot expand
+	// {id} patterns, a known narrowing noted for the router task.
+	routes.register(mux, http.MethodGet, "/api/v1/jobs", s.handleJobsList)
+	routes.register(mux, http.MethodGet, "/api/v1/jobs/{id}", s.handleJobGet)
+	routes.register(mux, http.MethodPost, "/api/v1/jobs/{id}/cancel", s.handleJobCancel)
+	routes.register(mux, http.MethodPost, "/api/v1/jobs/{id}/retry", s.handleJobRetry)
 
 	// "/" is the least specific pattern, so it only receives requests that no
 	// method+path pattern above matched.

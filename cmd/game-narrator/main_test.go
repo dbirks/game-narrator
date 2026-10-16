@@ -499,3 +499,159 @@ func freeListenAddress(t *testing.T) string {
 	}
 	return addr
 }
+
+// --- serve: durable jobs and the event stream ------------------------------
+
+// TestServeRunsEnqueuedJobsAndStreamsThem is the M1 acceptance path through
+// the real CLI wiring (not a reassembled copy of it): `serve` starts the job
+// runner over the SQLite queue; a system.noop job enqueued on the same
+// database is claimed, executed and recorded; and a browser-grade SSE client
+// reconnecting with Last-Event-ID: 0 replays that job's lifecycle from the
+// durable event log (docs/spec/08 "Event stream reliability", docs/spec/12
+// "SSE reconnect and Last-Event-ID"). The binary's own shutdown then exits 0
+// with the store still readable.
+func TestServeRunsEnqueuedJobsAndStreamsThem(t *testing.T) {
+	clearGatewayEnv(t)
+	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	dataDir := filepath.Join(t.TempDir(), "jobs-serve")
+	dbPath := store.DBPath(dataDir)
+	addr := freeListenAddress(t)
+
+	serveDone := make(chan int, 1)
+	go func() {
+		code, err := run([]string{"serve", "--listen", addr, "--data-dir", dataDir}, log)
+		if err != nil {
+			t.Errorf("serve: %v", err)
+		}
+		serveDone <- code
+	}()
+	defer func() {
+		syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		select {
+		case code := <-serveDone:
+			if code != 0 {
+				t.Errorf("serve exit code = %d, want 0 after a clean drain", code)
+			}
+		case <-time.After(20 * time.Second):
+			t.Error("serve did not exit after SIGTERM")
+		}
+	}()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	waitReady(t, client, addr)
+
+	// Enqueue through a second connection to the same database — exactly
+	// what a later import subsystem does in-process, and honest about the
+	// queue being the table, not a goroutine channel.
+	ctx := context.Background()
+	st, err := store.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("opening the live database: %v", err)
+	}
+	defer st.Close()
+	js := store.NewJobsStore(st)
+	job, created, err := js.Enqueue(ctx, store.EnqueueParams{
+		Kind:        "system.noop",
+		Payload:     json.RawMessage(`{"probe":"m1"}`),
+		MaxAttempts: 3,
+	})
+	if err != nil || !created {
+		t.Fatalf("enqueue: created=%v err=%v", created, err)
+	}
+
+	// The runner must pick it up and land it as `succeeded`, visible through
+	// the API — the same view a UI gets.
+	deadline := time.Now().Add(15 * time.Second)
+	var state string
+	for time.Now().Before(deadline) && state != "succeeded" {
+		resp, err := client.Get("http://" + addr + "/api/v1/jobs/" + job.ID)
+		if err == nil {
+			var body map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				resp.Body.Close()
+				t.Fatalf("job detail is not JSON: %v", err)
+			}
+			resp.Body.Close()
+			state, _ = body["state"].(string)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if state != "succeeded" {
+		t.Fatalf("job %s never reached succeeded through the API, last state %q", job.ID, state)
+	}
+
+	// The SSE stream, replayed from the beginning with a Last-Event-ID an
+	// ordinary client would have carried across a reconnect: the job's own
+	// events must be on it, correlated to the job id.
+	streamCtx, cancelStream := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelStream()
+	req, err := http.NewRequestWithContext(streamCtx, http.MethodGet,
+		"http://"+addr+"/api/v1/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Last-Event-ID", "0")
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		t.Fatalf("opening the event stream: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("event stream status = %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("content type = %q", ct)
+	}
+
+	var collected strings.Builder
+	buf := make([]byte, 4096)
+	needleStart, needleDone := "event: job.started", "event: job.succeeded"
+	for {
+		n, err := resp.Body.Read(buf)
+		collected.Write(buf[:n])
+		text := collected.String()
+		if strings.Contains(text, needleStart) && strings.Contains(text, needleDone) &&
+			strings.Contains(text, `"job_id":"`+job.ID+`"`) {
+			break
+		}
+		if err != nil { // the 5s stream deadline ends the read; decide below
+			break
+		}
+	}
+	text := collected.String()
+	for _, want := range []string{needleStart, needleDone, `"job_id":"` + job.ID + `"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("event stream missing %q; got %d bytes:\n%s", want, len(text), trimForLog(text))
+		}
+	}
+	// Every frame carries a numeric id — the cursor a reconnect would send.
+	if !strings.Contains(text, "id: ") {
+		t.Fatalf("SSE frames missing id: cursor field:\n%s", trimForLog(text))
+	}
+}
+
+// waitReady polls /api/v1/health/ready until it answers 200.
+func waitReady(t *testing.T, client *http.Client, addr string) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := client.Get("http://" + addr + "/api/v1/health/ready")
+		if err == nil {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+			_ = body
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatal("serve never became ready")
+}
+
+func trimForLog(s string) string {
+	if len(s) > 1500 {
+		return s[:1500] + "…"
+	}
+	return s
+}

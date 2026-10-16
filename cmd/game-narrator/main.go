@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -23,6 +24,8 @@ import (
 	"github.com/dbirks/game-narrator/internal/api"
 	"github.com/dbirks/game-narrator/internal/bootstrap"
 	"github.com/dbirks/game-narrator/internal/doctor"
+	"github.com/dbirks/game-narrator/internal/events"
+	"github.com/dbirks/game-narrator/internal/jobs"
 	"github.com/dbirks/game-narrator/internal/store"
 )
 
@@ -47,6 +50,12 @@ Start the Game Narrator HTTP API. Endpoints (JSON):
   GET /api/v1/health/live
   GET /api/v1/health/ready
   GET /api/v1/system/info
+  GET /api/v1/events                (SSE, Last-Event-ID replay)
+  GET /api/v1/jobs[?state=&kind=&cursor=&limit=]
+  GET /api/v1/jobs/{id}
+  POST /api/v1/jobs/{id}/cancel
+  POST /api/v1/jobs/{id}/retry
+Background job workers start with the server and drain on shutdown.
 
 flags:
   -data-dir string
@@ -207,11 +216,98 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 	}
 	log.Info("database ready", "applied", len(applied), "schema_version", schemaVersion)
 
-	srv := bootstrap.NewServer(cfg, api.New(build, time.Now(), log, api.WithReadiness(storeReadiness(st, log))).Handler(), log)
-	if err := srv.Run(ctx); err != nil {
+	// Durable event log and fan-out hub (docs/spec/08 "Event stream
+	// reliability"): SQLite assigns the global seq; the hub replays a
+	// reconnecting browser past its in-memory ring from that log.
+	eventStore := store.NewEventStore(st)
+	hub := events.New(events.WithStore(eventStore), events.WithLogger(log))
+	log.Info("event hub attached to the durable event log")
+
+	// Job workers (docs/spec/01: API, jobs and capture in one program on
+	// UNO Q). Recovery runs before workers start claiming, so a row left
+	// `running` by the last process becomes `recoverable`/`queued` before any
+	// live lease exists to race it (docs/spec/02 "Transaction workflows").
+	jobsStore := store.NewJobsStore(st)
+	runner, err := jobs.NewRunner(jobsStore, hub, log)
+	if err != nil {
+		return 1, fmt.Errorf("creating job runner: %w", err)
+	}
+	if err := runner.Register("system.noop", noopJobHandler, jobs.RegisterOpts{
+		Concurrency: 1,
+		Resumable:   true,
+		Timeout:     time.Minute,
+	}); err != nil {
+		return 1, fmt.Errorf("registering system.noop job kind: %w", err)
+	}
+	recovery, err := jobsStore.RecoverOnStartup(ctx, runner.ResumableKinds())
+	if err != nil {
+		return 1, fmt.Errorf("recovering interrupted jobs: %w", err)
+	}
+	log.Info("job recovery complete",
+		"marked_recoverable", len(recovery.Marked), "requeued", len(recovery.Requeued))
+	if err := runner.Start(ctx); err != nil {
+		return 1, fmt.Errorf("starting job runner: %w", err)
+	}
+	log.Info("job runner started")
+
+	// Shutdown choreography, in the only order that cannot wedge the
+	// process: HTTP drain and job drain race ctx.Done deliberately, because
+	// net/http.Shutdown waits for open SSE streams and only closing the hub
+	// releases them (docs/spec/01 "slow browsers cannot stall capture" has a
+	// shutdown-side twin: a browser must not stall shutdown either). The
+	// store closes afterwards via its defer, so nothing writes to a closed
+	// database on the way out.
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+	shutdownDone := make(chan struct{})
+	go func() {
+		defer close(shutdownDone)
+		<-runCtx.Done()
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), jobDrainBudget)
+		defer drainCancel()
+		if err := runner.Stop(drainCtx); err != nil {
+			log.Warn("job runner shutdown incomplete; interrupted jobs are re-queued for the next start",
+				"error", err)
+		} else {
+			log.Info("job runner stopped")
+		}
+		if err := hub.Close(); err != nil {
+			log.Error("closing event hub", "error", err)
+		}
+		log.Info("event hub closed")
+	}()
+
+	srv := bootstrap.NewServer(cfg, api.New(build, time.Now(), log,
+		api.WithReadiness(storeReadiness(st, log)),
+		api.WithEvents(hub),
+		api.WithJobs(jobsStore),
+	).Handler(), log)
+	if err := srv.Run(runCtx); err != nil {
+		// A bind failure returns before ctx is cancelled; the shutdown
+		// goroutine is then waiting on nothing. Release it the same way so
+		// both exits leave no goroutine writing to the store we are about to
+		// close (AGENTS.md: safe degraded shutdown, not merely a green log).
+		cancelRun()
+		<-shutdownDone
 		return 1, err
 	}
+	<-shutdownDone
 	return 0, nil
+}
+
+// jobDrainBudget bounds graceful in-flight job drain. It stays under
+// bootstrap.ShutdownTimeout so a forced job cancellation and its retry
+// bookkeeping land before the HTTP drain gives up on a streaming client.
+const jobDrainBudget = 7 * time.Second
+
+// noopJobHandler is the built-in diagnostic kind: `system.noop` exists so
+// operator tooling (doctor, the evidence bundle, a smoke test of this exact
+// binary) can prove the whole queue path — enqueue, claim, lease heartbeat,
+// publish, event-stream replay, persistence — with real work rather than a
+// mock (AGENTS.md "no simulation theater").
+func noopJobHandler(ctx context.Context, job jobs.Job, progress jobs.ProgressFn) (json.RawMessage, error) {
+	progress(100, "noop")
+	return json.RawMessage(`{"ok":true,"kind":"` + job.Kind + `"}`), nil
 }
 
 // storeReadiness reports database readiness for GET /api/v1/health/ready. The

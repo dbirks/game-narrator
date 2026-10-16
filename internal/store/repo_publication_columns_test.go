@@ -423,7 +423,26 @@ func TestRejectedPublishLeavesAnAuditRowAndChangesNothing(t *testing.T) {
 func TestUpgradeFromThePriorSchemaBackfillsThePointer(t *testing.T) {
 	s := openIn(t)
 	ctx := testCtx(t)
-	prior := priorSchemaVersion(t)
+	// The "previous build" for this fixture is the schema immediately before
+	// 0004_publication.sql specifically — not "one below this build's last
+	// migration". Every migration later than the subject (0005_jobs_lease
+	// today, more tomorrow) would otherwise silently shift the fixture onto a
+	// schema that already has the pointer, and the assertion below would
+	// (correctly) refuse to test anything.
+	migs, err := Migrations()
+	if err != nil {
+		t.Fatalf("Migrations: %v", err)
+	}
+	subject := -1
+	for i, m := range migs {
+		if strings.HasPrefix(m.Name, "0004_") {
+			subject = i
+		}
+	}
+	if subject < 1 {
+		t.Fatal("0004_publication is not an interior migration of this build")
+	}
+	prior := migs[subject-1].Version
 	migrateTo(t, s, prior)
 
 	gameID, editionID, emptyID := games.NewID(), games.NewID(), games.NewID()
