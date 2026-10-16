@@ -1,0 +1,95 @@
+# Development environment — verified host inventory
+
+Milestone 0 inventory of the actual Arch development host. Every value below was
+produced by the command in the same row at the time of writing; anything not
+observed is listed as `NOT CHECKED`. No URLs, hostnames, or credentials are
+recorded here — model roles are configured through environment variables only
+(see `examples/config/env.example`).
+
+## Host
+
+- OS: Arch Linux (`/etc/os-release`: `NAME="Arch Linux"`)
+- Kernel / machine: `Linux 7.2.9-arch1-1 x86_64` (`uname -srm`)
+- Shell: `/bin/bash` (`echo $SHELL`)
+- Sudo: passwordless sudo available on this host (verified with `sudo -n true`)
+- Session: `XDG_SESSION_TYPE=tty`; `DISPLAY` and `WAYLAND_DISPLAY` both unset
+
+| Tool | Version | Command used |
+|---|---|---|
+| kernel / arch | `Linux 7.2.9-arch1-1 x86_64` | `uname -srm` |
+| Go | `go1.27.2-X:nodwarf5 linux/amd64` | `go version` |
+| Node.js | `v26.11.1` | `node --version` |
+| pnpm | `12.14.0` | `pnpm --version` |
+| FFmpeg | `n9.0.2` | `ffmpeg -version \| head -1` |
+| v4l-utils | `v4l2-ctl 1.32.0` | `v4l2-ctl --version` |
+| Tesseract | `5.5.3` | `tesseract --version \| head -1` |
+| Tesseract languages | `eng`, `osd` (2 total) | `tesseract --list-langs` |
+| SQLite CLI | `3.54.0` (64-bit) | `sqlite3 --version` |
+| GoReleaser | `2.14.0` (`GitVersion`) | `goreleaser --version \| head -3` prints only the ASCII banner; version read from the full `goreleaser --version` output (`GitVersion:` line) |
+| Docker | `29.9.1` | `docker --version` |
+| buildx | `0.38.0` | `docker buildx version` |
+| Dolphin (package) | `dolphin-emu 1:2609-1` | `pacman -Q dolphin-emu` |
+| Dolphin (runtime) | `Dolphin 2609` | `dolphin-emu --version` **aborted (core dumped), exit 134** with no display; `xvfb-run -a dolphin-emu --version` printed `Dolphin 2609`. `dolphin-emu-nogui` is not on PATH (command not found) |
+| Xvfb | present (usage line only) | `Xvfb -help 2>&1 \| head -1` → `use: X [:<display>] [option]` |
+| Mesa | `mesa 1:26.2.4-1` | `pacman -Q mesa vulkan-intel pipewire wireplumber alsa-utils` |
+| Vulkan Intel driver | `vulkan-intel 1:26.2.4-1` | same `pacman -Q` command |
+| PipeWire | `pipewire 1:1.6.9-1` | same `pacman -Q` command |
+| WirePlumber | `wireplumber 0.5.18-1` | same `pacman -Q` command |
+| ALSA utils | `alsa-utils 1.2.16-1` | same `pacman -Q` command |
+| GPU | `00:02.0 VGA compatible controller: Intel Corporation Kaby Lake-S GT2 [HD Graphics 630] (rev 04)` | `lspci \| grep -iE 'vga\|3d'` |
+| Session type | `tty` | `echo $XDG_SESSION_TYPE` |
+| Other bootstrap packages | all present: `make 4.4.1-3`, `gcc 16.2.1+r23+gd564253eb6c8-1`, `syft 1.54.1-1`, `cosign 3.1.3-1`, `docker-buildx 0.38.0-1`, `xorg-server-xvfb 21.1.25-2`, `xorg-xwininfo 1.1.7-1`, `xdotool 4.20260303.1-1`, `mesa-utils 9.0.0-7`, `vulkan-tools 1.4.363.0-1`, `jq 1.8.2-1`, `go-yq 4.54.1-1`, `github-cli 2.102.0-1`, `imagemagick 7.1.2.34-1`, `kitty-terminfo 0.49.2-1`, `tesseract-data-eng 2:4.1.0-5` | `pacman -Q <pkg>` |
+| Docker service state | `docker.service` active + enabled; current user groups: `wheel` (not `docker`) | `systemctl is-active/-enabled docker.service`, `groups` |
+| PipeWire user service | `pipewire.service` (user unit) inactive; `wpctl status` emitted RTKit/DBus warnings | `systemctl --user is-active pipewire.service`, `wpctl status` |
+| UVC capture devices | none — `/dev/video*` does not exist | `ls /dev/video*` |
+
+## Verified gaps
+
+1. **No graphical session (TTY only).** `XDG_SESSION_TYPE=tty`, `DISPLAY` and
+   `WAYLAND_DISPLAY` unset. Consequence: Dolphin rendering must be proven under
+   Xvfb (or another virtual display / Xwayland setup) — never assumed. Evidence
+   captured above: bare `dolphin-emu --version` aborts with a core dump, while
+   `xvfb-run -a dolphin-emu --version` prints `Dolphin 2609`. Actual rendered
+   pixel frames and accepted controller input are still **NOT VERIFIED**.
+2. **Game ISO not provided — BLOCKED.** No `.iso`/`.gcm`/`.rvz` supplied, so the
+   Wind Waker adapter, real fixture authoring, and the `make test-dolphin` gate
+   cannot run. Unblocking: user supplies a lawful image path in configuration
+   (the file itself is never committed).
+3. **Model endpoints not deployed — BLOCKED.** Clef-Omni decision model, Qwen3-TTS
+   VoiceDesign and Qwen3-ASR endpoints are not present on this host and were not
+   probed. `make test-models` and live decision/TTS/ASR gates stay blocked until
+   the gateway and its endpoints exist.
+4. **UNO Q hardware not connected — BLOCKED.** No UNO Q, no UVC capture device
+   (`/dev/video*` absent), no USB DAC identified. `make test-hardware` is `NOT RUN`.
+5. **LLM and vision roles** will use an OpenAI-compatible gateway selected through
+   environment variables per logical role (no URL, hostname, or key stored in the
+   repo or in this document). Gateway reachability: **NOT CHECKED** (nothing
+   configured yet).
+6. **Audio playback path unverified.** PipeWire/WirePlumber/ALSA packages are
+   installed, but the user PipeWire service is inactive in this session and no
+   output device or sink was confirmed. Actual TTS playback: **NOT VERIFIED**.
+7. **Browser / frontend tooling not installed via pacman.** TypeScript, Vite,
+   React, oxlint, oxfmt, and Playwright come from `pnpm install` in `web/`; no
+   `web/` directory or `package.json` exists yet, and no browser build has been
+   installed or launched: **NOT CHECKED**.
+8. **No application code yet.** Go module, Vite skeleton, SQLite migrations,
+   `.env.example`, `make` targets, and ADRs for router/SQLite driver/UI kit/FFmpeg
+   and OCI strategy remain Milestone 0 work outside this document: **NOT CHECKED**.
+9. **Docker group membership.** `docker.service` is already active and enabled, so
+   that install step is satisfied; the current user is not in the `docker` group
+   (access is via sudo). `docker buildx` OCI build test: **NOT CHECKED**.
+
+## Reproduce this inventory
+
+```
+uname -srm; go version; node --version; pnpm --version
+ffmpeg -version | head -1; v4l2-ctl --version
+tesseract --version | head -1; tesseract --list-langs; sqlite3 --version
+goreleaser --version; docker --version; docker buildx version
+dolphin-emu --version; dolphin-emu-nogui --version; pacman -Q dolphin-emu
+xvfb-run -a dolphin-emu --version
+Xvfb -help 2>&1 | head -1
+pacman -Q mesa vulkan-intel pipewire wireplumber alsa-utils
+lspci | grep -iE 'vga|3d'; echo "$XDG_SESSION_TYPE"
+scripts/bootstrap-arch.sh --dry-run
+```

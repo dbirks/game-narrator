@@ -1,1 +1,26 @@
 *.zip
+.env
+.env.*
+!.env.example
+bin/
+dist/
+coverage/
+artifacts/
+node_modules/
+web/dist/
+internal/webassets/dist/
+.playwright-cli/
+playwright-report/
+test-results/
+verify-*.png
+# Game images, savestates and input movies are never committed (AGENTS.md rule 5).
+*.iso
+*.gcm
+*.rvz
+*.ciso
+*.dtm
+*.sav
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+/tmp/
