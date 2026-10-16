@@ -1,0 +1,306 @@
+package auth
+
+import (
+	"net"
+	"net/http"
+	"strings"
+)
+
+// Grant ties one route pattern to the minimum role that may call it. It is the
+// row type of the scope table docs/spec/08 "Token/session scopes" implies and
+// docs/spec/14 "role ACL" requires: the mapping is data, reviewed in one place,
+// instead of a call wrapped differently in every handler file.
+type Grant struct {
+	// Method is the HTTP method, or "" to mean "any method".
+	Method string
+	// Pattern is a route pattern in net/http ServeMux syntax: "/api/v1/jobs/{id}"
+	// matches one path segment for {id}; a trailing "/{rest...}" (or a final
+	// segment ending in "...") matches everything below a prefix.
+	Pattern string
+	// Access is the requirement. Build it with Require(role) or Public().
+	Access Access
+}
+
+// Policy resolves (method, path) to an Access. The zero Policy is not useful;
+// use DefaultPolicy.
+//
+// Resolution is ordered and first-match-wins over rules whose method is either
+// the request's method or "" (any). Order is therefore part of the contract —
+// most specific first — which is written out in DefaultPolicy rather than
+// derived from a specificity score, because a score silently reorders grants
+// when somebody adds a pattern and that is precisely how a developer-only route
+// ends up readable by a viewer.
+//
+// A path that matches nothing requires admin. Unknown-is-privileged is the only
+// default that fails closed: a route added without a grant is then loudly
+// inaccessible to everybody but an admin (who can fix the table) instead of
+// quietly public (docs/spec/14 "Authorization").
+type Policy struct {
+	grants []Grant
+}
+
+// NewPolicy builds a Policy over the given order-sensitive grants.
+func NewPolicy(grants ...Grant) *Policy { return &Policy{grants: grants} }
+
+// DefaultPolicy is the appliance's scope table: the roles of docs/spec/08
+// "API version and user authentication" applied to the routes of
+// docs/spec/08 "APIs". It covers routes this build has registered *and* the
+// ones a later milestone registers, so an endpoint arriving later cannot be
+// born unauthenticated by omission; internal/api's tests assert the two sets
+// agree for everything that is live (TestEveryRegisteredRouteIsCovered).
+func DefaultPolicy() *Policy {
+	return NewPolicy(
+		// ── public: what a monitoring system and a browser need before login ──
+		// docs/spec/08 makes health and system info unauthenticated; they carry
+		// no game content, no paths and no secrets. Nothing else here is public:
+		// docs/spec/14 forbids "unauthenticated screenshot/audio", and an
+		// unauthenticated event or job stream leaks gameplay text.
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/health/live", Access: Public()},
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/health/ready", Access: Public()},
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/health/{rest...}", Access: Public()},
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/system/info", Access: Public()},
+
+		// The auth endpoints are public by necessity — but only the three that
+		// cannot be guarded by the thing they produce. setup is additionally
+		// loopback-only inside its handler (docs/spec/10 "Security defaults":
+		// "Bind localhost on initial boot"), which is a transport check, not a
+		// role, so it stays a Public grant.
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/auth/status", Access: Public()},
+		Grant{Method: http.MethodPost, Pattern: "/api/v1/auth/login", Access: Public()},
+		Grant{Method: http.MethodPost, Pattern: "/api/v1/auth/setup", Access: Public()},
+
+		// ── developer and admin surfaces, before the generic prefixes ──
+		// docs/spec/08: "Developer mode can display sensitive gameplay text and
+		// provider traces; require explicit role." docs/spec/10: emulator and
+		// test-harness endpoints are dev-mode-only and must never be live on
+		// UNO Q without auth. This is the rule that makes /api/v1/dev/* mean
+		// something for routes that do not exist yet.
+		Grant{Method: "", Pattern: "/api/v1/dev/{rest...}", Access: Require(RoleDeveloper)},
+		Grant{Method: "", Pattern: "/api/v1/dev", Access: Require(RoleDeveloper)},
+
+		// config, users and sealed provider credentials are admin (docs/spec/08
+		// scopes; docs/spec/14 "Agent cannot update admin/gateway/secret config
+		// … without role-protected explicit action").
+		Grant{Method: "", Pattern: "/api/v1/config", Access: Require(RoleAdmin)},
+		Grant{Method: "", Pattern: "/api/v1/config/{rest...}", Access: Require(RoleAdmin)},
+		Grant{Method: "", Pattern: "/api/v1/secrets/{rest...}", Access: Require(RoleAdmin)},
+		Grant{Method: "", Pattern: "/api/v1/users", Access: Require(RoleAdmin)},
+		Grant{Method: "", Pattern: "/api/v1/users/{rest...}", Access: Require(RoleAdmin)},
+		Grant{Method: "", Pattern: "/api/v1/tokens/{rest...}", Access: Require(RoleAdmin)},
+
+		// ── operator: control of the running appliance ──
+		// Session lifecycle, capture and audio are the "act on the physical
+		// world" tier (docs/spec/10: no unauthenticated capture preview or TTS
+		// abuse). Reads of the same resources stay lower.
+		Grant{Method: "", Pattern: "/api/v1/sessions", Access: Require(RoleOperator)},
+		Grant{Method: "", Pattern: "/api/v1/sessions/{rest...}", Access: Require(RoleOperator)},
+		Grant{Method: "", Pattern: "/api/v1/capture/{rest...}", Access: Require(RoleOperator)},
+		Grant{Method: "", Pattern: "/api/v1/audio/{rest...}", Access: Require(RoleOperator)},
+		Grant{Method: "", Pattern: "/api/v1/frame-sources/{rest...}", Access: Require(RoleOperator)},
+		Grant{Method: http.MethodPost, Pattern: "/api/v1/jobs/{id}/cancel", Access: Require(RoleOperator)},
+		Grant{Method: http.MethodPost, Pattern: "/api/v1/jobs/{id}/retry", Access: Require(RoleOperator)},
+		Grant{Method: http.MethodPost, Pattern: "/api/v1/diagnostics/run", Access: Require(RoleOperator)},
+		// ── curator: content and voice curation, import, publication ──
+		// docs/spec/08's publish/import/audition/approve/onboarding routes;
+		// docs/spec/14's rights review makes publication a deliberate,
+		// role-gated act rather than something a kiosk viewer can trigger.
+		//
+		// The voice *registry* is curator-and-above on reads as well: docs/spec/14's
+		// acceptance test names "voice registry" as something a viewer must be
+		// denied, and docs/spec/07 explains why — replica registration state names
+		// upstream endpoints and cloned-voice identifiers, which are not library
+		// data. Which voices exist at all is a read (a viewer page has to label the
+		// voice it is about to play), so the list stays at viewer.
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/voices", Access: Require(RoleViewer)},
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/voices/{id}", Access: Require(RoleViewer)},
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/voices/{id}/registrations", Access: Require(RoleCurator)},
+		Grant{Method: http.MethodPost, Pattern: "/api/v1/voices/{id}/register", Access: Require(RoleOperator)},
+		Grant{Method: "", Pattern: "/api/v1/voices/{id}/approve", Access: Require(RoleCurator)},
+		Grant{Method: "", Pattern: "/api/v1/voices/{id}/preview", Access: Require(RoleCurator)},
+		Grant{Method: "", Pattern: "/api/v1/voices/{id}/auditions", Access: Require(RoleCurator)},
+		Grant{Method: http.MethodPost, Pattern: "/api/v1/voices/auditions", Access: Require(RoleCurator)},
+		Grant{Method: "", Pattern: "/api/v1/voices/{rest...}", Access: Require(RoleCurator)},
+		Grant{Method: "", Pattern: "/api/v1/voices", Access: Require(RoleCurator)},
+		Grant{Method: "", Pattern: "/api/v1/onboarding/{rest...}", Access: Require(RoleCurator)},
+		Grant{Method: "", Pattern: "/api/v1/corrections", Access: Require(RoleCurator)},
+		Grant{Method: "", Pattern: "/api/v1/corrections/{rest...}", Access: Require(RoleCurator)},
+		Grant{Method: "", Pattern: "/api/v1/import/{rest...}", Access: Require(RoleCurator)},
+
+		// games/profiles: reads are viewer, writes are curator. Listed read-first
+		// because method-disjoint rules never compete. The collection POST is
+		// spelled out rather than inherited from /api/v1/games/{rest...}, which
+		// — like net/http's own {name...} — claims one or more segments and so
+		// does not cover /api/v1/games itself (docs/spec/08 "POST /api/v1/games":
+		// adding a game to the library is curation).
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/games", Access: Require(RoleViewer)},
+		Grant{Method: http.MethodPost, Pattern: "/api/v1/games", Access: Require(RoleCurator)},
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/games/{id}", Access: Require(RoleViewer)},
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/games/{id}/profiles", Access: Require(RoleViewer)},
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/games/{id}/download", Access: Require(RoleViewer)},
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/games/{id}/export", Access: Require(RoleCurator)},
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/profiles/{id}/characters", Access: Require(RoleViewer)},
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/profiles/{id}/regions", Access: Require(RoleViewer)},
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/profiles/{id}/messages/{mid}", Access: Require(RoleViewer)},
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/jobs", Access: Require(RoleViewer)},
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/jobs/{id}", Access: Require(RoleViewer)},
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/diagnostics/{id}", Access: Require(RoleViewer)},
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/events", Access: Require(RoleViewer)},
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/openapi.json", Access: Require(RoleViewer)},
+
+		// Anything else under a content prefix — including every write to a game,
+		// profile, source or publication route that a later milestone registers —
+		// is curator.
+		Grant{Method: "", Pattern: "/api/v1/games/{rest...}", Access: Require(RoleCurator)},
+		Grant{Method: "", Pattern: "/api/v1/profiles/{rest...}", Access: Require(RoleCurator)},
+		Grant{Method: "", Pattern: "/api/v1/sources/{rest...}", Access: Require(RoleCurator)},
+		Grant{Method: "", Pattern: "/api/v1/scenes/{rest...}", Access: Require(RoleCurator)},
+		Grant{Method: "", Pattern: "/api/v1/jobs/{rest...}", Access: Require(RoleOperator)},
+
+		// Any authenticated principal may reach the auth self-service routes
+		// (me, logout, password). It sits after the public auth grants so it
+		// never overrides them, and catches "/api/v1/auth/anything-new" closed to
+		// the lowest real role rather than to admin.
+		Grant{Method: "", Pattern: "/api/v1/auth/{rest...}", Access: Require(RoleViewer)},
+
+		// The durable queue's remaining routes (POST /api/v1/jobs, whenever the
+		// policy question is answered) are operator, via the jobs prefix above.
+	)
+}
+
+// Require resolves the requirement for one request. The second result reports
+// whether a table entry matched at all; false means the caller is looking at the
+// fail-closed default (admin) and internal/api surfaces that as the reason in
+// the 403 detail.
+func (p *Policy) Require(method, path string) (Access, bool) {
+	if p == nil {
+		return Require(RoleAdmin), false
+	}
+	for _, g := range p.grants {
+		if g.Method != "" && !strings.EqualFold(g.Method, method) {
+			continue
+		}
+		if MatchPattern(g.Pattern, path) {
+			return g.Access, true
+		}
+	}
+	return Access{
+		Min:    RoleAdmin,
+		Reason: "no grant in the scope table matches this path, so it requires admin (fail-closed default)",
+	}, false
+}
+
+// RequireAnyMethod resolves a path ignoring the verb, reporting the *most
+// permissive* grant that names it. authorize uses it for one purpose: a request
+// whose method is not offered on a public path (POST /api/v1/health/live) must be
+// answered 405 by the router, as docs/spec/08's error contract requires, rather
+// than 401 by a fail-closed default that would leak nothing but confuse the
+// caller. Nothing reaches a handler either way — no method+path pattern is
+// registered for the pair — so widening the answer here cannot widen access.
+func (p *Policy) RequireAnyMethod(path string) (Access, bool) {
+	if p == nil {
+		return Access{}, false
+	}
+	var out Access
+	found := false
+	for _, g := range p.grants {
+		if !MatchPattern(g.Pattern, path) {
+			continue
+		}
+		if !found || g.Access.Min < out.Min {
+			out, found = g.Access, true
+		}
+	}
+	return out, found
+}
+
+// Grants exposes the table, in order, for the developer UI, `doctor` and the
+// matrix test that walks every route at every role.
+func (p *Policy) Grants() []Grant {
+	if p == nil {
+		return nil
+	}
+	out := make([]Grant, len(p.grants))
+	copy(out, p.grants)
+	return out
+}
+
+// MatchPattern reports whether path is claimed by a route pattern in ServeMux
+// syntax. It is exported because internal/api's 405 fallback and its
+// route-coverage test need the same notion of "does this pattern claim that
+// path?" as the policy, and two implementations of that question is how a
+// pattern stops being protected by the grant written for it.
+func MatchPattern(pattern, path string) bool {
+	if pattern == path {
+		return true
+	}
+	psegs := splitPath(pattern)
+	dsegs := splitPath(path)
+
+	// Go's syntax for a multi-segment wildcard is a final segment of the form
+	// {name...} — the dots are inside the braces, so testing for a trailing
+	// "..." alone would silently turn every deep pattern into a single-segment
+	// one and leave everything below it unmatched (i.e. ungranted, i.e. admin-
+	// only, which fails closed but breaks the route it was written for).
+	deep := len(psegs) > 0 && isDeepWildcard(psegs[len(psegs)-1])
+	if deep {
+		psegs = psegs[:len(psegs)-1]
+		// One or more segments, exactly as net/http documents {name...}: the
+		// prefix alone is not a match, so "/api/v1/dev/{rest...}" claims
+		// /api/v1/dev/traces but not /api/v1/dev, which needs its own grant.
+		if len(dsegs) <= len(psegs) {
+			return false
+		}
+	} else if len(dsegs) != len(psegs) {
+		return false
+	}
+
+	for i, seg := range psegs {
+		if !matchSegment(seg, dsegs[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isDeepWildcard(seg string) bool {
+	return strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "...}")
+}
+
+func splitPath(p string) []string {
+	return strings.Split(strings.Trim(p, "/"), "/")
+}
+
+func matchSegment(pattern, segment string) bool {
+	if strings.HasPrefix(pattern, "{") {
+		// {id} matches exactly one segment; {rest...} was already stripped by
+		// the caller, so anything else brace-shaped is a single-segment wildcard.
+		return true
+	}
+	return pattern == segment
+}
+
+// IsLoopbackRemote reports whether the peer address of a request is the machine
+// itself: 127.0.0.0/8 or ::1 (docs/spec/10 "Bind localhost on initial boot").
+//
+// It reads only the transport peer address. X-Forwarded-For and friends are
+// attacker-supplied by default, and first-run setup is the one request in the
+// system whose outcome is "somebody now owns this appliance": trusting a header
+// to decide it would let any LAN host answer the setup form (docs/spec/14).
+func IsLoopbackRemote(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	host = strings.Trim(host, "[]")
+	if zone := strings.IndexByte(host, '%'); zone >= 0 {
+		host = host[:zone]
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	// IsLoopback covers 127.0.0.0/8 and ::1, and also reports true for an
+	// IPv4-mapped IPv6 loopback, which is what a dual-stack listener hands a
+	// local client. It deliberately answers false for ::ffff:192.168.x.x.
+	return ip.IsLoopback()
+}

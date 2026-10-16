@@ -171,7 +171,7 @@ func newEventServer(t *testing.T, opts ...events.HubOption) (*httptest.Server, *
 	t.Helper()
 	opts = append([]events.HubOption{events.WithHeartbeat(50 * time.Millisecond)}, opts...)
 	hub := events.New(opts...)
-	srv := httptest.NewServer(newHandler(WithEvents(hub)))
+	srv := httptest.NewServer(newHandler(t, WithEvents(hub)))
 	t.Cleanup(srv.Close)
 	return srv, hub
 }
@@ -191,7 +191,7 @@ func publishTestEvent(t *testing.T, h *events.Hub, name, sessionID string) event
 }
 
 func TestEventsWithoutHubIs503(t *testing.T) {
-	rec := do(t, newHandler(), http.MethodGet, eventsPath)
+	rec := do(t, newHandler(t), http.MethodGet, eventsPath)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503 (body %s)", rec.Code, rec.Body.String())
@@ -217,7 +217,7 @@ func TestEventsWithoutHubIs503(t *testing.T) {
 // stream has no HEAD semantics and answering HEAD here would open a live
 // response with no body.
 func TestEventsMethodNotAllowed(t *testing.T) {
-	h := newHandler(WithEvents(events.New()))
+	h := newHandler(t, WithEvents(events.New()))
 	for _, tc := range []struct {
 		method string
 		allow  string
@@ -601,7 +601,7 @@ func TestEventsDisconnectIsClean(t *testing.T) {
 	// server notices that the browser is gone. A handler that never writes never
 	// learns the client hung up, which is why docs/spec/08 asks for heartbeats.
 	hub := events.New(events.WithHeartbeat(10 * time.Millisecond))
-	srv := httptest.NewServer(newHandler(WithEvents(hub)))
+	srv := httptest.NewServer(newHandler(t, WithEvents(hub)))
 	defer srv.Close()
 
 	// The settle loop is the only honest way to compare goroutine counts: the
@@ -700,7 +700,7 @@ func TestEventsSlowClientDoesNotStallPublishers(t *testing.T) {
 // net/http's drain waits forever on a request that is in flight by design.
 func TestEventsEndsOnHubClose(t *testing.T) {
 	hub := events.New(events.WithHeartbeat(time.Hour))
-	srv := httptest.NewServer(newHandler(WithEvents(hub)))
+	srv := httptest.NewServer(newHandler(t, WithEvents(hub)))
 	defer srv.Close()
 
 	stream := openEventStream(t, srv, "", nil)
@@ -748,7 +748,7 @@ func TestEventsSessionFilterIsEnforced(t *testing.T) {
 // handler: HEAD on a GET route is dispatched here, and must be refused before
 // any body is written.
 func TestEventsHeadIsNotAStream(t *testing.T) {
-	h := newHandler(WithEvents(events.New()))
+	h := newHandler(t, WithEvents(events.New()))
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 

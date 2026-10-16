@@ -2,16 +2,12 @@ package api
 
 import (
 	"encoding/json"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"testing/fstest"
-	"time"
 
-	"github.com/dbirks/game-narrator/internal/bootstrap"
 	"github.com/dbirks/game-narrator/internal/webassets"
 )
 
@@ -30,28 +26,26 @@ func uiBuild() fstest.MapFS {
 }
 
 // newUIHandler serves uiBuild() for non-API paths.
-func newUIHandler() http.Handler {
-	return newHandler(WithWebAssets(uiBuild()))
+func newUIHandler(t *testing.T) http.Handler {
+	return newHandler(t, WithWebAssets(uiBuild()))
 }
 
 // newNoUIHandler has an index.html-free bundle: every UI path must answer 503.
-func newNoUIHandler() http.Handler {
-	return newHandler(WithWebAssets(fstest.MapFS{
+func newNoUIHandler(t *testing.T) http.Handler {
+	return newHandler(t, WithWebAssets(fstest.MapFS{
 		"assets/index-abc123.js": {Data: []byte("console.log('ui');")},
 	}))
 }
 
-func newHandler(opts ...Option) http.Handler {
-	build := bootstrap.BuildInfo{
-		Version:   "v0.0.1-test",
-		Commit:    "deadbee",
-		GoVersion: "go1.27.2",
-		GOOS:      "linux",
-		GOARCH:    "arm64",
-	}
-	started := time.Date(2026, time.October, 16, 3, 4, 5, 0, time.UTC)
-	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	return New(build, started, log, opts...).Handler()
+// newHandler is every route test's server. Since the auth milestone it cannot be
+// credential-free: docs/spec/14 denies the job, event and library routes to an
+// anonymous caller, so a route test that sent no credentials would be asserting
+// the 401 shape instead of the route's own behaviour. It therefore presents the
+// test admin's API token on any request that carried none (see
+// testAuth.adminHandler in auth_test.go), which is the smallest possible edit to
+// a pre-auth assertion and is honest about what a browser would be sending.
+func newHandler(t *testing.T, opts ...Option) http.Handler {
+	return newTestAuth(t).adminHandler(opts...)
 }
 
 func do(t *testing.T, h http.Handler, method, target string) *httptest.ResponseRecorder {
@@ -81,7 +75,7 @@ func decodeJSON(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 }
 
 func TestStaticRootServesIndexHTML(t *testing.T) {
-	rec := do(t, newUIHandler(), http.MethodGet, "/")
+	rec := do(t, newUIHandler(t), http.MethodGet, "/")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
@@ -99,7 +93,7 @@ func TestStaticRootServesIndexHTML(t *testing.T) {
 // Deep links must reach the SPA, not a 404: the client router owns these paths
 // (docs/spec/09 "Embedded binary test" — SPA deep links).
 func TestStaticDeepLinksFallBackToIndex(t *testing.T) {
-	h := newUIHandler()
+	h := newUIHandler(t)
 	for _, target := range []string{
 		"/diagnostics",
 		"/games/x/dialogue",
@@ -123,7 +117,7 @@ func TestStaticDeepLinksFallBackToIndex(t *testing.T) {
 }
 
 func TestStaticServesAssetsWithCorrectContentType(t *testing.T) {
-	h := newUIHandler()
+	h := newUIHandler(t)
 	cases := []struct {
 		target, wantContentType, wantBody string
 	}{
@@ -146,7 +140,7 @@ func TestStaticServesAssetsWithCorrectContentType(t *testing.T) {
 // Hashed Vite output is immutable; other files (index.html, an unhashed
 // favicon) must be revalidated.
 func TestStaticCacheControl(t *testing.T) {
-	h := newUIHandler()
+	h := newUIHandler(t)
 	cases := []struct{ target, want string }{
 		{"/assets/index-abc123.js", "public, max-age=31536000, immutable"},
 		{"/assets/index-abc123.css", "public, max-age=31536000, immutable"},
@@ -167,7 +161,7 @@ func TestStaticCacheControl(t *testing.T) {
 // A request that names a file must never be answered with index.html: that
 // would hand HTML to a script loader and hide a broken bundle.
 func TestStaticMissingFileWithExtensionIsProblem404(t *testing.T) {
-	h := newUIHandler()
+	h := newUIHandler(t)
 	for _, target := range []string{
 		"/assets/missing.js",
 		"/assets/missing-deadbeef.wasm",
@@ -187,7 +181,7 @@ func TestStaticMissingFileWithExtensionIsProblem404(t *testing.T) {
 // Traversal attempts, encoded or not, are 404s. The SPA fallback must not turn
 // them into a 200 and they must never reach outside the embedded filesystem.
 func TestStaticRejectsPathTraversal(t *testing.T) {
-	h := newUIHandler()
+	h := newUIHandler(t)
 	for _, target := range []string{
 		"/%2e%2e/etc/passwd",
 		"/%2E%2E/etc/passwd",
@@ -216,7 +210,7 @@ func TestStaticRejectsPathTraversal(t *testing.T) {
 }
 
 func TestStaticSecurityHeaders(t *testing.T) {
-	h := newUIHandler()
+	h := newUIHandler(t)
 	for _, target := range []string{"/", "/diagnostics", "/assets/index-abc123.js"} {
 		rec := do(t, h, http.MethodGet, target)
 		requireSecurityHeaders(t, rec)
@@ -242,7 +236,7 @@ func requireSecurityHeaders(t *testing.T, rec *httptest.ResponseRecorder) {
 // Static content is GET/HEAD only; a wrong method is a problem+json 405 with
 // the same shape the API uses.
 func TestStaticRejectsOtherMethods(t *testing.T) {
-	h := newUIHandler()
+	h := newUIHandler(t)
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch} {
 		rec := do(t, h, method, "/diagnostics")
 		if rec.Code != http.StatusMethodNotAllowed {
@@ -257,7 +251,7 @@ func TestStaticRejectsOtherMethods(t *testing.T) {
 }
 
 func TestStaticHeadMatchesGetHeaders(t *testing.T) {
-	h := newUIHandler()
+	h := newUIHandler(t)
 	rec := do(t, h, http.MethodHead, "/assets/index-abc123.js")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -272,7 +266,7 @@ func TestStaticHeadMatchesGetHeaders(t *testing.T) {
 // Without a Vite build in the binary, UI paths are 503 problem+json rather
 // than an empty 200 — and API paths are untouched.
 func TestStaticNotBuiltReturns503Problem(t *testing.T) {
-	h := newNoUIHandler()
+	h := newNoUIHandler(t)
 	for _, target := range []string{"/", "/diagnostics", "/games/x/dialogue"} {
 		rec := do(t, h, http.MethodGet, target)
 		if rec.Code != http.StatusServiceUnavailable {
@@ -297,7 +291,7 @@ func TestStaticNotBuiltReturns503Problem(t *testing.T) {
 // API behaviour must be unchanged by static serving: /api/* keeps
 // problem+json 404/405 and never falls back to index.html.
 func TestAPIPathsUnchangedByStaticServing(t *testing.T) {
-	h := newUIHandler()
+	h := newUIHandler(t)
 
 	rec := do(t, h, http.MethodGet, "/api/v1/nope")
 	if rec.Code != http.StatusNotFound {
@@ -332,7 +326,7 @@ func TestAPIPathsUnchangedByStaticServing(t *testing.T) {
 // Vite output is compiled in depends on the checkout, so the assertion follows
 // webassets.Built() instead of assuming either state.
 func TestDefaultHandlerUsesEmbeddedWebAssets(t *testing.T) {
-	rec := do(t, newHandler(), http.MethodGet, "/diagnostics")
+	rec := do(t, newHandler(t), http.MethodGet, "/diagnostics")
 
 	if webassets.Built() {
 		if rec.Code != http.StatusOK {
@@ -352,7 +346,7 @@ func TestDefaultHandlerUsesEmbeddedWebAssets(t *testing.T) {
 }
 
 func TestStaticRequestIDCorrelates(t *testing.T) {
-	rec := do(t, newUIHandler(), http.MethodGet, "/diagnostics")
+	rec := do(t, newUIHandler(t), http.MethodGet, "/diagnostics")
 	if id := rec.Header().Get(HeaderRequestID); id == "" {
 		t.Fatal("missing X-Request-Id on a static response")
 	}

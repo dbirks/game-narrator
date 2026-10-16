@@ -27,7 +27,7 @@ func serve(h http.Handler, req *http.Request) *httptest.ResponseRecorder {
 // character set: an oversized or punctuation-bearing value is a log-injection
 // / header-padding vector, so it must be discarded and replaced.
 func TestRequestIDAcceptedFromClient(t *testing.T) {
-	h := newUIHandler()
+	h := newUIHandler(t)
 	for _, id := range []string{
 		"a",
 		"trace-42",
@@ -46,7 +46,7 @@ func TestRequestIDAcceptedFromClient(t *testing.T) {
 }
 
 func TestRequestIDRejectedFromClient(t *testing.T) {
-	h := newUIHandler()
+	h := newUIHandler(t)
 	cases := []struct {
 		name, id string
 	}{
@@ -79,7 +79,7 @@ func TestRequestIDRejectedFromClient(t *testing.T) {
 // The generated id must be the one inside the problem document too, so the
 // header and body always agree.
 func TestRejectedRequestIDStillCorrelatesProblem(t *testing.T) {
-	rec := serve(newUIHandler(), httptestRequest(http.MethodGet, "/api/v1/nope", "bad id with spaces"))
+	rec := serve(newUIHandler(t), httptestRequest(http.MethodGet, "/api/v1/nope", "bad id with spaces"))
 	body := decodeJSON(t, rec)
 	if got, want := body["request_id"], rec.Header().Get(HeaderRequestID); got != want {
 		t.Fatalf("problem request_id = %v, want header %v", got, want)

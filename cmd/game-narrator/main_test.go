@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dbirks/game-narrator/internal/auth"
 	"github.com/dbirks/game-narrator/internal/bootstrap"
 	"github.com/dbirks/game-narrator/internal/store"
 )
@@ -168,6 +170,53 @@ func TestRunMigrateUsageAndValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+// withStdin points the CLI's password reader at a fixed input, so a test can
+// feed a credential the way an operator pipes one from a secret manager.
+func withStdin(t *testing.T, input string) {
+	t.Helper()
+	prev := stdin
+	stdin = strings.NewReader(input)
+	t.Cleanup(func() { stdin = prev })
+}
+
+// adminTokenForTest creates an admin account and one API token for it through
+// the CLI, and returns the token. Going through the CLI rather than
+// store.AuthStore directly is the point: it proves the rows `admin create` and
+// `admin token` write are the rows the server accepts, which is the first-run
+// path docs/spec/14 describes ("local-first, set admin on first run").
+func adminTokenForTest(t *testing.T, dataDir string, log *slog.Logger, username, role, name string) string {
+	t.Helper()
+	withStdin(t, "correct horse battery staple\n")
+	created := captureStdout(t, func() int {
+		code, err := run([]string{"admin", "create", "--username", username, "--role", role, "--data-dir", dataDir}, log)
+		if err != nil {
+			t.Fatalf("admin create: %v", err)
+		}
+		return code
+	})
+	if created.code != 0 {
+		t.Fatalf("admin create exit = %d:\n%s", created.code, created.output)
+	}
+	minted := captureStdout(t, func() int {
+		code, err := run([]string{"admin", "token", "--username", username, "--name", name, "--role", role, "--data-dir", dataDir}, log)
+		if err != nil {
+			t.Fatalf("admin token: %v", err)
+		}
+		return code
+	})
+	if minted.code != 0 {
+		t.Fatalf("admin token exit = %d:\n%s", minted.code, minted.output)
+	}
+	raw := strings.TrimSpace(minted.output)
+	if !strings.HasPrefix(raw, "gn_") || len(raw) < 20 {
+		t.Fatalf("admin token printed %q, want a gn_... secret", raw)
+	}
+	if strings.Contains(raw, "created") || strings.Contains(strings.ToLower(minted.output), "token") {
+		t.Errorf("the token command mixed prose into the secret line: %q", minted.output)
+	}
+	return raw
 }
 
 // capturedStdout holds what a command wrote to stdout plus its exit code.
@@ -517,6 +566,14 @@ func TestServeRunsEnqueuedJobsAndStreamsThem(t *testing.T) {
 	dbPath := store.DBPath(dataDir)
 	addr := freeListenAddress(t)
 
+	// The database is prepared with the *same commands an operator runs* —
+	// migrate, admin create, admin token — so this asserts the CLI and the server
+	// agree on the credential tables, not just that each works alone.
+	if code, err := run([]string{"migrate", "--data-dir", dataDir}, log); err != nil || code != 0 {
+		t.Fatalf("migrate: code=%d err=%v", code, err)
+	}
+	token := adminTokenForTest(t, dataDir, log, "admin", "admin", "ci-probe")
+
 	serveDone := make(chan int, 1)
 	go func() {
 		code, err := run([]string{"serve", "--listen", addr, "--data-dir", dataDir}, log)
@@ -539,6 +596,17 @@ func TestServeRunsEnqueuedJobsAndStreamsThem(t *testing.T) {
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	waitReady(t, client, addr)
+
+	// Before the token is presented anywhere: the queue is not readable by
+	// whoever finds the port (docs/spec/14 "no unauthenticated … audio/screenshot"
+	// generalises to every route that is not health or system info).
+	if resp, err := client.Get("http://" + addr + "/api/v1/jobs"); err == nil {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("anonymous GET /api/v1/jobs = %d, want 401 (%s)", resp.StatusCode, trimForLog(string(body)))
+		}
+	}
 
 	// Enqueue through a second connection to the same database — exactly
 	// what a later import subsystem does in-process, and honest about the
@@ -564,7 +632,12 @@ func TestServeRunsEnqueuedJobsAndStreamsThem(t *testing.T) {
 	deadline := time.Now().Add(15 * time.Second)
 	var state string
 	for time.Now().Before(deadline) && state != "succeeded" {
-		resp, err := client.Get("http://" + addr + "/api/v1/jobs/" + job.ID)
+		req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/api/v1/jobs/"+job.ID, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := client.Do(req)
 		if err == nil {
 			var body map[string]any
 			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
@@ -591,6 +664,9 @@ func TestServeRunsEnqueuedJobsAndStreamsThem(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Last-Event-ID", "0")
+	// The event stream is no longer an anonymous channel: it carries game text
+	// (docs/spec/08 "Partial data redacted when not in developer mode").
+	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := (&http.Client{}).Do(req)
 	if err != nil {
 		t.Fatalf("opening the event stream: %v", err)
@@ -654,4 +730,378 @@ func trimForLog(s string) string {
 		return s[:1500] + "…"
 	}
 	return s
+}
+
+// --- admin: accounts and API tokens (docs/spec/08 "API version and user
+// authentication", docs/spec/14 "local-first, set admin on first run") -------
+
+// TestAdminCreateReadsThePasswordFromStdin is the credential-hygiene contract:
+// the password is piped, never a flag (argv is world-readable in `ps`), never
+// echoed, and never written to the log.
+func TestAdminCreateReadsThePasswordFromStdin(t *testing.T) {
+	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	dataDir := filepath.Join(t.TempDir(), "admin-create")
+
+	out := captureStdout(t, func() int {
+		withStdin(t, "correct horse battery staple\n")
+		code, err := run([]string{"admin", "create", "--username", "admin", "--role", "admin", "--data-dir", dataDir}, log)
+		if err != nil {
+			t.Fatalf("admin create: %v", err)
+		}
+		return code
+	})
+	if out.code != 0 {
+		t.Fatalf("exit = %d, want 0:\n%s", out.code, out.output)
+	}
+	if !strings.HasPrefix(out.output, "created admin with role admin (01") {
+		t.Fatalf("unexpected output:\n%s", out.output)
+	}
+	if strings.Contains(out.output, "correct horse battery staple") {
+		t.Fatalf("the CLI echoed the password back: %s", out.output)
+	}
+
+	// The row is real, and it holds a PBKDF2 envelope rather than a password.
+	st, err := store.Open(context.Background(), store.DBPath(dataDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	repo := store.NewAuthStore(st)
+	u, err := repo.UserByUsername(context.Background(), "admin")
+	if err != nil {
+		t.Fatalf("the created account is not readable: %v", err)
+	}
+	if u.Role != store.RoleAdmin || u.Disabled {
+		t.Fatalf("account = %+v", u)
+	}
+	if !strings.HasPrefix(u.PasswordHash, "pbkdf2-sha256$600000$") {
+		t.Fatalf("stored hash = %.24s…, want the default-cost pbkdf2-sha256 envelope", u.PasswordHash)
+	}
+	if strings.Contains(u.PasswordHash, "correct horse battery staple") {
+		t.Fatal("the password was stored")
+	}
+
+	// A duplicate name is refused (case-insensitively), and a weak password is
+	// refused with the rule quoted.
+	dup := captureStdout(t, func() int {
+		withStdin(t, "another fine passphrase\n")
+		code, _ := run([]string{"admin", "create", "--username", "ADMIN", "--role", "viewer", "--data-dir", dataDir}, log)
+		return code
+	})
+	if dup.code != 1 {
+		t.Fatalf("duplicate username exit = %d, want 1:\n%s", dup.code, dup.output)
+	}
+	weak := captureStdout(t, func() int {
+		withStdin(t, "short\n")
+		code, err := run([]string{"admin", "create", "--username", "weakling", "--data-dir", dataDir}, log)
+		if !errors.Is(err, errUsage) && err == nil {
+			// A policy failure is a runtime failure (1), not a usage error (2).
+			t.Errorf("weak password returned err=%v, want a non-usage error", err)
+		}
+		return code
+	})
+	if weak.code != 1 {
+		t.Fatalf("weak password exit = %d, want 1 (a rejected account must not look like a success)", weak.code)
+	}
+	// No stdin at all is a usage error with an actionable message, not a hang.
+	nostdin := captureStdout(t, func() int {
+		withStdin(t, "")
+		code, _ := run([]string{"admin", "create", "--username", "third", "--data-dir", dataDir}, log)
+		return code
+	})
+	if nostdin.code != 2 {
+		t.Fatalf("empty stdin exit = %d, want 2", nostdin.code)
+	}
+	// An unknown role is usage (2), because the operator can fix the command line.
+	badrole := captureStdout(t, func() int {
+		withStdin(t, "a perfectly fine passphrase\n")
+		code, _ := run([]string{"admin", "create", "--username", "boss", "--role", "supreme", "--data-dir", dataDir}, log)
+		return code
+	})
+	if badrole.code != 2 {
+		t.Fatalf("unknown role exit = %d, want 2", badrole.code)
+	}
+	// And only the good account exists: a rejected create wrote nothing.
+	users, err := repo.ListUsers(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 1 || users[0].Username != "admin" {
+		t.Fatalf("accounts after the rejected creates = %+v", users)
+	}
+}
+
+// createAccount runs `admin create` with the password piped on stdin and fails
+// the test if the CLI did not take it.
+func createAccount(t *testing.T, dataDir string, log *slog.Logger, username, role, password string) {
+	t.Helper()
+	withStdin(t, password+"\n")
+	out := captureStdout(t, func() int {
+		code, err := run([]string{"admin", "create", "--username", username, "--role", role, "--data-dir", dataDir}, log)
+		if err != nil {
+			t.Fatalf("admin create %s: %v", username, err)
+		}
+		return code
+	})
+	if out.code != 0 {
+		t.Fatalf("admin create %s exit = %d:\n%s", username, out.code, out.output)
+	}
+}
+
+// TestAdminTokenPrintsTheSecretOnce covers the integration-credential path of
+// docs/spec/08, including the ceiling rule that keeps a token from outgrowing
+// its owner.
+func TestAdminTokenPrintsTheSecretOnce(t *testing.T) {
+	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	dataDir := filepath.Join(t.TempDir(), "admin-token")
+	if code, err := run([]string{"migrate", "--data-dir", dataDir}, log); err != nil || code != 0 {
+		t.Fatalf("migrate: code=%d err=%v", code, err)
+	}
+	// Each create gets its own stdin: the password is read once per invocation,
+	// and a second invocation must not inherit an exhausted pipe.
+	createAccount(t, dataDir, log, "admin", "admin", "correct horse battery staple")
+	createAccount(t, dataDir, log, "reader", "viewer", "a second fine passphrase")
+
+	out := captureStdout(t, func() int {
+		code, err := run([]string{"admin", "token", "--username", "admin", "--name", "ci-harness", "--role", "operator", "--data-dir", dataDir}, log)
+		if err != nil {
+			t.Fatalf("admin token: %v", err)
+		}
+		return code
+	})
+	if out.code != 0 {
+		t.Fatalf("exit = %d:\n%s", out.code, out.output)
+	}
+	raw := strings.TrimSpace(out.output)
+	if strings.Count(out.output, "\n") != 1 {
+		t.Fatalf("stdout must carry the secret alone, got:\n%s", out.output)
+	}
+	if !strings.HasPrefix(raw, "gn_") {
+		t.Fatalf("token = %q, want the documented gn_ prefix", raw)
+	}
+
+	// It authenticates against the live server, which is the only proof that the
+	// digest the CLI wrote is the digest the API reads.
+	st, err := store.Open(context.Background(), store.DBPath(dataDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := auth.NewService(store.NewAuthStore(st))
+	id, err := svc.VerifyToken(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("the printed token does not authenticate: %v", err)
+	}
+	if id.Role != auth.RoleOperator {
+		t.Fatalf("verified role = %s, want operator", id.Role)
+	}
+	// And the database cannot give the secret back.
+	toks, err := store.NewAuthStore(st).ListAPITokens(context.Background(), id.User.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(toks) != 1 {
+		t.Fatalf("tokens = %+v", toks)
+	}
+	if toks[0].TokenHash != "" && toks[0].TokenHash != auth.DigestSecret(raw) {
+		t.Errorf("the list projection carried a digest that is not ours: %q", toks[0].TokenHash)
+	}
+	st.Close()
+
+	// Ceiling: a viewer may not mint an operator token.
+	tooHigh := captureStdout(t, func() int {
+		code, _ := run([]string{"admin", "token", "--username", "reader", "--name", "escalation", "--role", "admin", "--data-dir", dataDir}, log)
+		return code
+	})
+	if tooHigh.code != 1 {
+		t.Fatalf("over-ceiling token exit = %d, want 1:\n%s", tooHigh.code, tooHigh.output)
+	}
+	if strings.Contains(tooHigh.output, "gn_") {
+		t.Fatal("a refused token mint still printed a secret")
+	}
+	// Omitting --role inherits the owner's role (admin here), which is what an
+	// operator typing `admin token --username admin` expects.
+	inherited := captureStdout(t, func() int {
+		code, _ := run([]string{"admin", "token", "--username", "admin", "--name", "defaulted", "--data-dir", dataDir}, log)
+		return code
+	})
+	if inherited.code != 0 {
+		t.Fatalf("defaulted token exit = %d:\n%s", inherited.code, inherited.output)
+	}
+	st2, err := store.Open(context.Background(), store.DBPath(dataDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st2.Close()
+	// An unknown account is actionable, not a stack trace.
+	unknown := captureStdout(t, func() int {
+		code, _ := run([]string{"admin", "token", "--username", "ghost", "--name", "x", "--data-dir", dataDir}, log)
+		return code
+	})
+	if unknown.code != 1 {
+		t.Fatalf("unknown account exit = %d, want 1:\n%s", unknown.code, unknown.output)
+	}
+	// A negative lifetime is usage.
+	neg := captureStdout(t, func() int {
+		code, _ := run([]string{"admin", "token", "--username", "admin", "--name", "x", "--expires-days", "-3", "--data-dir", dataDir}, log)
+		return code
+	})
+	if neg.code != 2 {
+		t.Fatalf("--expires-days -3 exit = %d, want 2", neg.code)
+	}
+}
+
+func TestAdminListNeverCarriesASecret(t *testing.T) {
+	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	dataDir := filepath.Join(t.TempDir(), "admin-list")
+	if code, _ := run([]string{"migrate", "--data-dir", dataDir}, log); code != 0 {
+		t.Fatal("migrate failed")
+	}
+	before := captureStdout(t, func() int {
+		code, _ := run([]string{"admin", "list", "--data-dir", dataDir}, log)
+		return code
+	})
+	if before.code != 0 || !strings.Contains(before.output, "no accounts") {
+		t.Fatalf("an empty appliance should say so plainly, got %d:\n%s", before.code, before.output)
+	}
+	createAccount(t, dataDir, log, "operator1", "operator", "correct horse battery staple")
+	after := captureStdout(t, func() int {
+		code, _ := run([]string{"admin", "list", "--data-dir", dataDir}, log)
+		return code
+	})
+	if after.code != 0 || !strings.Contains(after.output, "operator1\toperator") {
+		t.Fatalf("list output:\n%s", after.output)
+	}
+	for _, secret := range []string{"pbkdf2", "correct horse battery staple", "gn_"} {
+		if strings.Contains(after.output, secret) {
+			t.Errorf("admin list leaked %q", secret)
+		}
+	}
+}
+
+func TestAdminUsageErrors(t *testing.T) {
+	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	for name, args := range map[string][]string{
+		"no subcommand":  {"admin"},
+		"unknown":        {"admin", "delete-everything"},
+		"unknown flag":   {"admin", "create", "--nope"},
+		"extra argument": {"admin", "create", "stray"},
+		"missing data":   {"admin", "create", "--username", "x", "--data-dir", "relative/dir"},
+	} {
+		if code, _ := run(args, log); code != 2 {
+			t.Errorf("%s: exit = %d, want 2", name, code)
+		}
+	}
+}
+
+// TestServeRequiresAuthenticationAndCompletesTheFirstRunCycle is docs/spec/14's
+// security acceptance sequence against the real binary: an anonymous caller gets
+// nothing, setup claims the appliance from loopback, login yields a session, the
+// CSRF header is required for a state-changing call, and logout invalidates the
+// cookie that was just in use.
+func TestServeRequiresAuthenticationAndCompletesTheFirstRunCycle(t *testing.T) {
+	clearGatewayEnv(t)
+	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	dataDir := filepath.Join(t.TempDir(), "auth-serve")
+	addr := freeListenAddress(t)
+
+	serveDone := make(chan int, 1)
+	go func() {
+		code, err := run([]string{"serve", "--listen", addr, "--data-dir", dataDir}, log)
+		if err != nil {
+			t.Errorf("serve: %v", err)
+		}
+		serveDone <- code
+	}()
+	defer func() {
+		syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		select {
+		case <-serveDone:
+		case <-time.After(20 * time.Second):
+			t.Error("serve did not exit after SIGTERM")
+		}
+	}()
+	client := &http.Client{Timeout: 5 * time.Second, Jar: newJar()}
+	base := "http://" + addr + "/api/v1"
+	waitReady(t, client, addr)
+
+	type step struct {
+		name   string
+		method string
+		path   string
+		body   string
+		csrf   bool
+		want   int
+	}
+	var csrfToken string
+	var cookie string
+	pas := []step{
+		{"status before setup", http.MethodGet, "/auth/status", "", false, http.StatusOK},
+		{"setup from loopback", http.MethodPost, "/auth/setup", `{"username":"admin","password":"correct horse battery staple"}`, false, http.StatusCreated},
+		{"setup again", http.MethodPost, "/auth/setup", `{"username":"two","password":"correct horse battery staple"}`, false, http.StatusConflict},
+		{"me before login", http.MethodGet, "/auth/me", "", false, http.StatusUnauthorized},
+		{"jobs before login", http.MethodGet, "/jobs", "", false, http.StatusUnauthorized},
+		{"login", http.MethodPost, "/auth/login", `{"username":"admin","password":"correct horse battery staple"}`, false, http.StatusOK},
+		{"me", http.MethodGet, "/auth/me", "", false, http.StatusOK},
+		{"cancel without csrf", http.MethodPost, "/jobs/does-not-exist/cancel", "", false, http.StatusForbidden},
+		{"cancel with csrf", http.MethodPost, "/jobs/does-not-exist/cancel", "", true, http.StatusNotFound},
+		{"logout with csrf", http.MethodPost, "/auth/logout", "", true, http.StatusNoContent},
+		{"me after logout", http.MethodGet, "/auth/me", "", false, http.StatusUnauthorized},
+	}
+	for _, st := range pas {
+		req, err := http.NewRequest(st.method, base+st.path, strings.NewReader(st.body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if cookie != "" {
+			req.Header.Set("Cookie", cookie)
+		}
+		if st.csrf && csrfToken != "" {
+			req.Header.Set("X-CSRF-Token", csrfToken)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s: %v", st.name, err)
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		if cs := resp.Cookies(); len(cs) > 0 {
+			parts := make([]string, 0, len(cs))
+			for _, c := range cs {
+				if c.Value != "" {
+					parts = append(parts, c.Name+"="+c.Value)
+				}
+			}
+			if len(parts) > 0 {
+				cookie = strings.Join(parts, "; ")
+			}
+		}
+		if st.name == "login" {
+			var parsed struct {
+				CSRFToken string `json:"csrf_token"`
+			}
+			if err := json.Unmarshal(body, &parsed); err != nil {
+				t.Fatalf("login body: %v (%s)", err, body)
+			}
+			csrfToken = parsed.CSRFToken
+			if csrfToken == "" {
+				t.Fatal("login returned no csrf_token")
+			}
+		}
+		if resp.StatusCode != st.want {
+			t.Fatalf("%s: %d, want %d (%s)", st.name, resp.StatusCode, st.want, trimForLog(string(body)))
+		}
+	}
+}
+
+// newJar keeps session cookies across the cycle's steps, the way a browser
+// would; http.Client ignores a jar-less cookie header otherwise.
+func newJar() http.CookieJar {
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		panic(err)
+	}
+	return jar
 }

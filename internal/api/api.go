@@ -1,9 +1,15 @@
 // Package api implements the /api/v1 HTTP surface (docs/spec/08-api-and-events.md).
 //
-// Milestone 0 covers process/system introspection routes, RFC 9457
-// problem+json errors and request correlation, plus the SSE event stream.
-// Auth, session, game, voice, onboarding, job and dev routes are added by later
-// milestones; the runtime that publishes events into the hub arrives with them.
+// Auth (internal/auth + internal/api/auth.go) sits in front of every non-public
+// route: role grants from the scope table, cookie sessions, API tokens and CSRF
+// (docs/spec/08 "API version and user authentication", docs/spec/14
+// "Authorization", ADR-0016). Health, system info, the auth endpoints
+// themselves and the embedded UI are public; everything else under /api/ that
+// the scope table does not recognise requires admin, so a route cannot be born
+// unauthenticated by omission.
+//
+// Game, voice, onboarding and dev routes are added by later milestones; the
+// runtime that publishes events into the hub arrives with them.
 package api
 
 import (
@@ -11,11 +17,13 @@ import (
 	"encoding/json"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"runtime"
 	"strings"
 	"time"
 
+	"github.com/dbirks/game-narrator/internal/auth"
 	"github.com/dbirks/game-narrator/internal/bootstrap"
 	"github.com/dbirks/game-narrator/internal/events"
 	"github.com/dbirks/game-narrator/internal/store"
@@ -33,7 +41,10 @@ const HeaderRequestID = "X-Request-Id"
 
 type ctxKey int
 
-const requestIDKey ctxKey = iota
+const (
+	requestIDKey ctxKey = iota
+	identityKey
+)
 
 // RequestIDFromContext returns the correlation id attached to this request.
 func RequestIDFromContext(ctx context.Context) string {
@@ -65,6 +76,33 @@ type Server struct {
 	// nil answers 503 there for the same honest-degradation reason as hub:
 	// an empty list would claim a working appliance with no queue.
 	jobStore *store.JobsStore
+
+	// authSvc verifies credentials and answers the auth routes. nil means this
+	// process has no credential store wired at all, which is reported as 503 on
+	// every non-public route — an API that simply let requests through because
+	// nobody configured auth is the fail-open bug docs/spec/14 is written
+	// against, and "localhost by default" is not an access control (ADR-0016).
+	authSvc *auth.Service
+
+	// policy is the route→role scope table. It is a field, not a package
+	// global, so a test can assert a grant table without rebuilding the server
+	// and so a future config route can show the live table.
+	policy *auth.Policy
+
+	// trustedProxies gate X-Forwarded-Proto for the cookie Secure attribute.
+	// Empty (the default) means no forwarded header is believed, which is the
+	// right answer for a localhost-bound appliance and the only answer that
+	// cannot be spoofed (docs/spec/10 "reverse proxy with authentication").
+	trustedProxies []*net.IPNet
+
+	// routes records what Handler registered, for 405 detection *and* for the
+	// test that fails when a route exists without a grant in the scope table.
+	routes routeTable
+
+	// authStore backs /api/v1/users and /api/v1/auth/* persistence. It is
+	// carried separately from authSvc because the service owns credential rules
+	// and never list-and-manage routes; the routes need both.
+	users *store.AuthStore
 }
 
 // ReadinessFunc answers GET /api/v1/health/ready. It returns the per-dependency
@@ -102,11 +140,65 @@ func WithEvents(h *events.Hub) Option {
 
 // WithJobs wires the durable queue behind /api/v1/jobs (list, get, cancel,
 // retry). There is no POST /jobs endpoint yet on purpose — enqueue is a
-// server-subsystem action until the auth milestone defines who may ask; see
-// internal/api/jobs.go. Like the hub, unconfigured is reported as 503, not
-// as an empty queue.
+// server-subsystem action (see internal/api/jobs.go). Like the hub, unconfigured
+// is reported as 503, not as an empty queue.
 func WithJobs(js *store.JobsStore) Option {
 	return func(s *Server) { s.jobStore = js }
+}
+
+// WithAuth wires credentials and authorization: the auth service (cookie
+// sessions, API tokens, CSRF, first-run setup) and the AuthStore behind the
+// user-management routes. Without it every non-public route answers 503
+// problem+json — the same rule WithEvents and WithJobs follow, applied to the
+// control that decides whether to answer at all.
+func WithAuth(svc *auth.Service, users *store.AuthStore) Option {
+	return func(s *Server) {
+		s.authSvc = svc
+		s.users = users
+	}
+}
+
+// WithAuthPolicy replaces the route→role scope table. Tests inject a table to
+// prove the fail-closed default; an operator would not.
+func WithAuthPolicy(p *auth.Policy) Option {
+	return func(s *Server) {
+		if p != nil {
+			s.policy = p
+		}
+	}
+}
+
+// WithTrustedProxy declares CIDR (or single-address) strings whose
+// X-Forwarded-Proto may set the Secure cookie flag. An unparsable entry is
+// logged and skipped rather than silently widening trust: the safe reading of a
+// typo in a proxy allowlist is "trust nobody", and the operator sees the line in
+// the startup log.
+func WithTrustedProxy(cidrs ...string) Option {
+	return func(s *Server) {
+		for _, raw := range cidrs {
+			raw = strings.TrimSpace(raw)
+			if raw == "" {
+				continue
+			}
+			if _, block, err := net.ParseCIDR(raw); err == nil {
+				s.trustedProxies = append(s.trustedProxies, block)
+				continue
+			}
+			if ip := net.ParseIP(raw); ip != nil {
+				// A bare address is a host route: /32 for IPv4, /128 for IPv6.
+				bits := "32"
+				if strings.ContainsRune(raw, ':') {
+					bits = "128"
+				}
+				if _, block, err := net.ParseCIDR(raw + "/" + bits); err == nil {
+					s.trustedProxies = append(s.trustedProxies, block)
+				}
+				continue
+			}
+			s.log.Warn("ignoring an unparsable trusted-proxy entry",
+				"entry", raw, "error", "not a CIDR or IP address")
+		}
+	}
 }
 
 // New constructs an API server. A zero BuildInfo or nil logger is tolerated.
@@ -121,6 +213,7 @@ func New(build bootstrap.BuildInfo, startedAt time.Time, log *slog.Logger, opts 
 		startedAt: startedAt.UTC(),
 		log:       log,
 		webFS:     webassets.FS(),
+		policy:    auth.DefaultPolicy(),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -139,15 +232,38 @@ func (s *Server) webBuilt() bool {
 }
 
 // Handler returns the routed HTTP handler, including correlation,
-// embedded-UI serving and problem+json fallbacks.
+// authorization, embedded-UI serving and problem+json fallbacks.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	var routes routeTable
+	// Public, in the sense of docs/spec/08's health/system contract: no game
+	// content, no paths, no secrets. Every other route is granted a role by
+	// auth.DefaultPolicy, keyed by these same method+path pairs —
+	// TestEveryRegisteredRouteIsCovered is what keeps the two lists from
+	// drifting.
 	routes.register(mux, http.MethodGet, "/api/v1/health/live", s.handleLive)
 	routes.register(mux, http.MethodGet, "/api/v1/health/ready", s.handleReady)
 	routes.register(mux, http.MethodGet, "/api/v1/system/info", s.handleSystemInfo)
-	routes.register(mux, http.MethodGet, "/api/v1/events", s.handleEvents)
+	routes.register(mux, http.MethodGet, "/api/v1/events", s.developerScopedEvents(s.handleEvents))
+
+	// Authentication and account management (docs/spec/08 "API version and user
+	// authentication", docs/spec/14 "Authorization", ADR-0016). The grants live
+	// in the scope table, not here, so the whole ACL is reviewable in one file.
+	routes.register(mux, http.MethodGet, "/api/v1/auth/status", s.handleAuthStatus)
+	routes.register(mux, http.MethodPost, "/api/v1/auth/setup", s.handleAuthSetup)
+	routes.register(mux, http.MethodPost, "/api/v1/auth/login", s.handleLogin)
+	routes.register(mux, http.MethodPost, "/api/v1/auth/logout", s.handleLogout)
+	routes.register(mux, http.MethodGet, "/api/v1/auth/me", s.handleMe)
+	routes.register(mux, http.MethodPost, "/api/v1/auth/password", s.handleChangePassword)
+	routes.register(mux, http.MethodGet, "/api/v1/users", s.handleUsersList)
+	routes.register(mux, http.MethodPost, "/api/v1/users", s.handleUsersCreate)
+	routes.register(mux, http.MethodPost, "/api/v1/users/{id}/disable", s.handleUserDisable)
+	routes.register(mux, http.MethodPost, "/api/v1/users/{id}/enable", s.handleUserEnable)
+	routes.register(mux, http.MethodPost, "/api/v1/users/{id}/password", s.handleUserPasswordReset)
+	routes.register(mux, http.MethodGet, "/api/v1/users/{id}/tokens", s.handleTokensList)
+	routes.register(mux, http.MethodPost, "/api/v1/users/{id}/tokens", s.handleTokensCreate)
+	routes.register(mux, http.MethodPost, "/api/v1/users/{id}/tokens/{tid}/revoke", s.handleTokenRevoke)
 
 	// Durable workflow queue (docs/spec/08). Wildcard patterns match only
 	// their method here; a wrong method on a concrete job path falls through
@@ -161,6 +277,7 @@ func (s *Server) Handler() http.Handler {
 	// "/" is the least specific pattern, so it only receives requests that no
 	// method+path pattern above matched.
 	mux.Handle("/", s.fallback(routes))
+	s.routes = routes
 
 	// ServeMux canonicalizes an unclean path with a 307 of its own before it
 	// dispatches (net/http findHandler: cleaned path != request path), which
@@ -176,7 +293,12 @@ func (s *Server) Handler() http.Handler {
 		mux.ServeHTTP(w, r)
 	})
 
-	return withRequestID(s.log, dispatch)
+	// Order: correlation first (a 401 and a 403 must carry a request_id like
+	// any other response), then authorization, then routing. Authorization runs
+	// on the whole dispatch handler rather than on the mux alone because the
+	// fail-closed default has to cover /api/ paths that match no route at all —
+	// an unknown API path is not information to hand an unauthenticated caller.
+	return withRequestID(s.log, s.authorize(routes, dispatch))
 }
 
 // handleLive reports process liveness only: no dependency probing.

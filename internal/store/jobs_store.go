@@ -244,7 +244,10 @@ func (j *JobsStore) Enqueue(ctx context.Context, p EnqueueParams) (*Job, bool, e
 // given duration, or returns (nil, nil) when the queue has nothing eligible.
 // Runnable means `queued` and past its run_after gate, or `running` whose
 // lease has expired (the previous owner is gone) and whose retry budget is
-// not yet spent. Highest priority first, then oldest.
+// not yet spent. Highest priority first, then oldest; a same-millisecond tie is
+// broken by insertion order (`rowid`), never by the random ULID suffix in `id`,
+// which would otherwise make two jobs enqueued in one millisecond claim in an
+// order nobody chose. `created_at` is millisecond-stamped, so ties are routine.
 //
 // Each claim also records a `job_attempts` row (docs/spec/02 "audit trail")
 // and closes out any attempt still marked `running` for that job as `crashed`
@@ -282,7 +285,7 @@ func (j *JobsStore) Claim(ctx context.Context, workerID string, kinds []string, 
 		err := tx.queryRow(ctx, op,
 			`SELECT id FROM jobs
 			 WHERE `+q+`
-			 ORDER BY priority DESC, created_at ASC, id ASC LIMIT 1`,
+			 ORDER BY priority DESC, created_at ASC, rowid ASC LIMIT 1`,
 			args...).Scan(&id)
 		if err == sql.ErrNoRows {
 			return nil // queue empty: an answer, not a failure

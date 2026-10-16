@@ -31,7 +31,7 @@ func jobsFixture(t *testing.T) (http.Handler, *store.JobsStore) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	js := store.NewJobsStore(st)
-	return newHandler(WithJobs(js)), js
+	return newHandler(t, WithJobs(js)), js
 }
 
 func seedJob(t *testing.T, js *store.JobsStore, kind string) *store.Job {
@@ -59,7 +59,7 @@ func getJSON(t *testing.T, h http.Handler, target string) (*httptest.ResponseRec
 // 503 on every jobs route — including the wildcard ones — instead of 200
 // with an empty list.
 func TestJobsEndpointsWithoutStoreAreUnavailable(t *testing.T) {
-	h := newHandler() // no WithJobs
+	h := newHandler(t) // no WithJobs
 	for _, tc := range []struct{ method, target string }{
 		{http.MethodGet, "/api/v1/jobs"},
 		{http.MethodGet, "/api/v1/jobs/" + games.NewID()},

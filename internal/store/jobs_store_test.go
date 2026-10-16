@@ -142,7 +142,11 @@ func TestJobsClaimPriorityOrder(t *testing.T) {
 	ctx := testCtx(t)
 
 	low, _, _ := js.Enqueue(ctx, EnqueueParams{Kind: "k", Priority: 1})
-	time.Sleep(2 * time.Millisecond) // created_at ties must not reorder determinism
+	// No sleep between the same-priority pair on purpose: at millisecond
+	// resolution they normally share a created_at, so this is the tie the claim
+	// order has to resolve by insertion order (`rowid`) rather than by the random
+	// ULID suffix in `id`. If the clock does tick over, created_at alone gives the
+	// same answer — either way the expectation below is deterministic.
 	high, _, _ := js.Enqueue(ctx, EnqueueParams{Kind: "k", Priority: 5})
 	later, _, _ := js.Enqueue(ctx, EnqueueParams{Kind: "k", Priority: 5})
 

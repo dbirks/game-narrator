@@ -13,7 +13,7 @@ import (
 )
 
 func TestHealthLive(t *testing.T) {
-	rec := do(t, newUIHandler(), http.MethodGet, "/api/v1/health/live")
+	rec := do(t, newUIHandler(t), http.MethodGet, "/api/v1/health/live")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -30,7 +30,7 @@ func TestHealthLive(t *testing.T) {
 }
 
 func TestHealthReadyHasEmptyChecksMap(t *testing.T) {
-	rec := do(t, newUIHandler(), http.MethodGet, "/api/v1/health/ready")
+	rec := do(t, newUIHandler(t), http.MethodGet, "/api/v1/health/ready")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -61,7 +61,7 @@ func TestHealthReadyHasEmptyChecksMap(t *testing.T) {
 // dependency is only reported once something probed it: with a checker wired,
 // its evidence (schema version) must reach the payload.
 func TestHealthReadyReportsTheDatabaseCheck(t *testing.T) {
-	h := newHandler(WithReadiness(func(context.Context) (map[string]any, bool) {
+	h := newHandler(t, WithReadiness(func(context.Context) (map[string]any, bool) {
 		return map[string]any{"database": map[string]any{"status": "ok", "schema_version": 1}}, true
 	}))
 
@@ -90,7 +90,7 @@ func TestHealthReadyReportsTheDatabaseCheck(t *testing.T) {
 // TestHealthReadyIs503WhenACheckerFails: a broken dependency must be visible to
 // a load balancer and to scripts, in the status code as well as the body.
 func TestHealthReadyIs503WhenACheckerFails(t *testing.T) {
-	h := newHandler(WithReadiness(func(context.Context) (map[string]any, bool) {
+	h := newHandler(t, WithReadiness(func(context.Context) (map[string]any, bool) {
 		return map[string]any{"database": map[string]any{
 			"status":         "fail",
 			"schema_version": 1,
@@ -122,7 +122,7 @@ func TestHealthReadyIs503WhenACheckerFails(t *testing.T) {
 // still answer 200 while readiness is 503, so a process with a sick dependency
 // is not killed by a liveness-only supervisor.
 func TestHealthReadyKeepsLivenessUnaffected(t *testing.T) {
-	h := newHandler(WithReadiness(func(context.Context) (map[string]any, bool) { return nil, false }))
+	h := newHandler(t, WithReadiness(func(context.Context) (map[string]any, bool) { return nil, false }))
 
 	if rec := do(t, h, http.MethodGet, "/api/v1/health/ready"); rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("ready = %d, want 503", rec.Code)
@@ -133,7 +133,7 @@ func TestHealthReadyKeepsLivenessUnaffected(t *testing.T) {
 }
 
 func TestHealthReadyCheckerPanicsBecomeFailNotCrash(t *testing.T) {
-	h := newHandler(WithReadiness(func(context.Context) (map[string]any, bool) {
+	h := newHandler(t, WithReadiness(func(context.Context) (map[string]any, bool) {
 		panic("checker exploded")
 	}))
 
@@ -151,7 +151,7 @@ func TestHealthReadyCheckerPanicsBecomeFailNotCrash(t *testing.T) {
 // from the request so a client disconnect cancels it too.
 func TestHealthReadyBoundsTheCheckerWithADeadline(t *testing.T) {
 	seen := make(chan time.Time, 1)
-	h := newHandler(WithReadiness(func(ctx context.Context) (map[string]any, bool) {
+	h := newHandler(t, WithReadiness(func(ctx context.Context) (map[string]any, bool) {
 		deadline, ok := ctx.Deadline()
 		if !ok {
 			t.Error("readiness checker got a context without a deadline")
@@ -179,7 +179,7 @@ func TestHealthReadyBoundsTheCheckerWithADeadline(t *testing.T) {
 }
 
 func TestSystemInfo(t *testing.T) {
-	rec := do(t, newUIHandler(), http.MethodGet, "/api/v1/system/info")
+	rec := do(t, newUIHandler(t), http.MethodGet, "/api/v1/system/info")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -223,7 +223,7 @@ func TestSystemInfo(t *testing.T) {
 }
 
 func TestSystemInfoLeaksNoHostOrEnv(t *testing.T) {
-	rec := do(t, newUIHandler(), http.MethodGet, "/api/v1/system/info")
+	rec := do(t, newUIHandler(t), http.MethodGet, "/api/v1/system/info")
 	body := rec.Body.String()
 
 	if host, _ := os.Hostname(); host != "" && strings.Contains(body, host) {
@@ -239,7 +239,7 @@ func TestSystemInfoLeaksNoHostOrEnv(t *testing.T) {
 var hexID = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 func TestRequestIDHeaderOnEveryResponse(t *testing.T) {
-	h := newUIHandler()
+	h := newUIHandler(t)
 	cases := []struct {
 		method, target string
 	}{
@@ -268,7 +268,7 @@ func TestRequestIDHeaderOnEveryResponse(t *testing.T) {
 }
 
 func TestUnknownAPIPathReturnsProblemJSON(t *testing.T) {
-	rec := do(t, newUIHandler(), http.MethodGet, "/api/v1/nope")
+	rec := do(t, newUIHandler(t), http.MethodGet, "/api/v1/nope")
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404 (body %s)", rec.Code, rec.Body.String())
@@ -278,7 +278,7 @@ func TestUnknownAPIPathReturnsProblemJSON(t *testing.T) {
 }
 
 func TestWrongMethodOnKnownPathReturnsProblemJSON(t *testing.T) {
-	rec := do(t, newUIHandler(), http.MethodPost, "/api/v1/health/live")
+	rec := do(t, newUIHandler(t), http.MethodPost, "/api/v1/health/live")
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405 (body %s)", rec.Code, rec.Body.String())
@@ -293,7 +293,7 @@ func TestWrongMethodOnKnownPathReturnsProblemJSON(t *testing.T) {
 // HEAD is served by GET patterns, so it must not be reported as a method
 // mismatch.
 func TestHeadOnKnownPathIsNot405(t *testing.T) {
-	rec := do(t, newUIHandler(), http.MethodHead, "/api/v1/health/live")
+	rec := do(t, newUIHandler(t), http.MethodHead, "/api/v1/health/live")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
 	}
@@ -303,7 +303,7 @@ func TestHeadOnKnownPathIsNot405(t *testing.T) {
 // document rather than a redirect or plain-text 404.
 func TestUnknownNestedAPIPathReturnsProblemJSON(t *testing.T) {
 	for _, target := range []string{"/api/v1/sessions", "/api/v1/", "/api/"} {
-		rec := do(t, newUIHandler(), http.MethodGet, target)
+		rec := do(t, newUIHandler(t), http.MethodGet, target)
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("%s: status = %d, want 404 (body %s)", target, rec.Code, rec.Body.String())
 		}
