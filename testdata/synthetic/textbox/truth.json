@@ -1,0 +1,386 @@
+[
+ {
+  "file": "plain-dejavu-01.png",
+  "text": "The old lighthouse keeps no flame these days.",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "letterboxed": false,
+  "variant": "plain",
+  "font": "DejaVuSans",
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "plain-dejavu-02.png",
+  "text": "Bring the waterlogged chart to the harbour master.",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "letterboxed": false,
+  "variant": "plain",
+  "font": "DejaVuSans",
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "serif-narration-01.png",
+  "text": "Night settled over the bay like a held breath.",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "letterboxed": false,
+  "variant": "plain",
+  "font": "NotoSerif-Regular",
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "serif-question-02.png",
+  "text": "You saw the lantern from the reef? Say when.",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "letterboxed": false,
+  "variant": "plain",
+  "font": "NotoSerif-Regular",
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "mono-cmd-01.png",
+  "text": "Set sail at first light, and take the small boat.",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "letterboxed": false,
+  "variant": "plain",
+  "font": "LiberationMono-Regular",
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "twoline-dejavu-01.png",
+  "text": "The keeper swore the light came back on its own, and that no one in the village had climbed the stair in years.",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "letterboxed": false,
+  "variant": "two_line",
+  "font": "DejaVuSans",
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "threeline-mono-01.png",
+  "text": "Every ledger in the customs house records the same ship arriving twice on the same wet night, and the harbour master has stopped asking.",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "letterboxed": false,
+  "variant": "three_line",
+  "font": "LiberationMono-Regular",
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "punct-noto-01.png",
+  "text": "\"Wait...\" he whispered, \"it wasn't the captain's fault!\"",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "letterboxed": false,
+  "variant": "punctuation",
+  "font": "NotoSerif-Regular",
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "punct-dejavu-02.png",
+  "text": "Don't light it! Not tonight - the tide's wrong.",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "letterboxed": false,
+  "variant": "punctuation",
+  "font": "DejaVuSans",
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "lightbox-dejavu-01.png",
+  "text": "A ledger names the ship, but not the crew.",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "letterboxed": false,
+  "variant": "light_box",
+  "font": "DejaVuSans",
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "accent-noto-01.png",
+  "text": "L'épée du vieux phare brille encor' ce soir.",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "letterboxed": false,
+  "variant": "non_ascii",
+  "font": "NotoSerif-Regular",
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "noisy-dejavu-01.png",
+  "text": "The door was barred from the other side.",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "letterboxed": false,
+  "variant": "noisy_blur",
+  "font": "DejaVuSans",
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "noisy-noto-02.png",
+  "text": "Nothing in the harbour remembered the wreck.",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "letterboxed": false,
+  "variant": "noisy_blur",
+  "font": "NotoSerif-Regular",
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "empty-box-01.png",
+  "text": "",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "letterboxed": false,
+  "variant": "empty_box",
+  "font": "",
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "letterbox-dejavu-01.png",
+  "text": "Two sails, running before a black wind.",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 854,
+   "h": 480
+  },
+  "letterboxed": true,
+  "variant": "plain",
+  "font": "DejaVuSans",
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "letterbox-noisy-02.png",
+  "text": "The boy counted the buoys and lost track at nine.",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 854,
+   "h": 480
+  },
+  "letterboxed": true,
+  "variant": "noisy_blur",
+  "font": "DejaVuSans",
+  "origin": "generated_synthetic"
+ }
+]
