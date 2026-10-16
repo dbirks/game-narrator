@@ -8,12 +8,15 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/bootstrap"
+	"github.com/dbirks/game-narrator/internal/webassets"
 )
 
 // Media types used by this package.
@@ -35,24 +38,59 @@ func RequestIDFromContext(ctx context.Context) string {
 	return id
 }
 
-// Server serves the API. Handlers receive explicit dependencies so they can
-// be exercised with fakes (docs/spec/12 "Unit" mode).
+// Server serves the API and, for every non-API path, the embedded web UI
+// (docs/spec/09). Handlers receive explicit dependencies so they can be
+// exercised with fakes (docs/spec/12 "Unit" mode).
 type Server struct {
 	build     bootstrap.BuildInfo
 	startedAt time.Time
 	log       *slog.Logger
+
+	// webFS holds the built SPA (rooted so index.html is "index.html").
+	webFS fs.FS
+}
+
+// Option customises a Server. Production wiring needs none of them; tests
+// inject an in-memory UI build (docs/spec/12 "Unit" mode).
+type Option func(*Server)
+
+// WithWebAssets replaces the filesystem served for non-API paths. A nil fs.FS
+// is treated as an empty build, which answers 503 on UI paths.
+func WithWebAssets(filesystem fs.FS) Option {
+	return func(s *Server) { s.webFS = filesystem }
 }
 
 // New constructs an API server. A zero BuildInfo or nil logger is tolerated.
-func New(build bootstrap.BuildInfo, startedAt time.Time, log *slog.Logger) *Server {
+// By default the UI comes from webassets.FS(), i.e. whatever Vite output was
+// compiled into the binary.
+func New(build bootstrap.BuildInfo, startedAt time.Time, log *slog.Logger, opts ...Option) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{build: build, startedAt: startedAt.UTC(), log: log}
+	s := &Server{
+		build:     build,
+		startedAt: startedAt.UTC(),
+		log:       log,
+		webFS:     webassets.FS(),
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	if s.webFS == nil {
+		s.webFS = emptyFS{}
+	}
+	return s
 }
 
-// Handler returns the routed HTTP handler, including correlation and
-// problem+json fallbacks.
+// webBuilt reports whether an actual UI build is embedded. It is a method so
+// the injected test filesystem takes part in the same check.
+func (s *Server) webBuilt() bool {
+	info, err := fs.Stat(s.webFS, indexFile)
+	return err == nil && !info.IsDir()
+}
+
+// Handler returns the routed HTTP handler, including correlation,
+// embedded-UI serving and problem+json fallbacks.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
@@ -65,7 +103,21 @@ func (s *Server) Handler() http.Handler {
 	// method+path pattern above matched.
 	mux.Handle("/", s.fallback(routes))
 
-	return withRequestID(s.log, mux)
+	// ServeMux canonicalizes an unclean path with a 307 of its own before it
+	// dispatches (net/http findHandler: cleaned path != request path), which
+	// would answer a traversal probe such as /../etc/passwd with a redirect
+	// instead of the 404 that docs/spec/09 requires. Extensionless UI paths are
+	// therefore dispatched here, ahead of the mux; anything a registered route
+	// claims still goes through it.
+	dispatch := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, apiRoot) && !routes.matches(r.Method, r.URL.Path) {
+			s.serveStatic(w, r)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+
+	return withRequestID(s.log, dispatch)
 }
 
 // handleLive reports process liveness only: no dependency probing.

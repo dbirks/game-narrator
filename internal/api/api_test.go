@@ -2,8 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,53 +9,10 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/dbirks/game-narrator/internal/bootstrap"
 )
 
-// newTestHandler builds the real router with a fixed build stamp and a discard
-// logger, so tests exercise exactly what bootstrap serves.
-func newTestHandler() http.Handler {
-	build := bootstrap.BuildInfo{
-		Version:   "v0.0.1-test",
-		Commit:    "deadbee",
-		GoVersion: "go1.27.2",
-		GOOS:      "linux",
-		GOARCH:    "arm64",
-	}
-	started := time.Date(2026, time.October, 16, 3, 4, 5, 0, time.UTC)
-	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	return New(build, started, log).Handler()
-}
-
-func do(t *testing.T, h http.Handler, method, target string) *httptest.ResponseRecorder {
-	t.Helper()
-	req := httptest.NewRequest(method, target, nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	return rec
-}
-
-// requireContentType fails unless the Content-Type header equals want exactly.
-func requireContentType(t *testing.T, rec *httptest.ResponseRecorder, want string) {
-	t.Helper()
-	got := rec.Header().Get("Content-Type")
-	if got != want {
-		t.Fatalf("Content-Type = %q, want %q (body %s)", got, want, rec.Body.String())
-	}
-}
-
-func decodeJSON(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
-	t.Helper()
-	var body map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("body is not valid JSON: %v (body %q)", err, rec.Body.String())
-	}
-	return body
-}
-
 func TestHealthLive(t *testing.T) {
-	rec := do(t, newTestHandler(), http.MethodGet, "/api/v1/health/live")
+	rec := do(t, newUIHandler(), http.MethodGet, "/api/v1/health/live")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -74,7 +29,7 @@ func TestHealthLive(t *testing.T) {
 }
 
 func TestHealthReadyHasEmptyChecksMap(t *testing.T) {
-	rec := do(t, newTestHandler(), http.MethodGet, "/api/v1/health/ready")
+	rec := do(t, newUIHandler(), http.MethodGet, "/api/v1/health/ready")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -102,7 +57,7 @@ func TestHealthReadyHasEmptyChecksMap(t *testing.T) {
 }
 
 func TestSystemInfo(t *testing.T) {
-	rec := do(t, newTestHandler(), http.MethodGet, "/api/v1/system/info")
+	rec := do(t, newUIHandler(), http.MethodGet, "/api/v1/system/info")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -146,7 +101,7 @@ func TestSystemInfo(t *testing.T) {
 }
 
 func TestSystemInfoLeaksNoHostOrEnv(t *testing.T) {
-	rec := do(t, newTestHandler(), http.MethodGet, "/api/v1/system/info")
+	rec := do(t, newUIHandler(), http.MethodGet, "/api/v1/system/info")
 	body := rec.Body.String()
 
 	if host, _ := os.Hostname(); host != "" && strings.Contains(body, host) {
@@ -162,7 +117,7 @@ func TestSystemInfoLeaksNoHostOrEnv(t *testing.T) {
 var hexID = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 func TestRequestIDHeaderOnEveryResponse(t *testing.T) {
-	h := newTestHandler()
+	h := newUIHandler()
 	cases := []struct {
 		method, target string
 	}{
@@ -191,7 +146,7 @@ func TestRequestIDHeaderOnEveryResponse(t *testing.T) {
 }
 
 func TestUnknownAPIPathReturnsProblemJSON(t *testing.T) {
-	rec := do(t, newTestHandler(), http.MethodGet, "/api/v1/nope")
+	rec := do(t, newUIHandler(), http.MethodGet, "/api/v1/nope")
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404 (body %s)", rec.Code, rec.Body.String())
@@ -201,7 +156,7 @@ func TestUnknownAPIPathReturnsProblemJSON(t *testing.T) {
 }
 
 func TestWrongMethodOnKnownPathReturnsProblemJSON(t *testing.T) {
-	rec := do(t, newTestHandler(), http.MethodPost, "/api/v1/health/live")
+	rec := do(t, newUIHandler(), http.MethodPost, "/api/v1/health/live")
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405 (body %s)", rec.Code, rec.Body.String())
@@ -216,7 +171,7 @@ func TestWrongMethodOnKnownPathReturnsProblemJSON(t *testing.T) {
 // HEAD is served by GET patterns, so it must not be reported as a method
 // mismatch.
 func TestHeadOnKnownPathIsNot405(t *testing.T) {
-	rec := do(t, newTestHandler(), http.MethodHead, "/api/v1/health/live")
+	rec := do(t, newUIHandler(), http.MethodHead, "/api/v1/health/live")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
 	}
@@ -226,22 +181,12 @@ func TestHeadOnKnownPathIsNot405(t *testing.T) {
 // document rather than a redirect or plain-text 404.
 func TestUnknownNestedAPIPathReturnsProblemJSON(t *testing.T) {
 	for _, target := range []string{"/api/v1/sessions", "/api/v1/", "/api/"} {
-		rec := do(t, newTestHandler(), http.MethodGet, target)
+		rec := do(t, newUIHandler(), http.MethodGet, target)
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("%s: status = %d, want 404 (body %s)", target, rec.Code, rec.Body.String())
 		}
 		requireContentType(t, rec, ContentTypeProblem)
 	}
-}
-
-func TestNonAPIPathAlsoProblems(t *testing.T) {
-	rec := do(t, newTestHandler(), http.MethodGet, "/")
-
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", rec.Code)
-	}
-	requireContentType(t, rec, ContentTypeProblem)
-	assertProblem(t, rec, http.StatusNotFound, "Not Found", "/")
 }
 
 // assertProblem checks every RFC 9457 field the spec requires, including
@@ -292,6 +237,10 @@ func titleSlug(t *testing.T, title string) string {
 		return "not-found"
 	case "Method Not Allowed":
 		return "method-not-allowed"
+	case "Service Unavailable":
+		return "web-not-built"
+	case "Internal Server Error":
+		return "web-ui-broken"
 	}
 	t.Fatalf("unknown title %q", title)
 	return ""

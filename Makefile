@@ -14,13 +14,22 @@ COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 LDFLAGS := -X $(PKG).version=$(VERSION) -X $(PKG).commit=$(COMMIT)
 
 # Gate targets that still need implementation (docs/spec/16).
-PENDING_GATES := test-replay test-ui test-dolphin test-models test-hardware
+PENDING_GATES := test-replay test-dolphin test-models test-hardware
 
-.PHONY: bootstrap dev build test-unit test-replay test-ui test-dolphin test-models \
+.PHONY: bootstrap dev build web-build test-unit test-replay test-ui test-dolphin test-models \
         test-hardware test-full lint release-snapshot diagnostics
 
-## build: compile the game-narrator binary with version/commit stamped in
-build:
+## web-build: build the React UI and stage it for go:embed
+web-build:
+	pnpm --dir web install --frozen-lockfile
+	pnpm --dir web build
+	@rm -rf internal/webassets/dist
+	@mkdir -p internal/webassets/dist
+	@cp -a web/dist/. internal/webassets/dist/
+	@: > internal/webassets/dist/.keep
+
+## build: compile the game-narrator binary with the UI embedded and version/commit stamped in
+build: web-build
 	@mkdir -p bin
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/game-narrator ./cmd/game-narrator
 
@@ -33,13 +42,15 @@ test-unit:
 	go vet ./...
 	go test -race ./...
 
-## lint: gofmt cleanliness plus go vet
+## lint: Go static checks plus the frontend lint/format gates
 lint:
 	@unformatted="$$(gofmt -l .)"; \
 	if [ -n "$$unformatted" ]; then \
 		echo "gofmt needed on:"; echo "$$unformatted"; exit 1; \
 	fi
 	go vet ./...
+	pnpm --dir web lint
+	pnpm --dir web fmt:check
 
 ## bootstrap: reproducible development environment setup
 bootstrap:
@@ -51,7 +62,7 @@ bootstrap:
 	fi
 
 ## test-full: run every gate that is implemented; report the rest as NOT RUN
-test-full: test-unit
+test-full: test-unit test-ui
 	@for target in $(PENDING_GATES); do \
 		echo "NOT RUN: $$target is not implemented yet (see docs/spec/16)" >&2; \
 	done; \
@@ -62,8 +73,16 @@ test-full: test-unit
 test-replay:
 	@echo "NOT RUN: test-replay is not implemented yet (see docs/spec/16)" >&2; exit 1
 
+## test-ui: the real UI gate (docs/spec/09, docs/spec/12 "UI") — frontend
+## checks, then an embedded-binary build, then Playwright against that binary
+## with no Vite dev-server dependency for the embedded project.
 test-ui:
-	@echo "NOT RUN: test-ui is not implemented yet (see docs/spec/16)" >&2; exit 1
+	pnpm --dir web typecheck
+	pnpm --dir web lint
+	pnpm --dir web fmt:check
+	pnpm --dir web test
+	$(MAKE) build
+	pnpm --dir web test:e2e
 
 test-dolphin:
 	@echo "NOT RUN: test-dolphin is not implemented yet (see docs/spec/16)" >&2; exit 1

@@ -53,10 +53,15 @@ recorded here — model roles are configured through environment variables only
    captured above: bare `dolphin-emu --version` aborts with a core dump, while
    `xvfb-run -a dolphin-emu --version` prints `Dolphin 2609`. Actual rendered
    pixel frames and accepted controller input are still **NOT VERIFIED**.
-2. **Game ISO not provided — BLOCKED.** No `.iso`/`.gcm`/`.rvz` supplied, so the
-   Wind Waker adapter, real fixture authoring, and the `make test-dolphin` gate
-   cannot run. Unblocking: user supplies a lawful image path in configuration
-   (the file itself is never committed).
+2. **Game image comes from outside the repo.** A user-provided GameCube image
+   (CISO) is available on this host and is passed to the application through
+   `GAME_NARRATOR_GAME_IMAGE_PATH`; its path is never recorded in Git, in this
+   document, or in any evidence bundle — only its hash is (AGENTS.md rule 5).
+   `.gitignore` blocks `*.iso`, `*.gcm`, `*.rvz`, `*.ciso`, `*.7z`, `*.gcz`,
+   `*.wbfs`, `*.wia` and `*.nkit.iso`. The Wind Waker adapter and real fixture
+   authoring can therefore run against a lawful image; the `make test-dolphin`
+   gate itself is still unimplemented, so end-to-end GameCube playback:
+   **NOT VERIFIED**.
 3. **Model endpoints not deployed — BLOCKED.** Clef-Omni decision model, Qwen3-TTS
    VoiceDesign and Qwen3-ASR endpoints are not present on this host and were not
    probed. `make test-models` and live decision/TTS/ASR gates stay blocked until

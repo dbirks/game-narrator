@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"time"
 )
 
@@ -32,12 +33,26 @@ func newRequestID() string {
 	return hex.EncodeToString(b[:])
 }
 
+// requestIDPattern bounds a client-supplied correlation id: 1-64 characters of
+// a conservative safe set. Anything else is ignored and a fresh id is
+// generated, so a hostile client cannot use the header to inject log content,
+// inflate response headers, or forge another request's correlation key.
+var requestIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+
+// acceptRequestID returns id when it is safe to echo back, else "".
+func acceptRequestID(id string) string {
+	if requestIDPattern.MatchString(id) {
+		return id
+	}
+	return ""
+}
+
 // withRequestID attaches a correlation id to every request and response, and
 // logs the completed request with it. Later milestones reuse request_id as the
 // correlation key in event traces and provider call logs.
 func withRequestID(log *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id := r.Header.Get(HeaderRequestID)
+		id := acceptRequestID(r.Header.Get(HeaderRequestID))
 		if id == "" {
 			id = newRequestID()
 		}

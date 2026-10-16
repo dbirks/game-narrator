@@ -42,10 +42,27 @@ func (t routeTable) allowedMethods(path string) []string {
 	return out
 }
 
+// matches reports whether a route claims this exact method+path pair. GET
+// routes also answer HEAD, like ServeMux.
+func (t routeTable) matches(method, path string) bool {
+	for _, rt := range t {
+		if rt.path != path {
+			continue
+		}
+		if rt.method == method || (rt.method == http.MethodGet && method == http.MethodHead) {
+			return true
+		}
+	}
+	return false
+}
+
 // fallback answers everything ServeMux could not route. ServeMux renders
 // plain-text 404/405 responses that cannot be overridden through its handler
 // fields in this Go build, and docs/spec/08 requires RFC 9457 problem+json
 // with a request_id, so unmatched requests land on the "/" pattern here.
+//
+// The embedded web UI (docs/spec/09) is dispatched earlier, in Handler, so
+// this only sees /api/ paths and wrong-method calls on registered routes.
 func (s *Server) fallback(routes routeTable) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if methods := routes.allowedMethods(r.URL.Path); len(methods) > 0 {
@@ -59,9 +76,6 @@ func (s *Server) fallback(routes routeTable) http.Handler {
 
 		detail := "no route matches the requested path"
 		if !strings.HasPrefix(r.URL.Path, apiRoot) {
-			// The embedded React SPA replaces this for non-API paths in a
-			// later milestone (docs/spec/01: internal/api serves browser
-			// static assets too).
 			detail = "no route or embedded asset matches the requested path"
 		}
 		s.writeProblem(w, r, http.StatusNotFound, "not-found", "Not Found", detail)
