@@ -64,8 +64,9 @@ install_group "release, signing and OCI" goreleaser syft cosign docker docker-bu
 install_group "virtual display and input automation" xorg-server-xvfb xorg-xwininfo xdotool
 install_group "graphics drivers / tools" mesa mesa-utils vulkan-intel vulkan-tools
 install_group "audio stack" pipewire pipewire-pulse pipewire-alsa wireplumber alsa-utils
-install_group "utilities" jq go-yq imagemagick
+install_group "utilities" jq go-yq imagemagick openssh
 install_group "emulator and terminal data" dolphin-emu kitty-terminfo
+install_group "browser runtime libraries and fonts" at-spi2-core libxcomposite libxdamage nss libxkbcommon libxrandr alsa-lib ttf-dejavu noto-fonts ttf-liberation
 
 if [ "$DRY_RUN" -eq 1 ]; then
   echo

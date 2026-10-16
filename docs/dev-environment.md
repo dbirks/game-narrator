@@ -39,7 +39,9 @@ recorded here — model roles are configured through environment variables only
 | GPU | `00:02.0 VGA compatible controller: Intel Corporation Kaby Lake-S GT2 [HD Graphics 630] (rev 04)` | `lspci \| grep -iE 'vga\|3d'` |
 | Session type | `tty` | `echo $XDG_SESSION_TYPE` |
 | Other bootstrap packages | all present: `make 4.4.1-3`, `gcc 16.2.1+r23+gd564253eb6c8-1`, `syft 1.54.1-1`, `cosign 3.1.3-1`, `docker-buildx 0.38.0-1`, `xorg-server-xvfb 21.1.25-2`, `xorg-xwininfo 1.1.7-1`, `xdotool 4.20260303.1-1`, `mesa-utils 9.0.0-7`, `vulkan-tools 1.4.363.0-1`, `jq 1.8.2-1`, `go-yq 4.54.1-1`, `github-cli 2.102.0-1`, `imagemagick 7.1.2.34-1`, `kitty-terminfo 0.49.2-1`, `tesseract-data-eng 2:4.1.0-5` | `pacman -Q <pkg>` |
-| Docker service state | `docker.service` active + enabled; current user groups: `wheel` (not `docker`) | `systemctl is-active/-enabled docker.service`, `groups` |
+| Docker service state | `docker.service` active + enabled; `docker:x:966:david` — the user is now a `docker` group member, but the live session still reports `david wheel`, so existing shells must be re-launched for the group to take effect | `systemctl is-active/-enabled docker.service`, `getent group docker`, `groups` |
+| Fonts | 679 fonts installed; `fc-match sans-serif` → `NotoSans-Regular.ttf: "Noto Sans" "Regular"` | `fc-list \| wc -l`, `fc-match sans-serif` |
+| Chromium system libraries | 5 of 5 sonames resolvable via the system loader (`libatk-1.0.so.0`, `libatk-bridge-2.0.so.0`, `libatspi.so.0`, `libXcomposite.so.1`, `libXdamage.so.1`) — packages `at-spi2-core 2.62.1-1`, `libxcomposite 0.4.7-1`, `libxdamage 1.1.7-1`, `nss 3.131-1`, `libxkbcommon 1.13.2-1`, `libxrandr 1.5.5-1`, `alsa-lib 1.2.16.1-1` | `ldconfig -p \| grep -cE 'libatk-1.0.so.0\|libatk-bridge-2.0.so.0\|libatspi.so.0\|libXcomposite.so.1\|libXdamage.so.1'`, `pacman -Q …` |
 | PipeWire user service | `pipewire.service` (user unit) inactive; `wpctl status` emitted RTKit/DBus warnings | `systemctl --user is-active pipewire.service`, `wpctl status` |
 | UVC capture devices | none — `/dev/video*` does not exist | `ls /dev/video*` |
 
@@ -68,16 +70,28 @@ recorded here — model roles are configured through environment variables only
 6. **Audio playback path unverified.** PipeWire/WirePlumber/ALSA packages are
    installed, but the user PipeWire service is inactive in this session and no
    output device or sink was confirmed. Actual TTS playback: **NOT VERIFIED**.
-7. **Browser / frontend tooling not installed via pacman.** TypeScript, Vite,
-   React, oxlint, oxfmt, and Playwright come from `pnpm install` in `web/`; no
-   `web/` directory or `package.json` exists yet, and no browser build has been
-   installed or launched: **NOT CHECKED**.
+7. **Browser / frontend tooling comes from pnpm, not pacman.** TypeScript, Vite,
+   React, oxlint, oxfmt, and Playwright are installed by `pnpm install` in `web/`;
+   the Chromium build comes from `pnpm exec playwright install chromium` and its
+   system libraries and fonts from `scripts/bootstrap-arch.sh` (see the Fonts and
+   Chromium system libraries rows above). `pnpm --dir web test:e2e` launches
+   Chromium and passes. Remaining browser work — visual/accessibility depth and
+   capture-heavy flows: **NOT CHECKED**.
 8. **No application code yet.** Go module, Vite skeleton, SQLite migrations,
    `.env.example`, `make` targets, and ADRs for router/SQLite driver/UI kit/FFmpeg
    and OCI strategy remain Milestone 0 work outside this document: **NOT CHECKED**.
-9. **Docker group membership.** `docker.service` is already active and enabled, so
-   that install step is satisfied; the current user is not in the `docker` group
-   (access is via sudo). `docker buildx` OCI build test: **NOT CHECKED**.
+9. **Docker group membership.** `docker.service` is already active and enabled and
+    the user has been added to the `docker` group (`docker:x:966:david`), so root
+    is no longer required for `docker`. Group membership is only applied at login:
+    shells started before the change still lack it (`groups` → `david wheel`) and
+    need a re-login / new session. `docker buildx` OCI build test: **NOT CHECKED**.
+10. **Host originally had zero fonts.** Before this milestone the Arch host had no
+    font packages at all (`fc-list` → 0 fonts), so every UI label rendered as
+    empty boxes in browser and Dolphin screenshots — Playwright assertions on
+    visible text could never have been trusted. Fixed by installing `ttf-dejavu`,
+    `noto-fonts` and `ttf-liberation` (now 679 fonts, `fc-match sans-serif` →
+    `Noto Sans`); these are part of the "browser runtime libraries and fonts" group
+    in `scripts/bootstrap-arch.sh`.
 
 ## Reproduce this inventory
 
@@ -91,5 +105,8 @@ xvfb-run -a dolphin-emu --version
 Xvfb -help 2>&1 | head -1
 pacman -Q mesa vulkan-intel pipewire wireplumber alsa-utils
 lspci | grep -iE 'vga|3d'; echo "$XDG_SESSION_TYPE"
+fc-list | wc -l; fc-match sans-serif
+ldconfig -p | grep -cE 'libatk-1.0.so.0|libatk-bridge-2.0.so.0|libatspi.so.0|libXcomposite.so.1|libXdamage.so.1'
+getent group docker; groups
 scripts/bootstrap-arch.sh --dry-run
 ```
