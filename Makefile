@@ -13,8 +13,10 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 LDFLAGS := -X $(PKG).version=$(VERSION) -X $(PKG).commit=$(COMMIT)
 
+# Gate targets that test-full runs for real.
+RUN_GATES := test-unit test-ui diagnostics
 # Gate targets that still need implementation (docs/spec/16).
-PENDING_GATES := test-replay test-dolphin test-models test-hardware
+PENDING_GATES := test-replay test-dolphin test-models test-hardware release-snapshot
 
 .PHONY: bootstrap dev build web-build test-unit test-replay test-ui test-dolphin test-models \
         test-hardware test-full lint release-snapshot diagnostics
@@ -62,8 +64,11 @@ bootstrap:
 	fi
 
 ## test-full: run every gate that is implemented; report the rest as NOT RUN
-test-full: test-unit test-ui
-	@for target in $(PENDING_GATES); do \
+test-full: $(RUN_GATES)
+	@for target in $(RUN_GATES); do \
+		echo "RUN: $$target passed"; \
+	done; \
+	for target in $(PENDING_GATES); do \
 		echo "NOT RUN: $$target is not implemented yet (see docs/spec/16)" >&2; \
 	done; \
 	echo "NOT RUN: test-full is incomplete because the gates above are unimplemented (see docs/spec/16)" >&2; \
@@ -96,8 +101,11 @@ test-hardware:
 release-snapshot:
 	@echo "NOT RUN: release-snapshot is not implemented yet (see docs/spec/16)" >&2; exit 1
 
-diagnostics:
-	@echo "NOT RUN: diagnostics is not implemented yet (see docs/spec/16)" >&2; exit 1
+## diagnostics: probe the host honestly — storage, native tools, OCR, capture,
+## audio, every model role, and with --dev the Dolphin/Xvfb and game image
+## checks. Exits 1 only when a configured component is actually broken.
+diagnostics: build
+	$(BIN) doctor --dev
 
 ## help: list targets
 .PHONY: help

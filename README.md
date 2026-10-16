@@ -30,8 +30,8 @@ as designed but unbuilt.
 | M8        | UNO Q and distributable release                                           | not started |
 
 Unimplemented gates (`test-replay`, `test-dolphin`, `test-models`,
-`test-hardware`, `release-snapshot`, `diagnostics`) print `NOT RUN: ...` and
-fail — they can never report success before the work exists.
+`test-hardware`, `release-snapshot`) print `NOT RUN: ...` and fail — they can
+never report success before the work exists.
 
 ## How it works
 
@@ -46,8 +46,13 @@ yet.
 3. Run OCR over the region (local Tesseract, with a vision-model fallback).
 4. Match the recognized text against the imported game script to rank candidate
    messages.
-5. Decide who is speaking — a fast reasoning model plus the character/scene
-   graph, with explicit abstention when it is not confident.
+5. Decide who is speaking, and what kind of text this is — that is the job of
+   the `decision` role: a typed classifier (Clef-Omni over the System One
+   protocol, [`docs/spec/06`](docs/spec/06-inference-contracts.md)) combined
+   with the character/scene graph and the local match scores, with explicit
+   abstention when it is not confident. The general `fast_reasoning` model is
+   not the speaker decider; it is only consulted for unresolved OCR or unusual
+   layout.
 6. Synthesize the line in that character's approved voice, or reuse a cached
    clip keyed on voice and text versions.
 7. Play it to the configured audio output, and cancel playback the moment the
@@ -70,16 +75,30 @@ pnpm --dir web exec playwright install chromium        # browser used by make te
 make build                                             # Vite build -> embedded into bin/game-narrator
 bin/game-narrator migrate                              # apply pending SQLite migrations
 bin/game-narrator serve                                # http://127.0.0.1:8080/diagnostics
+bin/game-narrator doctor --dev                         # same as: make diagnostics
 ```
 
 Then open <http://127.0.0.1:8080/diagnostics> — it shows build version/commit,
 Go version, `os`/`arch` and readiness read live from the API.
 
-For development (Go server from source plus a Vite dev server):
+`bin/game-narrator doctor` (`make diagnostics`, which builds the binary first)
+probes storage, native tools, OCR, capture, audio and every model role, and
+reports each one as `OK` / `DEGRADED` / `BLOCKED` / `NOT CONFIGURED` / `FAIL` —
+exiting 1 only when a configured component is actually broken.
+
+For development, `make dev` runs **only** the Go server from source
+(`go run ./cmd/game-narrator serve`); it serves the last `make build` UI, so it
+picks up Go changes, not `web/` edits. For UI hot reload, run the Vite dev
+server in a second terminal:
 
 ```sh
 make dev                                               # go run ./cmd/game-narrator serve
+pnpm --dir web dev                                     # Vite on http://127.0.0.1:5173
 ```
+
+Vite listens on `127.0.0.1:5173` and proxies `/api` to `127.0.0.1:8080`, so you
+open <http://127.0.0.1:5173/diagnostics> while the Go server keeps running on
+8080 (set `GAME_NARRATOR_API` if the API is on another port).
 
 Verification gates that exist today:
 
@@ -87,6 +106,7 @@ Verification gates that exist today:
 make test-unit    # go vet + go test -race ./...
 make test-ui      # frontend checks, then Playwright against a real embedded binary
 make lint         # gofmt/vet + oxlint + oxfmt --check
+make diagnostics  # build, then bin/game-narrator doctor --dev
 make test-full    # runs the gates above, exits non-zero while others are NOT RUN
 ```
 
@@ -128,7 +148,7 @@ do not commit them, and do not commit screenshots that show copyrighted visuals.
 ## Repository layout
 
 ```
-cmd/game-narrator/      CLI entry point (serve | migrate | version)
+cmd/game-narrator/      CLI entry point (serve | migrate | doctor | version)
 internal/api/           HTTP handlers, middleware, static SPA serving
 internal/bootstrap/     config, server lifecycle, build/version info
 internal/providers/     model-role registry + OpenAI-compatible chat adapter
@@ -145,6 +165,10 @@ docs/test-plan/         scenario catalog
 examples/               nonproduction config and scenario samples
 bin/ , artifacts/       build output and evidence bundles (both gitignored)
 ```
+
+Decision records: the substantial choices behind the layout above are ADRs
+0001–0014 in [`docs/adr/`](docs/adr/) — read the relevant one before reopening
+a boundary, a persistence format or a provider protocol.
 
 ## Specification
 

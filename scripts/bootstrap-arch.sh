@@ -78,6 +78,8 @@ cat <<'NOTES'
 ==> Manual steps (deliberately NOT performed by this script)
     sudo systemctl enable --now docker.service
     sudo usermod -aG docker "$USER"   # then log out and back in
+    systemctl --user enable --now pipewire.socket pipewire-pulse.socket \
+        wireplumber.service   # audio sink for playback tests
     Note: frontend tools (TypeScript, Vite, React, oxlint, oxfmt, Playwright)
     come from `pnpm install` in web/, not from pacman.
 NOTES

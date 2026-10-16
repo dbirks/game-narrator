@@ -42,7 +42,8 @@ recorded here — model roles are configured through environment variables only
 | Docker service state | `docker.service` active + enabled; `docker:x:966:david` — the user is now a `docker` group member, but the live session still reports `david wheel`, so existing shells must be re-launched for the group to take effect | `systemctl is-active/-enabled docker.service`, `getent group docker`, `groups` |
 | Fonts | 679 fonts installed; `fc-match sans-serif` → `NotoSans-Regular.ttf: "Noto Sans" "Regular"` | `fc-list \| wc -l`, `fc-match sans-serif` |
 | Chromium system libraries | 5 of 5 sonames resolvable via the system loader (`libatk-1.0.so.0`, `libatk-bridge-2.0.so.0`, `libatspi.so.0`, `libXcomposite.so.1`, `libXdamage.so.1`) — packages `at-spi2-core 2.62.1-1`, `libxcomposite 0.4.7-1`, `libxdamage 1.1.7-1`, `nss 3.131-1`, `libxkbcommon 1.13.2-1`, `libxrandr 1.5.5-1`, `alsa-lib 1.2.16.1-1` | `ldconfig -p \| grep -cE 'libatk-1.0.so.0\|libatk-bridge-2.0.so.0\|libatspi.so.0\|libXcomposite.so.1\|libXdamage.so.1'`, `pacman -Q …` |
-| PipeWire user service | `pipewire.service` (user unit) inactive; `wpctl status` emitted RTKit/DBus warnings | `systemctl --user is-active pipewire.service`, `wpctl status` |
+| PipeWire user service | `pipewire` and `wireplumber` user units both `active` (exit 0); the daemon answers over the PulseAudio protocol: `pactl list short sinks` → `44\tauto_null\tPipeWire\tfloat32le 2ch 48000Hz\tSUSPENDED`, `pactl list short sources` → `44\tauto_null.monitor\tPipeWire\tfloat32le 2ch 48000Hz\tSUSPENDED`. `wpctl status` shows an **empty Audio Devices list**, one sink (`44. Dummy Output`) and no sources — i.e. PipeWire is running but owns no hardware card. RTKit warnings persist (`org.freedesktop.DBus.Error.ServiceUnknown` → realtime priority not granted); warnings only, the daemon still serves clients | `systemctl --user is-active pipewire wireplumber`, `pactl list short sinks`, `pactl list short sources`, `wpctl status` |
+| Sound-card device nodes | `crw-rw---- 1 root audio 116, 10 …  /dev/snd/controlC0` — ACL `user::rw- group::rw- other::---`, and this session is `david wheel` (not `audio`), so the TTY user cannot open the card; that is why PipeWire lists no device | `ls -l /dev/snd/controlC0`, `getfacl /dev/snd/controlC0 2>/dev/null \| head`, `groups` |
 | UVC capture devices | none — `/dev/video*` does not exist | `ls /dev/video*` |
 
 ## Verified gaps
@@ -72,9 +73,22 @@ recorded here — model roles are configured through environment variables only
    environment variables per logical role (no URL, hostname, or key stored in the
    repo or in this document). Gateway reachability: **NOT CHECKED** (nothing
    configured yet).
-6. **Audio playback path unverified.** PipeWire/WirePlumber/ALSA packages are
-   installed, but the user PipeWire service is inactive in this session and no
-   output device or sink was confirmed. Actual TTS playback: **NOT VERIFIED**.
+6. **Audio playback path unverified beyond a null sink.** PipeWire and
+   WirePlumber user services are now `active` (`systemctl --user is-active
+   pipewire wireplumber` → `active`, `active`) and `pactl list short sinks`
+   returns exactly one sink: `auto_null` ("Dummy Output", float32le 2ch
+   48000Hz), whose monitor `auto_null.monitor` is likewise the only source.
+   `wpctl status` lists **no audio devices at all**: this session has no seat
+   access to the hardware card — `/dev/snd/controlC0` is `crw-rw---- root:audio`
+   with ACL `user::rw- group::rw- other::---`, and `groups` reports `david
+   wheel` (no `audio` membership, no active logind seat granting it), so
+   PipeWire starts with no card and falls back to the null sink. Consequence
+   for tests: playback assertions must target the PipeWire null sink and read
+   back its **monitor** source (a deterministic, device-independent sink); they
+   prove bytes reached the audio server, not that anything was audible.
+   Actual TTS playback through a real DAC or speaker: **NOT VERIFIED**. Adding
+   the user to the `audio` group / starting a graphical seat, and then a speaker
+   smoke test, is hardware-gate work (`make test-hardware`).
 7. **Browser / frontend tooling comes from pnpm, not pacman.** TypeScript, Vite,
    React, oxlint, oxfmt, and Playwright are installed by `pnpm install` in `web/`;
    the Chromium build comes from `pnpm exec playwright install chromium` and its
@@ -113,5 +127,9 @@ lspci | grep -iE 'vga|3d'; echo "$XDG_SESSION_TYPE"
 fc-list | wc -l; fc-match sans-serif
 ldconfig -p | grep -cE 'libatk-1.0.so.0|libatk-bridge-2.0.so.0|libatspi.so.0|libXcomposite.so.1|libXdamage.so.1'
 getent group docker; groups
+systemctl --user is-active pipewire wireplumber
+pactl list short sinks; pactl list short sources
+wpctl status 2>&1 | sed -n '/^Audio/,/Streams:/p'   # RTKit warnings aside
+ls -l /dev/snd/controlC0; getfacl /dev/snd/controlC0 2>/dev/null | head
 scripts/bootstrap-arch.sh --dry-run
 ```
