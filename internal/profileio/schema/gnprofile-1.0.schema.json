@@ -1,0 +1,287 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://game-narrator.example/schema/gnprofile-1.0.schema.json",
+  "title": "Game Narrator profile manifest (.gnprofile.json)",
+  "description": "A portable profile revision: edition identity, source provenance pointers, the dialogue graph, regions and publication state. Closed object: an unknown key is a typo or a version skew, and silently ignoring either is how a profile imports with content nobody reviewed (docs/spec/14). Copyrighted source bytes never appear here; sources carry a SHA-256 and a rights state, and text whose rights are unsettled is null with a reason.",
+  "type": "object",
+  "additionalProperties": false,
+  "$comment": "Every content section is required. An absent section and an empty one mean different things ('characters were not considered' vs 'this revision has no characters'), and the exporter always writes [] for a section with no rows — see canonical.go's note on empty sections. Requiring the key makes that distinction impossible to lose in transit.",
+  "required": [
+    "schema_version",
+    "profile_id",
+    "edition",
+    "publication",
+    "sources",
+    "characters",
+    "scenes",
+    "regions",
+    "messages",
+    "message_edges",
+    "speaker_assertions",
+    "manifest_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0",
+      "description": "Compatibility version of this document shape. A reader that does not know a version refuses it rather than ignoring fields it has never seen."
+    },
+    "profile_id": {
+      "$ref": "#/$defs/id",
+      "description": "The revision row this document was exported from. Carried for cross-checking; a re-import mints its own and does not reuse it."
+    },
+    "edition": { "$ref": "#/$defs/edition" },
+    "publication": { "$ref": "#/$defs/publication" },
+    "sources": { "type": "array", "items": { "$ref": "#/$defs/source" } },
+    "characters": { "type": "array", "items": { "$ref": "#/$defs/character" } },
+    "scenes": { "type": "array", "items": { "$ref": "#/$defs/scene" } },
+    "regions": { "type": "array", "items": { "$ref": "#/$defs/region" } },
+    "messages": { "type": "array", "items": { "$ref": "#/$defs/message" } },
+    "message_edges": { "type": "array", "items": { "$ref": "#/$defs/message_edge" } },
+    "speaker_assertions": { "type": "array", "items": { "$ref": "#/$defs/speaker_assertion" } },
+    "manifest_digest": {
+      "$ref": "#/$defs/sha256",
+      "description": "SHA-256 over the canonical JSON projection of this document with the digest itself, profile_id and the publication section removed, and every row id replaced by a content-derived alias. Stable across re-import by construction; see internal/profileio/canonical.go."
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "nullableSha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+    "id": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" },
+    "nullableId": { "type": ["string", "null"], "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" },
+    "nullableText": { "type": ["string", "null"] },
+    "float": { "type": "number" },
+    "nullableFloat": { "type": ["number", "null"] },
+    "jsonArray": { "type": "array" },
+    "jsonObject": { "type": "object" },
+
+    "ProfileStatus": {"type": "string", "enum": ["draft", "review", "published", "archived"] },
+    "SourceType": {"type": "string", "enum": ["user_file", "web_page", "repository", "manual", "game_extract"] },
+    "RightsStatus": {"type": "string", "enum": ["user_supplied", "licensed", "unknown"] },
+    "TextKind": {"type": "string", "enum": ["dialogue", "sign", "item", "menu", "tutorial", "system", "other"] },
+    "AttributionStatus": {"type": "string", "enum": ["unknown", "proposed", "confirmed", "rejected"] },
+    "EdgeType": {"type": "string", "enum": ["next", "branch", "repeat", "contextual", "inferred"] },
+    "CharacterStatus": {"type": "string", "enum": ["proposed", "confirmed", "retired"] },
+    "RegionType": {"type": "string", "enum": ["textbox", "speaker_label", "subtitle", "sign", "item", "menu", "tutorial", "hud", "other"] },
+    "DetectMethod": {"type": "string", "enum": ["manual", "auto_discovered", "imported", "inferred"] },
+    "AssertionMethod": {"type": "string", "enum": ["on_screen_label", "script_order", "dump_metadata", "visual_anchor", "model", "manual", "manual_correction"] },
+    "RedactedReason": {
+      "type": ["string", "null"],
+      "enum": ["rights_unknown", "no_registered_source", null],
+      "description": "Why a message's text is null. Absent means the text is present; a redacted message must say which rule withheld it, so a reviewer can tell 'unknown rights' from 'no source registered' from 'nothing wrong here'."
+    },
+    "Slug": { "type": "string", "pattern": "^[a-z0-9_-]{1,80}$" },
+
+    "rfc3339": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "nullableRfc3339": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+
+    "edition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "slug", "region", "language", "revision"],
+      "properties": {
+        "title": { "type": "string", "description": "Title family name as the curator reads it." },
+        "slug": { "$ref": "#/$defs/Slug", "description": "Names the game row on re-import. games.Validate's slug grammar." },
+        "platform": { "type": "string" },
+        "description": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string" }, "description": "games.Game.user_tags: user labels, never a controlled vocabulary." },
+        "region": { "type": "string", "description": "Release region. Compatibility is checked against a target edition on import." },
+        "language": { "type": "string", "description": "BCP-47 tag of the script, not a guess from its characters (docs/spec/04)." },
+        "revision": { "type": "string", "description": "Script/dump revision of the edition, e.g. 'demo' or a US version marker." },
+        "locale": { "type": "string" },
+        "notes": { "type": "string", "description": "editions.compatibility_notes." },
+        "aspect": { "$ref": "#/$defs/nullableFloat", "description": "editions.display_aspect: a positive ratio or null while the capture target is unknown." },
+        "identity": { "$ref": "#/$defs/nullableSha256", "description": "editions.source_identity: hash of the exact image the edition was observed against." }
+      }
+    },
+
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Lifecycle of the exported revision. Excluded from manifest_digest: a re-import is a draft by construction, and an approval timestamp is not content.",
+      "required": ["status", "revision"],
+      "properties": {
+        "status": { "$ref": "#/$defs/ProfileStatus" },
+        "revision": { "type": "integer", "description": "profiles.revision_num: which revision of the edition this was." },
+        "parent_revision": { "type": ["integer", "null"], "description": "The revision this one was derived from, or null for the first of a lineage." },
+        "approved_at": { "$ref": "#/$defs/nullableRfc3339" },
+        "author": { "type": "string", "description": "Who published it, as the publication audit recorded it." },
+        "preferred_voice_id": { "$ref": "#/$defs/nullableId" },
+        "store_digest": { "type": "string", "description": "profiles.manifest_digest as the store computed it. Audit only: it hashes row ids and so does not survive the re-import that manifest_digest is built to survive." }
+      }
+    },
+
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Provenance pointer. The bytes themselves live in the asset store and travel only in an explicitly acknowledged .gnpack (docs/spec/14).",
+      "required": ["source_id", "type", "sha256", "rights", "parser"],
+      "properties": {
+        "source_id": { "$ref": "#/$defs/id" },
+        "type": { "$ref": "#/$defs/SourceType" },
+        "sha256": { "type": "string", "pattern": "^$|^[0-9a-f]{64}$", "description": "Content address of the payload; empty for a manual note with no bytes." },
+        "rights": { "$ref": "#/$defs/RightsStatus" },
+        "parser": { "type": "string", "description": "adapter-id@semver: the importer build whose output these rows are (docs/spec/04)." },
+        "uri": { "type": "string", "description": "Where it came from, for audit. Never opened (docs/spec/14 'Filesystem/import')." },
+        "mime_type": { "type": "string" },
+        "trust": { "type": "number", "description": "[0,1] confidence in the source." },
+        "coverage": { "type": "string", "description": "Importer notes: what it saw, what it skipped." },
+        "retrieved_at": { "$ref": "#/$defs/nullableRfc3339", "description": "When the bytes were obtained. Carried and restored, because re-importing does not re-retrieve anything." }
+      }
+    },
+
+    "character": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "status"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string" },
+        "aliases": { "type": "array", "items": { "type": "string" } },
+        "role": { "type": "string", "description": "Open data by design: roles belong to a game, not to the core (docs/spec/04)." },
+        "summary": { "type": "string" },
+        "visual": { "type": "array", "items": { "type": "string" } },
+        "status": { "$ref": "#/$defs/CharacterStatus" },
+        "verified_source_refs": { "type": "array", "items": { "type": "string" } },
+        "portrait": { "$ref": "#/$defs/nullableSha256" },
+        "voice_profile_id": {
+          "$ref": "#/$defs/nullableId",
+          "description": "Always null in this build: voice definitions are Milestone 4, and the field exists so a manifest written today still validates when they arrive."
+        }
+      }
+    },
+
+    "scene": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string" },
+        "aliases": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+
+    "rect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "w", "h"],
+      "description": "Normalized frame fractions in [0,1]; the box itself is checked in Go, because 'x + w <= 1' is not something this validator subset states.",
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "w": { "type": "number" },
+        "h": { "type": "number" }
+      }
+    },
+
+    "region": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "rect"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "label": { "type": "string" },
+        "kind": { "$ref": "#/$defs/RegionType" },
+        "detect": { "$ref": "#/$defs/DetectMethod" },
+        "scene": { "$ref": "#/$defs/nullableId" },
+        "rect": { "$ref": "#/$defs/rect" },
+        "ocr": { "type": "object", "description": "Engine settings as open data (docs/spec/04 'visual profiles')." },
+        "mask_assets": { "type": "array", "items": { "type": "string" } },
+        "reliability": { "$ref": "#/$defs/nullableFloat" },
+        "min_aspect": { "$ref": "#/$defs/nullableFloat" },
+        "max_aspect": { "$ref": "#/$defs/nullableFloat" },
+        "min_width_px": { "type": ["integer", "null"] },
+        "min_height_px": { "type": ["integer", "null"] }
+      }
+    },
+
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "text"],
+      "description": "One display page. index is message_pages.ordinal, 1-based: a message can have several pages and a page is not an utterance (docs/spec/02 'Core data distinctions').",
+      "properties": {
+        "index": { "type": "integer" },
+        "text": { "$ref": "#/$defs/nullableText", "description": "Null exactly when the parent message is redacted." },
+        "source_page_id": { "$ref": "#/$defs/nullableText" },
+        "prefixes": { "type": "array" },
+        "controls": { "type": "array", "items": { "type": "string" } },
+        "timing": { "type": "object" }
+      }
+    },
+
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "attribution", "pages"],
+      "description": "Canonical source text plus its renderings. Not an occurrence, not a page, not an utterance. original_text, normalized_text, speech_text and every page's text are null together when the source's rights do not allow shipping them, with redacted_reason naming which rule applied.",
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "source": { "$ref": "#/$defs/nullableId" },
+        "source_message_id": { "$ref": "#/$defs/nullableText", "description": "Source-side identity: the key a re-import reconciles against." },
+        "kind": { "$ref": "#/$defs/TextKind" },
+        "language": { "type": "string" },
+        "original_text": { "$ref": "#/$defs/nullableText" },
+        "normalized_text": { "$ref": "#/$defs/nullableText" },
+        "speech_text": { "$ref": "#/$defs/nullableText", "description": "Empty string means 'deliberately not spoken'; null means 'withheld' (docs/spec/02)." },
+        "speaker_id": { "$ref": "#/$defs/nullableId" },
+        "scene_id": { "$ref": "#/$defs/nullableId" },
+        "attribution": { "$ref": "#/$defs/attribution" },
+        "markup": { "type": "array", "description": "Control-byte AST with source offsets; never regex-stripped text (docs/spec/02)." },
+        "evidence": { "type": "array" },
+        "flags": { "type": "object" },
+        "redacted_reason": { "$ref": "#/$defs/RedactedReason" },
+        "pages": { "type": "array", "items": { "$ref": "#/$defs/page" } }
+      }
+    },
+
+    "attribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "confidence"],
+      "description": "A speaker claim and how far to trust it. 'unknown' beside a speaker_id and null beside 'confirmed' are both meaningful; only 'rejected' beside a speaker_id contradicts itself, and that is refused in Go.",
+      "properties": {
+        "status": { "$ref": "#/$defs/AttributionStatus" },
+        "confidence": { "type": "number" }
+      }
+    },
+
+    "message_edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to", "type"],
+      "description": "One dialogue transition. condition is data-only: nothing here, and nothing in SQLite, evaluates it (docs/spec/02, docs/spec/05).",
+      "properties": {
+        "from": { "$ref": "#/$defs/id" },
+        "to": { "$ref": "#/$defs/id" },
+        "type": { "$ref": "#/$defs/EdgeType" },
+        "condition": { "type": "string" },
+        "source": { "$ref": "#/$defs/nullableId" },
+        "confidence": { "type": "number" },
+        "evidence": { "type": "array" }
+      }
+    },
+
+    "speaker_assertion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "message", "character", "method"],
+      "description": "A candidate speaker that is not the resolved one (docs/spec/02 keeps these apart from messages.speaker_id because a name on screen is not proof).",
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "message": { "$ref": "#/$defs/id" },
+        "character": { "$ref": "#/$defs/id" },
+        "method": { "$ref": "#/$defs/AssertionMethod" },
+        "posterior": { "type": "number" },
+        "reviewer": { "$ref": "#/$defs/nullableText", "description": "Required for a manual method, absent for an automated one — a rule that spans two fields, so it lives in games.SpeakerAssertion.Validate." },
+        "evidence": { "type": "array" }
+      }
+    }
+  }
+}
