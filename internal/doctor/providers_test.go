@@ -68,21 +68,22 @@ func TestUnconfiguredRolesAreNotConfigured(t *testing.T) {
 func TestUndeployedRolesAreDegradedEvenWhenConfigured(t *testing.T) {
 	h := newFakeHost(t)
 	h.withEnv("GAME_NARRATOR_GATEWAY_URL", "http://gateway.invalid/v1")
-	// The decision role now has a real client (ADR-0021) and is covered by
-	// the decision probe tests in decision_test.go, not by this list.
+	// The decision role has a real client (ADR-0021) and the voice roles have
+	// real probes (ADR-0022); they are covered by the probe tests, not by
+	// this list. Only speech_asr still has no adapter in this build.
 	for _, role := range []providers.Role{
-		providers.RoleVoiceDesign, providers.RoleVoiceClone, providers.RoleSpeechASR,
+		providers.RoleSpeechASR,
 	} {
 		modelEnv, _, _, _ := providers.RoleEnvVars(role)
 		h.withEnv(modelEnv, "some-checkpoint")
 	}
 	rep := h.run()
 	for _, role := range []providers.Role{
-		providers.RoleVoiceDesign, providers.RoleVoiceClone, providers.RoleSpeechASR,
+		providers.RoleSpeechASR,
 	} {
 		c := h.check(rep, "providers."+string(role))
 		mustStatus(t, c, StatusDegraded)
-		if c.Summary != "client not implemented yet (M3/M4)" {
+		if c.Summary != "client not implemented yet (M4)" {
 			t.Fatalf("%s: summary = %q, want the documented wording", role, c.Summary)
 		}
 		if !strings.Contains(c.Detail, "some-checkpoint") {

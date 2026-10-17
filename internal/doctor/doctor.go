@@ -169,6 +169,9 @@ type Options struct {
 	// DecisionProbe overrides the System One decision probe (tests); nil
 	// builds the real systemone client per role.
 	DecisionProbe DecisionProbe
+	// VoiceProbe overrides the TTS probe for the voice_design and voice_clone
+	// roles (tests); nil uses the real tts client and registry.
+	VoiceProbe VoiceProbe
 
 	// OCRImage overrides the embedded controlled image.
 	OCRImage []byte

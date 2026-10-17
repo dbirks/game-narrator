@@ -73,13 +73,18 @@ func (r *runner) checkRole(ctx context.Context, role providers.Role, cfg provide
 		// real decision probe instead of the chat/vision probe path below.
 		return r.checkDecisionRole(ctx, role, cfg)
 	}
+	if role == providers.RoleVoiceDesign || role == providers.RoleVoiceClone {
+		// The voice roles speak vLLM-Omni speech, not OpenAI chat: they get the
+		// real TTS probes (ADR-0022) instead of the chat/vision probe path below.
+		return r.checkVoiceRole(ctx, role, cfg)
+	}
 	if !providers.ProtocolImplemented(cfg.Protocol) {
-		// A model id alone is not proof of a working route: the System One,
-		// TTS and ASR clients land in M3/M4, and claiming OK now would be the
-		// simulation theatre docs/spec/12 forbids.
+		// A model id alone is not proof of a working route: the ASR client lands
+		// in M4, and claiming OK now would be the simulation theatre
+		// docs/spec/12 forbids.
 		return Check{
 			Status:  StatusDegraded,
-			Summary: "client not implemented yet (M3/M4)",
+			Summary: "client not implemented yet (M4)",
 			Detail: fmt.Sprintf("role %s is configured with model %s over protocol %q, which has no adapter in this build",
 				role, cfg.Model, cfg.Protocol),
 			Remedy: "the endpoint is not deployed in M0 (docs/spec/16); no request was sent, so nothing is proven",
