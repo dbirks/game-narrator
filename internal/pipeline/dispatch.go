@@ -198,6 +198,15 @@ func (r *Runner) applyOutcome(regions []*regionState, o ocrOutcome) {
 			// answer only confirms it, so counting it again would make one
 			// supersession look like two problems.
 			r.cnt.ocrError()
+			if r.cfg.Mode == ModeReplay {
+				// The replay retry policy (ocrWorker) spent its budget and the
+				// frame's text is still missing: the run is no longer the recording
+				// it claims to be (docs/spec/12 "Frame replay"), so the frame is
+				// named for the report instead of absorbed into OCR errors. Live
+				// mode keeps its current semantics: a faulted frame there is simply
+				// OCRErrors, and the next frame is the truth again.
+				r.cnt.replayDegraded(o.job.frameSeq)
+			}
 		}
 		if rs != nil {
 			// A failed read is not evidence. The observation still goes out — the
@@ -255,7 +264,13 @@ func regionFor(regions []*regionState, job *ocrJob) *regionState {
 // (reduceLoop's outstanding count). Holding this loop on a retrieval would just
 // add a second, slower fence over the same reply.
 func (r *Runner) drainAtEOF(ctx context.Context, regions []*regionState, in chan<- *obsIn, done <-chan ocrOutcome) {
-	deadline := time.NewTimer(r.cfg.OCRTimeout + 200*time.Millisecond)
+	budget := r.cfg.OCRTimeout + 200*time.Millisecond
+	if r.cfg.Mode == ModeReplay {
+		// A replay read is allowed its whole retry budget before EOF gives up
+		// on it; the live bound would interrupt a second retry attempt.
+		budget = ReplayOCRMaxAttempts*r.cfg.ReplayOCRTimeout + 200*time.Millisecond
+	}
+	deadline := time.NewTimer(budget)
 	defer deadline.Stop()
 	for {
 		if err := r.emitAll(regions, ctx, in); err != nil {
@@ -309,6 +324,13 @@ func (r *Runner) abort(regions []*regionState) {
 // ageOut drops observations whose recognition has outrun its deadline.
 func (r *Runner) ageOut(regions []*regionState) {
 	limit := r.cfg.OCRTimeout + 250*time.Millisecond
+	if r.cfg.Mode == ModeReplay {
+		// The retry policy legitimately spends several per-call budgets on one
+		// frame; aging out mid-retry would turn the load spike the retries
+		// exist to ride out into a counted drop — the exact failure ModeReplay
+		// exists to prevent.
+		limit = ReplayOCRMaxAttempts*r.cfg.ReplayOCRTimeout + 250*time.Millisecond
+	}
 	for _, rs := range regions {
 		for len(rs.pending) > 0 {
 			p := rs.pending[0]
@@ -349,7 +371,7 @@ func (rs *regionState) accept(r *Runner, ctx context.Context, f capture.Frame, i
 		r.cnt.ocrSkipped()
 	case a.hash != "":
 		rs.discardInflight(r)
-		p.job = rs.startJob(r, ctx, a, jobs)
+		p.job = rs.startJob(r, ctx, f.Seq, a, jobs)
 	}
 
 	rs.pending = append(rs.pending, p)
@@ -371,18 +393,27 @@ func (rs *regionState) accept(r *Runner, ctx context.Context, f capture.Frame, i
 
 // startJob dispatches one recognition. The per-job context is a child of the run
 // context carrying the configured timeout, so killing it reaches the engine's own
-// subprocess: internal/vision/ocr supervises a process group.
-func (rs *regionState) startJob(r *Runner, ctx context.Context, a analysis, jobs chan<- *ocrJob) *ocrJob {
-	jctx, cancel := context.WithTimeout(ctx, r.cfg.OCRTimeout)
+// subprocess: internal/vision/ocr supervises a process group. In ModeReplay the
+// budget is ReplayOCRTimeout rather than OCRTimeout: nothing supersedes a replay
+// read, so its deadline exists to bound a wedged engine, and the retry policy in
+// ocrWorker — not an early kill — is what decides a slow frame's fate.
+func (rs *regionState) startJob(r *Runner, ctx context.Context, frameSeq int64, a analysis, jobs chan<- *ocrJob) *ocrJob {
+	timeout := r.cfg.OCRTimeout
+	if r.cfg.Mode == ModeReplay {
+		timeout = r.cfg.ReplayOCRTimeout
+	}
+	jctx, cancel := context.WithTimeout(ctx, timeout)
 	rs.nextID++
 	job := &ocrJob{
-		id:      rs.nextID,
-		region:  rs.region.ID,
-		hash:    a.hash,
-		input:   a.input,
-		ctx:     jctx,
-		cancel:  cancel,
-		started: r.cfg.Now(),
+		id:       rs.nextID,
+		region:   rs.region.ID,
+		hash:     a.hash,
+		frameSeq: frameSeq,
+		input:    a.input,
+		ctx:      jctx,
+		cancel:   cancel,
+		base:     ctx,
+		started:  r.cfg.Now(),
 	}
 	rs.inflight = job
 	rs.lastHash = a.hash

@@ -6,6 +6,8 @@ package scenario
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/dbirks/game-narrator/internal/events"
@@ -145,8 +147,40 @@ func TestEvaluateAggregates(t *testing.T) {
 	a := Assertion{Type: "message_detected", MessageID: "demo-page-1", MaxDelayMS: 1500}
 	b := Assertion{Type: "no_stale_generation_applied"}
 	r := sc(a, b).Evaluate(nil, pipeline.Stats{}, clipTruth)
-	if r.Passed || len(r.Results) != 2 || !r.Results[1].Passed || r.Results[0].Passed {
+	// Two author assertions plus the implicit replay_not_degraded check.
+	if r.Passed || len(r.Results) != 3 || !r.Results[2].Passed || !r.Results[1].Passed || r.Results[0].Passed {
 		t.Fatalf("report = %+v", r)
+	}
+	if r.Results[2].Type != "replay_not_degraded" {
+		t.Fatalf("implicit check type = %q, want replay_not_degraded", r.Results[2].Type)
+	}
+}
+
+// TestEvalReplayNotDegradedIsImplicit covers both halves of the implicit
+// assertion: a clean run passes with the number stated, and a degraded run
+// fails the whole report with the frames named.
+func TestEvalReplayNotDegradedIsImplicit(t *testing.T) {
+	a := Assertion{Type: "no_duplicate_commit"}
+	clean := sc(a).Evaluate(nil, pipeline.Stats{}, clipTruth)
+	if !clean.Passed {
+		t.Fatalf("a clean run must pass: %+v", clean)
+	}
+	if len(clean.Results) != 2 {
+		t.Fatalf("results = %+v, want the author assertion plus the implicit check", clean.Results)
+	}
+	st := pipeline.Stats{ReplayDegradedFrames: 2, ReplayDegradedFrameSeqs: []int64{7, 12}}
+	r := sc(a).Evaluate(nil, st, clipTruth)
+	if r.Passed {
+		t.Fatal("a replay that lost two OCR reads must fail the report")
+	}
+	last := r.Results[len(r.Results)-1]
+	if last.Type != "replay_not_degraded" || last.Passed {
+		t.Fatalf("implicit result = %+v, want a failing replay_not_degraded", last)
+	}
+	for _, seq := range []int64{7, 12} {
+		if !strings.Contains(last.Detail, fmt.Sprintf("%d", seq)) {
+			t.Fatalf("detail %q does not name frame %d", last.Detail, seq)
+		}
 	}
 }
 

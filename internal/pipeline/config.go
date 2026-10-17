@@ -26,6 +26,18 @@ const (
 	// DefaultOCRTimeout is ocr.DefaultTimeout — a hard kill for one wedged child
 	// so the frame loop cannot stall behind it.
 	DefaultOCRTimeout = ocr.DefaultTimeout
+	// DefaultReplayOCRTimeout is the per-call budget one ModeReplay recognition
+	// gets. It is generous on purpose: a replay must be the recording it claims
+	// to be (docs/spec/12 "Frame replay"), so a slow host that makes a four
+	// second read take nine is a load spike, not a lost frame — and the retry
+	// policy that follows a timeout exists to say exactly that.
+	DefaultReplayOCRTimeout = 30 * time.Second
+	// ReplayOCRMaxAttempts bounds one replay read's total engine calls: the
+	// initial attempt plus two retries. A read still failing after its budget
+	// is a degraded frame, not a silently dropped one (Stats.ReplayDegraded
+	// Frames names it and the scenario's replay_not_degraded assertion fails
+	// the report).
+	ReplayOCRMaxAttempts = 3
 	// DefaultFrameProbeHz is the low-rate "the box has not changed, keep checking"
 	// cadence docs/spec/05 asks for instead of per-frame OCR.
 	DefaultFrameProbeHz = 5
@@ -181,8 +193,14 @@ type Config struct {
 	// Workers is the OCR pool size, clamped to [1, MaxWorkers].
 	Workers int
 	// OCRTimeout bounds one engine call. A newer frame cancels it earlier when it
-	// can; this is the backstop when no newer frame arrives.
+	// can; this is the backstop when no newer frame arrives. In ModeReplay the
+	// per-call budget is ReplayOCRTimeout instead: there no frame supersedes the
+	// one being read, so a call that outlives OCRTimeout is a load spike to
+	// retry, not a stale answer to discard.
 	OCRTimeout time.Duration
+	// ReplayOCRTimeout is the per-call OCR budget in ModeReplay only; zero takes
+	// DefaultReplayOCRTimeout. ModeLive ignores it and keeps OCRTimeout.
+	ReplayOCRTimeout time.Duration
 	// FrameProbeHz is the idle re-check cadence, and the tick on which held
 	// observations age out (see Runner.probe).
 	FrameProbeHz int
@@ -237,6 +255,9 @@ func (c Config) normalize() Config {
 	}
 	if c.OCRTimeout <= 0 {
 		c.OCRTimeout = DefaultOCRTimeout
+	}
+	if c.Mode == ModeReplay && c.ReplayOCRTimeout <= 0 {
+		c.ReplayOCRTimeout = DefaultReplayOCRTimeout
 	}
 	if c.FrameProbeHz < 1 {
 		c.FrameProbeHz = DefaultFrameProbeHz

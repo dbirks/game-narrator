@@ -25,7 +25,9 @@ type Result struct {
 }
 
 // Evaluate runs every assertion in the scenario against the run's event log
-// (oldest first), the pipeline's self-report and the clip's ground truth.
+// (oldest first), the pipeline's self-report and the clip's ground truth, and
+// appends the implicit replay_not_degraded check to every report (see
+// evalReplayNotDegraded).
 //
 // All timing math happens on the capture timestamps the events carry, never on
 // the wall clock: message_detected compares the commit's transition timestamp
@@ -34,11 +36,15 @@ type Result struct {
 // takes seconds of wall time but its timestamps are the recording's, which is
 // exactly what makes the delay assertion meaningful.
 func (s *Scenario) Evaluate(evs []events.Envelope, stats pipeline.Stats, truth []Truth) Report {
-	rep := Report{Results: make([]Result, 0, len(s.Assertions))}
+	rep := Report{Results: make([]Result, 0, len(s.Assertions)+1)}
 	for _, a := range s.Assertions {
 		passed, detail := evaluateAssertion(a, evs, stats, truth)
 		rep.Results = append(rep.Results, Result{Type: a.Type, Passed: passed, Detail: detail})
 	}
+	// The implicit check is appended, not authorable: a scenario that forgot to
+	// ask for it would otherwise pass a replay that lost a line.
+	passed, detail := evalReplayNotDegraded(stats)
+	rep.Results = append(rep.Results, Result{Type: "replay_not_degraded", Passed: passed, Detail: detail})
 	rep.Passed = true
 	for _, r := range rep.Results {
 		if !r.Passed {
@@ -279,4 +285,19 @@ func evalEventsOrder(a Assertion, evs []events.Envelope) (bool, string) {
 		}
 	}
 	return true, fmt.Sprintf("events appear in order: %v", a.Names)
+}
+
+// evalReplayNotDegraded is the implicit replay-integrity assertion:
+// a frame replay must be the recording it claims to be (docs/spec/12 "Frame
+// replay"), so a frame whose OCR read the replay could not recover after its
+// retry budget is a failed run, not a degraded one. It is appended to every
+// report by Evaluate rather than listed in the scenario YAML, because a
+// scenario that forgot to ask for it would pass a replay that lost a line; a
+// run that degraded nothing reads zero and passes silently.
+func evalReplayNotDegraded(stats pipeline.Stats) (bool, string) {
+	if stats.ReplayDegradedFrames == 0 {
+		return true, "no frame lost its OCR read (replay_degraded_frames = 0)"
+	}
+	return false, fmt.Sprintf("%d frame(s) lost their OCR read even after the replay retry policy: frame seq(s) %v",
+		stats.ReplayDegradedFrames, stats.ReplayDegradedFrameSeqs)
 }

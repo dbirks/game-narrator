@@ -313,6 +313,88 @@ func TestDismissThenSameTextIsANewOccurrence(t *testing.T) {
 	}
 }
 
+// TestPageAdvanceInOneBoxGivesANewTrace is docs/spec/01 "High-level events" for
+// the case the box-lifetime rule cannot see: a page turn inside one box lifetime
+// is a new dialogue occurrence, so the new page's text.observed, message.candidates
+// and message.committed must carry a trace_id the previous page never used. One
+// trace per occurrence is what the inspector relies on to group one page's events
+// together; a trace holding both pages' message.committed would look like one
+// occurrence that committed twice.
+func TestPageAdvanceInOneBoxGivesANewTrace(t *testing.T) {
+	h := newHarness(t, DefaultConfig())
+	h.settle("THE DOOR OPENS", 0.9)
+	first := h.rank("msg-01", 0.5, false)
+	if !hasName(first.Events, events.MessageCommitted) {
+		t.Fatalf("page one did not commit: %s", joinNames(first.Events))
+	}
+	h.gen = h.r.Generation()
+	h.speech(h.occurrence("bottom"), SpeechReady, "bottom")
+
+	h.settle("A GUARD BARS IT", 0.9)
+	second := h.rank("msg-02", 0.5, false)
+	if !hasName(second.Events, events.MessageCommitted) {
+		t.Fatalf("page two did not commit: %s", joinNames(second.Events))
+	}
+
+	firstCommit := first.Events[len(first.Events)-1]
+	secondCommit := second.Events[len(second.Events)-1]
+	if firstCommit.TraceID == "" || secondCommit.TraceID == "" {
+		t.Fatal("a message.committed carries no trace_id")
+	}
+	if firstCommit.TraceID == secondCommit.TraceID {
+		t.Fatalf("both pages committed under trace %s: a page advance in one box is a new occurrence with its own trace", firstCommit.TraceID)
+	}
+	// The advance's own events belong to the new page: the new text.observed and
+	// the candidate list that answered it carry the new trace, and the
+	// cancellation of page one's audio — the last event of the old occurrence —
+	// still carries the old one, with causation crossing the boundary.
+	var newPageObs, cands []events.Envelope
+	for _, e := range h.pub.published {
+		switch e.Name {
+		case events.TextObserved:
+			if e.TraceID == secondCommit.TraceID {
+				newPageObs = append(newPageObs, e)
+			}
+		case events.MessageCandidates:
+			if e.TraceID == secondCommit.TraceID {
+				cands = append(cands, e)
+			}
+		}
+	}
+	if len(newPageObs) == 0 {
+		t.Fatal("page two's text.observed events carry no trace of the commitment: the advance did not start a new trace")
+	}
+	if len(cands) == 0 {
+		t.Fatal("page two's message.candidates carry no trace of the commitment")
+	}
+	cancels := h.pub.byName(events.SpeechCancelled)
+	if len(cancels) != 1 {
+		t.Fatalf("speech.cancelled events = %d, want 1 (one cancel for the advanced-away page)", len(cancels))
+	}
+	if cancels[0].TraceID != firstCommit.TraceID {
+		t.Fatalf("the cancellation of page one's audio rides trace %q, want page one's %q", cancels[0].TraceID, firstCommit.TraceID)
+	}
+	if got := cands[0].CausationID; got == "" {
+		t.Fatal("page two's message.candidates carries no causation_id: the chain across the advance is broken")
+	}
+	// One trace per occurrence, stated over the whole log: every trace holds at
+	// most one message.committed.
+	commitsByTrace := map[string]int{}
+	for _, e := range h.pub.published {
+		if e.Name == events.MessageCommitted {
+			commitsByTrace[e.TraceID]++
+		}
+	}
+	for trace, n := range commitsByTrace {
+		if n != 1 {
+			t.Fatalf("trace %s holds %d message.committed events, want 1", trace, n)
+		}
+	}
+	if h.trace("bottom") != secondCommit.TraceID {
+		t.Fatalf("region state trace %q is not page two's %q", h.trace("bottom"), secondCommit.TraceID)
+	}
+}
+
 // TestAbstainingRankingCommitsUnknownAndStaysSilent is docs/spec/05's "never invent
 // dialogue to fill uncertainty" made observable: the box commits, the message id
 // says unknown, and nothing about it may reach a speaker.

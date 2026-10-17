@@ -186,41 +186,30 @@ test("the developer inspector over a real replay session", async ({
 
   // The session runs the real pipeline on Tesseract and ends on its own when
   // the 24-frame clip is exhausted (docs/spec/12: no machine-speed dependency).
-  // On this shared box Tesseract's throughput varies with load, and a starved
-  // pass can leave the last page's temporal vote unsettled (one commit instead
-  // of two). Starting the replay is idempotent, so re-run it a bounded number
-  // of times until the clip commits its two documented pages (ADR-0024); a
-  // persistent miss is a real failure and falls through to the assertion.
+  // The replay's OCR budget is generous and a timed-out or errored read is
+  // retried (ModeReplay), so a starved pass can no longer lose a frame's commit
+  // silently: a run that ends without the clip's two commits is a real failure
+  // and the assertion below says so, instead of being hidden by a re-run.
   type SessionSnapshot = {
     state: string;
     reason?: string;
     stats: { commits: number; ocr_calls: number };
   };
-  const MAX_RUNS = 3;
   await page.getByTestId("session-start").click();
   await shot("01-session-started");
   await expect(page.getByTestId("session-state")).toHaveText("stopped", { timeout: 180_000 });
-  let sessionId = (await page.getByTestId("session-id").textContent()) as string;
-  let session = (await (
+  const sessionId = (await page.getByTestId("session-id").textContent()) as string;
+  const session = (await (
     await request.get(`${origin}/api/v1/sessions/${sessionId}`)
   ).json()) as SessionSnapshot;
-  for (let attempt = 1; session.stats.commits !== 2 && attempt < MAX_RUNS; attempt++) {
-    await testInfo.attach(`replay-retry-after-run-${attempt}`, {
-      body: JSON.stringify(session, null, 2),
-      contentType: "application/json",
-    });
-    await page.getByTestId("session-start").click();
-    await expect(page.getByTestId("session-state")).toHaveText("stopped", { timeout: 180_000 });
-    sessionId = (await page.getByTestId("session-id").textContent()) as string;
-    session = (await (
-      await request.get(`${origin}/api/v1/sessions/${sessionId}`)
-    ).json()) as SessionSnapshot;
-  }
   await shot("02-session-stopped");
   expect(sessionId).toBeTruthy();
   expect(session.state).toBe("stopped");
   expect(session.reason).toBe("source_end");
   // Two commits is the documented outcome of this clip (ADR-0024 validation).
+  // Missing a commit now fails the test: the replay retry policy is what the
+  // removed session-start re-run papered over, and a replay that is not the
+  // recording it claims to be must be visible, not retried away.
   expect(session.stats.commits, "the synthetic clip commits its two pages").toBe(2);
   expect(session.stats.ocr_calls).toBeGreaterThan(0);
 
@@ -261,9 +250,10 @@ test("the developer inspector over a real replay session", async ({
     (event) => event.name === "text.observed" && event.trace_id === traceId,
   );
   expect(observations.length, "the commit's trace holds observations").toBeGreaterThan(0);
-  // One trace carries both pages (the box stays up across the turn), so the
-  // observation to inspect is the last one before the page-1 commit: it holds
-  // the page-1 text ("harbour bell"). The later observations belong to page 2.
+  // Traces are per dialogue occurrence: page 1's trace holds only page 1's
+  // observations, so the one to inspect is the last before the commit — it
+  // holds the page-1 text ("harbour bell"). Page 2's observations ride page 2's
+  // own trace, minted at the advance.
   const observed =
     [...observations].reverse().find((event) => event.seq < page1.seq) ??
     observations[observations.length - 1];

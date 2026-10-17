@@ -217,11 +217,14 @@ func (r *Reducer) applyObservation(ctx context.Context, m ObservationMsg, res *R
 
 	if lifetime := reg.tr.Lifetime(); lifetime != reg.lifetime {
 		// A new box lifetime ends the previous occurrence for good. The trace id
-		// changes with it — one trace per dialogue occurrence (docs/spec/01 "High-
-		// level events", docs/spec/09 "Link everything using trace_id") — and the
-		// committed content stays in r.committedKeys only for *this* lifetime, so
-		// the same words coming back after a dismissal are a new occurrence
-		// (docs/spec/12 "repeat NPC after menu").
+		// changes with it — one trace per dialogue occurrence (docs/spec/01
+		// "High-level events", docs/spec/09 "Link everything using trace_id"). A
+		// page turn *inside* one lifetime is the other half of that rule: the
+		// ADVANCING transition below mints its own trace, so a trace never holds
+		// events from two occurrences. The committed content stays in
+		// r.committedKeys only for *this* lifetime, so the same words coming back
+		// after a dismissal are a new occurrence (docs/spec/12 "repeat NPC after
+		// menu").
 		reg.lifetime = lifetime
 		reg.traceID = r.ids()
 		reg.emittedKey = ""
@@ -260,6 +263,17 @@ func (r *Reducer) applyObservation(ctx context.Context, m ObservationMsg, res *R
 			if err := r.cancelLocked(ctx, reg, reason, res); err != nil {
 				return err
 			}
+			// The page has turned: a new dialogue occurrence has started inside the
+			// same box lifetime, and docs/spec/01 gives each occurrence its own
+			// trace_id. The cancellation above was emitted under the old trace
+			// because it stops the *previous* occurrence's audio, and the next
+			// event's causation_id still names it — causation deliberately crosses
+			// the trace boundary, so a reviewer walks across the turn by causation
+			// and filters one occurrence by trace. Without this mint the new
+			// page's text.observed, message.candidates and message.committed would
+			// ride the previous page's trace, and the inspector would show one
+			// trace holding both pages' commitments.
+			reg.traceID = r.ids()
 		case recognition.StateDismissed:
 			if err := r.cancelLocked(ctx, reg, CancelRegionDismissed, res); err != nil {
 				return err

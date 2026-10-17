@@ -177,7 +177,7 @@ func TestSyntheticFrameReplayRealTesseract(t *testing.T) {
 		if !slicesEqual(first.commits, got.commits) {
 			t.Fatalf("run 1 committed %+v, run %d committed %+v: a replay must not depend on machine speed", first.commits, run+1, got.commits)
 		}
-		if a, b := stableStats(first.stats), stableStats(got.stats); a != b {
+		if a, b := stableStats(first.stats), stableStats(got.stats); !statsEqual(a, b) {
 			t.Fatalf("run 1 stats %v != run %d stats %v: deterministic counters moved between replays", a, run+1, b)
 		}
 	}
@@ -251,6 +251,35 @@ func slicesEqual(a, b []commitStamp) bool {
 func stableStats(s pipeline.Stats) pipeline.Stats {
 	s.Latency = pipeline.Latency{}
 	return s
+}
+
+// statsEqual compares two stableStats snapshots field by field: Stats now
+// carries the replay-degraded frame list, and a struct with a slice cannot use
+// ==, so the comparison is spelled out. Every field here is decision-affecting
+// and must be identical run to run.
+func statsEqual(a, b pipeline.Stats) bool {
+	if a.FramesDelivered != b.FramesDelivered || a.FramesDropped != b.FramesDropped ||
+		a.FramesProcessed != b.FramesProcessed || a.Observations != b.Observations ||
+		a.OCRCalls != b.OCRCalls || a.OCRSkippedByHash != b.OCRSkippedByHash ||
+		a.OCRCancelled != b.OCRCancelled || a.OCRStale != b.OCRStale || a.OCRErrors != b.OCRErrors ||
+		a.ReplayDegradedFrames != b.ReplayDegradedFrames ||
+		a.Rankings != b.Rankings || a.RankingStale != b.RankingStale || a.RankingsAbstained != b.RankingsAbstained ||
+		a.Commits != b.Commits || a.Events != b.Events || a.StaleApplied != b.StaleApplied {
+		return false
+	}
+	return slicesEqualInt64(a.ReplayDegradedFrameSeqs, b.ReplayDegradedFrameSeqs)
+}
+
+func slicesEqualInt64(a, b []int64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // --- speech sidecar -----------------------------------------------------------

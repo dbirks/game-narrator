@@ -269,24 +269,21 @@ function TraceDetail({ pinned, session }: { pinned: EventEnvelope; session: Sess
   }
   if (!page) return <Loading label="Loading the trace…" />;
 
-  // Correlate the ranking and the commitment to the pinned event, not to the
-  // whole trace: one region can carry several dialogue occurrences in a single
-  // trace (the box stays up across a page turn), so "the last commit in the
-  // trace" is the wrong answer when you pinned the first page. The payloads
-  // all carry the observed text, so match on it; the pinned event's own
-  // candidates/commit wins when it is one, and the trace-wide last is the
-  // fallback when nothing matches.
-  const pinnedText = str(payload(pinned).text);
-  const sameText = (event: EventEnvelope) =>
-    pinnedText === null || str(payload(event).text) === pinnedText;
-
+  // Correlate the ranking and the commitment by trace: page.events is exactly
+  // the pinned event's trace, and traces are per dialogue occurrence (a page
+  // advance mints a new trace), so this trace's candidates and its commitment
+  // are this occurrence's — no text-matching across occurrences, which was how
+  // the panel could show one page's commit under another page's observation.
+  // The pinned event's own candidates/commit win when it is one; within the
+  // trace the newest wins, and a trace may have no commit yet (the pinned
+  // observation can be any frame of a reveal that has not committed), in which
+  // case the commitment section says so rather than borrowing one from
+  // elsewhere.
   const candidatesEvent =
     (pinned.name === "message.candidates" && hasCandidates(pinned) ? pinned : null) ??
-    lastEvent(page.events, (event) => hasCandidates(event) && sameText(event)) ??
     lastEvent(page.events, (event) => hasCandidates(event));
   const committed =
     (pinned.name === "message.committed" ? pinned : null) ??
-    lastEvent(page.events, (event) => event.name === "message.committed" && sameText(event)) ??
     lastEvent(page.events, (event) => event.name === "message.committed");
 
   return (
@@ -296,7 +293,13 @@ function TraceDetail({ pinned, session }: { pinned: EventEnvelope; session: Sess
       ) : (
         <p className="muted">No ranking in this trace.</p>
       )}
-      {committed ? <CommitOutcome event={committed} names={names} /> : null}
+      {committed ? (
+        <CommitOutcome event={committed} names={names} />
+      ) : (
+        <p className="muted" data-testid="commit-pending">
+          No commit in this trace yet.
+        </p>
+      )}
       <TraceView traceId={pinned.trace_id as string} page={page} />
     </div>
   );

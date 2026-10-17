@@ -81,11 +81,20 @@ func darkShare(g *image.Gray, luma uint8) float64 {
 // leak with an OCR subprocess behind it (docs/spec/05 "cancel on newer
 // observation", AGENTS.md "deadline/cancellation propagation").
 type ocrJob struct {
-	id      int64
-	region  string
-	hash    string
-	ctx     context.Context
-	cancel  context.CancelFunc
+	id     int64
+	region string
+	hash   string
+	// frameSeq is the capture frame this read was started for. The replay
+	// degradation counter needs it: a frame whose read fails after the retry
+	// policy is named in the report by its sequence, not by a wall-clock guess.
+	frameSeq int64
+	ctx      context.Context
+	cancel   context.CancelFunc
+	// base is the run context the per-call deadline is a child of. The retry
+	// policy (ModeReplay only) derives a fresh deadline from it after the job's
+	// own one has expired, so a wedged-but-recoverable engine cannot burn the
+	// whole retry budget on the first attempt's timer.
+	base    context.Context
 	input   image.Image
 	started time.Time
 

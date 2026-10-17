@@ -242,7 +242,7 @@ func (r *Runner) ocrWorker(ctx context.Context, jobs <-chan *ocrJob, done chan<-
 			if !ok {
 				return
 			}
-			res, err := r.cfg.OCR.Recognize(job.ctx, job.input)
+			res, err := r.recognize(job)
 			if res.Engine == "" {
 				res.Engine = engineName(r.cfg.OCR)
 			}
@@ -255,6 +255,32 @@ func (r *Runner) ocrWorker(ctx context.Context, jobs <-chan *ocrJob, done chan<-
 			return
 		}
 	}
+}
+
+// recognize runs one job's engine call with the replay-mode retry policy
+// (docs/spec/12): under host load a Tesseract call can outlive its deadline, and
+// a replay that loses the frame's text is no longer the recording it claims to
+// be — so a timed-out or otherwise errored read is retried up to
+// ReplayOCRMaxAttempts-1 more times, each attempt on a fresh deadline derived
+// from the run context. The attempt budget, not an early kill, is what decides
+// a slow frame's fate; what the budget cannot recover reaches applyOutcome as a
+// failed read and is named there (Stats.ReplayDegradedFrames).
+//
+// Two classes of failure are never retried. A cancellation this pipeline issued
+// (supersession, a vanished box, shutdown) is not a fault of the engine's: the
+// pixels are gone or the run is over, and a retry would read a screen nobody
+// wants. And once the run context is done the retries have nothing to serve.
+// Live mode retries nothing: a live player has already moved on, and there the
+// supersede/cancellation machinery — not a retry — is the policy.
+func (r *Runner) recognize(job *ocrJob) (ocr.Result, error) {
+	res, err := r.cfg.OCR.Recognize(job.ctx, job.input)
+	for attempt := 1; r.cfg.Mode == ModeReplay && err != nil && !isCancelledErr(err) &&
+		attempt < ReplayOCRMaxAttempts && job.base.Err() == nil; attempt++ {
+		retryCtx, cancel := context.WithTimeout(job.base, r.cfg.ReplayOCRTimeout)
+		res, err = r.cfg.OCR.Recognize(retryCtx, job.input)
+		cancel()
+	}
+	return res, err
 }
 
 // rankWorker ranks observations off the reducer goroutine. matcher.Rank is pure

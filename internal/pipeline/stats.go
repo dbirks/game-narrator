@@ -136,6 +136,18 @@ type Stats struct {
 	// cancellation (timeout, engine failure, unavailable).
 	OCRErrors uint64 `json:"ocr_errors"`
 
+	// ReplayDegradedFrames counts frames whose OCR read still failed after the
+	// replay retry policy (ModeReplay only; a clean live run always reports 0).
+	// A clean replay is the recording it claims to be (docs/spec/12 "Frame
+	// replay"): any frame here means a frame's text was lost, and the
+	// scenario's implicit replay_not_degraded assertion fails the report on
+	// exactly this number.
+	ReplayDegradedFrames uint64 `json:"replay_degraded_frames"`
+	// ReplayDegradedFrameSeqs names the degraded frames, oldest first, bounded
+	// FIFO: the count is what the assertion reads, the list is what a reviewer
+	// names in a report.
+	ReplayDegradedFrameSeqs []int64 `json:"replay_degraded_frame_seqs,omitempty"`
+
 	// Rankings counts candidate rankings completed.
 	Rankings uint64 `json:"rankings"`
 	// RankingStale counts ranking replies the reducer refused (stale_observation,
@@ -218,12 +230,31 @@ func (c *counters) ocrSkipped()              { c.add(func(s *Stats) { s.OCRSkipp
 func (c *counters) ocrCancelled()            { c.add(func(s *Stats) { s.OCRCancelled++ }) }
 func (c *counters) ocrStale()                { c.add(func(s *Stats) { s.OCRStale++ }) }
 func (c *counters) ocrError()                { c.add(func(s *Stats) { s.OCRErrors++ }) }
-func (c *counters) ranking()                 { c.add(func(s *Stats) { s.Rankings++ }) }
-func (c *counters) rankingStale()            { c.add(func(s *Stats) { s.RankingStale++ }) }
-func (c *counters) rankingAbstained()        { c.add(func(s *Stats) { s.RankingsAbstained++ }) }
-func (c *counters) commits(n uint64)         { c.add(func(s *Stats) { s.Commits += n }) }
-func (c *counters) events(n uint64)          { c.add(func(s *Stats) { s.Events += n }) }
-func (c *counters) staleApplied()            { c.add(func(s *Stats) { s.StaleApplied++ }) }
+
+// replayDegraded books one frame whose read the replay could not recover after
+// its retry budget. Rotations materialise a fresh backing array so a Stats copy
+// returned earlier never sees one of its slots rewritten under it.
+func (c *counters) replayDegraded(frameSeq int64) {
+	c.mu.Lock()
+	c.s.ReplayDegradedFrames++
+	seqs := c.s.ReplayDegradedFrameSeqs
+	if len(seqs) >= maxReplayDegradedSeqs {
+		next := make([]int64, 0, maxReplayDegradedSeqs)
+		c.s.ReplayDegradedFrameSeqs = append(next, seqs[1:]...)
+	}
+	c.s.ReplayDegradedFrameSeqs = append(c.s.ReplayDegradedFrameSeqs, frameSeq)
+	c.mu.Unlock()
+}
+
+// maxReplayDegradedSeqs bounds the retained list of degraded frame sequences.
+const maxReplayDegradedSeqs = 64
+
+func (c *counters) ranking()          { c.add(func(s *Stats) { s.Rankings++ }) }
+func (c *counters) rankingStale()     { c.add(func(s *Stats) { s.RankingStale++ }) }
+func (c *counters) rankingAbstained() { c.add(func(s *Stats) { s.RankingsAbstained++ }) }
+func (c *counters) commits(n uint64)  { c.add(func(s *Stats) { s.Commits += n }) }
+func (c *counters) events(n uint64)   { c.add(func(s *Stats) { s.Events += n }) }
+func (c *counters) staleApplied()     { c.add(func(s *Stats) { s.StaleApplied++ }) }
 
 func (c *counters) snapshot() Stats {
 	c.mu.Lock()
