@@ -21,6 +21,23 @@
 //     matcher never touches reducer state (docs/spec/01 "models never mutate
 //     session state").
 //
+// The bullets above describe Config.Mode == ModeLive, the default. ModeReplay
+// turns the same Runner into the lossless fixture replay docs/spec/12 "Frame
+// replay" runs in CI, and it changes exactly the two things that would make a
+// replay's outcome depend on machine speed:
+//
+//   - delivery is QueueLossless whatever Config.Queue said — a bounded blocking
+//     queue, the producer waits instead of dropping (a replay that drops a
+//     frame is a different recording), so FramesDropped stays zero;
+//   - a newer frame never cancels an in-flight recognition: each region's ROI
+//     and OCR run to completion in frame order (the frame stream pauses for an
+//     outstanding read), so OCRCancelled and OCRStale stay zero. The per-call
+//     OCR timeout still bounds a wedged engine.
+//
+// Live dropping and cancellation tests must keep ModeLive on purpose; they are
+// what the live bullets describe, and running them in ModeReplay would test a
+// different pipeline than the one a player's session runs.
+//
 // There is no game-specific code path and no fixture-specific branch here
 // (docs/spec/11 step 4): every threshold is a documented Config field, and the
 // same Runner consumes a replay.Source, an FFmpeg pipe or a Dolphin-dev grab

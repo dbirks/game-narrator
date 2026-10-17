@@ -33,6 +33,14 @@ import (
 // such below: the M2 pipeline owns no TTS scheduler, so the speech assertion is
 // checked against a session-level sidecar (real reducer, real matcher,
 // scripted TTS feedback), not against a voice endpoint.
+//
+// The run is ModeReplay: a fixture replay must be the recording it claims to be
+// (docs/spec/12), and at replay speed every frame lands inside one Tesseract
+// call's latency, so the live supersede-cancel path would race machine speed —
+// the run that passed once would fail the next. Replay mode makes the outcome
+// a function of the frames and the engine only, which is also what the three
+// identical-runs assertion below is about: committed message ids, commit
+// capture timestamps and the deterministic counters must not move between runs.
 func TestSyntheticFrameReplayRealTesseract(t *testing.T) {
 	if _, err := exec.LookPath("tesseract"); err != nil {
 		t.Skip("NOT RUN: tesseract not installed")
@@ -59,6 +67,9 @@ func TestSyntheticFrameReplayRealTesseract(t *testing.T) {
 	// The same runner shape the fake-OCR harness proved: lossless replay queue
 	// (a fixture must be the recording it claims to be) and a tracker tuned to
 	// the clip's 10 Hz cadence — documented settings, not fixture branches.
+	// ModeReplay is the code-level form of that: lossless delivery plus
+	// frame-ordered, never-superseded OCR (docs/spec/01 "Parallelism and
+	// deadline contracts", docs/spec/12 "Frame replay").
 	cfg := pipeline.Config{
 		SessionID:       "synthsession",
 		ProfileRevision: "1",
@@ -67,75 +78,110 @@ func TestSyntheticFrameReplayRealTesseract(t *testing.T) {
 		Index:           idx,
 		Preprocess:      vision.DefaultSteps(),
 		Trace:           true,
-		Queue:           pipeline.QueueLossless,
+		Mode:            pipeline.ModeReplay,
 		OCRTimeout:      ocr.DefaultTimeout,
 		Tracker: recognition.Config{
 			VoteWindow:   3,
 			StableWindow: 100 * time.Millisecond,
 		},
 	}
-	runner, err := pipeline.New(cfg)
-	if err != nil {
-		t.Fatalf("pipeline.New: %v", err)
-	}
 
-	mem := events.NewMemStore()
-	hub := events.New(events.WithStore(mem))
-	t.Cleanup(func() { _ = hub.Close() })
-	src := &replay.Source{Dir: clipDir, Speed: 0}
-	t.Cleanup(func() { _ = src.Close() })
-
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
-	defer cancel()
-	if err := runner.Run(ctx, src, hub); err != nil {
-		t.Fatalf("pipeline run: %v", err)
-	}
-	st := runner.Stats()
-	t.Logf("stats: frames=%d processed=%d ocr_calls=%d ocr_skipped=%d ocr_cancelled=%d ocr_stale=%d rankings=%d commits=%d stale_applied=%d",
-		st.FramesDelivered, st.FramesProcessed, st.OCRCalls, st.OCRSkippedByHash, st.OCRCancelled, st.OCRStale, st.Rankings, st.Commits, st.StaleApplied)
-
+	// The speech sidecar depends only on the matcher and the clip's truth, so
+	// its events are identical for every run and are computed once.
 	speechEvs := runSpeechSidecar(t, idx, truth)
 
-	evs, err := mem.After(context.Background(), 0, events.Filter{}, 4096)
-	if err != nil {
-		t.Fatalf("read events: %v", err)
+	type runOutcomes struct {
+		commits []commitStamp
+		stats   pipeline.Stats
 	}
-	all := append(evs, speechEvs...)
+	var outcomes []runOutcomes
+	for run := 1; run <= 3; run++ {
+		runner, err := pipeline.New(cfg)
+		if err != nil {
+			t.Fatalf("pipeline.New (run %d): %v", run, err)
+		}
 
-	// The evidence-bundle timeline: frame capture ts -> OCR text -> top
-	// candidate with probability -> events, straight from the runner's trace.
-	t.Logf("timeline (capture clock; candidate probability in parens):")
-	t.Logf("%-12s %-13s %-40s %-28s %s", "frame_ts", "state", "ocr_text", "top_candidate", "events")
-	for _, e := range runner.Trace() {
-		ts := "-"
-		if e.CaptureTimestampNS > 0 {
-			ts = fmt.Sprintf("%d ms", e.CaptureTimestampNS/1e6)
+		mem := events.NewMemStore()
+		hub := events.New(events.WithStore(mem))
+		t.Cleanup(func() { _ = hub.Close() })
+		src := &replay.Source{Dir: clipDir, Speed: 0}
+		t.Cleanup(func() { _ = src.Close() })
+
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+		defer cancel()
+		if err := runner.Run(ctx, src, hub); err != nil {
+			t.Fatalf("pipeline run %d: %v", run, err)
 		}
-		text := e.AcceptedText
-		if len(text) > 38 {
-			text = text[:38] + "…"
+		st := runner.Stats()
+		t.Logf("run %d: stats: frames=%d processed=%d ocr_calls=%d ocr_skipped=%d ocr_cancelled=%d ocr_stale=%d rankings=%d commits=%d stale_applied=%d",
+			run, st.FramesDelivered, st.FramesProcessed, st.OCRCalls, st.OCRSkippedByHash, st.OCRCancelled, st.OCRStale, st.Rankings, st.Commits, st.StaleApplied)
+
+		// A clean replay drops and cancels nothing; the counters are the proof
+		// that the live supersede path did not leak into the replay.
+		if st.OCRCancelled != 0 || st.OCRStale != 0 || st.FramesDropped != 0 {
+			t.Errorf("run %d: clean replay left drops behind: cancelled=%d stale=%d frames_dropped=%d",
+				run, st.OCRCancelled, st.OCRStale, st.FramesDropped)
 		}
-		top := "-"
-		if e.TopCandidate != "" {
-			top = fmt.Sprintf("%s (%.3f)", e.TopCandidate, e.TopScore)
+
+		evs, err := mem.After(context.Background(), 0, events.Filter{}, 4096)
+		if err != nil {
+			t.Fatalf("read events (run %d): %v", run, err)
 		}
-		t.Logf("%-12s %-13s %-40q %-28s %s", ts, orDash(e.State), text, top, e.Event)
+		all := append(evs, speechEvs...)
+
+		if run == 1 {
+			// The evidence-bundle timeline: frame capture ts -> OCR text -> top
+			// candidate with probability -> events, straight from the runner's trace.
+			t.Logf("timeline (capture clock; candidate probability in parens):")
+			t.Logf("%-12s %-13s %-40s %-28s %s", "frame_ts", "state", "ocr_text", "top_candidate", "events")
+			for _, e := range runner.Trace() {
+				ts := "-"
+				if e.CaptureTimestampNS > 0 {
+					ts = fmt.Sprintf("%d ms", e.CaptureTimestampNS/1e6)
+				}
+				text := e.AcceptedText
+				if len(text) > 38 {
+					text = text[:38] + "…"
+				}
+				top := "-"
+				if e.TopCandidate != "" {
+					top = fmt.Sprintf("%s (%.3f)", e.TopCandidate, e.TopScore)
+				}
+				t.Logf("%-12s %-13s %-40q %-28s %s", ts, orDash(e.State), text, top, e.Event)
+			}
+		}
+
+		rep := sc.Evaluate(all, st, truth)
+		for _, r := range rep.Results {
+			status := "PASS"
+			if !r.Passed {
+				status = "FAIL"
+			}
+			t.Logf("run %d: assertion %-28s %s: %s", run, r.Type, status, r.Detail)
+			if !r.Passed {
+				t.Errorf("run %d: assertion %s failed: %s", run, r.Type, r.Detail)
+			}
+		}
+		if !rep.Passed {
+			t.Fatalf("scenario %s did not pass (run %d)", sc.ID, run)
+		}
+
+		outcomes = append(outcomes, runOutcomes{commits: commitStamps(t, evs), stats: st})
 	}
 
-	rep := sc.Evaluate(all, st, truth)
-	for _, r := range rep.Results {
-		status := "PASS"
-		if !r.Passed {
-			status = "FAIL"
+	// docs/spec/12 "determinism under identical inputs": three replays of the
+	// same clip through the same engine decide the same thing at the same
+	// capture times. Latency buckets are wall-clock and are not compared.
+	for run := 1; run < len(outcomes); run++ {
+		first, got := outcomes[0], outcomes[run]
+		if !slicesEqual(first.commits, got.commits) {
+			t.Fatalf("run 1 committed %+v, run %d committed %+v: a replay must not depend on machine speed", first.commits, run+1, got.commits)
 		}
-		t.Logf("assertion %-28s %s: %s", r.Type, status, r.Detail)
-		if !r.Passed {
-			t.Errorf("assertion %s failed: %s", r.Type, r.Detail)
+		if a, b := stableStats(first.stats), stableStats(got.stats); a != b {
+			t.Fatalf("run 1 stats %v != run %d stats %v: deterministic counters moved between replays", a, run+1, b)
 		}
 	}
-	if !rep.Passed {
-		t.Fatalf("scenario %s did not pass", sc.ID)
-	}
+	t.Logf("deterministic over %d runs: commits=%+v", len(outcomes), outcomes[0].commits)
 }
 
 // orDash renders the empty state (ranking trace rows carry none) as a dash.
@@ -143,6 +189,67 @@ func orDash(s string) string {
 	if s == "" {
 		return "-"
 	}
+	return s
+}
+
+// commitStamp is one message.committed reduced to the two fields a determinism
+// assertion needs: which message, and at which capture time it committed (the
+// transition that moved the text machine into committed names the frame, and
+// the frame carries the source-clock time — docs/spec/01 invariant 1).
+type commitStamp struct {
+	MessageID string
+	TSNS      int64
+}
+
+func (c commitStamp) String() string { return fmt.Sprintf("%s@%d", c.MessageID, c.TSNS) }
+
+// commitStamps extracts (message_id, commit capture timestamp) pairs from
+// message.committed payloads, oldest first.
+func commitStamps(t *testing.T, evs []events.Envelope) []commitStamp {
+	t.Helper()
+	var out []commitStamp
+	for _, e := range evs {
+		if e.Name != events.MessageCommitted {
+			continue
+		}
+		var p struct {
+			MessageID   string `json:"message_id"`
+			Transitions []struct {
+				To                 string `json:"to"`
+				CaptureTimestampNS int64  `json:"capture_timestamp_ns"`
+			} `json:"transitions"`
+		}
+		if err := json.Unmarshal(e.Data, &p); err != nil {
+			t.Fatalf("message.committed payload: %v", err)
+		}
+		var ts int64
+		for _, tr := range p.Transitions {
+			if tr.To == "committed" {
+				ts = tr.CaptureTimestampNS
+			}
+		}
+		out = append(out, commitStamp{MessageID: p.MessageID, TSNS: ts})
+	}
+	return out
+}
+
+func slicesEqual(a, b []commitStamp) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// stableStats zeroes the wall-clock latency table so a determinism comparison
+// covers every decision-affecting counter without comparing timing buckets that
+// are wall-clock measurements by construction.
+func stableStats(s pipeline.Stats) pipeline.Stats {
+	s.Latency = pipeline.Latency{}
 	return s
 }
 

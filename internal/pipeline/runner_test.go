@@ -59,10 +59,12 @@ func TestLateOCRStillCommitsTwice(t *testing.T) {
 
 // TestInOrderOCRCommitsTwice is the same clip with a cooperative engine: no
 // cancellation, the same two commitments. It exists so the previous test's stale
-// counts cannot be attributed to the harness rather than to the timing.
+// counts cannot be attributed to the harness rather than to the timing. It is a
+// replay-mode test: a fixture replay must be the recording it claims to be
+// (ModeReplay), and the previous test's live supersede path is what it isolates.
 func TestInOrderOCRCommitsTwice(t *testing.T) {
 	eng := &fakeOCR{script: ocrScript(t), delay: fastScript, respectCtx: true}
-	h := newHarness(t, eng, nil)
+	h := newHarness(t, eng, func(c *pipeline.Config) { c.Mode = pipeline.ModeReplay })
 	st, evs, err := h.run(t, h.source(1.0, false))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -76,6 +78,10 @@ func TestInOrderOCRCommitsTwice(t *testing.T) {
 	if st.Rankings == 0 {
 		t.Error("no rankings were dispatched")
 	}
+	// A clean replay drops and cancels nothing; the counters are the proof.
+	if st.OCRCancelled != 0 || st.OCRStale != 0 || st.FramesDropped != 0 {
+		t.Errorf("clean replay left drops behind: cancelled=%d stale=%d frames_dropped=%d", st.OCRCancelled, st.OCRStale, st.FramesDropped)
+	}
 	timeline(t, h.runner)
 }
 
@@ -85,7 +91,7 @@ func TestInOrderOCRCommitsTwice(t *testing.T) {
 // business.
 func TestHashDedupeSuppressesRepeatOCR(t *testing.T) {
 	eng := &fakeOCR{script: ocrScript(t), delay: fastScript, respectCtx: true}
-	h := newHarness(t, eng, nil)
+	h := newHarness(t, eng, func(c *pipeline.Config) { c.Mode = pipeline.ModeReplay })
 	st, _, err := h.run(t, h.source(0, false))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -111,12 +117,14 @@ func TestHashDedupeSuppressesRepeatOCR(t *testing.T) {
 // TestDeterminism asserts the property docs/spec/12 lists under "two OCR futures
 // finish out of order" and "determinism under identical inputs": the same clip, the
 // same script, two runs, one committed sequence. Latency numbers differ between the
-// runs (they are wall-clock measurements); what the session decided does not.
+// runs (they are wall-clock measurements); what the session decided does not. The
+// runs are replay-mode: the property is what ModeReplay promises, and the live
+// path's drop counts are allowed to depend on machine speed.
 func TestDeterminism(t *testing.T) {
 	var runs [][]string
 	for i := 0; i < 2; i++ {
 		eng := &fakeOCR{script: ocrScript(t), delay: fastScript, respectCtx: true}
-		h := newHarness(t, eng, nil)
+		h := newHarness(t, eng, func(c *pipeline.Config) { c.Mode = pipeline.ModeReplay })
 		_, evs, err := h.run(t, h.source(0, false))
 		if err != nil {
 			t.Fatalf("run %d: %v", i, err)

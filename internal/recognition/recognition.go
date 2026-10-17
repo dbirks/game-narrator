@@ -410,6 +410,12 @@ type Stats struct {
 	// place that truncation stays visible (docs/spec/12 scores duplicate and
 	// missed narration from exactly this kind of counter).
 	CommittedDrift int64 `json:"committed_drift"`
+	// RevealGrowthFrames counts frames on which a fresh OCR read strictly
+	// extended the previous read — a typewriter revealing more of the same
+	// line. Each such frame restarts the stability window, so STABILIZING and
+	// READY are only reachable after the raw text has stopped growing for the
+	// whole StableWindow.
+	RevealGrowthFrames int64 `json:"reveal_growth_frames"`
 	// Transitions counts emitted transitions.
 	Transitions int64 `json:"transitions"`
 	// Commits counts READY→COMMITTED / predictive REVEALING→COMMITTED.

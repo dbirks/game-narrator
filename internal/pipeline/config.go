@@ -109,9 +109,41 @@ const (
 	QueueLossless
 )
 
+// Mode selects the Runner's runtime semantics. It is the code-level form of
+// docs/spec/01 "Parallelism and deadline contracts", whose first two bullets
+// draw the same line: a live runtime runs a bounded single-slot latest-frame
+// queue and cancels an in-flight recognition on a newer observation, *unlike*
+// lossless recording, where every frame must be delivered in order and nothing
+// may be dropped or cancelled on the way.
+type Mode uint8
+
+const (
+	// ModeLive is the default. Live-runtime semantics: Queue is honoured as set
+	// (default QueueLatest), and a newer frame of the same region supersedes the
+	// in-flight recognition of an older one — the superseded read is killed and
+	// counted (Stats.OCRCancelled / OCRStale), which is what keeps the runtime
+	// analysing the current screen rather than a second-old one.
+	ModeLive Mode = iota
+	// ModeReplay is the lossless fixture-replay semantics docs/spec/12 "Frame
+	// replay" requires of the CI gate: delivery is QueueLossless whatever Queue
+	// said (a replay that dropped a frame is a different recording), and each
+	// region's OCR runs to completion in frame order — a newer frame never
+	// cancels an in-flight recognition, it waits for it. The per-call timeout
+	// still bounds a wedged engine. A clean replay ends with ocr_cancelled,
+	// ocr_stale and frames_dropped all zero, and its committed messages and
+	// their capture timestamps are identical run to run, on a fast box or a
+	// slow one: the outcome depends on the frames and the engine, not on CPU
+	// speed.
+	ModeReplay
+)
+
 // Config is the Runner's whole input. Zero fields mean defaults except where a
-// value is genuinely required (Engine, Index, Regions).
+// value is genuinely required (Engine, Index, Regions). Zero Mode is ModeLive.
 type Config struct {
+	// Mode selects live versus lossless-replay semantics; see Mode. ModeReplay
+	// forces Queue to QueueLossless in normalize, so a caller cannot ask for a
+	// replay that drops frames.
+	Mode Mode
 	// SessionID and ProfileRevision stamp every message the pipeline produces.
 	// The reducer fences messages from another session or another revision, so
 	// these must name the session the Publisher is serving.
@@ -192,6 +224,11 @@ type Config struct {
 // reading, so they take defaults and the effective values are readable back from
 // Runner.Config().
 func (c Config) normalize() Config {
+	if c.Mode == ModeReplay {
+		// A replay must be the recording it claims to be (docs/spec/12 "Frame
+		// replay"): backpressure instead of drops, whatever Queue asked for.
+		c.Queue = QueueLossless
+	}
 	if c.Workers <= 0 {
 		c.Workers = DefaultWorkers
 	}

@@ -90,6 +90,14 @@ func (r *Runner) roiLoop(ctx context.Context, frames <-chan capture.Frame, in ch
 			}
 			r.cnt.framesProcessed()
 			for _, rs := range regions {
+				if r.cfg.Mode == ModeReplay {
+					// Replay determinism (docs/spec/12): this region's outstanding
+					// recognition must land before its next frame is analysed.
+					if err := r.waitInflight(rs, regions, ctx, in, done); err != nil {
+						r.abort(regions)
+						return err
+					}
+				}
 				if err := rs.accept(r, ctx, f, in, jobs); err != nil {
 					r.abort(regions)
 					return err
@@ -122,6 +130,37 @@ func (r *Runner) emitAll(regions []*regionState, ctx context.Context, in chan<- 
 	for _, rs := range regions {
 		if err := rs.emitReady(r, ctx, in); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// waitInflight is the Replay-mode half of the frame-order contract: while this
+// region has an outstanding recognition, the frame stream pauses for it. Each
+// region's ROI/OCR is therefore strictly sequential in frame order — frame N+1
+// is never analysed while frame N's recognition is still running — so a newer
+// frame can never supersede an in-flight read and no supersede-cancel is ever
+// issued (Stats.OCRCancelled and OCRStale stay zero on a clean replay). That is
+// what makes a replay's outcome independent of how fast the CPU happens to be:
+// the live path instead races frames against OCR and its drop counts depend on
+// timing, which is exactly the machine-speed dependence docs/spec/12 forbids in
+// the replay gate.
+//
+// The per-call timeout still applies: a wedged engine answers through its own
+// context, the outcome arrives as an error, and that is what OCRErrors counts
+// rather than a cancellation. Every outcome is applied through the same
+// applyOutcome path the live select uses, so a multi-region replay keeps the
+// per-region FIFO the tracker's stability window needs.
+func (r *Runner) waitInflight(rs *regionState, regions []*regionState, ctx context.Context, in chan<- *obsIn, done <-chan ocrOutcome) error {
+	for rs.inflight != nil {
+		select {
+		case o := <-done:
+			r.applyOutcome(regions, o)
+			if err := r.emitAll(regions, ctx, in); err != nil {
+				return err
+			}
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 	return nil

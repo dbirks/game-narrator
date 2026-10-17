@@ -344,6 +344,21 @@ func (t *Tracker) Step(o Observation) []Transition {
 			t.stats.OCRRedundantSameHash++
 		}
 		raw, conf := rawText(o.OCR, t.cfg.MinWordConfidence)
+		if prevKey := t.normKey(t.lastRaw); prevKey != "" {
+			// A typewriter reveal is the raw read strictly growing ("…bell" →
+			// "…bell rang"). The vote may keep returning the shorter prefix while
+			// that happens — it is the safer hypothesis — and then the accepted
+			// key never changes, the stability clock never resets, and a box still
+			// typing reaches READY on a three-word prefix. Restarting the clock on
+			// raw growth closes that gap: STABILIZING/READY becomes reachable only
+			// once the raw text has stopped growing for the whole StableWindow.
+			// normKey is the same fold appendEntry stores as the entry key, so the
+			// comparison runs on exactly what the vote groups on.
+			if newKey := t.normKey(raw); newKey != "" && newKey != prevKey && isExtension(prevKey, newKey) {
+				t.changed = o.CaptureTimestampNS
+				t.stats.RevealGrowthFrames++
+			}
+		}
 		t.lastRaw, t.lastOCRConf, t.haveOCR = raw, conf, true
 		if raw == "" {
 			t.stats.EmptyReads++

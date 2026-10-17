@@ -179,8 +179,10 @@ func committedConfig() Config {
 
 // TestAppearsRevealsStabilizesReadyCommitOnce is the happy path of docs/spec/05
 // "Dialogue observation state machine", and the docs/spec/16 M2 gate "text state
-// machine": a box appears, types out over six frames, stabilizes, reaches READY,
-// and a commit takes it to COMMITTED exactly once.
+// machine": a box appears, types out over eight frames, stabilizes, reaches
+// READY, and a commit takes it to COMMITTED exactly once. The tail is held long
+// enough that READY is reached only after the typing has stopped for the whole
+// StableWindow, which is what the reveal-growth reset in Tracker.Step demands.
 func TestAppearsRevealsStabilizesReadyCommitOnce(t *testing.T) {
 	d := newDriver(t, committedConfig())
 
@@ -192,7 +194,7 @@ func TestAppearsRevealsStabilizesReadyCommitOnce(t *testing.T) {
 		t.Fatalf("state after one frame = %s, want absent", got)
 	}
 
-	reveal := []string{"THE SHIP", "THE SHIP S", "THE SHIP SAI", "THE SHIP SAILS", "THE SHIP SAILS", "THE SHIP SAILS"}
+	reveal := []string{"THE SHIP", "THE SHIP S", "THE SHIP SAI", "THE SHIP SAILS", "THE SHIP SAILS", "THE SHIP SAILS", "THE SHIP SAILS", "THE SHIP SAILS"}
 	sawRevealing, sawStabilizing, sawReady := false, false, false
 	for _, text := range reveal {
 		trs := d.frame(text, 0.9)
