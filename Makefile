@@ -1,10 +1,16 @@
 # Game Narrator — development and release targets (AGENTS.md "CLI targets")
 #
-# Unimplemented gates print "NOT RUN: ..." to stderr and their recipe exits 1,
-# so `make` fails. They are never allowed to print success; see AGENTS.md "CLI
-# targets expected in actual implementation". Note that GNU make maps any
-# recipe failure to its own exit status 2 (documented behaviour, not
-# configurable), so `make test-replay` returns 2 while the recipe returns 1.
+# A gate prints "NOT RUN: <setup instruction>" when its capability is not
+# configured on this host and exits non-zero, so a gate is never green
+# without real evidence (AGENTS.md "CLI targets expected in actual
+# implementation"; the NOT RUN convention per ADR-0009/0013). The go-test
+# gates run through scripts/gates/run-go-gate.sh, which classifies each test
+# PASS/FAIL/SKIP/NOT RUN and exits 0 (all ran and passed), 1 (any FAIL, or
+# go test itself failed) or 2 (nothing failed but at least one NOT RUN). The
+# go gates record that real code in artifacts/gates/<gate>.rc because GNU
+# make maps any recipe failure to its own exit status 2 (documented
+# behaviour, not configurable); test-full reads those files so FAIL (1) and
+# NOT RUN (2) stay distinct.
 
 MODULE  := github.com/dbirks/game-narrator
 BIN     := bin/game-narrator
@@ -13,10 +19,9 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 LDFLAGS := -X $(PKG).version=$(VERSION) -X $(PKG).commit=$(COMMIT)
 
-# Gate targets that test-full runs for real.
-RUN_GATES := test-unit test-ui diagnostics release-snapshot bench
-# Gate targets that still need implementation (docs/spec/16).
-PENDING_GATES := test-replay test-dolphin test-models test-hardware
+# Gate targets that test-full runs, in order.
+RUN_GATES := test-unit test-ui diagnostics release-snapshot bench \
+             test-replay test-dolphin test-models test-hardware
 
 .PHONY: bootstrap dev build web-build test-unit test-replay test-ui test-dolphin test-models \
         test-hardware test-full lint release-snapshot diagnostics bench
@@ -63,16 +68,39 @@ bootstrap:
 		exit 1; \
 	fi
 
-## test-full: run every gate that is implemented; report the rest as NOT RUN
-test-full: $(RUN_GATES)
-	@for target in $(RUN_GATES); do \
-		echo "RUN: $$target passed"; \
-	done; \
-	for target in $(PENDING_GATES); do \
-		echo "NOT RUN: $$target is not implemented yet (see docs/spec/16)" >&2; \
-	done; \
-	echo "NOT RUN: test-full is incomplete because the gates above are unimplemented (see docs/spec/16)" >&2; \
-	exit 1
+## test-full: run every gate in order, continue past failures, then print a
+## final table (gate | result | detail). Result PASS comes from exit 0; a
+## go gate's recorded exit 2 (artifacts/gates/<gate>.rc) or a legacy gate's
+## own "NOT RUN: <gate> ..." output is NOT RUN; anything else is FAIL.
+## Exits 1 if any gate FAILed, 2 if nothing failed but at least one gate is
+## NOT RUN, and 0 only if every gate passed. Per-gate logs:
+## artifacts/gates/full-<gate>.log (gitignored).
+test-full:
+	@mkdir -p artifacts/gates ; \
+	fail=0; notrun=0; table="" ; \
+	for target in $(RUN_GATES); do \
+		out=artifacts/gates/full-$$target.log ; \
+		rm -f artifacts/gates/$$target.rc ; \
+		echo "=== GATE $$target ===" ; \
+		$(MAKE) $$target >$$out 2>&1 ; \
+		rc=$$? ; \
+		if [ -f artifacts/gates/$$target.rc ]; then rc=$$(cat artifacts/gates/$$target.rc) ; fi ; \
+		if [ $$rc -eq 0 ] ; then res=PASS ; \
+		elif [ $$rc -eq 2 ] ; then res="NOT RUN" ; notrun=$$((notrun+1)) ; \
+		elif grep -q "^NOT RUN: $$target " $$out 2>/dev/null ; then res="NOT RUN" ; notrun=$$((notrun+1)) ; \
+		else res=FAIL ; fail=$$((fail+1)) ; fi ; \
+		detail=$$(grep -m1 "^junit:" $$out) ; \
+		[ -n "$$detail" ] || detail=$$(grep -m1 "^NOT RUN" $$out) ; \
+		[ -n "$$detail" ] || detail=$$(grep -m1 "^FAIL" $$out) ; \
+		[ -n "$$detail" ] || detail="exit $$rc" ; \
+		detail=$$(printf '%s' "$$detail" | head -c 140) ; \
+		table="$$table$$target | $$res | $$detail\n" ; \
+	done ; \
+	printf '\n=== test-full summary ===\n'; \
+	printf 'gate | result | detail\n'; \
+	printf '%b' "$$table" ; \
+	[ $$fail -eq 0 ] || exit 1 ; \
+	[ $$notrun -eq 0 ]
 
 ## bench: the docs/spec/12 benchmark gate — the holdout split of the committed
 ## synthetic set, replayed through the real pipeline (real Tesseract, real
@@ -86,9 +114,14 @@ bench:
 	go run ./cmd/game-narrator bench --set testdata/bench/bench-synthetic-001 --split holdout --out artifacts/bench
 	@cat artifacts/bench/report.md
 
-## Release and remaining verification gates — intentionally not implemented.
+## test-replay: the docs/spec/12 replay gate — the synthetic scenario suite
+## (fault injection; BLOCKED scenarios are reported, never passed, ADR-0037)
+## plus the pipeline replay tests (real Tesseract, deterministic
+## three-identical-runs), race-enabled. BLOCKED and NOT RUN (e.g. tesseract
+## missing) results are reported per test and never counted as a pass.
 test-replay:
-	@echo "NOT RUN: test-replay is not implemented yet (see docs/spec/16)" >&2; exit 1
+	@scripts/gates/run-go-gate.sh test-replay -race -count=1 ./internal/scenario/... ./internal/pipeline/... ; \
+	rc=$$?; echo $$rc > artifacts/gates/test-replay.rc ; exit $$rc
 
 ## test-ui: the real UI gate (docs/spec/09, docs/spec/12 "UI") — frontend
 ## checks, then an embedded-binary build, then Playwright against that binary
@@ -101,14 +134,42 @@ test-ui:
 	$(MAKE) build
 	pnpm --dir web test:e2e
 
+## test-dolphin: the docs/spec/12 "Dolphin emulator mode" gate — the real
+## Dolphin tests (real_test.go, drive_test.go) boot a real Dolphin against
+## the user-supplied game image; never labelled as unit coverage. Requires
+## GAME_NARRATOR_GAME_IMAGE_PATH plus dolphin-emu, Xvfb, ffmpeg and
+## x11-utils on PATH; without them the tests report NOT RUN (exit 2).
+## -p 1: one Dolphin at a time; the boot-to-first-dialogue drive takes
+## minutes, hence the 20-minute timeout.
 test-dolphin:
-	@echo "NOT RUN: test-dolphin is not implemented yet (see docs/spec/16)" >&2; exit 1
+	@scripts/gates/run-go-gate.sh test-dolphin -count=1 -p 1 -timeout 20m -run Real ./internal/dolphin/... ; \
+	rc=$$?; echo $$rc > artifacts/gates/test-dolphin.rc ; exit $$rc
 
+## test-models: the live provider contract gate (docs/spec/12 "provider
+## schema — recorded every PR, live conditional") — the -run Live tests in
+## the openai, recorded, systemone and tts providers, the voices workflow and
+## the runtime speech session, all against the real gateway. Sequential (-p
+## 1) so gateway calls never overlap. Requires GAME_NARRATOR_GATEWAY_URL
+## plus the token env; the vision tests additionally need
+## GAME_NARRATOR_LIVE_VISION=1 and the TTS registry tests
+## GAME_NARRATOR_TTS_BASE_DIRECT_URL. Each unset capability reports NOT RUN
+## (exit 2), never a pass.
 test-models:
-	@echo "NOT RUN: test-models is not implemented yet (see docs/spec/16)" >&2; exit 1
+	@scripts/gates/run-go-gate.sh test-models -count=1 -p 1 -timeout 30m -run Live \
+		./internal/providers/openai/... ./internal/providers/recorded/... \
+		./internal/providers/systemone/... ./internal/providers/tts/... \
+		./internal/voices/... ./internal/runtime/... ; \
+	rc=$$?; echo $$rc > artifacts/gates/test-models.rc ; exit $$rc
 
+## test-hardware: the UNO Q hardware gate (docs/spec/16, M8). No UNO Q
+## hardware tests exist yet — there is nothing to run, so the gate reports
+## NOT RUN (exit 2) with the unblock steps from docs/status/blocked.md
+## instead of printing success. It is not green: until the gate has real
+## tests that pass, test-full records it as NOT RUN and exits 2.
 test-hardware:
-	@echo "NOT RUN: test-hardware is not implemented yet (see docs/spec/16)" >&2; exit 1
+	@echo "NOT RUN: test-hardware — no UNO Q hardware tests exist yet; attach a UNO Q and see docs/status/blocked.md" ; \
+	echo 2 > artifacts/gates/test-hardware.rc ; \
+	exit 2
 
 ## release-snapshot: local snapshot pipeline (docs/spec/15, ADR 0033).
 ## Validates the build, archives, SBOMs, .debs and the OCI image WITHOUT

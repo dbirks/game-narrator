@@ -6,6 +6,44 @@ observed is listed as `NOT CHECKED`. No URLs, hostnames, or credentials are
 recorded here — model roles are configured through environment variables only
 (see `examples/config/env.example`).
 
+## Gates
+
+`make test-full` runs the gate targets in order — `test-unit`, `test-ui`,
+`diagnostics`, `release-snapshot`, `bench`, `test-replay`, `test-dolphin`,
+`test-models`, `test-hardware` — continues past failures, and prints a final
+table (`gate | result | detail`). It exits 0 only if every gate passed, 1 if
+any gate FAILed, and 2 if nothing failed but at least one gate is NOT RUN.
+Per-gate logs and the JUnit XML summaries land in `artifacts/gates/`
+(gitignored).
+
+**NOT RUN** is the gate convention for "this capability is not configured on
+this host": the test (or the gate) skips itself and prints
+`NOT RUN: <setup instruction>`. NOT RUN is neither a pass nor a fail — it is
+a reported, missing capability (ADR-0009/0013; ADR-0037 "blocked ≠ pass").
+A gate whose capabilities are not configured is never green, and
+`make test-full` exits 2, not 0, while one remains.
+
+| Gate | What it runs | Needs (env var names only) |
+| --- | --- | --- |
+| `test-unit` | `go vet` plus all unit tests with `-race` | — |
+| `test-ui` | frontend typecheck/lint/format/tests, embedded build, Playwright e2e | — |
+| `diagnostics` | `game-narrator doctor --dev` on a fresh build | — |
+| `release-snapshot` | GoReleaser snapshot pipeline (no publishing) | `goreleaser` on PATH; docker optional |
+| `bench` | benchmark holdout split through the real pipeline | `tesseract` and `magick` on PATH |
+| `test-replay` | synthetic scenario suite (fault injection; BLOCKED reported, never passed) plus pipeline replay tests, `-race` | `tesseract` on PATH, else the replay test reports NOT RUN |
+| `test-dolphin` | real Dolphin tests (`-run Real`), one emulator at a time (`-p 1`, 20m timeout) | `GAME_NARRATOR_GAME_IMAGE_PATH`; `dolphin-emu`, `Xvfb`, `ffmpeg`, `x11-utils` on PATH |
+| `test-models` | live provider contract tests (`-run Live`), sequential (`-p 1`) | `GAME_NARRATOR_GATEWAY_URL` plus the token env (default `GAME_NARRATOR_GATEWAY_TOKEN`, name overridable via `GAME_NARRATOR_GATEWAY_TOKEN_ENV`); vision tests additionally `GAME_NARRATOR_LIVE_VISION=1`; TTS registry tests `GAME_NARRATOR_TTS_BASE_DIRECT_URL` (or `GAME_NARRATOR_ROLE_VOICE_CLONE_REGISTRY_URL`) |
+| `test-hardware` | UNO Q hardware smoke — no hardware tests exist yet, so the gate itself reports NOT RUN | attach a UNO Q; see `docs/status/blocked.md` |
+
+The go-test gates (`test-replay`, `test-dolphin`, `test-models`) run through
+`scripts/gates/run-go-gate.sh`, which parses `go test -json`, prints one
+`PASS`/`FAIL`/`SKIP`/`NOT RUN` line per test (NOT RUN lines carry the setup
+instruction), and writes `artifacts/gates/<gate>.xml`. Its exit code is 0 =
+every test ran and passed, 1 = any FAIL (or `go test` itself failed), 2 =
+nothing failed but at least one test is NOT RUN; the gate records that code
+in `artifacts/gates/<gate>.rc` because `make` maps any recipe failure to its
+own exit status 2.
+
 ## Host
 
 - OS: Arch Linux (`/etc/os-release`: `NAME="Arch Linux"`)
