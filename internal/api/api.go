@@ -28,6 +28,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/bootstrap"
 	"github.com/dbirks/game-narrator/internal/events"
 	"github.com/dbirks/game-narrator/internal/games/adapter"
+	rt "github.com/dbirks/game-narrator/internal/runtime"
 	"github.com/dbirks/game-narrator/internal/store"
 	"github.com/dbirks/game-narrator/internal/webassets"
 )
@@ -121,6 +122,19 @@ type Server struct {
 	adapters *adapter.Registry
 	jobQueue JobQueue
 
+	// sessions owns the session lifecycle API (sessions.go): start, status and
+	// stop, plus the dev-trace asset lookup the developer inspector's asset
+	// route reads through. nil answers 503 for the same honest-degradation
+	// reason as every other unwired subsystem: an empty session list would
+	// claim an appliance with no runtime.
+	sessions *rt.Manager
+
+	// devEvents is the durable event log behind the developer inspector's REST
+	// pages (dev.go). It is the same store the hub persists into, so the pages
+	// show exactly what the SSE stream would have shown, minus the live tail.
+	// nil answers 503 on /api/v1/dev/events and /api/v1/dev/traces.
+	devEvents events.Store
+
 	// idempotency remembers the responses of keyed creates so a retried POST
 	// cannot create two games (docs/spec/08 "Conventions"). It is per-process by
 	// construction and ADR-0017 says so out loud; the durable queue owns the
@@ -209,6 +223,22 @@ func WithImport(as assets.Store, reg *adapter.Registry, queue JobQueue) Option {
 		s.adapters = reg
 		s.jobQueue = queue
 	}
+}
+
+// WithSessions wires the session runtime behind POST /api/v1/sessions, the
+// session status routes and the dev-trace asset route (ADR-0024). The manager
+// also owns the one-active-session invariant, so the API cannot express
+// starting a second one even if a test or a future route tried.
+func WithSessions(mgr *rt.Manager) Option {
+	return func(s *Server) { s.sessions = mgr }
+}
+
+// WithDevEvents wires the durable event log behind the developer inspector's
+// REST pages (GET /api/v1/dev/events, /api/v1/dev/traces/{trace_id}). The
+// production call passes the same store the hub persists into; a nil store
+// answers 503 rather than an empty inspector.
+func WithDevEvents(st events.Store) Option {
+	return func(s *Server) { s.devEvents = st }
 }
 
 // JobQueue is the slice of the durable queue this package uses: enqueue one job,
@@ -325,6 +355,22 @@ func (s *Server) Handler() http.Handler {
 	routes.register(mux, http.MethodGet, "/api/v1/jobs/{id}", s.handleJobGet)
 	routes.register(mux, http.MethodPost, "/api/v1/jobs/{id}/cancel", s.handleJobCancel)
 	routes.register(mux, http.MethodPost, "/api/v1/jobs/{id}/retry", s.handleJobRetry)
+
+	// Session lifecycle (docs/spec/08 "Example session workflow", ADR-0024).
+	// The runtime manager owns the one-active-session invariant, the published-
+	// revision rule and the frame-source allowlist; the handlers map its
+	// sentinel errors onto documented problem codes.
+	routes.register(mux, http.MethodPost, "/api/v1/sessions", s.handleSessionsStart)
+	routes.register(mux, http.MethodGet, "/api/v1/sessions/{id}", s.handleSessionsGet)
+	routes.register(mux, http.MethodPost, "/api/v1/sessions/{id}/stop", s.handleSessionsStop)
+
+	// Developer inspection (docs/spec/08 "APIs": dev/events, dev/traces; the
+	// asset route is ADR-0024's sampled-evidence read path). All three sit
+	// under the developer-only /api/v1/dev prefix of the scope table: the
+	// payloads carry raw gameplay text, provider details and captured frames.
+	routes.register(mux, http.MethodGet, "/api/v1/dev/events", s.handleDevEvents)
+	routes.register(mux, http.MethodGet, "/api/v1/dev/traces/{trace_id}", s.handleDevTraces)
+	routes.register(mux, http.MethodGet, "/api/v1/dev/assets/{sha256}", s.handleDevAsset)
 
 	// Catalog, profile lifecycle and portability (docs/spec/08 "APIs": games,
 	// editions, profiles, messages, characters, regions, import, export,

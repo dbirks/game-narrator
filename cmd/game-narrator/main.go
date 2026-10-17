@@ -33,6 +33,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/games/adapter"
 	"github.com/dbirks/game-narrator/internal/games/adapter/generic"
 	"github.com/dbirks/game-narrator/internal/jobs"
+	"github.com/dbirks/game-narrator/internal/runtime"
 	"github.com/dbirks/game-narrator/internal/store"
 )
 
@@ -63,6 +64,12 @@ Start the Game Narrator HTTP API. Endpoints (JSON):
   GET  /api/v1/health/ready
   GET  /api/v1/system/info
   GET  /api/v1/events                (SSE, Last-Event-ID replay, viewer+)
+  POST /api/v1/sessions              (operator+, one active session at a time)
+  GET  /api/v1/sessions/{id}         (viewer+)
+  POST /api/v1/sessions/{id}/stop    (operator+, idempotent)
+  GET  /api/v1/dev/events            (developer, durable event log pages)
+  GET  /api/v1/dev/traces/{trace_id} (developer)
+  GET  /api/v1/dev/assets/{sha256}   (developer, dev-trace samples)
   GET  /api/v1/jobs[?state=&kind=&cursor=&limit=]
   GET  /api/v1/jobs/{id}
   POST /api/v1/jobs/{id}/cancel      (operator+)
@@ -368,6 +375,28 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 	}
 	log.Info("job runner started")
 
+	// Session runtime (Milestone 2, ADR-0024): the one live pipeline run, its
+	// lifecycle events and its developer-trace evidence. Dev-trace storage
+	// sits beside the asset store in the durable directory (same reasoning as
+	// AssetDir: evidence and catalogue are one body of state), and the replay
+	// allowlist is the documented default — GAME_NARRATOR_REPLAY_ROOTS, else
+	// testdata/ from a dev checkout, else nothing in production.
+	devTraceDir := filepath.Join(cfg.DataDir, "dev-trace")
+	sessions, err := runtime.New(runtime.Options{
+		Store:       st,
+		Hub:         hub,
+		Jobs:        runner,
+		AssetsRoot:  devTraceDir,
+		ReplayRoots: runtime.DefaultReplayRoots(os.LookupEnv),
+		Log:         log,
+	})
+	if err != nil {
+		return 1, fmt.Errorf("creating the session runtime: %w", err)
+	}
+	log.Info("session runtime ready",
+		"dev_trace_root", filepath.Base(devTraceDir),
+		"replay_roots", len(runtime.DefaultReplayRoots(os.LookupEnv)))
+
 	// Auth store (docs/spec/08 "API version and user authentication", ADR-0016):
 	// created before the listener so a process that cannot read its own
 	// credential tables never serves, and reported the same way every other
@@ -403,6 +432,11 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 		} else {
 			log.Info("job runner stopped")
 		}
+		// The session runtime stops before the hub closes: a run finalising on
+		// shutdown still publishes its session.stopped, and a hub closed first
+		// would drop the terminal event of the session we asked to stop.
+		sessions.Close()
+		log.Info("session runtime closed")
 		if err := hub.Close(); err != nil {
 			log.Error("closing event hub", "error", err)
 		}
@@ -413,6 +447,8 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 		api.WithReadiness(storeReadiness(st, log)),
 		api.WithEvents(hub),
 		api.WithJobs(jobsStore),
+		api.WithSessions(sessions),
+		api.WithDevEvents(eventStore),
 		api.WithAuth(auth.NewService(authRepo, auth.WithLogger(log)), authRepo),
 		api.WithStore(st),
 		api.WithImport(assetStore, adapters, runner),

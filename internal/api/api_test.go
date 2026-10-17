@@ -302,7 +302,7 @@ func TestHeadOnKnownPathIsNot405(t *testing.T) {
 // A deeper unknown path under a known prefix must still produce the problem
 // document rather than a redirect or plain-text 404.
 func TestUnknownNestedAPIPathReturnsProblemJSON(t *testing.T) {
-	for _, target := range []string{"/api/v1/sessions", "/api/v1/", "/api/"} {
+	for _, target := range []string{"/api/v1/frame-sources/probe", "/api/v1/", "/api/"} {
 		rec := do(t, newUIHandler(t), http.MethodGet, target)
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("%s: status = %d, want 404 (body %s)", target, rec.Code, rec.Body.String())

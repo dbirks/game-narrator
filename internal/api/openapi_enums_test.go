@@ -21,6 +21,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/auth"
 	"github.com/dbirks/game-narrator/internal/games"
 	"github.com/dbirks/game-narrator/internal/profileio"
+	"github.com/dbirks/game-narrator/internal/runtime"
 )
 
 // domainEnums maps a documented schema (or a "Schema.properties.member" path) onto
@@ -52,6 +53,14 @@ var literalEnums = map[string][]string{
 	"ImportAccepted.properties.job_kind": {JobKindImportFile},
 	// internal/profileio writes the manifest schema version it understands.
 	"ProfileManifest.properties.schema_version": {profileio.SchemaVersion},
+	// The session runtime (Milestone 2, ADR-0024) writes these words: the frame
+	// source kinds it admits, the lifecycle states it transitions and the two
+	// decision modes it accepts. They live in internal/runtime as constants
+	// rather than a games domain table, so they are pinned here the same way
+	// the api-owned JobKindImportFile is.
+	"FrameSourceKind": {runtime.SourceKindReplay, runtime.SourceKindTestPattern, runtime.SourceKindV4L2, runtime.SourceKindDolphin},
+	"SessionState":    {runtime.StateStarting, runtime.StateRunning, runtime.StateStopping, runtime.StateStopped, runtime.StateFailed},
+	"SessionMode":     {runtime.ModeConservative, runtime.ModePredictive},
 }
 
 func TestOpenAPIEnumVocabulariesMatchTheDomainEnums(t *testing.T) {

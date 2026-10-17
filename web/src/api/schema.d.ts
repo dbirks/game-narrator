@@ -712,6 +712,120 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/sessions": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Start one session: run the published profile against a frame source.
+     * @description One active session at a time (docs/spec/01 key invariant). Only the edition's published revision runs. v4l2 and dolphin frame sources answer 501 unsupported_capability; replay directories must sit under the configured allowlist. dev_trace stores sampled frames and ROI crops under a per-session byte quota and additionally requires the caller to hold the developer role on this operator route (docs/spec/13 explicit toggle; ADR-0024).
+     */
+    post: operations["startSession"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/sessions/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** One session's current state and pipeline counters. */
+    get: operations["getSession"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/sessions/{id}/stop": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Stop a session (idempotent). */
+    post: operations["stopSession"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/dev/events": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Page the durable event log for the developer inspector.
+     * @description REST snapshot of the persisted events (the SSE stream's durable half), filterable by session and name. Payloads carry raw recognised gameplay text and provider details, so the route is developer-only (docs/spec/08: developer mode displays sensitive gameplay text and provider traces).
+     */
+    get: operations["devEvents"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/dev/traces/{trace_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Every persisted event carrying one trace id, in seq order.
+     * @description The correlated view docs/spec/09 asks for: one decision or recognition walked across frame, observation, text, candidate, commit and provider events by its trace_id. Developer-only for the same reason as dev/events.
+     */
+    get: operations["devTrace"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/dev/assets/{sha256}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * One stored developer-trace sample (full-frame JPEG or ROI crop PNG).
+     * @description The only read path into a session's private dev-trace store (ADR-0024): text.observed carries the sha256, this route serves the bytes, and the developer-only grant is the privacy boundary (docs/spec/13). 404 covers never-stored, evicted-under-quota and invalid hashes alike.
+     */
+    get: operations["devAsset"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/openapi.json": {
     parameters: {
       query?: never;
@@ -1168,6 +1282,109 @@ export interface components {
       jobs: components["schemas"]["Job"][];
       next_cursor?: string;
     };
+    /**
+     * @description Session lifecycle states (docs/spec/08 example workflow).
+     * @enum {string}
+     */
+    SessionState: "starting" | "running" | "stopping" | "stopped" | "failed";
+    /**
+     * @description docs/spec/01: conservative commits only on the documented evidence bar; predictive may commit earlier at higher risk.
+     * @enum {string}
+     */
+    SessionMode: "conservative" | "predictive";
+    /**
+     * @description replay reads a recording directory from the configured allowlist; test_pattern is the built-in synthetic source; v4l2 and dolphin are not implemented in this build and answer 501 unsupported_capability.
+     * @enum {string}
+     */
+    FrameSourceKind: "replay" | "test_pattern" | "v4l2" | "dolphin";
+    FrameSource: {
+      kind: components["schemas"]["FrameSourceKind"];
+      /** @description Replay recording directory; required for kind replay and must sit under the configured allowlist. */
+      dir?: string;
+    };
+    StartSessionRequest: {
+      /** @description The profile to run; must be the edition's published revision. */
+      profile_id: string;
+      frame_source: components["schemas"]["FrameSource"];
+      mode?: components["schemas"]["SessionMode"];
+      /**
+       * @description Store sampled frames (downscaled full-frame JPEG, width 640 max) and ROI crop PNGs under the per-session byte quota; requires the caller to hold the developer role.
+       * @default false
+       */
+      dev_trace: boolean;
+    };
+    LatencySummary: {
+      count?: number;
+      p50_ns?: number;
+      p95_ns?: number;
+      mean_ns?: number;
+      max_ns?: number;
+    };
+    PipelineLatency: {
+      frame_to_ocr?: components["schemas"]["LatencySummary"];
+      ocr_to_ranked?: components["schemas"]["LatencySummary"];
+      frame_to_committed?: components["schemas"]["LatencySummary"];
+    };
+    /** @description The pipeline's in-memory self-report: the numbers docs/spec/16's session gate reads. */
+    PipelineStats: {
+      frames_delivered: number;
+      frames_dropped: number;
+      frames_processed: number;
+      observations: number;
+      ocr_calls: number;
+      ocr_skipped_by_hash: number;
+      ocr_cancelled: number;
+      ocr_stale: number;
+      ocr_errors: number;
+      rankings: number;
+      ranking_stale: number;
+      rankings_abstained: number;
+      commits: number;
+      events: number;
+      /** @description Must stay 0: the generation fence is absolute (docs/spec/01 invariant 2). */
+      stale_generation_applied: number;
+      latency: components["schemas"]["PipelineLatency"];
+    };
+    /** @description A session's lifecycle state and counters (the API view of the runtime). */
+    Session: {
+      session_id: string;
+      profile_id: string;
+      profile_revision: string;
+      mode: components["schemas"]["SessionMode"];
+      frame_source: components["schemas"]["FrameSourceKind"];
+      dev_trace: boolean;
+      state: components["schemas"]["SessionState"];
+      /** @description Terminal reason: requested, source_end, error or closed. */
+      reason?: string;
+      /** Format: date-time */
+      created_at: string;
+      /** Format: date-time */
+      ended_at?: string;
+      /** @description The session.started seq; later session events resume from here. */
+      event_cursor: number;
+      stats: components["schemas"]["PipelineStats"];
+    };
+    /** @description The documented event wire shape (docs/spec/08 event stream). */
+    EventEnvelope: {
+      schema_version: number;
+      event_id: string;
+      session_id?: string;
+      seq: number;
+      trace_id?: string;
+      causation_id?: string;
+      name: string;
+      /** Format: date-time */
+      occurred_at: string;
+      data: Record<string, never>;
+    };
+    /** @description One page of the durable event log for the developer inspector. */
+    DevEventsPage: {
+      events: components["schemas"]["EventEnvelope"][];
+      /** @description Pass as since_seq to continue. */
+      next_seq: number;
+      /** @description true when the page holds exactly the limit (or more matches existed for a trace). */
+      truncated: boolean;
+    };
   };
   responses: {
     /** @description RFC 9457 problem+json. code is the stable member of docs/spec/08's error contract; X-Request-Id correlates it with the server log and the event stream. */
@@ -1198,6 +1415,12 @@ export interface components {
     SearchLimit: number;
     /** @description At most 200 characters. Same key + same body replays the stored response; same key + different body is a 422. Held in the process's memory only: a restart forgets it, and a retried POST then lands on the store's own uniqueness rules instead (ADR-0017). */
     IdempotencyKey: string;
+    /** @description The session id returned by POST /api/v1/sessions (a ULID). */
+    SessionId: string;
+    /** @description The trace id correlating one decision across events (docs/spec/09). */
+    TraceId: string;
+    /** @description Lowercase hex sha256 of a stored dev-trace sample, as referenced by frame_asset or crop_asset on text.observed. */
+    AssetSha256: string;
   };
   requestBodies: never;
   headers: never;
@@ -2554,6 +2777,175 @@ export interface operations {
       };
       404: components["responses"]["Problem"];
       409: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  startSession: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["StartSessionRequest"];
+      };
+    };
+    responses: {
+      /** @description Session accepted; state is starting and event_cursor is the session.started seq. */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Session"];
+        };
+      };
+      400: components["responses"]["Problem"];
+      403: components["responses"]["Problem"];
+      404: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
+      501: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  getSession: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The session id returned by POST /api/v1/sessions (a ULID). */
+        id: components["parameters"]["SessionId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The session snapshot, active or finished. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Session"];
+        };
+      };
+      404: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  stopSession: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The session id returned by POST /api/v1/sessions (a ULID). */
+        id: components["parameters"]["SessionId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The terminal snapshot when the run has settled. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Session"];
+        };
+      };
+      404: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  devEvents: {
+    parameters: {
+      query?: {
+        /** @description Restrict to one session's events. */
+        session_id?: string;
+        /** @description Restrict to events with this name; repeatable. */
+        name?: string;
+        /** @description Resume cursor: first seq to include. */
+        since_seq?: number;
+        limit?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description One page of envelopes in seq order. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DevEventsPage"];
+        };
+      };
+      400: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  devTrace: {
+    parameters: {
+      query?: {
+        limit?: number;
+      };
+      header?: never;
+      path: {
+        /** @description The trace id correlating one decision across events (docs/spec/09). */
+        trace_id: components["parameters"]["TraceId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The trace's events; truncated is true when more matched than the limit. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DevEventsPage"];
+        };
+      };
+      400: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  devAsset: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Lowercase hex sha256 of a stored dev-trace sample, as referenced by frame_asset or crop_asset on text.observed. */
+        sha256: components["parameters"]["AssetSha256"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The sample bytes with their content type. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "image/jpeg": string;
+          "image/png": string;
+        };
+      };
+      404: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
       default: components["responses"]["Problem"];
     };
   };

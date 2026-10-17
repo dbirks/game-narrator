@@ -744,6 +744,293 @@
         }
       }
     },
+    "/api/v1/sessions": {
+      "post": {
+        "operationId": "startSession",
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Start one session: run the published profile against a frame source.",
+        "description": "One active session at a time (docs/spec/01 key invariant). Only the edition's published revision runs. v4l2 and dolphin frame sources answer 501 unsupported_capability; replay directories must sit under the configured allowlist. dev_trace stores sampled frames and ROI crops under a per-session byte quota and additionally requires the caller to hold the developer role on this operator route (docs/spec/13 explicit toggle; ADR-0024).",
+        "x-required-role": "operator",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartSessionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Session accepted; state is starting and event_cursor is the session.started seq.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "403": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "409": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "501": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{id}": {
+      "get": {
+        "operationId": "getSession",
+        "tags": [
+          "sessions"
+        ],
+        "summary": "One session's current state and pipeline counters.",
+        "x-required-role": "viewer",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SessionId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The session snapshot, active or finished.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{id}/stop": {
+      "post": {
+        "operationId": "stopSession",
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Stop a session (idempotent).",
+        "x-required-role": "operator",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SessionId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The terminal snapshot when the run has settled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/api/v1/dev/events": {
+      "get": {
+        "operationId": "devEvents",
+        "tags": [
+          "dev"
+        ],
+        "summary": "Page the durable event log for the developer inspector.",
+        "description": "REST snapshot of the persisted events (the SSE stream's durable half), filterable by session and name. Payloads carry raw recognised gameplay text and provider details, so the route is developer-only (docs/spec/08: developer mode displays sensitive gameplay text and provider traces).",
+        "x-required-role": "developer",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Restrict to one session's events."
+          },
+          {
+            "name": "name",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Restrict to events with this name; repeatable."
+          },
+          {
+            "name": "since_seq",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
+            "description": "Resume cursor: first seq to include."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000,
+              "default": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of envelopes in seq order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DevEventsPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/api/v1/dev/traces/{trace_id}": {
+      "get": {
+        "operationId": "devTrace",
+        "tags": [
+          "dev"
+        ],
+        "summary": "Every persisted event carrying one trace id, in seq order.",
+        "description": "The correlated view docs/spec/09 asks for: one decision or recognition walked across frame, observation, text, candidate, commit and provider events by its trace_id. Developer-only for the same reason as dev/events.",
+        "x-required-role": "developer",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TraceId"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000,
+              "default": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The trace's events; truncated is true when more matched than the limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DevEventsPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/api/v1/dev/assets/{sha256}": {
+      "get": {
+        "operationId": "devAsset",
+        "tags": [
+          "dev"
+        ],
+        "summary": "One stored developer-trace sample (full-frame JPEG or ROI crop PNG).",
+        "description": "The only read path into a session's private dev-trace store (ADR-0024): text.observed carries the sha256, this route serves the bytes, and the developer-only grant is the privacy boundary (docs/spec/13). 404 covers never-stored, evicted-under-quota and invalid hashes alike.",
+        "x-required-role": "developer",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AssetSha256"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The sample bytes with their content type.",
+            "content": {
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "contentEncoding": "base64"
+                }
+              },
+              "image/png": {
+                "schema": {
+                  "type": "string",
+                  "contentEncoding": "base64"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
     "/api/v1/openapi.json": {
       "get": {
         "operationId": "getOpenAPIDocument",
@@ -797,7 +1084,10 @@
       "Cursor": { "name": "cursor", "in": "query", "schema": { "type": "string" }, "description": "An opaque next_cursor issued by this service for the same list. Anything else is a 400, not an empty page." },
       "Limit": { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 }, "description": "Hard upper bound 200. Out-of-range is refused rather than clamped: a clamped limit makes a client's 'give me everything' look successful while it silently received 50." },
       "SearchLimit": { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 }, "description": "Search hits carry whole message rows, so the ceiling is tighter than a list's." },
-      "IdempotencyKey": { "name": "Idempotency-Key", "in": "header", "required": true, "description": "At most 200 characters. Same key + same body replays the stored response; same key + different body is a 422. Held in the process's memory only: a restart forgets it, and a retried POST then lands on the store's own uniqueness rules instead (ADR-0017).", "schema": { "type": "string", "maxLength": 200 } }
+      "IdempotencyKey": { "name": "Idempotency-Key", "in": "header", "required": true, "description": "At most 200 characters. Same key + same body replays the stored response; same key + different body is a 422. Held in the process's memory only: a restart forgets it, and a retried POST then lands on the store's own uniqueness rules instead (ADR-0017).", "schema": { "type": "string", "maxLength": 200 } },
+      "SessionId": { "name": "id", "in": "path", "required": true, "description": "The session id returned by POST /api/v1/sessions (a ULID).", "schema": { "type": "string", "minLength": 1, "maxLength": 26 } },
+      "TraceId": { "name": "trace_id", "in": "path", "required": true, "description": "The trace id correlating one decision across events (docs/spec/09).", "schema": { "type": "string", "minLength": 1, "maxLength": 64 } },
+      "AssetSha256": { "name": "sha256", "in": "path", "required": true, "description": "Lowercase hex sha256 of a stored dev-trace sample, as referenced by frame_asset or crop_asset on text.observed.", "schema": { "type": "string", "minLength": 64, "maxLength": 64 } }
     },
     "responses": {
       "Problem": {
@@ -1277,6 +1567,306 @@
         "properties": {
           "jobs": { "type": "array", "items": { "$ref": "#/components/schemas/Job" } },
           "next_cursor": { "type": "string" }
+        }
+      },
+      "SessionState": {
+        "type": "string",
+        "enum": [
+          "starting",
+          "running",
+          "stopping",
+          "stopped",
+          "failed"
+        ],
+        "description": "Session lifecycle states (docs/spec/08 example workflow)."
+      },
+      "SessionMode": {
+        "type": "string",
+        "enum": [
+          "conservative",
+          "predictive"
+        ],
+        "description": "docs/spec/01: conservative commits only on the documented evidence bar; predictive may commit earlier at higher risk."
+      },
+      "FrameSourceKind": {
+        "type": "string",
+        "enum": [
+          "replay",
+          "test_pattern",
+          "v4l2",
+          "dolphin"
+        ],
+        "description": "replay reads a recording directory from the configured allowlist; test_pattern is the built-in synthetic source; v4l2 and dolphin are not implemented in this build and answer 501 unsupported_capability."
+      },
+      "FrameSource": {
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/FrameSourceKind"
+          },
+          "dir": {
+            "type": "string",
+            "description": "Replay recording directory; required for kind replay and must sit under the configured allowlist."
+          }
+        }
+      },
+      "StartSessionRequest": {
+        "type": "object",
+        "required": [
+          "profile_id",
+          "frame_source"
+        ],
+        "properties": {
+          "profile_id": {
+            "type": "string",
+            "description": "The profile to run; must be the edition's published revision."
+          },
+          "frame_source": {
+            "$ref": "#/components/schemas/FrameSource"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/SessionMode"
+          },
+          "dev_trace": {
+            "type": "boolean",
+            "default": false,
+            "description": "Store sampled frames (downscaled full-frame JPEG, width 640 max) and ROI crop PNGs under the per-session byte quota; requires the caller to hold the developer role."
+          }
+        }
+      },
+      "LatencySummary": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "p50_ns": {
+            "type": "integer"
+          },
+          "p95_ns": {
+            "type": "integer"
+          },
+          "mean_ns": {
+            "type": "integer"
+          },
+          "max_ns": {
+            "type": "integer"
+          }
+        }
+      },
+      "PipelineLatency": {
+        "type": "object",
+        "properties": {
+          "frame_to_ocr": {
+            "$ref": "#/components/schemas/LatencySummary"
+          },
+          "ocr_to_ranked": {
+            "$ref": "#/components/schemas/LatencySummary"
+          },
+          "frame_to_committed": {
+            "$ref": "#/components/schemas/LatencySummary"
+          }
+        }
+      },
+      "PipelineStats": {
+        "type": "object",
+        "description": "The pipeline's in-memory self-report: the numbers docs/spec/16's session gate reads.",
+        "required": [
+          "frames_delivered",
+          "frames_dropped",
+          "frames_processed",
+          "observations",
+          "ocr_calls",
+          "ocr_skipped_by_hash",
+          "ocr_cancelled",
+          "ocr_stale",
+          "ocr_errors",
+          "rankings",
+          "ranking_stale",
+          "rankings_abstained",
+          "commits",
+          "events",
+          "stale_generation_applied",
+          "latency"
+        ],
+        "properties": {
+          "frames_delivered": {
+            "type": "integer"
+          },
+          "frames_dropped": {
+            "type": "integer"
+          },
+          "frames_processed": {
+            "type": "integer"
+          },
+          "observations": {
+            "type": "integer"
+          },
+          "ocr_calls": {
+            "type": "integer"
+          },
+          "ocr_skipped_by_hash": {
+            "type": "integer"
+          },
+          "ocr_cancelled": {
+            "type": "integer"
+          },
+          "ocr_stale": {
+            "type": "integer"
+          },
+          "ocr_errors": {
+            "type": "integer"
+          },
+          "rankings": {
+            "type": "integer"
+          },
+          "ranking_stale": {
+            "type": "integer"
+          },
+          "rankings_abstained": {
+            "type": "integer"
+          },
+          "commits": {
+            "type": "integer"
+          },
+          "events": {
+            "type": "integer"
+          },
+          "stale_generation_applied": {
+            "type": "integer",
+            "description": "Must stay 0: the generation fence is absolute (docs/spec/01 invariant 2)."
+          },
+          "latency": {
+            "$ref": "#/components/schemas/PipelineLatency"
+          }
+        }
+      },
+      "Session": {
+        "type": "object",
+        "description": "A session's lifecycle state and counters (the API view of the runtime).",
+        "required": [
+          "session_id",
+          "profile_id",
+          "profile_revision",
+          "mode",
+          "frame_source",
+          "dev_trace",
+          "state",
+          "created_at",
+          "event_cursor",
+          "stats"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "profile_id": {
+            "type": "string"
+          },
+          "profile_revision": {
+            "type": "string"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/SessionMode"
+          },
+          "frame_source": {
+            "$ref": "#/components/schemas/FrameSourceKind"
+          },
+          "dev_trace": {
+            "type": "boolean"
+          },
+          "state": {
+            "$ref": "#/components/schemas/SessionState"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Terminal reason: requested, source_end, error or closed."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ended_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "event_cursor": {
+            "type": "integer",
+            "description": "The session.started seq; later session events resume from here."
+          },
+          "stats": {
+            "$ref": "#/components/schemas/PipelineStats"
+          }
+        }
+      },
+      "EventEnvelope": {
+        "type": "object",
+        "description": "The documented event wire shape (docs/spec/08 event stream).",
+        "required": [
+          "schema_version",
+          "event_id",
+          "seq",
+          "name",
+          "occurred_at",
+          "data"
+        ],
+        "properties": {
+          "schema_version": {
+            "type": "integer"
+          },
+          "event_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "seq": {
+            "type": "integer"
+          },
+          "trace_id": {
+            "type": "string"
+          },
+          "causation_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "DevEventsPage": {
+        "type": "object",
+        "description": "One page of the durable event log for the developer inspector.",
+        "required": [
+          "events",
+          "next_seq",
+          "truncated"
+        ],
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EventEnvelope"
+            }
+          },
+          "next_seq": {
+            "type": "integer",
+            "description": "Pass as since_seq to continue."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "true when the page holds exactly the limit (or more matches existed for a trace)."
+          }
         }
       }
     }

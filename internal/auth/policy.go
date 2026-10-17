@@ -92,6 +92,14 @@ func DefaultPolicy() *Policy {
 		// Session lifecycle, capture and audio are the "act on the physical
 		// world" tier (docs/spec/10: no unauthenticated capture preview or TTS
 		// abuse). Reads of the same resources stay lower.
+		//
+		// Reading one session's state is a viewer read (ADR-0024): the snapshot
+		// names profile, mode, counters and terminal state — no gameplay text,
+		// which stays on the developer-only event pages and dev-trace assets.
+		// It must sit before the generic operator rule below: Require scans in
+		// table order and the first matching grant wins, so a later viewer rule
+		// would be dead code that reads as if it applied.
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/sessions/{id}", Access: Require(RoleViewer)},
 		Grant{Method: "", Pattern: "/api/v1/sessions", Access: Require(RoleOperator)},
 		Grant{Method: "", Pattern: "/api/v1/sessions/{rest...}", Access: Require(RoleOperator)},
 		Grant{Method: "", Pattern: "/api/v1/capture/{rest...}", Access: Require(RoleOperator)},

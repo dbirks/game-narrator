@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -22,6 +23,8 @@ import (
 
 	"github.com/dbirks/game-narrator/internal/auth"
 	"github.com/dbirks/game-narrator/internal/bootstrap"
+	"github.com/dbirks/game-narrator/internal/games"
+	"github.com/dbirks/game-narrator/internal/scenario"
 	"github.com/dbirks/game-narrator/internal/store"
 )
 
@@ -1387,4 +1390,270 @@ func newJar() http.CookieJar {
 		panic(err)
 	}
 	return jar
+}
+
+// --- serve: the session runtime and the developer inspector ----------------
+
+// TestServeWiresTheSessionRuntime is the M2 acceptance path through the real
+// CLI wiring (not a reassembled copy): `serve` starts the session runtime
+// over the live database, a replay session with developer tracing runs the
+// real pipeline with the production Tesseract engine, and the inspector
+// reads back the evidence the run actually stored. The profile is imported
+// through the store's own write path before serve starts, the same way an
+// operator prepares the database with the CLI.
+func TestServeWiresTheSessionRuntime(t *testing.T) {
+	if _, err := exec.LookPath("tesseract"); err != nil {
+		t.Skip("NOT RUN: tesseract is not installed; the session E2E needs the production OCR engine")
+	}
+	clearGatewayEnv(t)
+	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	dataDir := filepath.Join(t.TempDir(), "sessions-serve")
+	addr := freeListenAddress(t)
+	clipDir, err := filepath.Abs(filepath.Join("..", "..", "testdata", "synthetic", "replay", "dialogue-advance-001"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The serve process inherits the test's environment: point the replay
+	// allowlist at the synthetic clip explicitly, the documented production
+	// knob (GAME_NARRATOR_REPLAY_ROOTS) rather than the dev-checkout default.
+	t.Setenv("GAME_NARRATOR_REPLAY_ROOTS", clipDir)
+
+	if code, err := run([]string{"migrate", "--data-dir", dataDir}, log); err != nil || code != 0 {
+		t.Fatalf("migrate: code=%d err=%v", code, err)
+	}
+	devToken := adminTokenForTest(t, dataDir, log, "dev-user", "developer", "dev-probe")
+	opToken := adminTokenForTest(t, dataDir, log, "op-user", "operator", "op-probe")
+	viewToken := adminTokenForTest(t, dataDir, log, "view-user", "viewer", "view-probe")
+
+	// The database is prepared before the listener starts, exactly the way
+	// an operator prepares it: a published synthetic profile the session
+	// can run.
+	st, err := store.Open(context.Background(), store.DBPath(dataDir))
+	if err != nil {
+		t.Fatalf("opening the prepared database: %v", err)
+	}
+	profileID := seedSyntheticProfileForServe(t, st)
+	if err := st.Close(); err != nil {
+		t.Fatalf("closing the prepared database: %v", err)
+	}
+
+	serveDone := make(chan int, 1)
+	go func() {
+		code, err := run([]string{"serve", "--listen", addr, "--data-dir", dataDir}, log)
+		if err != nil {
+			t.Errorf("serve: %v", err)
+		}
+		serveDone <- code
+	}()
+	defer func() {
+		syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		select {
+		case code := <-serveDone:
+			if code != 0 {
+				t.Errorf("serve exit code = %d, want 0 after a clean drain", code)
+			}
+		case <-time.After(30 * time.Second):
+			t.Error("serve did not exit after SIGTERM")
+		}
+	}()
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	base := "http://" + addr + "/api/v1"
+	waitReady(t, client, addr)
+
+	call := func(token, method, path string, body []byte) (int, map[string]any, []byte) {
+		t.Helper()
+		var reader io.Reader
+		if body != nil {
+			reader = bytes.NewReader(body)
+		}
+		req, err := http.NewRequest(method, base+path, reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		var parsed map[string]any
+		if json.Valid(raw) {
+			_ = json.Unmarshal(raw, &parsed)
+		}
+		return resp.StatusCode, parsed, raw
+	}
+
+	// The session surface requires a credential, whatever its role.
+	if code, _, raw := call("", http.MethodPost, "/sessions", []byte(`{}`)); code != http.StatusUnauthorized {
+		t.Fatalf("anonymous POST /sessions = %d, want 401 (%s)", code, trimForLog(string(raw)))
+	}
+
+	// dev_trace is the developer toggle on an operator route: the operator
+	// asks for it and is refused before a session exists.
+	startBody := []byte(`{"profile_id":"` + profileID + `","frame_source":{"kind":"replay","dir":"` + clipDir +
+		`"},"mode":"conservative","dev_trace":true}`)
+	if code, _, raw := call(opToken, http.MethodPost, "/sessions", startBody); code != http.StatusForbidden {
+		t.Fatalf("operator dev_trace start = %d, want 403 (%s)", code, trimForLog(string(raw)))
+	}
+
+	// The developer starts the replay; the pipeline runs on Tesseract.
+	code, started, raw := call(devToken, http.MethodPost, "/sessions", startBody)
+	if code != http.StatusCreated {
+		t.Fatalf("developer start = %d, want 201 (%s)", code, trimForLog(string(raw)))
+	}
+	sessID, _ := started["session_id"].(string)
+	if sessID == "" {
+		t.Fatalf("no session_id in %s", trimForLog(string(raw)))
+	}
+
+	// The viewer may read the session's state while it runs.
+	if code, _, raw := call(viewToken, http.MethodGet, "/sessions/"+sessID, nil); code != http.StatusOK {
+		t.Fatalf("viewer GET /sessions/{id} = %d, want 200 (%s)", code, trimForLog(string(raw)))
+	}
+
+	// The replay ends on its own; poll through the API to the terminal state.
+	var state string
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) && state != "stopped" && state != "failed" {
+		_, body, raw := call(devToken, http.MethodGet, "/sessions/"+sessID, nil)
+		state, _ = body["state"].(string)
+		if state == "" {
+			t.Fatalf("poll lost the session: %s", trimForLog(string(raw)))
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if state != "stopped" {
+		t.Fatalf("terminal state = %q, want stopped", state)
+	}
+
+	// Stop stays idempotent on the finished session.
+	if code, stopped, raw := call(devToken, http.MethodPost, "/sessions/"+sessID+"/stop", []byte(`{}`)); code != http.StatusOK {
+		t.Fatalf("stop = %d, want 200 (%s)", code, trimForLog(string(raw)))
+	} else if stopped["state"] != "stopped" {
+		t.Fatalf("stop response state = %v, want stopped", stopped["state"])
+	}
+
+	// The inspector: the developer page carries the session's events, the
+	// trace of one observation under its trace id, and the stored frame.
+	code, page, raw := call(devToken, http.MethodGet, "/dev/events?session_id="+sessID+"&limit=1000", nil)
+	if code != http.StatusOK {
+		t.Fatalf("dev/events = %d, want 200 (%s)", code, trimForLog(string(raw)))
+	}
+	evs, _ := page["events"].([]any)
+	var sawStarted, frameAsset string
+	for _, rawEv := range evs {
+		ev, _ := rawEv.(map[string]any)
+		if ev == nil {
+			continue
+		}
+		if ev["name"] == "session.started" {
+			sawStarted = "1"
+		}
+		if ev["name"] == "text.observed" {
+			data, _ := ev["data"].(map[string]any)
+			if s, ok := data["frame_asset"].(string); ok && s != "" {
+				frameAsset = s
+			}
+		}
+	}
+	if sawStarted == "" {
+		t.Fatalf("dev/events has no session.started for %s (%d events)", sessID, len(evs))
+	}
+	if frameAsset == "" {
+		t.Fatalf("no text.observed carried a frame_asset reference (%d events)", len(evs))
+	}
+	if code, _, raw := call(viewToken, http.MethodGet, "/dev/events?session_id="+sessID, nil); code != http.StatusForbidden {
+		t.Fatalf("viewer dev/events = %d, want 403 (%s)", code, trimForLog(string(raw)))
+	}
+	code, _, raw = call(devToken, http.MethodGet, "/dev/assets/"+frameAsset, nil)
+	if code != http.StatusOK {
+		t.Fatalf("dev/assets = %d, want 200 (%s)", code, trimForLog(string(raw)))
+	}
+}
+
+// seedSyntheticProfileForServe imports the synthetic profile through the
+// store's own write path (friendly ids mapped to ULIDs, the production
+// import's behaviour) and publishes it. The cmd tests must not link internal
+// test helpers, so this is the store-write copy of the seeder the runtime
+// and api suites keep for themselves; the seeding rules are a store contract
+// all three must respect.
+func seedSyntheticProfileForServe(t *testing.T, st *store.Store) string {
+	t.Helper()
+	profile, err := scenario.LoadProfile(filepath.Join("..", "..", "testdata", "synthetic", "profiles", "dialogue-advance-001.json"))
+	if err != nil {
+		t.Fatalf("load profile: %v", err)
+	}
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	game := games.Game{ID: games.NewID(), Slug: "synthetic-serve-demo", Title: "Synthetic Demo",
+		Platform: "gamecube", UserTags: []byte(`["synthetic"]`), CreatedAt: now}
+	if err := st.CreateGame(ctx, game); err != nil {
+		t.Fatalf("CreateGame: %v", err)
+	}
+	edition := games.Edition{ID: games.NewID(), GameID: game.ID, Region: "US",
+		Language: "en", Revision: "rev0", Locale: "en_US"}
+	if err := st.CreateEdition(ctx, edition); err != nil {
+		t.Fatalf("CreateEdition: %v", err)
+	}
+	draft, err := st.CreateDraftProfile(ctx, edition.ID)
+	if err != nil {
+		t.Fatalf("CreateDraftProfile: %v", err)
+	}
+	byFriendly := map[string]string{}
+	msgs := make([]games.Message, 0, len(profile.Messages))
+	for _, m := range profile.ToMessages() {
+		id := games.NewID()
+		byFriendly[m.ID] = id
+		row := m
+		row.ID, row.ProfileID, row.SourceMessageID = id, draft.ID, m.ID
+		row.AttributionStatus = games.AttributionUnknown
+		row.Revision = 1
+		row.CreatedAt, row.UpdatedAt = now, now
+		msgs = append(msgs, row)
+	}
+	if err := st.PutMessages(ctx, draft.ID, msgs, nil); err != nil {
+		t.Fatalf("PutMessages: %v", err)
+	}
+	regions := make([]games.Region, 0, len(profile.Regions))
+	for _, r := range profile.ToRegions() {
+		r.ID, r.ProfileID = games.NewID(), draft.ID
+		r.DetectMethod = games.DetectManual
+		r.Revision = 1
+		r.UpdatedAt = now
+		regions = append(regions, r)
+	}
+	if err := st.PutRegions(ctx, draft.ID, regions); err != nil {
+		t.Fatalf("PutRegions: %v", err)
+	}
+	edges := profile.ToEdges()
+	for i := range edges {
+		edges[i].FromID = byFriendly[edges[i].FromID]
+		edges[i].ToID = byFriendly[edges[i].ToID]
+		edges[i].CreatedAt = now
+	}
+	if err := st.PutEdges(ctx, draft.ID, edges); err != nil {
+		t.Fatalf("PutEdges: %v", err)
+	}
+	_, rev, err := st.GetProfile(ctx, draft.ID)
+	if err != nil {
+		t.Fatalf("GetProfile: %v", err)
+	}
+	if err := st.SetProfileStatus(ctx, draft.ID, games.StatusReview, rev); err != nil {
+		t.Fatalf("SetProfileStatus: %v", err)
+	}
+	_, rev, err = st.GetProfile(ctx, draft.ID) // SetProfileStatus moves the row version
+	if err != nil {
+		t.Fatalf("GetProfile: %v", err)
+	}
+	published, err := st.Publish(ctx, draft.ID, rev, "serve-test@local")
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	return published.ID
 }
