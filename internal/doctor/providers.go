@@ -45,7 +45,14 @@ func (r *runner) checkRoles(ctx context.Context) {
 
 	for _, role := range providers.AllRoles {
 		role, cfg := role, roles[role]
-		r.add(ctx, "providers."+string(role), r.opts.ModelTimeout, func(ctx context.Context) Check {
+		budget := r.opts.ModelTimeout
+		if role == providers.RoleDecision && decisionProbeTimeout < budget {
+			// The System One probe gets its own (shorter) budget: a cold gateway
+			// can take ~13 s (ADR-0021), but a wedged one must not hold the
+			// report for the full model timeout.
+			budget = decisionProbeTimeout
+		}
+		r.add(ctx, "providers."+string(role), budget, func(ctx context.Context) Check {
 			return r.checkRole(ctx, role, cfg)
 		})
 	}
@@ -60,6 +67,11 @@ func (r *runner) checkRole(ctx context.Context, role providers.Role, cfg provide
 			Detail:  fmt.Sprintf("protocol %s, request budget %s", cfg.Protocol, cfg.Timeout),
 			Remedy:  fmt.Sprintf("set %s to a deployed model id, then re-run doctor", modelEnv),
 		}
+	}
+	if role == providers.RoleDecision {
+		// The decision role speaks System One, not OpenAI chat: it gets the
+		// real decision probe instead of the chat/vision probe path below.
+		return r.checkDecisionRole(ctx, role, cfg)
 	}
 	if !providers.ProtocolImplemented(cfg.Protocol) {
 		// A model id alone is not proof of a working route: the System One,

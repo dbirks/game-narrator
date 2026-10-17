@@ -166,6 +166,9 @@ type Options struct {
 	// Probe overrides the model client (tests); nil uses the real OpenAI
 	// compatible client for the role.
 	Probe ProviderProbe
+	// DecisionProbe overrides the System One decision probe (tests); nil
+	// builds the real systemone client per role.
+	DecisionProbe DecisionProbe
 
 	// OCRImage overrides the embedded controlled image.
 	OCRImage []byte

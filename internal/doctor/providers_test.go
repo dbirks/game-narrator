@@ -68,15 +68,17 @@ func TestUnconfiguredRolesAreNotConfigured(t *testing.T) {
 func TestUndeployedRolesAreDegradedEvenWhenConfigured(t *testing.T) {
 	h := newFakeHost(t)
 	h.withEnv("GAME_NARRATOR_GATEWAY_URL", "http://gateway.invalid/v1")
+	// The decision role now has a real client (ADR-0021) and is covered by
+	// the decision probe tests in decision_test.go, not by this list.
 	for _, role := range []providers.Role{
-		providers.RoleDecision, providers.RoleVoiceDesign, providers.RoleVoiceClone, providers.RoleSpeechASR,
+		providers.RoleVoiceDesign, providers.RoleVoiceClone, providers.RoleSpeechASR,
 	} {
 		modelEnv, _, _, _ := providers.RoleEnvVars(role)
 		h.withEnv(modelEnv, "some-checkpoint")
 	}
 	rep := h.run()
 	for _, role := range []providers.Role{
-		providers.RoleDecision, providers.RoleVoiceDesign, providers.RoleVoiceClone, providers.RoleSpeechASR,
+		providers.RoleVoiceDesign, providers.RoleVoiceClone, providers.RoleSpeechASR,
 	} {
 		c := h.check(rep, "providers."+string(role))
 		mustStatus(t, c, StatusDegraded)
