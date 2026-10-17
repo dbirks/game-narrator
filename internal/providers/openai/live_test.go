@@ -27,15 +27,24 @@ import (
 //	GAME_NARRATOR_GATEWAY_TOKEN_ENV    names the variable holding the token
 //	                                  (default GAME_NARRATOR_GATEWAY_TOKEN)
 //	GAME_NARRATOR_LIVE_MODEL           model id to probe
-//	                                  (default qwen3-8-flash-next)
+//	                                  (default qwen3-8-27b)
+//	GAME_NARRATOR_LIVE_VISION          set to 1 to enable the vision test,
+//	                                  which sends image input to the gateway
+//	                                  model (not otherwise run by default)
 //
 // Nothing here may print a URL, host or token. Log lines carry the model id,
 // latency and token counts only.
 
-const defaultLiveModel = "qwen3-8-flash-next"
+const defaultLiveModel = "qwen3-8-27b"
 
 const liveSkipMessage = "NOT RUN: set GAME_NARRATOR_GATEWAY_URL and the token env named by " +
 	providers.EnvGatewayTokenEnv + " (default " + providers.EnvGatewayToken + ") to run live provider contract tests"
+
+// liveVisionSkipMessage gates the vision probe: image input to the gateway
+// model is not confirmed safe (concurrent one-image requests crashed the
+// inference engine), so it only runs when explicitly opted in.
+const liveVisionSkipMessage = "NOT RUN: vision live tests are opt-in (GAME_NARRATOR_LIVE_VISION=1); " +
+	"image input to the gateway model is not confirmed safe"
 
 // liveClient loads the shared gateway through the normal role configuration
 // path, so the live tests exercise the same resolution code the service uses.
@@ -127,6 +136,9 @@ func TestLiveChatTextAnswersPong(t *testing.T) {
 // pure red, right half pure blue) as a data URL and requires the model to name
 // both colours. This is the vision_ocr_fallback role's real capability probe.
 func TestLiveChatVisionNamesBothColors(t *testing.T) {
+	if os.Getenv("GAME_NARRATOR_LIVE_VISION") != "1" {
+		t.Skip(liveVisionSkipMessage)
+	}
 	client := liveClient(t, 120*time.Second)
 	img := redBluePNG(t, 64, 64)
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)

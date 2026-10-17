@@ -11,27 +11,26 @@ development host, with no UNO Q involved.
 
 ## Status
 
-Early development — Milestone 0 (environment/discovery and executable
-infrastructure) is in progress and nothing after it has started. What runs today
-is a Go service with an embedded React UI, SQLite migrations, model-role
-configuration and a Playwright-checked diagnostics page; treat everything else
-as designed but unbuilt.
+Work proceeds through the milestones in
+[docs/spec/16](docs/spec/16-implementation-and-acceptance.md); only committed
+work is claimed, and hardware or private-resource gates are marked NOT
+VERIFIED / blocked rather than passed.
 
-| Milestone | Scope (see [docs/spec/16](docs/spec/16-implementation-and-acceptance.md)) | Status      |
+| Milestone | Scope (see [docs/spec/16](docs/spec/16-implementation-and-acceptance.md)) | Status |
 | --------- | ------------------------------------------------------------------------- | ----------- |
-| M0        | Environment/discovery and executable infrastructure                       | in progress |
-| M1        | Full foundation and portability                                           | not started |
-| M2        | Video + recognition engine                                                | not started |
-| M3        | Model integration and knowledge agent                                     | not started |
-| M4        | Complete voice and playback pipeline                                      | not started |
-| M5        | Complete React product                                                    | not started |
-| M6        | Dolphin live driver and fixture factory                                   | not started |
-| M7        | Full live-model and adverse-condition validation                          | not started |
-| M8        | UNO Q and distributable release                                           | not started |
+| M0        | Environment/discovery and executable infrastructure                       | Done — closed out in the commit log; decisions recorded in ADRs 0001–0014 |
+| M1        | Full foundation and portability                                           | In progress — schema, profile revisions/atomic publish, job queue + event store, auth/sessions, REST+OpenAPI, asset store and `.gnprofile` export/import are committed (ADRs 0014–0017); acceptance pass not yet recorded |
+| M2        | Video + recognition engine                                                | In progress — frame sources (replay/FFmpeg/V4L2), OCR engine, dialogue state machine, candidate matcher and pipeline runner are committed; the first frame-replay run used real Tesseract |
+| M3        | Model integration and knowledge agent                                     | In progress — router with circuit breakers (ADR 0019), Clef-Omni System One client (ADR 0021), onboarding agent core/tools/API (ADRs 0025–0028) committed; the ASR client is still blocked |
+| M4        | Complete voice and playback pipeline                                      | In progress — Qwen3-TTS client + voice registry (ADR 0022), speech cache + fenced playback scheduler (ADR 0023) and the voice workflow (ADR 0030) are committed; ASR QA is blocked on an endpoint |
+| M5        | Complete React product                                                    | In progress — catalog UI, onboarding chat, `/developer` inspector and the player view ("M5 part 1") are committed |
+| M6        | Dolphin live driver and fixture factory                                   | In progress — headless Dolphin render + controller input proven on the dev host (ADR 0007); live driver and fixture factory not built |
+| M7        | Full live-model and adverse-condition validation                          | Not started beyond the live provider contract tests and recorded-replay groundwork |
+| M8        | UNO Q and distributable release                                           | Snapshot pipeline verified locally (ADR 0033); UNO Q install NOT VERIFIED |
 
 Unimplemented gates (`test-replay`, `test-dolphin`, `test-models`,
-`test-hardware`, `release-snapshot`) print `NOT RUN: ...` and fail — they can
-never report success before the work exists.
+`test-hardware`) print `NOT RUN: ...` and fail — they can never report
+success before the work exists.
 
 ## How it works
 
@@ -51,8 +50,10 @@ yet.
    protocol, [`docs/spec/06`](docs/spec/06-inference-contracts.md)) combined
    with the character/scene graph and the local match scores, with explicit
    abstention when it is not confident. The general `fast_reasoning` model is
-   not the speaker decider; it is only consulted for unresolved OCR or unusual
-   layout.
+   not the speaker decider; per [`docs/spec/05`](docs/spec/05-runtime-recognition.md)
+   ("Clef adjudication and commit policy") the fast LLM/VLM is called only for
+   unresolved OCR, unusual layout, scene transitions or speaker anomalies, and
+   may send a screenshot crop plus recent context bounded by the privacy policy.
 6. Synthesize the line in that character's approved voice, or reuse a cached
    clip keyed on voice and text versions.
 7. Play it to the configured audio output, and cancel playback the moment the
@@ -127,15 +128,24 @@ Useful knobs for `serve` and `migrate`:
 
 Copy `.env.example` and fill it in — every value there is a placeholder on a
 `.invalid` host, so a forgotten default fails loudly instead of pointing at
-somebody else's server. Model **roles** are configured by environment variables
-(`GAME_NARRATOR_ROLE_*`), not raw URLs in a config file; a role is enabled only
-when its model is set, and preflight reports the rest as `NOT CONFIGURED` while
-the service keeps running. In this build only the chat-style roles have adapters
-(`agent_reasoning`, `fast_reasoning`, `vision_ocr_fallback`); `decision`,
-`voice_design`, `voice_clone` and `speech_asr` are representable in configuration
-but not implemented. `examples/config/` holds the illustrative YAML/env samples
-from the spec kit. Never commit `.env` — it is gitignored, and so is any real
-token.
+somebody else's server. Model **roles** are configured by environment
+variables (`GAME_NARRATOR_ROLE_*`), not raw URLs in a config file; a role is
+enabled only when its model is set, and preflight reports the rest as `NOT
+CONFIGURED` while the service keeps running. In this build every role except
+`speech_asr` has an adapter: `agent_reasoning`, `fast_reasoning` and
+`vision_ocr_fallback` use the OpenAI-compatible chat client
+(`internal/providers/openai`), `decision` uses the System One / Clef-Omni
+client (`internal/providers/systemone`, ADR 0021) and
+`voice_design`/`voice_clone` use the Qwen3-TTS client
+(`internal/providers/tts`, ADR 0022). `speech_asr` has no adapter and no ASR
+endpoint yet — it is BLOCKED on hardware. Deployment is separate from the
+code: the gateway serves the chat roles, and `decision` and
+`voice_design`/`voice_clone` have live endpoints, exercised by the live
+provider tests (ADRs 0021, 0022 and 0030); `vision_ocr_fallback` has an
+adapter but no vision model configured, and `speech_asr` is BLOCKED — so
+preflight reports the missing ones `NOT CONFIGURED` while the service keeps
+running. `examples/config/` holds the illustrative YAML/env samples from the
+spec kit. Never commit `.env` — it is gitignored, and so is any real token.
 
 ## Game content and copyright
 
