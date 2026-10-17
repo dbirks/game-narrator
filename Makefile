@@ -99,8 +99,10 @@ test-full:
 	printf '\n=== test-full summary ===\n'; \
 	printf 'gate | result | detail\n'; \
 	printf '%b' "$$table" ; \
-	[ $$fail -eq 0 ] || exit 1 ; \
-	[ $$notrun -eq 0 ]
+	rc=0 ; \
+	if [ $$fail -ne 0 ] ; then rc=1 ; elif [ $$notrun -ne 0 ] ; then rc=2 ; fi ; \
+	printf '%s' "$$rc" > artifacts/gates/test-full.rc ; \
+	exit $$rc
 
 ## bench: the docs/spec/12 benchmark gate — the holdout split of the committed
 ## synthetic set, replayed through the real pipeline (real Tesseract, real

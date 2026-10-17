@@ -42,7 +42,9 @@ instruction), and writes `artifacts/gates/<gate>.xml`. Its exit code is 0 =
 every test ran and passed, 1 = any FAIL (or `go test` itself failed), 2 =
 nothing failed but at least one test is NOT RUN; the gate records that code
 in `artifacts/gates/<gate>.rc` because `make` maps any recipe failure to its
-own exit status 2.
+own exit status 2. GNU make reports any failing recipe as make exit status
+2, so scripts must read `artifacts/gates/<gate>.rc` (0 pass, 1 fail, 2 NOT
+RUN) or the printed summary table, not make's own exit code.
 
 ## Host
 
