@@ -1,6 +1,6 @@
 # ADR-0041: Storage resilience evidence — disk full, power outage, asset store offline (M7 storage rows)
 
-Date: 2026-10-17
+Date: 2026-10-17 (amended 2026-10-17: "Reference check before delete" section below)
 Status: accepted
 Records decisions made in this change (`internal/store/repo_tx.go`, `internal/assets/assets.go`, `internal/assets/local.go`, `internal/speech/cache.go`, plus the resilience tests `internal/store/resilience_test.go`, `internal/assets/resilience_test.go`, `internal/jobs/resilience_test.go`, `internal/speech/resilience_test.go`).
 Owners: project
@@ -81,3 +81,18 @@ No schema change, no data migration. Reversal: drop `ErrNoSpace` and the `SQLITE
 - Runtime eviction policy: on `ErrNoSpace`/`ENOSPC` from a commit, call `EvictTransient` with a quota derived from the failed write's size, then retry once (bounded-retry rule).
 - Persistent LRU recency if cold-start eviction order becomes measurable (APM: eviction count, freed bytes).
 - UNO Q hardware smoke: real disk-full (fill the eMMC) and real power pull, per the "still unproven" list.
+
+## Amendment: Reference check before delete (2026-10-17)
+
+Review of the eviction contract (commit daaeaa0) found the safety argument in decision 3 — "nothing outside this index names these blobs" — true of the **entries** but false of the **blobs**: assets are content-addressed and *shared*, so the blob hash of an evicted cache entry can be the very hash an approved voice reference, an audition clip, a character portrait or an imported source names. Deleting that blob destroys catalogue bytes under the guise of cache reclamation; the previous `TestEvictTransientNeverTouchesForeignBlobs` only covered a foreign blob with *different* bytes.
+
+Decision (amends decision 3, `EvictTransient`):
+
+1. **Catalogue-side check.** `store.Store.AssetReferenced(ctx, sha256) (bool, error)` (`internal/store/asset_ref.go`): one UNION over all five columns that name asset-store blobs outside the speech cache index — `source_blobs.sha256` (PK), `sources.content_sha256`, `characters.portrait_asset_id`, `voice_profiles.canonical_reference_asset_id`, `voice_auditions.asset_sha256`. Every branch is an indexed point lookup: two were indexed at creation (0001), migration `0010_asset_reference_indexes.sql` adds the other three (indexes only — no column, no default, no data change; existing databases upgrade on the next `migrate`). Columns whose hashes live only inside JSON (`characters.visual_descriptors`, `scenes.visual_anchors`, `regions.mask_asset_ids`, `messages.attribution_evidence`) are evidence pointers, not ownership references, and are deliberately out of scope. A malformed hash is an error, never "unreferenced" — answering no there would authorise deleting an unaddressable blob.
+2. **Cache-side gate.** `assets.ReferenceChecker` interface (`internal/assets/reference.go`); `speech.Cache` takes it as an OPTIONAL `Option` (`speech.New(…, WithReferenceChecker(store))`), so existing construction sites keep compiling. Per evicted entry: checker says "referenced" → the index entry is dropped (still counted as `evicted`) but the blob is kept, so its size does not enter `freed`; "unreferenced" → the blob is deleted; checker error OR no checker configured → the blob is kept and counted in `Stats().RefusedDeletes`. **A cache without a checker never deletes a blob at all** (index-only eviction, logged once per process): safe by default, because deleting a blob without proof that it is unshared is exactly how approved content is lost.
+
+Tests (each labels what is stubbed, AGENTS.md rule 3): `internal/store/asset_ref_test.go` — the query sees one row in each referencing table, is index-backed across the whole UNION (`EXPLAIN QUERY PLAN` asserts no table scan), and rejects malformed hashes; `internal/speech/evict_reference_test.go` — shared hash (a voice-reference row naming the entry's exact blob) → entry evicted, blob still verifies, `freed` = 0, refusal counted; no checker → index-only with both blobs intact; checker error → blob kept. The pre-existing resilience eviction tests now wire an explicit "unshared" stub checker (the real query is proven in `internal/store`).
+
+Wiring: the production call sites (`cmd/game-narrator/main.go`, the runtime speech cache) still construct the cache without a checker, so eviction is index-only there — the safe default, and a visible one (`RefusedDeletes` > 0 after any eviction). Those packages are owned by other workers at the time of this amendment; wiring `WithReferenceChecker(store)` at those call sites is a **follow-up**, not a done item.
+
+Reversal addendum: additionally drop `AssetReferenced` + its tests, `assets.ReferenceChecker`, the cache option, `RefusedDeletes` and the `0010` indexes (index-only; `DROP INDEX` is trivially reversible), and restore the old unconditional `Delete` in `EvictTransient`. Nothing else changes.

@@ -212,6 +212,27 @@ func (o *offlineStore) RecoverStaging(ctx context.Context) (int, error) {
 
 // ── disk full: refuse, then recover via LRU eviction ───────────────────────
 
+// refCheckerStub is a test stand-in for assets.ReferenceChecker: the real
+// implementation is store.Store.AssetReferenced (one UNION over the
+// catalogue's referencing tables, covered by internal/store's tests); this
+// stub fixes the catalogue's answer so the cache's gating logic — referenced
+// keeps the blob, error keeps the blob, no checker deletes nothing — is
+// proven on its own. It is a stub, not a replay of the real catalogue.
+// (AGENTS.md rule 3: say so, and say where the real one is tested.)
+type refCheckerStub struct {
+	referenced func(hash string) (bool, error)
+}
+
+func (r refCheckerStub) AssetReferenced(_ context.Context, sha256 string) (bool, error) {
+	return r.referenced(sha256)
+}
+
+// unsharedChecker is a refCheckerStub answering "nothing else names this
+// blob" — the catalogue's answer for a blob only the speech cache wrote.
+func unsharedChecker() refCheckerStub {
+	return refCheckerStub{referenced: func(string) (bool, error) { return false, nil }}
+}
+
 // TestDiskFullCacheRefusesThenEvictionRecovers is the speech half of the
 // "Disk full" row: "refuse new assets, evict safe transient cache". Three
 // entries are committed; the fourth cannot fit. It must fail with a typed
@@ -225,7 +246,10 @@ func TestDiskFullCacheRefusesThenEvictionRecovers(t *testing.T) {
 	}
 	store := &capacityStore{inner: inner}
 	idx := NewMemIndex()
-	c := New(store, idx, 2)
+	// A checker that answers "unshared" (stub; the real catalogue query lives
+	// in internal/store): without one, eviction is index-only and frees no
+	// bytes, which is exactly what the disk-full recovery needs to avoid.
+	c := New(store, idx, 2, WithReferenceChecker(unsharedChecker()))
 
 	// One utterance size for every key (different frequencies, same length):
 	// the capacity math below is exact.
@@ -311,7 +335,9 @@ func TestDiskFullCacheRefusesThenEvictionRecovers(t *testing.T) {
 // TestEvictTransientNeverTouchesForeignBlobs is the safety half of the same
 // row: eviction may only reclaim the cache's own blobs. A blob that the cache
 // never wrote (an approved voice reference or imported source, committed
-// directly by the catalogue) must survive a full eviction untouched.
+// directly by the catalogue) must survive a full eviction untouched — while
+// the cache's OWN unshared blobs are actually deleted, which is what makes
+// the eviction reclaim space at all.
 func TestEvictTransientNeverTouchesForeignBlobs(t *testing.T) {
 	ctx := context.Background()
 	inner, err := assets.NewLocal(t.TempDir() + "/assets")
@@ -328,7 +354,7 @@ func TestEvictTransientNeverTouchesForeignBlobs(t *testing.T) {
 	store := &capacityStore{inner: inner}
 	store.SetCapacity(1 << 20)
 	idx := NewMemIndex()
-	c := New(store, idx, 1)
+	c := New(store, idx, 1, WithReferenceChecker(unsharedChecker()))
 	ka, kb := testKey(t, "x"), testKey(t, "y")
 	if _, err := c.GetOrGenerate(ctx, ka, PriorityCurrent, func(context.Context) (tts.Audio, error) { return toneAudio(), nil }); err != nil {
 		t.Fatalf("commit a: %v", err)
@@ -351,8 +377,13 @@ func TestEvictTransientNeverTouchesForeignBlobs(t *testing.T) {
 	if _, ok := idx.Lookup(ka); ok {
 		t.Fatal("eviction left an index entry behind")
 	}
+	// The cache's OWN unshared blobs were deleted (that is what reclaims
+	// space); the store holds exactly the foreign blob now.
+	if n := countBlobs(t, inner); n != 1 {
+		t.Fatalf("store has %d blobs after eviction, want 1 (only the foreign blob)", n)
+	}
 
-	t.Logf("resilience: disk_full speech cache safety: full eviction removed %d transient entries, foreign blob %s… intact", evicted, foreign.SHA256[:12])
+	t.Logf("resilience: disk_full speech cache safety: full eviction removed %d transient entries and their unshared blobs, foreign blob %s… intact", evicted, foreign.SHA256[:12])
 }
 
 // ── asset store offline ─────────────────────────────────────────────────────

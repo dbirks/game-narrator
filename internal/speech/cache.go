@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
@@ -99,17 +100,29 @@ type Cache struct {
 
 	// Stats are decision counters (docs/spec/13: counters a report can act
 	// on), not bookkeeping ticks.
-	hits      int64
-	misses    int64
-	qaSkips   int64
-	generated int64
-	failed    int64
+	hits           int64
+	misses         int64
+	qaSkips        int64
+	generated      int64
+	failed         int64
+	refusedDeletes int64
 
 	// LRU evidence for EvictTransient (docs/spec/13 "Disk full": evict safe
 	// transient cache). lruMu guards lru; it is a separate lock so eviction
 	// never contends with the inflight singleflight map.
 	lruMu sync.Mutex
 	lru   map[CacheKey]lruState
+
+	// refCheck answers whether a blob the cache is about to delete is still
+	// named by any catalogue record (ADR-0041 "Reference check before
+	// delete"). Optional by design: a cache built WITHOUT one may only
+	// evict index entries and must never delete a blob, because only a
+	// checker can prove the blob unshared.
+	refCheck assets.ReferenceChecker
+	// noCheckerWarned logs the no-checker degradation exactly once per
+	// process so the first operator to see it is told, without a log line
+	// per evicted entry.
+	noCheckerWarned sync.Once
 }
 
 // CacheStats is a snapshot of Cache's decision counters.
@@ -120,24 +133,51 @@ type CacheStats struct {
 	Generated  int64
 	Failed     int64
 	PendingGen int64
+	// RefusedDeletes counts EvictTransient victims whose blob was NOT deleted:
+	// referenced by the checker, kept without a checker, or kept on a checker
+	// error. A nonzero value is a decision, not bookkeeping: freed space fell
+	// short of the quota for a provable reason.
+	RefusedDeletes int64
 }
 
 // New opens a cache. maxConcurrentGenerations bounds simultaneous provider
-// calls (≤ 0 means 1). The index is loaded lazily on first use.
-func New(Assets assets.Store, Index Index, maxConcurrentGenerations int) *Cache {
+// calls (≤ 0 means 1). The index is loaded lazily on first use. Options are
+// optional; the default configuration (no options) keeps deletion safe by
+// refusing it: EvictTransient runs index-only until a ReferenceChecker is
+// wired in (ADR-0041).
+func New(Assets assets.Store, Index Index, maxConcurrentGenerations int, opts ...Option) *Cache {
 	if Assets == nil {
 		panic("speech: New requires a non-nil assets.Store")
 	}
 	if Index == nil {
 		panic("speech: New requires a non-nil Index")
 	}
-	return &Cache{
+	c := &Cache{
 		Assets:   Assets,
 		Index:    Index,
 		inflight: map[CacheKey]*call{},
 		lim:      newGenLimiter(maxConcurrentGenerations),
 		lru:      make(map[CacheKey]lruState),
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
+}
+
+// Option customizes a Cache at construction. Options are the seam where the
+// owning process (the runtime, or the CLI) wires in dependencies the cache's
+// own tests do not need.
+type Option func(*Cache)
+
+// WithReferenceChecker wires the catalogue-side reachability check into
+// eviction (ADR-0041 "Reference check before delete"). With a checker,
+// EvictTransient deletes a blob only after the checker proves no other record
+// names it; a referenced blob survives as bytes while its index entry is
+// dropped. Without one, EvictTransient refuses to delete any blob at all.
+// *store.Store satisfies the interface.
+func WithReferenceChecker(rc assets.ReferenceChecker) Option {
+	return func(c *Cache) { c.refCheck = rc }
 }
 
 // ensureLoaded runs the index LoadAll exactly once.
@@ -368,17 +408,35 @@ func (c *Cache) loadBytes(ctx context.Context, hash string) ([]byte, error) {
 
 // EvictTransient reclaims disk by evicting up to maxEntries of the cache's
 // OWN entries, least recently used first (maxEntries <= 0 evicts all). For
-// each evicted key it removes the index entry and the blob it addresses.
+// each evicted key it removes the index entry, then deletes the blob it
+// addresses — unless a reference check says the blob is still named elsewhere
+// (ADR-0041 "Reference check before delete").
 //
 // This is the "evict safe transient cache" half of docs/spec/13's Disk-full
-// row. The safety argument, in one line: the index holds only generated TTS
-// utterances, so every key in it is re-synthesizable, and nothing outside this
-// index names these blobs. Approved voice references and imported source data
-// live in the catalogue's own tables and are never touched — EvictTransient
-// cannot see them and Delete reaches only the exact hash of the entry being
-// evicted. The documented quota is the caller's: the runtime (or operator)
-// decides how many entries to release when a write fails with a capacity
-// error; this method is the mechanism, not the policy.
+// row. The entries are safe to evict because the index holds only generated
+// TTS utterances and every key is re-synthesizable. The blobs are NOT safe by
+// construction, though: assets are content-addressed and shared, so the
+// evicted entry's hash may be the same hash an approved voice reference, an
+// audition clip, a character portrait or an imported source names. Delete
+// reaches exactly the hash of the evicted entry, and a shared hash would
+// destroy the catalogue's bytes. So each deletion is gated on the cache's
+// ReferenceChecker:
+//
+//   - checker reports "referenced" → the index entry is dropped (the entry is
+//     still `evicted`) but the blob is kept; its size does not enter `freed`.
+//   - checker reports "unreferenced" → the blob is deleted and its size is
+//     freed.
+//   - checker errors (or none is configured) → the blob is kept and the
+//     refusal is counted (Stats().RefusedDeletes): a checker that cannot
+//     prove the blob unshared is not a green light, and a cache with no
+//     checker never deletes at all — index-only eviction, logged once per
+//     process.
+//
+// The documented quota is the caller's: the runtime (or operator) decides how
+// many entries to release when a write fails with a capacity error; this
+// method is the mechanism, not the policy. Note the consequence for disk-full
+// recovery: on a store whose blobs are all shared with the catalogue,
+// eviction frees index memory but little disk — that is the safe answer.
 //
 // A blob that is already gone (Stat → ErrNotFound) is not a failure: the
 // index entry is still removed, the freed count simply does not include it.
@@ -412,6 +470,7 @@ func (c *Cache) EvictTransient(ctx context.Context, maxEntries int) (evicted int
 		victims = victims[:maxEntries]
 	}
 
+	var checkerWarned sync.Once // one log line per call, not per entry
 	for _, v := range victims {
 		e, ok := c.Index.Lookup(v.key)
 		if !ok {
@@ -419,21 +478,56 @@ func (c *Cache) EvictTransient(ctx context.Context, maxEntries int) (evicted int
 			continue // already evicted (by this process or a persistent index GC)
 		}
 		size := c.lruSize(v.key)
-		c.dropLRU(v.key)
-		if err := c.Index.Delete(v.key); err != nil {
-			return evicted, freed, fmt.Errorf("speech: evict %s: %w", v.key, err)
-		}
-		evicted++
 		if size <= 0 {
 			if si, serr := c.Assets.Stat(ctx, e.SHA256); serr == nil {
 				size = si.Size
 			}
 		}
-		err := c.Assets.Delete(ctx, e.SHA256)
-		if err != nil && !errors.Is(err, assets.ErrNotFound) {
-			return evicted, freed, fmt.Errorf("speech: evict %s (blob %s…): %w", v.key, e.SHA256[:12], err)
+		c.dropLRU(v.key)
+		if err := c.Index.Delete(v.key); err != nil {
+			return evicted, freed, fmt.Errorf("speech: evict %s: %w", v.key, err)
 		}
-		freed += size
+		evicted++
+
+		// Reference check before delete (ADR-0041). The hash is the exact
+		// address of the evicted entry's blob, and Delete removes exactly that
+		// address — so the only question is whether another record names the
+		// same hash.
+		switch {
+		case c.refCheck != nil:
+			referenced, err := c.refCheck.AssetReferenced(ctx, e.SHA256)
+			switch {
+			case err != nil:
+				// A failed check is NOT a "no reference": keep the blob, count
+				// the refusal, and say so once per call.
+				c.bump(&c.refusedDeletes)
+				checkerWarned.Do(func() {
+					slog.Warn("speech: EvictTransient reference check failed; keeping blobs",
+						"hash", e.SHA256[:16], "error", err.Error())
+				})
+			case referenced:
+				// Shared with the catalogue: drop the entry, keep the bytes.
+				c.bump(&c.refusedDeletes)
+			default:
+				if derr := c.Assets.Delete(ctx, e.SHA256); derr != nil {
+					if !errors.Is(derr, assets.ErrNotFound) {
+						return evicted, freed, fmt.Errorf("speech: evict %s (blob %s…): %w", v.key, e.SHA256[:12], derr)
+					}
+					// The blob is already gone: the entry is still evicted,
+					// there is simply nothing to free.
+					continue
+				}
+				freed += size
+			}
+		default:
+			// No checker configured: the cache cannot prove the blob unshared,
+			// so it refuses to delete blobs at all — index-only eviction,
+			// safe by default (ADR-0041). Logged once per process.
+			c.bump(&c.refusedDeletes)
+			c.noCheckerWarned.Do(func() {
+				slog.Warn("speech: EvictTransient running without a reference checker; evicting index entries only (no blob deletion)")
+			})
+		}
 	}
 	return evicted, freed, nil
 }
@@ -457,12 +551,13 @@ func (c *Cache) Stats() CacheStats {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return CacheStats{
-		Hits:       c.hits,
-		Misses:     c.misses,
-		QASkips:    c.qaSkips,
-		Generated:  c.generated,
-		Failed:     c.failed,
-		PendingGen: int64(c.lim.pending()),
+		Hits:           c.hits,
+		Misses:         c.misses,
+		QASkips:        c.qaSkips,
+		Generated:      c.generated,
+		Failed:         c.failed,
+		PendingGen:     int64(c.lim.pending()),
+		RefusedDeletes: c.refusedDeletes,
 	}
 }
 
