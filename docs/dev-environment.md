@@ -32,7 +32,7 @@ A gate whose capabilities are not configured is never green, and
 | `bench` | benchmark holdout split through the real pipeline | `tesseract` and `magick` on PATH |
 | `test-replay` | synthetic scenario suite (fault injection; BLOCKED reported, never passed) plus pipeline replay tests, `-race` | `tesseract` on PATH, else the replay test reports NOT RUN |
 | `test-dolphin` | real Dolphin tests (`-run Real`), one emulator at a time (`-p 1`, 20m timeout) | `GAME_NARRATOR_GAME_IMAGE_PATH`; `dolphin-emu`, `Xvfb`, `ffmpeg`, `x11-utils` on PATH |
-| `test-models` | live provider contract tests (`-run Live`), sequential (`-p 1`) | `GAME_NARRATOR_GATEWAY_URL` plus the token env (default `GAME_NARRATOR_GATEWAY_TOKEN`, name overridable via `GAME_NARRATOR_GATEWAY_TOKEN_ENV`); vision tests additionally `GAME_NARRATOR_LIVE_VISION=1`; TTS registry tests `GAME_NARRATOR_TTS_BASE_DIRECT_URL` (or `GAME_NARRATOR_ROLE_VOICE_CLONE_REGISTRY_URL`) |
+| `test-models` | live provider contract tests (`-run Live`), sequential (`-p 1`) | `GAME_NARRATOR_GATEWAY_URL` plus the token env (default `GAME_NARRATOR_GATEWAY_TOKEN`, name overridable via `GAME_NARRATOR_GATEWAY_TOKEN_ENV`); the vision tests run by default (the `GAME_NARRATOR_LIVE_VISION` opt-in was removed, ADR 0040); TTS registry tests `GAME_NARRATOR_TTS_BASE_DIRECT_URL` (or `GAME_NARRATOR_ROLE_VOICE_CLONE_REGISTRY_URL`) |
 | `test-hardware` | UNO Q hardware smoke — no hardware tests exist yet, so the gate itself reports NOT RUN | attach a UNO Q; see `docs/status/blocked.md` |
 
 The go-test gates (`test-replay`, `test-dolphin`, `test-models`) run through

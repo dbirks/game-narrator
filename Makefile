@@ -150,8 +150,9 @@ test-dolphin:
 ## the openai, recorded, systemone and tts providers, the voices workflow and
 ## the runtime speech session, all against the real gateway. Sequential (-p
 ## 1) so gateway calls never overlap. Requires GAME_NARRATOR_GATEWAY_URL
-## plus the token env; the vision tests additionally need
-## GAME_NARRATOR_LIVE_VISION=1 and the TTS registry tests
+## plus the token env — the vision tests run by default (no opt-in; the
+## GAME_NARRATOR_LIVE_VISION switch was removed with the VLM OCR fallback,
+## ADR 0040) and the TTS registry tests need
 ## GAME_NARRATOR_TTS_BASE_DIRECT_URL. Each unset capability reports NOT RUN
 ## (exit 2), never a pass.
 test-models:

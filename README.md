@@ -19,18 +19,23 @@ VERIFIED / blocked rather than passed.
 | Milestone | Scope (see [docs/spec/16](docs/spec/16-implementation-and-acceptance.md)) | Status |
 | --------- | ------------------------------------------------------------------------- | ----------- |
 | M0        | Environment/discovery and executable infrastructure                       | Done — closed out in the commit log; decisions recorded in ADRs 0001–0014 |
-| M1        | Full foundation and portability                                           | In progress — schema, profile revisions/atomic publish, job queue + event store, auth/sessions, REST+OpenAPI, asset store and `.gnprofile` export/import are committed (ADRs 0014–0017); acceptance pass not yet recorded |
-| M2        | Video + recognition engine                                                | In progress — frame sources (replay/FFmpeg/V4L2), OCR engine, dialogue state machine, candidate matcher and pipeline runner are committed; the first frame-replay run used real Tesseract |
-| M3        | Model integration and knowledge agent                                     | In progress — router with circuit breakers (ADR 0019), Clef-Omni System One client (ADR 0021), onboarding agent core/tools/API (ADRs 0025–0028) committed; the ASR client is still blocked |
-| M4        | Complete voice and playback pipeline                                      | In progress — Qwen3-TTS client + voice registry (ADR 0022), speech cache + fenced playback scheduler (ADR 0023) and the voice workflow (ADR 0030) are committed; ASR QA is blocked on an endpoint |
-| M5        | Complete React product                                                    | In progress — catalog UI, onboarding chat, `/developer` inspector and the player view ("M5 part 1") are committed |
-| M6        | Dolphin live driver and fixture factory                                   | In progress — headless Dolphin render + controller input proven on the dev host (ADR 0007); live driver and fixture factory not built |
-| M7        | Full live-model and adverse-condition validation                          | Not started beyond the live provider contract tests and recorded-replay groundwork |
+| M1        | Full foundation and portability                                           | In progress — schema, profile revisions/atomic publish, job queue + event store, auth/sessions, REST+OpenAPI, asset store and `.gnprofile` export/import are committed (ADRs 0014–0017); storage resilience (online backup/restore at the CLI) is in progress; acceptance pass not yet recorded |
+| M2        | Video + recognition engine                                                | In progress — frame sources (replay/FFmpeg/V4L2), OCR engine, dialogue state machine, candidate matcher, pipeline runner and the vision-model OCR fallback (unresolved-only policy, ADR 0040) are committed; the first frame-replay run used real Tesseract |
+| M3        | Model integration and knowledge agent                                     | In progress — router with circuit breakers (ADR 0019), Clef-Omni System One client (ADR 0021), onboarding agent core/tools/API (ADRs 0025–0028), honest capability fallback (JSON mode / `tool_choice=required`, ADR 0009 amendment) and per-role reasoning effort are committed; the ASR client is still blocked |
+| M4        | Complete voice and playback pipeline                                      | In progress — Qwen3-TTS client + voice registry (ADR 0022), speech cache + fenced playback scheduler (ADR 0023) and the voice workflow (ADR 0030) are committed; speech in runtime sessions is in progress; ASR QA is blocked on an endpoint |
+| M5        | Complete React product                                                    | In progress — catalog UI, onboarding chat, `/developer` inspector, player view, characters, publish review and the voices pages are committed; the graph/region/settings pages and their tests are in progress |
+| M6        | Dolphin live driver and fixture factory                                   | In progress — the dev-only Dolphin bridge (isolated launch, X11 frame source, Pipes controller input, proven readiness, ADR 0034) is committed; drive-to-dialogue and savestates are in progress; the fixture factory is not built |
+| M7        | Full live-model and adverse-condition validation                          | In progress — scenario fault injection with five adverse-condition scenarios and the BLOCKED register (ADR 0037), the benchmark harness with a generated synthetic ground-truth set (ADR 0038) and matcher temperature calibration (ADR 0035) are committed; full live-model validation is pending |
 | M8        | UNO Q and distributable release                                           | Snapshot pipeline verified locally (ADR 0033); UNO Q install NOT VERIFIED |
 
-Unimplemented gates (`test-replay`, `test-dolphin`, `test-models`,
-`test-hardware`) print `NOT RUN: ...` and fail — they can never report
-success before the work exists.
+The four live gates (`test-replay`, `test-dolphin`, `test-models`,
+`test-hardware`) run real tests and report per-test `NOT RUN: ...` when
+their capability is not configured on the host — they can never report
+success without the work, and `make test-full` exits non-zero while any
+gate remains NOT RUN. Blocked items and their unblock steps are tracked in
+[docs/status/blocked.md](docs/status/blocked.md); operational runbooks
+(first boot, gateway connection, recovery, resets, troubleshooting and
+more) live in [docs/manuals/](docs/manuals/README.md).
 
 ## How it works
 
