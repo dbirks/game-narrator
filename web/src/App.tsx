@@ -4,6 +4,7 @@ import { AuthProvider, RequireAuth } from "./auth/auth-context";
 import { AppNav } from "./components/AppNav";
 import { DialoguePage } from "./pages/Dialogue";
 import { DiagnosticsPage } from "./pages/Diagnostics";
+import { DeveloperPage } from "./pages/developer/DeveloperPage";
 import { GameOverviewPage } from "./pages/GameOverview";
 import { LibraryPage } from "./pages/Library";
 import { LoginPage } from "./pages/Login";
@@ -29,6 +30,14 @@ export function App() {
         <Route path="/setup" element={<SetupPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/diagnostics" element={<DiagnosticsPage />} />
+        <Route
+          path="/developer"
+          element={
+            <RequireAuth>
+              <DeveloperPage />
+            </RequireAuth>
+          }
+        />
         <Route
           path="/library"
           element={

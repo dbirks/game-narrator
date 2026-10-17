@@ -328,8 +328,13 @@ test("first run to published revision, through the browser", async ({ page, requ
 
   // ── 10. export, through the browser's own download path ────────────────────
   await page.getByTestId("overview-link").click();
-  await page.getByTestId("export-1").click();
-  const download = await page.waitForEvent("download", { timeout: 20_000 });
+  // Wait for the download *while* clicking: a download that starts during
+  // the click fires its event before a subsequent `waitForEvent` is
+  // registered, so the two must overlap or the fast path is missed.
+  const [download] = await Promise.all([
+    page.waitForEvent("download", { timeout: 20_000 }),
+    page.getByTestId("export-1").click(),
+  ]);
   expect(download.suggestedFilename()).toMatch(/\.gnprofile\.json$/);
   const exportPath = resolve("test-results", download.suggestedFilename());
   await download.saveAs(exportPath);

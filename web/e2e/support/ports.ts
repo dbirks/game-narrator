@@ -11,4 +11,6 @@ export const ports = {
   embedded: 18095,
   /** the packaged binary the catalogue walk-through claims (catalog.spec.ts). */
   catalog: 18096,
+  /** the packaged binary the developer inspector drives a replay on (developer.spec.ts). */
+  developer: 18097,
 } as const;

@@ -25,7 +25,13 @@ const webUrl = `http://127.0.0.1:${ports.web}`;
 // the embedded spec must stay a test of serving, not of ordering.
 const embeddedUrl = `http://127.0.0.1:${ports.embedded}`;
 const catalogUrl = `http://127.0.0.1:${ports.catalog}`;
+const developerUrl = `http://127.0.0.1:${ports.developer}`;
 const embeddedBinary = resolve(import.meta.dirname, "..", "bin", "game-narrator");
+// The replay allowlist for the inspector's server: the repo's testdata, named
+// explicitly (ADR-0024 "replay allowlist") rather than relying on the
+// dev-checkout cwd default, so the synthetic clip is admitted wherever the
+// checkout lives. This config lives in web/, so the repo root is one ".." up.
+const replayRoots = resolve(import.meta.dirname, "..", "testdata");
 
 if (!existsSync(embeddedBinary)) {
   throw new Error(
@@ -44,6 +50,13 @@ export default defineConfig({
   testDir: "./e2e",
   fullyParallel: true,
   forbidOnly: Boolean(process.env.CI),
+  // Four projects each spin up a Go server and a browser; the developer
+  // project additionally runs real Tesseract OCR, which is CPU-bound. When it
+  // shares the box with the catalog spec the two starve each other
+  // nondeterministically: the replay clip drops its second commit, or the
+  // catalog export download times out. One worker runs the suite serially so
+  // the CPU-bound tests get the whole box; the light specs cost little.
+  workers: 1,
   retries: process.env.CI ? 1 : 0,
   outputDir: "test-results",
   reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : [["list"]],
@@ -52,6 +65,10 @@ export default defineConfig({
   use: {
     baseURL: webUrl,
     trace: "on-first-retry",
+    // Playwright does not capture browser downloads unless the context
+    // accepts them (the default is `false`). The catalog export step and any
+    // future file download need the `download` event to fire.
+    acceptDownloads: true,
   },
   projects: [
     {
@@ -73,6 +90,13 @@ export default defineConfig({
       // nothing else on the machine can reach.
       testMatch: /catalog\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: catalogUrl },
+    },
+    {
+      name: "developer",
+      // The milestone 2 inspector: a replay session on the packaged binary with
+      // the synthetic clip admitted to the replay allowlist (GAME_NARRATOR_REPLAY_ROOTS).
+      testMatch: /developer\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: developerUrl },
     },
   ],
   webServer: [
@@ -110,6 +134,16 @@ export default defineConfig({
       command: `node web/e2e/serve.mjs catalog 127.0.0.1:18096 ${embeddedBinary} serve`,
       cwd: "..",
       url: `${catalogUrl}/api/v1/health/live`,
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      command: `node web/e2e/serve.mjs developer 127.0.0.1:${ports.developer} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${developerUrl}/api/v1/health/live`,
+      env: { GAME_NARRATOR_REPLAY_ROOTS: replayRoots },
       reuseExistingServer: false,
       timeout: 60_000,
       stdout: "ignore",
