@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+import { trackConsoleErrors } from "./support/console";
+
 // docs/spec/09 "Embedded binary test": the packaged binary alone (no Vite
 // process) must serve the real SPA, answer deep links with index.html, and run
 // under the Content-Security-Policy the Go server sends. Selected for the
@@ -8,21 +10,19 @@ import { expect, test } from "@playwright/test";
 const csp = "default-src 'self'";
 
 test("embedded binary serves the SPA and its deep links", async ({ page, request }) => {
-  const consoleErrors: string[] = [];
-  page.on("console", (message) => {
-    if (message.type() === "error") {
-      consoleErrors.push(message.text());
-    }
-  });
-  page.on("pageerror", (error) => {
-    consoleErrors.push(String(error));
-  });
+  // 401 is ignored by design: the unauthenticated /auth/me probe the guard
+  // fires on every mount (ADR-0016) is a console error the browser logs, not a
+  // fault of the served bundle.
+  const consoleErrors = trackConsoleErrors(page);
 
-  // Deep link into a client-side route that no server route owns. The server
-  // must answer with index.html (200, text/html) and the client router must
-  // then render its own "Not found" page — proof the SPA, not a Go template,
-  // produced the DOM.
-  const deepLink = await page.goto("/games/demo/dialogue");
+  // Deep link into a path no server route owns and no client route claims. The
+  // server must answer with index.html (200, text/html) and the client router
+  // must then render its own "Not found" page — proof the SPA, not a Go
+  // template, produced the DOM. (A *real* client route such as
+  // /games/:id/dialogue would not do: it is behind the auth guard, which would
+  // bounce an unauthenticated browser to /setup before the router could
+  // disagree with the URL.)
+  const deepLink = await page.goto("/definitely/not/a/route");
   expect(deepLink?.status()).toBe(200);
   expect(deepLink?.headers()["content-type"]).toContain("text/html");
   expect(deepLink?.headers()["content-security-policy"]).toContain(csp);
@@ -33,7 +33,7 @@ test("embedded binary serves the SPA and its deep links", async ({ page, request
   // The bundle referenced by index.html is served by the same binary with a
   // JS media type and immutable caching (a wrong type would break the module
   // script and show up as a console error below).
-  const indexHtml = await (await request.get("/games/demo/dialogue")).text();
+  const indexHtml = await (await request.get("/definitely/not/a/route")).text();
   const scriptMatch = /\/assets\/index-[\w-]+\.js/.exec(indexHtml);
   expect(scriptMatch, "index.html must reference a built module script").not.toBeNull();
   const script = scriptMatch![0];

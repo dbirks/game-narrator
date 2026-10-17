@@ -1,7 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
-import { apiStatus, fetchReadiness, fetchSystemInfo } from "../api/system";
+import { fetchReadiness, fetchSystemInfo } from "../api/system";
+import { ErrorState } from "../components/states";
 
 /**
  * `/diagnostics` — Milestone 0 slice of docs/spec/09 "Routes and page
@@ -22,11 +23,15 @@ export function DiagnosticsPage() {
 
   let body: ReactNode;
   if (error) {
-    const status = apiStatus(error);
     body = (
-      <p role="alert" className="error">
-        Diagnostics unavailable: {status === null ? "network error" : `HTTP ${status}`}.
-      </p>
+      <ErrorState
+        error={error}
+        action="Diagnostics unavailable"
+        onRetry={() => {
+          void system.refetch();
+          void readiness.refetch();
+        }}
+      />
     );
   } else if (!system.data || !readiness.data) {
     body = <p className="muted">Loading…</p>;

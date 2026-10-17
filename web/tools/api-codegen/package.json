@@ -1,0 +1,14 @@
+{
+  "name": "@game-narrator/api-codegen",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Generates src/api/schema.d.ts from the OpenAPI contract (docs/spec/09, ADR-0017). Not shipped to the browser.",
+  "type": "module",
+  "scripts": {
+    "gen": "node gen.mjs"
+  },
+  "dependencies": {
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.9.3"
+  }
+}

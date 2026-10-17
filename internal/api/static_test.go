@@ -217,8 +217,13 @@ func TestStaticSecurityHeaders(t *testing.T) {
 	}
 }
 
+// wantCSP mirrors staticCSP in static.go. style-src-attr 'unsafe-inline' is
+// the single deliberate relaxation (Radix inline style attributes, ADR-0011);
+// style-src 'self' keeps <style> elements and stylesheets same-origin only,
+// and scripts stay script-src 'self'. Any other weakening must fail here.
 const wantCSP = "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; " +
-	"connect-src 'self'; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'self'"
+	"connect-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; " +
+	"script-src 'self'; frame-ancestors 'none'; base-uri 'self'"
 
 func requireSecurityHeaders(t *testing.T, rec *httptest.ResponseRecorder) {
 	t.Helper()

@@ -1,21 +1,20 @@
 import { expect, test } from "@playwright/test";
 
+import { trackConsoleErrors } from "./support/console";
+
 // Real E2E against the Go server started by playwright.config.ts (docs/spec/12
 // "UI" mode). `go run` builds without release ldflags, so the stamped version
 // and commit fall back to "dev"/"unknown" (internal/bootstrap/version.go).
+// `/diagnostics` is a public route (ADR-0016 §3), so this spec never signs in.
+// It goes straight to the page rather than through `/`: the root now routes by
+// auth state (an unclaimed appliance bounces to /setup), and the point here is
+// the public page, not the guard.
 test("diagnostics page shows live data from the Go API", async ({ page }) => {
-  const consoleErrors: string[] = [];
-  page.on("console", (message) => {
-    if (message.type() === "error") {
-      consoleErrors.push(message.text());
-    }
-  });
-  page.on("pageerror", (error) => {
-    consoleErrors.push(String(error));
-  });
+  // 401 is ignored by design: the unauthenticated /auth/me probe the guard
+  // fires on mount (ADR-0016) is a console error the browser logs, not a fault.
+  const consoleErrors = trackConsoleErrors(page);
 
-  await page.goto("/");
-  await expect.poll(() => new URL(page.url()).pathname).toBe("/diagnostics");
+  await page.goto("/diagnostics");
 
   await expect(page.getByRole("heading", { name: "Diagnostics" })).toBeVisible();
 

@@ -1,6 +1,6 @@
 # ADR-0011: Frontend UI primitives — Radix Primitives (per-component), plain CSS, virtualized tables
 Date: 2026-10-16
-Status: proposed
+Status: accepted (2026-10-17, first adoption below)
 Owners: project
 Related requirements/tests: FR-01, FR-11, FR-12, FR-14; docs/spec/09 "Technology" ("lightweight UI component system (Radix-style accessible primitives or similar)"), docs/spec/09 "Routes and page requirements", docs/spec/09 "UX robustness" (keyboard-accessible tabs and dialogs, correct empty/loading/error states, "don't load thousands of messages into React memory"), docs/spec/09 "Embedded binary test", docs/spec/12 "Unit"/"UI" modes, docs/spec/16 Milestone 0 ("Write ADRs for … frontend UI kit"); `pnpm --dir web test`, `make test-ui`
 
@@ -167,6 +167,73 @@ Plan to convert this ADR to `accepted` (M5, first page that needs it):
    `web/e2e/embedded.spec.ts`) — no style injection from any library.
 5. `pnpm --dir web typecheck && pnpm --dir web lint && pnpm --dir web test`.
 
+## Adoption record — first adoption, 2026-10-17
+
+Adopted per component for the Milestone 1 catalog pages (the first pages
+built, per docs/spec/09's own route list): `@radix-ui/react-dialog@1.3.1`
+(`web/src/components/Modal.tsx`) and `@radix-ui/react-tabs@1.2.1`
+(`web/src/pages/GameOverview.tsx`), styled with plain CSS from
+`[data-state]`/`[role]` selectors as the Decision specifies. The umbrella
+`radix-ui` barrel was not installed, matching rule 1. The pnpm install
+produced no peer warnings.
+
+Measured `vite build` delta (Decision step 1): the identical app built with
+the two Radix imports stubbed out (same pages, same app code, only the
+primitives' bytes removed) versus the real build, 2026-10-17, Vite 8:
+
+| Build | JS (uncompressed) | JS (gzip) | CSS (gzip) |
+| --- | --- | --- | --- |
+| baseline (Radix stubbed) | 338.06 kB | 104.21 kB | 1.68 kB |
+| with `react-dialog@1.3.1` + `react-tabs@1.2.1` | 391.96 kB | 122.14 kB | 1.68 kB |
+| **delta** | **+53.90 kB** | **+17.93 kB** | **0** |
+
+The delta is attributable to the two Radix primitives plus their shared
+deps (`@radix-ui/react-*` context/primitive plumbing); the stub baseline
+is a few hundred bytes of app code, so the library's real contribution is
+≈ that full delta. No style injection (CSS size unchanged), consistent with
+the CSP in `internal/api/static.go`.
+
+Decision step 2's Playwright keyboard paths (Escape closes the dialog and
+returns focus, Tab order, arrow keys within the edition tabs) are covered
+by `web/e2e/catalog.spec.ts`; steps 3-4 (a11y assertions, CSP verification)
+by the same suite and `web/e2e/embedded.spec.ts` via `make test-ui`.
+
+CSP adjustment, 2026-10-17 (recorded against Status): the catalogue
+walk-through's console-cleanliness check surfaced two distinct CSP hits, and
+a Playwright probe (DOM mutation observer plus console/network capture) split
+them before any directive was touched:
+
+1. Style **attributes** set by the adopted libraries (Radix dialog overlay
+   `pointer-events`, focus-guard spans, react-tabs `animation-duration`) —
+   governed by `style-src-attr`. The server policy in
+   `internal/api/static.go` therefore carries `style-src-attr
+   'unsafe-inline'` as its only relaxation; `style-src 'self'` still
+   governs `<style>` elements and stylesheets, and `script-src 'self'`
+   is untouched. `wantCSP` in `internal/api/static_test.go` pins the new
+   header so any further weakening fails the Go tests. No *app* code sets
+   inline styles; every attribute observed came from the adopted libraries.
+2. A **`<style>` element** injected while a Radix dialog is open
+   (`style-src-elem` → falls back to `style-src 'self'` → blocked). The
+   source is `react-remove-scroll-bar` (a `@radix-ui/react-dialog`
+   dependency, via `react-style-singleton`): its scrollbar-compensation
+   sheet carries dynamic values (the measured scrollbar gap in px), so a
+   CSP hash cannot track it, and the dialog's public API exposes no switch
+   to disable it. Rather than loosen `style-src-elem` to
+   `'unsafe-inline'`, the dependency is pnpm-patched
+   (`web/patches/react-remove-scroll-bar.patch`, registered in
+   `web/pnpm-workspace.yaml`) to render no element at all, and the one rule
+   the app functionally needs — the body scroll-lock keyed on the
+   `data-scroll-locked` attribute the library still sets — is carried by
+   the app's own stylesheet (`web/src/index.css`). The loss is the
+   cosmetic scrollbar-gutter compensation while a dialog is open, accepted
+   for a local single-user appliance; a browser-visible scrollbar behind
+   the dialog is a visual defect, not a functional one.
+
+The same cleanliness check also caught a non-CSP app bug: the slug input's
+`pattern` attribute used a Go-style regex whose unescaped trailing `-` is
+invalid to the browser's `v`-flag validator; the pattern now escapes the
+hyphen (`web/src/pages/Library.tsx`).
+
 ## Consequences and risks
 
 Positive: a11y semantics for the hard parts come from a maintained library whose
@@ -209,8 +276,9 @@ own ADR entry with the failing Playwright test as evidence.
 
 ## Follow-ups
 
-- Accept (or supersede) this ADR at the first M5 page build with measured
-  `vite build` gzip deltas per added primitive.
+- ~~Accept (or supersede) this ADR at the first M5 page build with measured
+  `vite build` gzip deltas per added primitive.~~ Done 2026-10-17 (see
+  Adoption record).
 - Decide the toast renderer (Radix Toast vs Sonner vs hand-rolled `aria-live`
   region) together with the event-bus queue design in docs/spec/08.
 - Choose the virtualization library for message dumps and graph tables with a

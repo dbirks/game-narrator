@@ -24,9 +24,17 @@ import (
 // URLs for capture previews, and framing/script injection are refused
 // (docs/spec/09 "Embedded binary test" requires CSP to be exercised, not just
 // present — web/e2e/embedded.spec.ts asserts the app still runs under it).
+//
+// The one exception is style *attributes*: the Radix primitives adopted per
+// ADR-0011 (dialog, tabs) set inline style attributes (the dialog overlay's
+// pointer-events fix), and those would otherwise be blocked. CSP3 splits
+// style sources into style-src-elem (<style>/stylesheets, covered by
+// style-src 'self' — still strict) and style-src-attr (inline attributes,
+// opened to 'unsafe-inline' only). Scripts remain script-src 'self'.
 const staticCSP = "default-src 'self'; img-src 'self' data: blob:; " +
 	"media-src 'self' blob:; connect-src 'self'; style-src 'self'; " +
-	"script-src 'self'; frame-ancestors 'none'; base-uri 'self'"
+	"style-src-attr 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'; " +
+	"base-uri 'self'"
 
 // Cache policies: Vite emits content-hashed filenames under assets/, so those
 // URLs can never go stale; the SPA entry point must be revalidated so a new

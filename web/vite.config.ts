@@ -12,6 +12,9 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 5173,
     strictPort: true,
+    // The OpenAPI contract lives in internal/api/openapi/ next to the Go code
+    // that owns it (ADR-0017); the client's contract-parity test imports it.
+    fs: { allow: [".."] },
     proxy: {
       "/api": {
         target: apiTarget,

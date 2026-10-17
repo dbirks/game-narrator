@@ -1,0 +1,11 @@
+# Settings for the web workspace (pnpm >= 10 reads config from this file).
+#
+# tools/api-codegen is a separate workspace package because openapi-typescript
+# builds its output with the TypeScript 5 compiler API (ts.factory), which the
+# TypeScript 7 package the app compiles against does not expose. Its own
+# package.json pins a TypeScript 5 for the generator only; the app keeps 7.
+packages:
+  - "."
+  - "tools/api-codegen"
+patchedDependencies:
+  react-remove-scroll-bar: patches/react-remove-scroll-bar.patch

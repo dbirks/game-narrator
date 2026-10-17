@@ -1,25 +1,76 @@
+/*
+ * Plain CSS with custom properties (docs/adr/0011-frontend-ui-primitives.md
+ * decision 2): the served bundle carries `style-src 'self'` (staticCSP in
+ * internal/api/static.go), so anything that injects a stylesheet at runtime is
+ * disqualified and the theme lives here, in one file, with no build step.
+ *
+ * Radix primitives are styled from the data attributes they emit —
+ * [data-state], [aria-current] — which is the contract that makes unstyled
+ * primitives workable (docs/spec/09 "UX robustness" asks for keyboard-accessible
+ * dialogs and tabs; how they look is this file's only business).
+ */
+
 :root {
   color-scheme: light dark;
+  --bg: light-dark(#fff, #14161a);
+  --fg: light-dark(#15171b, #e8eaee);
+  --line: color-mix(in srgb, currentColor 20%, transparent);
+  --fill: color-mix(in srgb, currentColor 6%, transparent);
+  --accent: #2f6feb;
+  --danger: #c0392b;
+  --warn: #a2740b;
+  --ok: #1c7c46;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1.5rem;
+  --radius: 4px;
+  --ring: 2px;
+
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   line-height: 1.5;
 }
 
 body {
   margin: 0;
-  padding: 1.5rem;
-  max-width: 48rem;
+  padding: var(--space-4);
+  max-width: 60rem;
+  background: var(--bg);
+  color: var(--fg);
 }
 
-nav {
+nav[aria-label="Primary"] {
   display: flex;
-  gap: 1rem;
-  padding-bottom: 0.75rem;
-  margin-bottom: 1.5rem;
-  border-bottom: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  align-items: center;
+  gap: var(--space-3);
+  padding-bottom: var(--space-3);
+  margin-bottom: var(--space-4);
+  border-bottom: 1px solid var(--line);
 }
 
-nav a {
+nav[aria-label="Primary"] a {
   font-weight: 600;
+}
+
+.nav-spacer {
+  flex: 1;
+}
+
+.nav-user {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.nav-username {
+  font-variant-numeric: tabular-nums;
+}
+
+.page-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
 }
 
 h1 {
@@ -27,16 +78,93 @@ h1 {
   font-size: 1.4rem;
 }
 
+h2 {
+  font-size: 1.1rem;
+  margin-bottom: var(--space-2);
+}
+
+a {
+  color: var(--accent);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  border: 1px solid var(--line);
+  background: var(--fill);
+  border-radius: var(--radius);
+  padding: var(--space-1) var(--space-3);
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: var(--ring) solid var(--accent);
+  outline-offset: 1px;
+}
+
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.stack {
+  display: grid;
+  gap: var(--space-3);
+  max-width: 34rem;
+}
+
+.stack label,
+.filters label,
+.import-form label {
+  display: grid;
+  gap: var(--space-1);
+  font-weight: 600;
+}
+
+input,
+select,
+textarea {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--space-1) var(--space-2);
+  background: var(--bg);
+  font-weight: 400;
+}
+
+textarea {
+  width: 100%;
+  max-width: 44rem;
+}
+
 .facts {
   display: grid;
-  gap: 0.5rem;
+  gap: var(--space-2);
   margin: 0;
 }
 
 .facts div {
   display: grid;
-  grid-template-columns: 10rem 1fr;
-  gap: 0.5rem;
+  grid-template-columns: 12rem 1fr;
+  gap: var(--space-2);
 }
 
 dt {
@@ -48,13 +176,304 @@ dd {
   font-variant-numeric: tabular-nums;
 }
 
+.wrap {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .muted {
   opacity: 0.7;
 }
 
 .error {
-  background: color-mix(in srgb, red 12%, transparent);
-  border: 1px solid red;
-  border-radius: 4px;
-  padding: 0.5rem 0.75rem;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
+  margin: var(--space-3) 0;
+}
+
+.error-meta {
+  font-size: 0.85rem;
+}
+
+.problems {
+  margin: var(--space-2) 0 0;
+  padding-left: 1.25rem;
+}
+
+.empty {
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  padding: var(--space-4);
+}
+
+.cards {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: var(--space-3);
+}
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+}
+
+.card a {
+  display: grid;
+  gap: var(--space-1);
+  text-decoration: none;
+}
+
+.revisions,
+.pages ol {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: var(--space-3);
+}
+
+.pages ol {
+  list-style: decimal;
+  padding-left: 1.25rem;
+}
+
+.revision {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+  display: grid;
+  gap: var(--space-2);
+}
+
+.revision-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.revision-links {
+  display: flex;
+  gap: var(--space-3);
+  align-items: baseline;
+  flex-wrap: wrap;
+  margin: 0;
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 0;
+}
+
+.badge {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0 var(--space-2);
+  font-size: 0.8rem;
+  text-transform: lowercase;
+}
+
+.badge-draft {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.badge-review {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.badge-published {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.badge-archived {
+  opacity: 0.7;
+}
+
+.panel {
+  border: 1px solid var(--line);
+  border-top: none;
+  border-radius: 0 0 var(--radius) var(--radius);
+  padding: var(--space-3);
+  display: grid;
+  gap: var(--space-3);
+}
+
+.tabs {
+  display: grid;
+  gap: 0;
+}
+
+.tabs-list {
+  display: flex;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--line);
+}
+
+.tab {
+  border: 1px solid var(--line);
+  border-bottom: none;
+  border-radius: var(--radius) var(--radius) 0 0;
+  background: var(--fill);
+  padding: var(--space-2) var(--space-3);
+}
+
+.tab[aria-selected="true"] {
+  background: var(--bg);
+  font-weight: 600;
+  position: relative;
+  top: 1px;
+  border-bottom: 1px solid var(--bg);
+}
+
+.import-form {
+  display: flex;
+  gap: var(--space-3);
+  align-items: end;
+  flex-wrap: wrap;
+}
+
+.import-mapping {
+  flex-basis: 100%;
+}
+
+.import-mapping-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2) var(--space-3);
+  margin-top: var(--space-2);
+}
+
+.import-mapping-grid label {
+  display: grid;
+  gap: var(--space-1);
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.import {
+  border-top: 1px dashed var(--line);
+  padding-top: var(--space-3);
+  display: grid;
+  gap: var(--space-2);
+}
+
+.import-report {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
+}
+
+.job {
+  margin: 0;
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+}
+
+.filters {
+  display: flex;
+  gap: var(--space-3);
+  align-items: end;
+  flex-wrap: wrap;
+  margin-bottom: var(--space-3);
+}
+
+.messages {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.95rem;
+}
+
+.messages th,
+.messages td {
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  padding: var(--space-1) var(--space-2);
+  vertical-align: top;
+}
+
+.messages caption {
+  text-align: left;
+  padding-bottom: var(--space-2);
+}
+
+.messages tr[aria-current="true"] {
+  background: var(--fill);
+}
+
+.pager {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  margin-top: var(--space-3);
+}
+
+.detail {
+  margin-top: var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+  display: grid;
+  gap: var(--space-2);
+}
+
+/* Radix Dialog: the portal renders these outside #root, so the selectors are
+   element+role based rather than nested under main. */
+
+/* Body scroll-lock while a Radix dialog is open. Radix's
+   react-remove-scroll-bar normally injects this rule in a <style> element,
+   which the same-origin CSP (style-src 'self' for style elements) refuses to
+   apply; the app therefore carries the lock rule itself and the dependency
+   is pnpm-patched not to inject the element (patches/ in web/). Keyed on the
+   data-scroll-locked attribute the library still sets on <body>.
+   (docs/adr/0011, CSP note; the scrollbar-gutter compensation the library's
+   injected sheet also carried is a deliberate cosmetic loss here.) */
+body[data-scroll-locked] {
+  overflow: hidden !important;
+  overscroll-behavior: contain;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, #000 45%, transparent);
+}
+
+.modal-content {
+  position: fixed;
+  top: 10vh;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(36rem, calc(100vw - 2rem));
+  max-height: 80vh;
+  overflow: auto;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--space-4);
+  display: grid;
+  gap: var(--space-3);
+}
+
+.modal-title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
 }

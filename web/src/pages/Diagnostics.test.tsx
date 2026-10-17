@@ -17,12 +17,20 @@ const systemInfo: SystemInfo = {
 
 const readiness: Readiness = { status: "ok", checks: {} };
 
-/** Minimal Response stand-in; jsdom provides no fetch implementation. */
-function fakeResponse(status: number, body: unknown): Response {
+/** Minimal Response stand-in; jsdom provides no fetch implementation. The client
+ *  reads `etag`/`x-request-id` off every response, so the fake needs real headers. */
+function fakeResponse(
+  status: number,
+  body: unknown,
+  headers: Record<string, string> = {},
+): Response {
   return {
     ok: status >= 200 && status < 300,
     status,
+    statusText: "",
+    headers: new Headers({ "content-type": "application/json", ...headers }),
     json: async () => body,
+    text: async () => JSON.stringify(body),
   } as unknown as Response;
 }
 
@@ -77,12 +85,22 @@ describe("DiagnosticsPage (unit test with a stubbed fetch fake)", () => {
   });
 
   it("renders an error alert with the HTTP status when the API returns 503", async () => {
-    installFetch(() => fakeResponse(503, { title: "Service Unavailable" }));
+    installFetch(() =>
+      fakeResponse(503, {
+        type: "urn:game-narrator:error:store-unavailable",
+        title: "Service Unavailable",
+        status: 503,
+        detail: "the database is not reachable",
+        request_id: "req-503",
+      }),
+    );
 
     renderPage();
 
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("HTTP 503");
+    expect(alert).toHaveTextContent("the database is not reachable");
+    expect(alert).toHaveTextContent("store-unavailable");
+    expect(alert).toHaveTextContent("req-503");
     expect(screen.queryByTestId("version")).not.toBeInTheDocument();
   });
 });

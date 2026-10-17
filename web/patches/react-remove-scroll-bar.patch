@@ -1,0 +1,21 @@
+diff --git a/dist/es2015/component.js b/dist/es2015/component.js
+index 4a7ee5b055a3c1e26445977eea909e369aee857b..17288e5ed52a6b5a248c36b8a89c5cbc9d78d5f6 100644
+--- a/dist/es2015/component.js
++++ b/dist/es2015/component.js
+@@ -48,6 +48,14 @@ export var RemoveScrollBar = function (_a) {
+      however it will be used only by the "first" invocation
+      due to singleton nature of <Style
+      */
+-    var gap = React.useMemo(function () { return getGapWidth(gapMode); }, [gapMode]);
+-    return React.createElement(Style, { styles: getStyles(gap, !noRelative, gapMode, !noImportant ? '!important' : '') });
++    /*
++     * Game Narrator patch: the embedded-UI CSP (style-src 'self' for <style>
++     * elements, see internal/api/static.go) blocks the <style> element this
++     * component used to inject. The body-lock rule it carried is provided by
++     * the app's own stylesheet instead (web/src/index.css, keyed on the
++     * data-scroll-locked attribute set by useLockAttribute above); the
++     * scrollbar-gutter compensation is a cosmetic loss accepted for a local
++     * single-user appliance (docs/adr/0011, CSP note).
++     */
++    return null;
+ };

@@ -1,54 +1,20 @@
-// Typed REST access to the introspection endpoints of docs/spec/08.
-// Field names mirror the Go JSON payloads in internal/api/api.go.
+// Typed REST access to the introspection endpoints of docs/spec/08, on the
+// generated contract types (src/api/client.ts). Kept as its own module because
+// /diagnostics is the one page that must work before anybody has an account
+// (docs/spec/09: the SPA serves its own login form, ADR-0016 §"Enforcement point").
 
-/** Response of GET /api/v1/system/info. */
-export interface SystemInfo {
-  version: string;
-  commit: string;
-  go_version: string;
-  os: string;
-  arch: string;
-  num_cpu: number;
-  started_at: string;
-}
+import { api } from "./client";
+import type { Readiness, SystemInfo } from "./client";
 
-/** Response of GET /api/v1/health/ready. */
-export interface Readiness {
-  status: string;
-  checks: Record<string, string>;
-}
-
-/** HTTP failure that carries the status code so pages can display it. */
-export class ApiError extends Error {
-  readonly status: number;
-
-  constructor(status: number, message: string) {
-    super(message);
-    this.name = "ApiError";
-    this.status = status;
-  }
-}
-
-/** The HTTP status behind an error, or null when it is not an HTTP failure. */
-export function apiStatus(error: unknown): number | null {
-  return error instanceof ApiError ? error.status : null;
-}
-
-async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(path, {
-    headers: { accept: "application/json" },
-    signal,
-  });
-  if (!response.ok) {
-    throw new ApiError(response.status, `GET ${path} failed with HTTP ${response.status}`);
-  }
-  return (await response.json()) as T;
-}
+export type { Readiness, SystemInfo };
+export { ApiError, apiCode, apiStatus } from "./client";
 
 export function fetchSystemInfo(signal?: AbortSignal): Promise<SystemInfo> {
-  return getJson<SystemInfo>("/api/v1/system/info", signal);
+  return api.get("/api/v1/system/info", { signal }) as Promise<SystemInfo>;
 }
 
 export function fetchReadiness(signal?: AbortSignal): Promise<Readiness> {
-  return getJson<Readiness>("/api/v1/health/ready", signal);
+  // The contract types `checks` as an open object map; the shape the page reads
+  // is documented in internal/api/api.go's readiness handler.
+  return api.get("/api/v1/health/ready", { signal }) as Promise<Readiness>;
 }
