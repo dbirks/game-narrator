@@ -4,6 +4,7 @@ package tools
 // scenarios").
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -281,5 +282,74 @@ func TestScenario_6_VoiceRedesignKeepsApprovedVoice(t *testing.T) {
 	if before.msgCount != after.msgCount || before.srcCount != after.srcCount ||
 		before.charCount != after.charCount || before.preferredVoice != after.preferredVoice {
 		t.Fatalf("voice redesign changed non-voice state: before=%+v after=%+v", before, after)
+	}
+}
+
+// TestAnalyzeCharacterRequestsJSONModeWithFallback proves analyze_character opts
+// into the JSON-mode fallback (the gateway's 27B rejects response_format on the
+// 2026-10-17 NInfer build) and still validates the brief: the model's answer is
+// steered by instruction, wrapped in a preamble and a code fence, and the tool
+// must strip both, parse the object and label every creative field.
+func TestAnalyzeCharacterRequestsJSONModeWithFallback(t *testing.T) {
+	e := newEnv(t)
+	g := e.game("synthetic-tide", "Synthetic Tide")
+	p := e.draft(e.edition(g, "US", "en", "v1").ID)
+	e.importDirect(t, p.ID, "synthetic-adventure.csv", smallCSV, games.RightsUserSupplied)
+	chars, err := e.store.ListCharacters(e.ctx, p.ID)
+	if err != nil {
+		t.Fatalf("ListCharacters: %v", err)
+	}
+	var marla games.Character
+	for _, c := range chars {
+		if c.Name == "Marla" {
+			marla = c
+		}
+	}
+	if marla.ID == "" {
+		t.Fatal("the import did not create the Marla character row")
+	}
+
+	// A preamble + fenced brief: the tool must strip both and still parse.
+	const brief = `{"vocal_age_impression":"mid-30s","timbre":"stern, low","cadence":"fast","emotional_baseline":"cold","language_notes":"no contractions","pronunciation_notes":"hard stops"}`
+	wrapped := "Sure, here is the voice brief:\n```json\n" + brief + "\n```"
+	var gotReq openai.ChatRequest
+	e.deps.Chat = func(ctx context.Context, req openai.ChatRequest) (openai.ChatResponse, error) {
+		gotReq = req
+		return openai.ChatResponse{Text: wrapped, FinishReason: "stop"}, nil
+	}
+
+	call := agent.Call{
+		ID:        "analyze-1",
+		Name:      "analyze_character",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"profile_id":%q,"character_id":%q}`, p.ID, marla.ID)),
+	}
+	res, err := e.deps.analyzeCharacter(e.ctx, call)
+	if err != nil {
+		t.Fatalf("analyzeCharacter: %v", err)
+	}
+	if !gotReq.ResponseFormatJSON {
+		t.Error("analyze_character request did not set ResponseFormatJSON")
+	}
+	if !gotReq.JSONModeFallback {
+		t.Error("analyze_character request did not set JSONModeFallback")
+	}
+	var out struct {
+		VoiceBrief map[string]struct {
+			Value    any  `json:"value"`
+			Creative bool `json:"creative"`
+		} `json:"voice_brief"`
+	}
+	if err := json.Unmarshal(res.Results, &out); err != nil {
+		t.Fatalf("Results did not unmarshal: %v (%s)", err, res.Results)
+	}
+	for _, f := range []string{"vocal_age_impression", "timbre", "cadence", "emotional_baseline", "language_notes", "pronunciation_notes"} {
+		entry, ok := out.VoiceBrief[f]
+		if !ok {
+			t.Errorf("voice_brief missing field %q", f)
+			continue
+		}
+		if !entry.Creative {
+			t.Errorf("voice_brief.%s must be labelled creative:true", f)
+		}
 	}
 }

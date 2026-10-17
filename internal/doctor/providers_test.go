@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/providers"
+	"github.com/dbirks/game-narrator/internal/providers/openai"
 )
 
 // Role checks are exercised two ways: against a recorded OpenAI-compatible
@@ -24,6 +25,7 @@ import (
 type fakeProbe struct {
 	models []string
 	chat   func(prompt string, images [][]byte) (ChatResult, error)
+	caps   openai.Capabilities
 	calls  []string
 }
 
@@ -34,6 +36,17 @@ func (p *fakeProbe) ListModels(context.Context, providers.RoleConfig) ([]string,
 func (p *fakeProbe) Chat(_ context.Context, _ providers.RoleConfig, prompt string, images [][]byte) (ChatResult, error) {
 	p.calls = append(p.calls, prompt)
 	return p.chat(prompt, images)
+}
+
+// ProbeCapabilities reports the fake's capability findings. The in-process fake
+// does not send real requests, so it reports unknown unless a test configures
+// a finding; the recorded-gateway tests (default probe) exercise the real
+// probes.
+func (p *fakeProbe) ProbeCapabilities(_ context.Context, _ providers.RoleConfig) (openai.Capabilities, error) {
+	if p.caps != (openai.Capabilities{}) {
+		return p.caps, nil
+	}
+	return openai.Capabilities{JSONMode: openai.CapabilityUnknown, ToolChoiceRequired: openai.CapabilityUnknown}, nil
 }
 
 func configuredRoles(role providers.Role, model string) map[providers.Role]providers.RoleConfig {

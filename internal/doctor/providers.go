@@ -147,6 +147,15 @@ func (r *runner) checkRole(ctx context.Context, role providers.Role, cfg provide
 		detail += fmt.Sprintf("; vision request answered in %s", visionLatency)
 	}
 
+	// Optional capability findings (json_mode, tool_choice_required) from
+	// docs/spec/06 "Model-serving version and health negotiation": a
+	// diagnostic, not a hard requirement — the app degrades from a rejected
+	// capability (JSON-mode fallback, tool_choice auto). A probe error (client
+	// construction) simply omits the findings; it never fails the role.
+	if caps, err := probe.ProbeCapabilities(ctx, cfg); err == nil {
+		detail += fmt.Sprintf("; json_mode=%s tool_choice_required=%s", caps.JSONMode, caps.ToolChoiceRequired)
+	}
+
 	return Check{Status: StatusOK, Summary: summary, Detail: detail}
 }
 

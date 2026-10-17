@@ -216,3 +216,43 @@ involved, and no credential is stored anywhere by this decision.
   settings; env stays the override layer above it.
 - Per-role concurrency and max-payload caps, plus `usage` recording in the
   decision/event log.
+
+## Capability fallback (2026-10-17 amendment)
+
+The NInfer gateway build serving qwen3-8-27b rejects two request features with
+an HTTP 400 it cannot guarantee: `response_format {"type":"json_object"}` and
+`tool_choice:"required"` (`tool_choice:"auto"` and image input are accepted).
+A gateway that cannot guarantee a feature is a **capability finding, not a
+schema accident**, so the adapter now degrades honestly instead of failing:
+
+1. **Typed capability errors.** A 400 that names `response_format` or
+   `tool_choice` maps to `unsupported_capability` (the existing classification,
+   kept) and is tagged with a matchable sentinel: `ErrUnsupportedResponseFormat`
+   or `ErrUnsupportedToolChoice` (`errors.Is`), so callers and diagnostics name
+   the exact gap rather than parse prose.
+2. **Opt-in, retry-once fallback.** `ChatRequest.JSONModeFallback` retries once
+   without `response_format` plus a "single JSON object only" system instruction,
+   then validates the response is one parseable object (extracted outermost
+   `{…}`; a non-object answer is a typed `bad_schema`, no further retries).
+   `ChatRequest.ToolChoiceFallback` retries `required` once as `auto` plus a
+   call-a-tool instruction and reports `ErrToolCallMissing` if no call arrives.
+   Without the opt-in flag a rejection still fails loudly. This is a bounded
+   retry (one), inside the adapter, and is not the model router's retry policy.
+3. **Cached per (base URL, model).** A "rejected" finding is cached for the
+   client's lifetime (a `Client` is one base URL + model), so later calls skip
+   the doomed first attempt. `Client.Capabilities()` exposes the snapshot
+   (`json_mode`, `tool_choice_required`) for diagnostics; `doctor` reports both
+   per role. `analyze_character` opts into `JSONModeFallback` and keeps
+   validating the brief's fields.
+4. **Honest live tests.** The tool-calling live test uses `auto` (the app's real
+   usage); a separate `required` probe and the JSON-mode test record a
+   CAPABILITY FINDING (pass with a logged finding) instead of asserting a
+   capability the deployment does not have (AGENTS.md rule 3, no simulation
+   theatre). `TestLiveJSONModeFallbackReturnsObject` proves the degraded path
+   returns a parseable object against the real gateway.
+
+**Tradeoff / reversal.** The fallback hides a genuine deployment limitation
+behind a working call; the `Capabilities()` snapshot and the live findings keep
+that visibility. If the gateway grows to guarantee structured output or forced
+tool calls, the finding flips to `supported` with no code change, and the
+fallback simply stops firing.

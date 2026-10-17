@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/providers"
@@ -36,6 +37,54 @@ const (
 	// the gateways we tested, and a mid-request 400 wastes the whole timeout.
 	roleDeveloper = "developer"
 )
+
+// Typed capability errors (docs/spec/06 "Model-serving version and health
+// negotiation"). A gateway that cannot guarantee a feature rejects the request
+// with an HTTP 400; these sentinels let callers and diagnostics match the exact
+// capability gap rather than parsing prose. Each is also surfaced as a
+// *providers.Error of KindUnsupportedCapability (the existing classification),
+// so the two views agree.
+var (
+	// ErrUnsupportedResponseFormat marks a 400 in which the gateway refused a
+	// response_format (structured/JSON mode) request. Observed live on the
+	// NInfer build (2026-10-17): 'this response_format requires constrained
+	// output, which NInfer cannot guarantee; only {"type":"text"} is available'.
+	ErrUnsupportedResponseFormat = errors.New("openai: response_format is not supported by this deployment")
+	// ErrUnsupportedToolChoice marks a 400 in which the gateway refused
+	// tool_choice=required. Observed live on the NInfer build (2026-10-17):
+	// "tool_choice='required' requires at least one tool call, which NInfer
+	// cannot guarantee". tool_choice auto is accepted by the same deployment.
+	ErrUnsupportedToolChoice = errors.New("openai: tool_choice required is not supported by this deployment")
+	// ErrToolCallMissing marks the degraded tool_choice=required -> auto retry
+	// in which the model still produced no tool call: the deployment cannot be
+	// coerced into a forced call, which is a capability gap, not a transport
+	// accident. Not retryable by default (a retry cannot add the capability).
+	ErrToolCallMissing = errors.New("openai: a tool call was requested but none arrived")
+)
+
+// CapabilityState is one entry in a Capabilities snapshot.
+type CapabilityState string
+
+const (
+	// CapabilityUnknown means this capability has not been probed (or recorded)
+	// yet for this client's (base URL, model).
+	CapabilityUnknown CapabilityState = "unknown"
+	// CapabilitySupported means a request exercising the capability succeeded.
+	CapabilitySupported CapabilityState = "supported"
+	// CapabilityRejected means the gateway rejected the capability (HTTP 400).
+	CapabilityRejected CapabilityState = "rejected"
+)
+
+// Capabilities is a read-only snapshot of the per-(base URL, model) findings
+// the client has recorded for its lifetime, for diagnostics. It is a cache of
+// observed behaviour, not a live probe: entries stay unknown until the client
+// actually sends a request that exercises the capability.
+type Capabilities struct {
+	// JSONMode records the response_format json_object finding.
+	JSONMode CapabilityState
+	// ToolChoiceRequired records the tool_choice=required finding.
+	ToolChoiceRequired CapabilityState
+}
 
 // Message is one chat message. Text carries the content; Images are PNG or
 // JPEG bytes sent as base64 data URLs, in order, after the text part.
@@ -66,6 +115,23 @@ type ChatRequest struct {
 	Tools []ToolDef
 	// ToolChoice constrains tool use; empty sends nothing.
 	ToolChoice ToolChoice
+	// JSONModeFallback opts into the JSON-mode degradation (docs/spec/06
+	// "Model-serving version and health negotiation"): when the gateway rejects
+	// response_format json_object with a 400, the client retries once without
+	// response_format and with an appended "answer with a single JSON object
+	// only" instruction, then validates the response contains one parseable
+	// JSON object. The "JSON mode unsupported" finding is cached per
+	// (base URL, model) for the client's lifetime so later calls skip the
+	// doomed first attempt. Opt-in only: a plain ResponseFormatJSON request
+	// still fails loudly when rejected.
+	JSONModeFallback bool
+	// ToolChoiceFallback opts into the tool_choice degradation: when the
+	// gateway rejects tool_choice=required with a 400, the client retries once
+	// with tool_choice auto and an instruction to call the tool. If the model
+	// still does not call a tool, the call returns ErrToolCallMissing (wrapped
+	// in a *providers.Error). The "tool_choice=required unsupported" finding is
+	// cached per (base URL, model) the same way. Opt-in only.
+	ToolChoiceFallback bool
 }
 
 // Usage reports token counts. Reasoning is populated when the gateway returns
@@ -113,6 +179,14 @@ type Client struct {
 	// MaxImageBytes overrides MaxImageBytes for this client; zero uses the
 	// package default.
 	MaxImageBytes int
+
+	// Capability findings are cached for the client's lifetime. A Client is
+	// one (base URL, model) by construction, so a client-lifetime cache is
+	// exactly the required per-(base URL, model) cache. Guarded by mu because a
+	// shared client may serve concurrent requests.
+	mu                 sync.Mutex
+	jsonModeState      CapabilityState
+	toolChoiceReqState CapabilityState
 }
 
 // New returns a client for a base URL. baseURL is validated, not silently
@@ -170,13 +244,13 @@ func NewFromRole(cfg providers.RoleConfig) (*Client, error) {
 
 // String renders the client identity for logs with the credential masked, so a
 // stray %v of a client can never print a token.
-func (c Client) String() string {
+func (c *Client) String() string {
 	return fmt.Sprintf("openai.Client{BaseURL: %q, Model: %q, Token: %q, HTTP: %s}",
 		c.BaseURL, c.Model, mask(c.Token), transportLabel(c.HTTP))
 }
 
 // LogValue keeps the same guarantee for structured logging.
-func (c Client) LogValue() any {
+func (c *Client) LogValue() any {
 	token := ""
 	if c.Token != "" {
 		token = providers.MaskValue
@@ -216,6 +290,40 @@ func (c *Client) maxImageBytes() int {
 		return c.MaxImageBytes
 	}
 	return MaxImageBytes
+}
+
+// Capabilities returns a read-only snapshot of the capability findings this
+// client has recorded for its (base URL, model) (docs/spec/06 "Model-serving
+// version and health negotiation"). It is a cache of observed behaviour for
+// diagnostics, not a live probe.
+func (c *Client) Capabilities() Capabilities {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return Capabilities{JSONMode: c.jsonModeState, ToolChoiceRequired: c.toolChoiceReqState}
+}
+
+func (c *Client) jsonModeRejected() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.jsonModeState == CapabilityRejected
+}
+
+func (c *Client) setJSONMode(state CapabilityState) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.jsonModeState = state
+}
+
+func (c *Client) toolChoiceReqRejected() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.toolChoiceReqState == CapabilityRejected
+}
+
+func (c *Client) setToolChoiceRequired(state CapabilityState) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.toolChoiceReqState = state
 }
 
 func (c *Client) endpoint(path string) (string, error) {
@@ -410,7 +518,7 @@ func kindForStatus(status int, providerMsg string) providers.Kind {
 func mentionsCapability(msg string) bool {
 	for _, hint := range []string{"not supported", "unsupported", "does not exist", "no such model",
 		"unknown model", "invalid model", "not found", "unknown role", "response_format", "image",
-		"developer", "max_tokens", "temperature"} {
+		"developer", "max_tokens", "temperature", "tool_choice"} {
 		if strings.Contains(msg, hint) {
 			return true
 		}
@@ -600,20 +708,11 @@ func detectImageMIME(b []byte) string {
 	}
 }
 
-// Chat performs one chat completion.
-func (c *Client) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error) {
-	messages, err := c.buildMessages(req)
-	if err != nil {
-		return ChatResponse{}, err
-	}
-	tools, err := toolsToWire(req.Tools)
-	if err != nil {
-		return ChatResponse{}, err
-	}
-	choice, err := choiceToWire(req.ToolChoice)
-	if err != nil {
-		return ChatResponse{}, err
-	}
+// buildBody assembles the wire body for one attempt. jsonMode controls whether
+// response_format is sent; choice is the already-projected tool_choice value.
+// Factored out of Chat so the capability-fallback retry can rebuild the body
+// with a degraded feature without duplicating the sampling/field mapping.
+func (c *Client) buildBody(req ChatRequest, messages []chatMessage, tools []wireTool, choice any, jsonMode bool) chatRequestBody {
 	body := chatRequestBody{
 		Model:      c.Model,
 		Messages:   messages,
@@ -627,18 +726,109 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error
 		t := *req.Temperature
 		body.Temperature = &t
 	}
-	if req.ResponseFormatJSON {
+	if jsonMode {
 		body.ResponseFormat = &responseFormat{Type: "json_object"}
+	}
+	return body
+}
+
+// Chat performs one chat completion.
+//
+// When JSONModeFallback / ToolChoiceFallback are set, a gateway 400 that
+// rejects the corresponding capability is degraded and retried exactly once
+// (docs/spec/06 "Model-serving version and health negotiation"): JSON mode
+// retries without response_format plus a "single JSON object only" instruction
+// and then validates the response is one parseable object; tool_choice=required
+// retries as auto plus a "call a tool" instruction and reports ErrToolCallMissing
+// if no call arrives. The finding is cached per (base URL, model) so later
+// calls skip the doomed first attempt. Without the opt-in flag, a rejection
+// still surfaces as a typed *providers.Error (KindUnsupportedCapability) tagged
+// with the capability sentinel.
+func (c *Client) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	baseMessages, err := c.buildMessages(req)
+	if err != nil {
+		return ChatResponse{}, err
+	}
+	tools, err := toolsToWire(req.Tools)
+	if err != nil {
+		return ChatResponse{}, err
 	}
 	endpoint, err := c.endpoint("/chat/completions")
 	if err != nil {
 		return ChatResponse{}, err
 	}
+
+	wantJSON := req.ResponseFormatJSON
+	wantRequired := req.ToolChoice == ToolChoiceRequired
+
+	// Apply the cached capability findings up front so a known-rejected
+	// capability is skipped on the first attempt and the degraded form is sent
+	// instead (the "skip the doomed first attempt" behaviour).
+	jsonMode := wantJSON
+	jsonDegraded := false
+	if wantJSON && req.JSONModeFallback && c.jsonModeRejected() {
+		jsonMode = false
+		jsonDegraded = true
+		baseMessages, err = c.buildMessages(ChatRequest{Messages: withJSONOnlyInstruction(req.Messages)})
+		if err != nil {
+			return ChatResponse{}, err
+		}
+	}
+	toolChoice := req.ToolChoice
+	toolDegraded := false
+	if wantRequired && req.ToolChoiceFallback && c.toolChoiceReqRejected() {
+		toolChoice = ToolChoiceAuto
+		toolDegraded = true
+		baseMessages, err = c.buildMessages(ChatRequest{Messages: withToolCallInstruction(req.Messages)})
+		if err != nil {
+			return ChatResponse{}, err
+		}
+	}
+	choice, err := choiceToWire(toolChoice)
+	if err != nil {
+		return ChatResponse{}, err
+	}
+	body := c.buildBody(req, baseMessages, tools, choice, jsonMode)
+	// Track what the *current* attempt sends so a post-attempt error is only
+	// tagged with a capability sentinel when the failing request actually
+	// exercised the rejected feature.
+	sentJSON := jsonMode
+	sentRequired := toolChoice == ToolChoiceRequired
+
 	var payload chatResponsePayload
 	latency, header, callErr := c.do(ctx, http.MethodPost, endpoint, body, &payload)
 	if callErr != nil {
-		return ChatResponse{}, callErr
+		switch {
+		// First attempt sent response_format and the gateway rejected it:
+		// degrade once, without response_format, with the JSON instruction.
+		case wantJSON && req.JSONModeFallback && sentJSON && IsJSONModeRejection(callErr):
+			c.setJSONMode(CapabilityRejected)
+			jsonMode, jsonDegraded, sentJSON = false, true, false
+			baseMessages, err = c.buildMessages(ChatRequest{Messages: withJSONOnlyInstruction(req.Messages)})
+			if err != nil {
+				return ChatResponse{}, err
+			}
+			body = c.buildBody(req, baseMessages, tools, choice, jsonMode)
+			latency, header, callErr = c.do(ctx, http.MethodPost, endpoint, body, &payload)
+		// First attempt sent tool_choice=required and the gateway rejected it:
+		// degrade once, to auto, with the call-a-tool instruction.
+		case wantRequired && req.ToolChoiceFallback && sentRequired && IsToolChoiceRejection(callErr):
+			c.setToolChoiceRequired(CapabilityRejected)
+			toolChoice = ToolChoiceAuto
+			toolDegraded, sentRequired = true, false
+			baseMessages, err = c.buildMessages(ChatRequest{Messages: withToolCallInstruction(req.Messages)})
+			if err != nil {
+				return ChatResponse{}, err
+			}
+			choice, _ = choiceToWire(toolChoice)
+			body = c.buildBody(req, baseMessages, tools, choice, jsonMode)
+			latency, header, callErr = c.do(ctx, http.MethodPost, endpoint, body, &payload)
+		}
+		if callErr != nil {
+			return ChatResponse{}, tagCapabilityError(callErr, wantJSON, sentJSON, wantRequired, sentRequired)
+		}
 	}
+
 	out, err := payload.toChatResponse(c.Model)
 	if err != nil {
 		return ChatResponse{}, err
@@ -649,6 +839,43 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error
 	out.RequestID = requestID(header)
 	if out.RequestID == "" {
 		out.RequestID = payload.ID
+	}
+
+	// Record a successful probe of the feature the final attempt sent.
+	if wantJSON && sentJSON {
+		c.setJSONMode(CapabilitySupported)
+	}
+	if wantRequired && sentRequired {
+		c.setToolChoiceRequired(CapabilitySupported)
+	}
+
+	// The degraded JSON path: the gateway does not guarantee structured output,
+	// so validate the model still produced one parseable JSON object. A
+	// non-object answer is a capability failure of the degraded path, typed and
+	// not retried. The text is normalised to the extracted object so callers
+	// get exactly one clean object.
+	if jsonDegraded {
+		obj, ok := extractJSONObject(out.Text)
+		if !ok {
+			e := providers.NewError(providers.KindBadSchema, http.StatusOK,
+				"openai: JSON-mode fallback response is not a single parseable JSON object")
+			e.Model = out.Model
+			e.RequestID = out.RequestID
+			return out, e
+		}
+		out.Text = string(obj)
+	}
+
+	// The degraded tool_choice=required -> auto path (whether skipped up front
+	// from the cache or retried after a rejection): if the model still did not
+	// call a tool, report the capability gap rather than a silent success.
+	if toolDegraded && len(out.ToolCalls) == 0 {
+		e := providers.NewError(providers.KindUnsupportedCapability, 0,
+			"openai: tool_choice required degraded to auto but the model still did not call a tool")
+		e.Err = ErrToolCallMissing
+		e.Model = out.Model
+		e.RequestID = out.RequestID
+		return out, e
 	}
 	return out, nil
 }
@@ -668,6 +895,107 @@ func IsJSONModeRejection(err error) bool {
 	lower := strings.ToLower(pe.Msg)
 	return strings.Contains(lower, "response_format") || strings.Contains(lower, "response format") ||
 		strings.Contains(lower, "json")
+}
+
+// IsToolChoiceRejection reports whether an error looks like a gateway refusing
+// tool_choice=required rather than a transport or schema accident, so callers
+// can record it as a capability finding. Mirrors IsJSONModeRejection.
+func IsToolChoiceRejection(err error) bool {
+	var pe *providers.Error
+	if !errors.As(err, &pe) {
+		return false
+	}
+	if pe.Kind != providers.KindUnsupportedCapability && pe.Kind != providers.KindBadSchema {
+		return false
+	}
+	return strings.Contains(strings.ToLower(pe.Msg), "tool_choice")
+}
+
+// tagCapabilityError wraps a failed capability request in its typed sentinel
+// (ErrUnsupportedResponseFormat / ErrUnsupportedToolChoice) so callers and
+// diagnostics can match the exact gap. It only tags when the *failing* request
+// actually exercised the rejected feature (sentJSON / sentRequired), so an
+// unrelated error on a degraded retry is not mislabelled. The existing
+// *providers.Error classification (KindUnsupportedCapability) is preserved; the
+// sentinel is attached as the cause so errors.Is(err, sentinel) also matches.
+func tagCapabilityError(err error, wantJSON, sentJSON, wantRequired, sentRequired bool) error {
+	var sentinel error
+	switch {
+	case wantJSON && sentJSON && IsJSONModeRejection(err):
+		sentinel = ErrUnsupportedResponseFormat
+	case wantRequired && sentRequired && IsToolChoiceRejection(err):
+		sentinel = ErrUnsupportedToolChoice
+	}
+	if sentinel == nil {
+		return err
+	}
+	var pe *providers.Error
+	if !errors.As(err, &pe) {
+		return err
+	}
+	pe.Err = sentinel
+	return err
+}
+
+// injectInstruction returns a copy of msgs with instruction merged into the
+// leading system message (or prepended as a new one when none exists). The
+// original slice and its messages are not mutated. Used by the capability
+// fallback retries, which steer the model with a system instruction.
+func injectInstruction(msgs []Message, instruction string) []Message {
+	out := make([]Message, len(msgs))
+	copy(out, msgs)
+	for i := range out {
+		if strings.EqualFold(strings.TrimSpace(out[i].Role), "system") {
+			if strings.TrimSpace(out[i].Text) != "" {
+				out[i].Text = strings.TrimSpace(out[i].Text) + "\n" + instruction
+			} else {
+				out[i].Text = instruction
+			}
+			return out
+		}
+	}
+	prepended := make([]Message, 0, len(out)+1)
+	prepended = append(prepended, Message{Role: "system", Text: instruction})
+	return append(prepended, out...)
+}
+
+// withJSONOnlyInstruction is the JSON-mode fallback instruction.
+func withJSONOnlyInstruction(msgs []Message) []Message {
+	return injectInstruction(msgs, "Answer with a single JSON object only.")
+}
+
+// withToolCallInstruction is the tool_choice=required fallback instruction.
+func withToolCallInstruction(msgs []Message) []Message {
+	return injectInstruction(msgs, "You must answer by calling a tool; do not answer with plain text.")
+}
+
+// extractJSONObject returns the outermost balanced {...} substring of text as a
+// validated JSON object, reporting whether text contains one such parseable
+// object. Used by the JSON-mode fallback, where the gateway does not guarantee
+// structured output: the model is steered by instruction and the response is
+// then checked to actually be a single object.
+func extractJSONObject(text string) (json.RawMessage, bool) {
+	start := strings.Index(text, "{")
+	if start < 0 {
+		return nil, false
+	}
+	depth := 0
+	for i := start; i < len(text); i++ {
+		switch text[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				candidate := text[start : i+1]
+				if !json.Valid([]byte(candidate)) {
+					return nil, false
+				}
+				return json.RawMessage(candidate), true
+			}
+		}
+	}
+	return nil, false
 }
 
 type chatResponsePayload struct {

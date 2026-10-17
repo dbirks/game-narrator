@@ -124,6 +124,11 @@ func (d Deps) analyzeCharacter(ctx context.Context, call agent.Call) (agent.Resu
 			{Role: agent.RoleUser, Text: userMsg},
 		},
 		ResponseFormatJSON: true,
+		// The gateway's 27B rejects response_format json_object (NInfer build
+		// 2026-10-17). Opt into the degraded JSON path: retry once without
+		// response_format plus a "single JSON object only" instruction and
+		// validate the response is one parseable object (docs/spec/06).
+		JSONModeFallback: true,
 	})
 	if err != nil {
 		return agent.Result{}, fmt.Errorf("tools: analyze_character: model call: %w", err)

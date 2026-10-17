@@ -209,6 +209,57 @@ func TestLiveChatJSONModeReturnsParsableObject(t *testing.T) {
 		resp.Model, resp.Latency.Round(time.Millisecond), resp.Usage.Prompt, resp.Usage.Completion)
 }
 
+// TestLiveJSONModeFallbackReturnsObject is the degraded JSON path against the
+// real gateway: a JSONModeFallback request must yield one parseable JSON object
+// whether the gateway accepts response_format or rejects it (then the client
+// retries once without it plus the JSON-only instruction). It logs which path
+// was taken from the client's capability snapshot.
+func TestLiveJSONModeFallbackReturnsObject(t *testing.T) {
+	client := liveClient(t, 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	resp, err := client.Chat(ctx, ChatRequest{
+		Messages: []Message{{
+			Role: "user",
+			Text: `Return only a JSON object with the single boolean key "ok" set to true. No prose, no code fences.`,
+		}},
+		MaxTokens:          300,
+		ResponseFormatJSON: true,
+		JSONModeFallback:   true,
+	})
+	if err != nil {
+		t.Fatalf("JSON-mode fallback Chat: %v", err)
+	}
+	// The response must contain one parseable JSON object. In the degraded
+	// path the client normalised Text to the extracted object; in the
+	// accepted path the gateway guaranteed structured output. extractJSONObject
+	// covers both (it also tolerates a stray code fence).
+	obj, ok := extractJSONObject(resp.Text)
+	if !ok {
+		t.Fatalf("Text = %q does not contain a single parseable JSON object", resp.Text)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(obj, &parsed); err != nil {
+		t.Fatalf("extracted object %s is not a JSON object: %v", obj, err)
+	}
+	if v, isBool := parsed["ok"]; !isBool || v != true {
+		t.Errorf("parsed = %v, want {\"ok\":true}", parsed)
+	}
+	// Log which path was taken, from the recorded capability finding.
+	switch client.Capabilities().JSONMode {
+	case CapabilityRejected:
+		t.Logf("CAPABILITY FINDING: live gateway rejects response_format; the JSON-mode "+
+			"fallback was taken (degraded to plain-text JSON). model=%s latency=%s usage=%d/%d",
+			resp.Model, resp.Latency.Round(time.Millisecond), resp.Usage.Prompt, resp.Usage.Completion)
+	case CapabilitySupported:
+		t.Logf("live JSON-mode fallback NOT needed: gateway accepted response_format. model=%s latency=%s usage=%d/%d",
+			resp.Model, resp.Latency.Round(time.Millisecond), resp.Usage.Prompt, resp.Usage.Completion)
+	default:
+		t.Errorf("Capabilities().JSONMode = %q, want rejected or supported after a JSON-mode request",
+			client.Capabilities().JSONMode)
+	}
+}
+
 // TestLiveChatRejectsUnknownModelLive confirms the 404/model-not-found mapping
 // against the real gateway, which is the case that decides whether a role is
 // misconfigured or merely overloaded.

@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/providers"
+	"github.com/dbirks/game-narrator/internal/providers/openai"
 )
 
 // Report states from docs/spec/13, plus FAIL for a configured component that
@@ -131,6 +132,12 @@ type ExecFunc func(ctx context.Context, name string, args ...string) CommandResu
 type ProviderProbe interface {
 	ListModels(ctx context.Context, cfg providers.RoleConfig) ([]string, error)
 	Chat(ctx context.Context, cfg providers.RoleConfig, prompt string, images [][]byte) (ChatResult, error)
+	// ProbeCapabilities exercises the role's optional capabilities (JSON mode
+	// via response_format and tool_choice=required) and returns a snapshot.
+	// It is a diagnostic, not a hard requirement: a capability the app can
+	// degrade from (docs/spec/06) is reported, and a probe failure must not
+	// fail the role.
+	ProbeCapabilities(ctx context.Context, cfg providers.RoleConfig) (openai.Capabilities, error)
 }
 
 // ChatResult is one probe answer.

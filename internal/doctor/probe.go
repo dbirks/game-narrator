@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 
 	"github.com/dbirks/game-narrator/internal/providers"
@@ -33,6 +34,48 @@ func (openAIProbe) Chat(ctx context.Context, cfg providers.RoleConfig, prompt st
 		return ChatResult{}, err
 	}
 	return ChatResult{Text: resp.Text, Model: resp.Model, Latency: resp.Latency}, nil
+}
+
+// probeCapabilitiesProbeJSON and probeCapabilitiesProbeTool are the cheap, fixed
+// prompts for the optional-capability probes (docs/spec/06). They are content
+// probes, not warm-and-fuzzy pings: the gateway either accepts the feature
+// (200) or rejects it (400), which the adapter records as a finding.
+const (
+	probeCapabilitiesJSONPrompt = `Return only a JSON object with the single boolean key "ok" set to true.`
+	probeCapabilitiesToolPrompt = `Use the probe_echo tool to echo the exact text "probe".`
+	probeCapabilitiesToolSchema = `{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}`
+)
+
+// ProbeCapabilities exercises the role's optional capabilities and returns the
+// findings the adapter recorded. It sends one JSON-mode request (response_format
+// plus the degraded fallback) and one tool_choice=required request (plus the
+// auto fallback). Both failures are capability findings, not probe errors, so
+// the individual responses are intentionally ignored: only the recorded
+// snapshot is returned. A client-construction failure is the only error.
+func (openAIProbe) ProbeCapabilities(ctx context.Context, cfg providers.RoleConfig) (openai.Capabilities, error) {
+	client, err := probeClient(cfg)
+	if err != nil {
+		return openai.Capabilities{}, err
+	}
+	// JSON mode: the fallback is enabled so a rejection degrades instead of
+	// aborting, and the finding (rejected/supported) is recorded either way.
+	_, _ = client.Chat(ctx, openai.ChatRequest{
+		Messages:           []openai.Message{{Role: "user", Text: probeCapabilitiesJSONPrompt}},
+		MaxTokens:          64,
+		ResponseFormatJSON: true,
+		JSONModeFallback:   true,
+	})
+	// tool_choice=required: the fallback is enabled so a rejection degrades to
+	// auto; a missing tool call after degradation is ErrToolCallMissing, which
+	// is a capability finding, not a probe error.
+	_, _ = client.Chat(ctx, openai.ChatRequest{
+		Messages:           []openai.Message{{Role: "user", Text: probeCapabilitiesToolPrompt}},
+		MaxTokens:          64,
+		Tools:              []openai.ToolDef{{Name: "probe_echo", Description: "Echo the given text back verbatim.", Parameters: json.RawMessage(probeCapabilitiesToolSchema)}},
+		ToolChoice:         openai.ToolChoiceRequired,
+		ToolChoiceFallback: true,
+	})
+	return client.Capabilities(), nil
 }
 
 // probeClient builds the role's client, then removes the role's runtime latency

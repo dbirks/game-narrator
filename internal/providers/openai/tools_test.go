@@ -194,6 +194,12 @@ func TestToolDefValidation(t *testing.T) {
 // Live: one tool definition against the configured agent_reasoning gateway;
 // the model must answer with a tool call whose arguments parse as JSON.
 // NOT RUN (skip) when the gateway env is absent.
+//
+// This exercises the app's real usage: tool_choice auto. The gateway's 27B
+// rejects tool_choice=required (2026-10-17 NInfer build), so the app degrades
+// to auto (docs/spec/06). The separate required probe
+// (TestLiveToolChoiceRequiredIsACapabilityFinding) records that capability
+// finding rather than asserting it.
 func TestLiveToolCallingExecutesOneTool(t *testing.T) {
 	roles, err := providers.LoadRoles(os.LookupEnv)
 	if err != nil {
@@ -224,7 +230,7 @@ func TestLiveToolCallingExecutesOneTool(t *testing.T) {
 		Messages:   []Message{{Role: "user", Text: `Use the echo_tool function to echo the exact text "agent-live". Do not answer anything else.`}},
 		MaxTokens:  256,
 		Tools:      []ToolDef{{Name: "echo_tool", Description: "Echo the given text back verbatim.", Parameters: json.RawMessage(echoToolSchema)}},
-		ToolChoice: ToolChoiceRequired,
+		ToolChoice: ToolChoiceAuto,
 	})
 	if err != nil {
 		t.Fatalf("live tool Chat: %v", err)
@@ -246,6 +252,60 @@ func TestLiveToolCallingExecutesOneTool(t *testing.T) {
 	// Log-safe: model id, finish reason, latency. Never the URL or token.
 	t.Logf("live tool call: model=%s finish=%s tool=%s args_keys=%d latency=%s",
 		resp.Model, resp.FinishReason, call.Name, len(obj), resp.Latency.Round(time.Millisecond))
+}
+
+// TestLiveToolChoiceRequiredIsACapabilityFinding probes the real behaviour of
+// tool_choice=required against the configured gateway and records a CAPABILITY
+// FINDING either way (pass with a logged finding), mirroring the JSON-mode
+// test. It does NOT assert required is available: the app degrades to auto
+// (docs/spec/06), so a rejection is expected and honest, not a failure.
+func TestLiveToolChoiceRequiredIsACapabilityFinding(t *testing.T) {
+	roles, err := providers.LoadRoles(os.LookupEnv)
+	if err != nil {
+		t.Fatalf("LoadRoles: %v", err)
+	}
+	cfg := roles[providers.RoleAgentReasoning]
+	if strings.TrimSpace(cfg.BaseURL) == "" || strings.TrimSpace(cfg.Token()) == "" {
+		t.Skip("NOT RUN: set GAME_NARRATOR_GATEWAY_URL and the token env named by GAME_NARRATOR_GATEWAY_TOKEN_ENV")
+	}
+	model := strings.TrimSpace(os.Getenv("GAME_NARRATOR_LIVE_AGENT_MODEL"))
+	if model == "" {
+		model = strings.TrimSpace(cfg.Model)
+	}
+	if model == "" {
+		model = "qwen3-8-27b"
+	}
+	cfg.Model = model
+	cfg.Timeout = 60 * time.Second
+	client, err := NewFromRole(cfg)
+	if err != nil {
+		t.Fatalf("NewFromRole: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	resp, err := client.Chat(ctx, ChatRequest{
+		Messages:   []Message{{Role: "user", Text: `Use the echo_tool function to echo the exact text "agent-live".`}},
+		MaxTokens:  256,
+		Tools:      []ToolDef{{Name: "echo_tool", Description: "Echo the given text back verbatim.", Parameters: json.RawMessage(echoToolSchema)}},
+		ToolChoice: ToolChoiceRequired,
+	})
+	if err != nil {
+		// Expected on the NInfer build: a typed capability rejection.
+		var pe *providers.Error
+		if errors.As(err, &pe) && errors.Is(err, ErrUnsupportedToolChoice) {
+			t.Logf("CAPABILITY FINDING: live gateway rejects tool_choice=required (model=%s); %s. "+
+				"The app degrades to auto (docs/spec/06).", model, pe)
+			return
+		}
+		t.Fatalf("live tool_choice=required probe: %v, want ErrUnsupportedToolChoice", err)
+	}
+	// The gateway accepted required: record that (unexpected) capability and
+	// still require a tool call to have arrived.
+	t.Logf("CAPABILITY FINDING: live gateway accepts tool_choice=required (model=%s); forced tool calls are available", model)
+	if len(resp.ToolCalls) == 0 {
+		t.Fatalf("gateway accepted required but no tool call arrived: finish=%s text=%q", resp.FinishReason, truncate(resp.Text, 120))
+	}
+	_ = client.Capabilities()
 }
 
 func truncate(s string, n int) string {
