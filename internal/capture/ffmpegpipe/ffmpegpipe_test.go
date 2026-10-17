@@ -74,7 +74,11 @@ func TestTestSourceDeliversAnimatedFramesAtRate(t *testing.T) {
 
 	seen := map[capture.PixFmt]bool{}
 	hashes := map[string]bool{}
-	var prev int64
+	var (
+		prevTS   int64
+		prevSeq  int64
+		stamped  int64 // sum of the delivered frames' Dropped stamps
+	)
 	for i, f := range frames {
 		if err := f.Validate(); err != nil {
 			t.Fatalf("frame %d invalid: %v", i, err)
@@ -88,18 +92,35 @@ func TestTestSourceDeliversAnimatedFramesAtRate(t *testing.T) {
 		if f.SourceClock != capture.ClockMonotonic {
 			t.Fatalf("frame %d clock %q, want monotonic: rawvideo carries no device stamps and pretending otherwise breaks docs/spec/01 invariant 1", i, f.SourceClock)
 		}
-		if f.CaptureTimestampNS <= prev && i > 0 {
-			t.Fatalf("frame %d timestamp %d did not advance past %d", i, f.CaptureTimestampNS, prev)
+		if i > 0 {
+			if f.CaptureTimestampNS <= prevTS {
+				t.Fatalf("frame %d timestamp %d did not advance past %d", i, f.CaptureTimestampNS, prevTS)
+			}
+			if f.Seq <= prevSeq {
+				t.Fatalf("frame %d seq %d did not advance past %d: the slot may lose frames, never reorder them", i, f.Seq, prevSeq)
+			}
 		}
-		prev = f.CaptureTimestampNS
-		if f.Seq != int64(i+1) {
-			t.Fatalf("frame %d has seq %d: a live source must number frames from 1 without gaps", i, f.Seq)
-		}
+		prevTS = f.CaptureTimestampNS
+		prevSeq = f.Seq
+		stamped += f.Dropped
 		if f.Hash == "" {
 			t.Fatalf("frame %d has no hash", i)
 		}
 		hashes[f.Hash] = true
 		seen[f.PixFmt] = true
+	}
+	// Dropped accounting, not gap-free numbering: the live path is a
+	// single-slot latest-frame queue, so under load the slot legitimately
+	// overwrites frames the consumer did not take in time, and a strict
+	// seq == n+1 assertion would then fail for a reason nothing to do with
+	// this code. Every frame FFmpeg produced is either delivered or
+	// overwritten (never both), so the last delivered seq equals the
+	// delivered count plus the stamped drops; a clean gap-free run simply
+	// lands on seq == n with zero stamps, and a dropped one names how much
+	// video went missing — which is what the trace is supposed to be able to
+	// say (docs/spec/10 preflight).
+	if want := int64(len(frames)) + stamped; prevSeq != want {
+		t.Errorf("last delivered seq = %d, want %d (delivered %d + stamped drops %d): the Dropped accounting does not cover the seq gap", prevSeq, want, len(frames), stamped)
 	}
 	if len(hashes) < 3 {
 		t.Errorf("only %d distinct frame hashes over %d frames: testsrc2 animates, so a frozen pipe looks identical to a frozen capture card", len(hashes), len(frames))
@@ -113,10 +134,16 @@ func TestTestSourceDeliversAnimatedFramesAtRate(t *testing.T) {
 	// do the negotiated mode), so it is measured over the delivered frames, not
 	// over the whole test window, and asserted as a band rather than exactly.
 	st := s.Stats()
-	t.Logf("measured fps=%.2f (requested %g), delivered=%d, dropped_slot=%d, decode_errors=%d, state=%s",
-		st.FPS, fps, st.Delivered, st.DroppedSlot, st.DecodeErrors, st.State)
+	t.Logf("measured fps=%.2f (requested %g), delivered=%d, dropped_slot=%d, stamped=%d, decode_errors=%d, state=%s",
+		st.FPS, fps, st.Delivered, st.DroppedSlot, stamped, st.DecodeErrors, st.State)
 	if st.FPS < fps-3 || st.FPS > fps+3 {
 		t.Errorf("measured FPS %.2f outside %g±3; lavfi pacing or the fps estimator is wrong", st.FPS, fps)
+	}
+	if int64(st.DroppedSlot) < stamped {
+		t.Errorf("source dropped_slot=%d but the delivered frames stamp %d drops: the source's own counter undercounts what the consumer saw", st.DroppedSlot, stamped)
+	}
+	if st.Delivered < uint64(len(frames)) {
+		t.Errorf("source delivered=%d but the channel handed over %d frames", st.Delivered, len(frames))
 	}
 	if st.State != capture.StateRunning {
 		t.Errorf("state = %s while frames are flowing", st.State)

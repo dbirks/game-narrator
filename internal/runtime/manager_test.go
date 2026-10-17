@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"testing"
 	"time"
 
@@ -312,8 +313,19 @@ func TestOneSessionAtATime(t *testing.T) {
 // runner: a job enqueued mid-session stays queued until the session ends.
 // The env pieces are built here, not through newEnv, because the jobs runner
 // must exist before the manager is constructed and the store before both.
+//
+// The session runs the test_pattern source (FFmpeg testsrc2 through the same
+// supervised subprocess live capture uses), not the synthetic replay: the
+// recording ends after 24 frames, and under parallel load the run could reach
+// EOF before the queued check ran, in which case the job legitimately ran and
+// the assertion would fail for a reason nothing to do with foreground-busy.
+// The pattern source ends only on stop, so the session is provably live for
+// the whole check — asserted, not slept into.
 func TestForegroundBusyPausesJobs(t *testing.T) {
 	corpusPresent(t)
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skipf("NOT RUN: ffmpeg is not installed (%v); the test_pattern source needs it", err)
+	}
 	script := truthScript(t)
 	ctx := context.Background()
 	st, err := store.Open(ctx, store.DBPath(t.TempDir()))
@@ -350,7 +362,7 @@ func TestForegroundBusyPausesJobs(t *testing.T) {
 		Jobs:        runner,
 		AssetsRoot:  t.TempDir(),
 		ReplayRoots: []string{syntheticClipDir()},
-		OCR:         &fakeOCR{script: script, delay: 250 * time.Millisecond},
+		OCR:         &fakeOCR{script: script},
 		Log:         slog.New(slog.DiscardHandler),
 	})
 	if err != nil {
@@ -361,7 +373,7 @@ func TestForegroundBusyPausesJobs(t *testing.T) {
 	profileID, _ := seedSyntheticProfile(t, st, true)
 	info, err := mgr.Start(ctx, runtime.StartRequest{
 		ProfileID:   profileID,
-		FrameSource: runtime.FrameSource{Kind: runtime.SourceKindReplay, Dir: syntheticClipDir()},
+		FrameSource: runtime.FrameSource{Kind: runtime.SourceKindTestPattern},
 	})
 	if err != nil {
 		t.Fatalf("start: %v", err)
@@ -372,13 +384,22 @@ func TestForegroundBusyPausesJobs(t *testing.T) {
 	if err != nil || !created {
 		t.Fatalf("enqueue: %v created=%v", err, created)
 	}
-	time.Sleep(700 * time.Millisecond)
+	// Foreground-busy is set before the session leaves "starting" and cleared
+	// only after the run has ended, so with the session provably running on
+	// both sides of the check the queued state is what the runner is actually
+	// holding — no fixed sleep stands in for the session staying live.
+	if snap, ok := mgr.Get(info.ID); !ok || snap.State != runtime.StateRunning {
+		t.Fatalf("session state = %q before the queued check, want running", snap.State)
+	}
 	got, err := js.GetJob(ctx, job.ID)
 	if err != nil {
 		t.Fatalf("GetJob: %v", err)
 	}
 	if got.State != store.JobQueued {
 		t.Fatalf("job state = %q while a session is live; foreground-busy must pause background work", got.State)
+	}
+	if snap, ok := mgr.Get(info.ID); !ok || snap.State != runtime.StateRunning {
+		t.Fatalf("session state = %q after the queued check, want running", snap.State)
 	}
 
 	if _, err := mgr.Stop(info.ID); err != nil {

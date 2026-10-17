@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -343,28 +344,27 @@ func TestSpeedScalesTheTimelineWithoutRewritingIt(t *testing.T) {
 }
 
 func TestSpeedZeroNeverSleeps(t *testing.T) {
-	// The claim that makes fixture replay the gate that runs on every PR: thousands
-	// of frames in milliseconds. If anything sleeps at speed 0 the reasoning is
-	// false, so both the call count and the wall clock are checked.
-	calls := 0
+	// The claim that makes fixture replay the gate that runs on every PR:
+	// thousands of frames in milliseconds. If anything sleeps at speed 0 the
+	// reasoning is false. The assertion is the injected sleeper's call count,
+	// not wall time: a bound on elapsed time would be a test of this machine's
+	// PNG decoder under load, not of the pacing, and it was exactly that
+	// flake that made this test fail under parallel CI load.
+	var calls atomic.Int64
 	s := &Source{Dir: corpusDir(t), Speed: 0, Sleeper: func(ctx context.Context, _ time.Duration) error {
-		calls++
+		calls.Add(1)
 		return nil
 	}}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	start := time.Now()
 	ch, _ := s.Start(ctx)
 	defer s.Close()
 	frames := drainAll(t, ch, 10*time.Second)
 	if len(frames) != 24 {
 		t.Fatalf("%d frames", len(frames))
 	}
-	if calls != 0 {
-		t.Errorf("Sleeper called %d times at speed 0", calls)
-	}
-	if d := time.Since(start); d > 2*time.Second {
-		t.Errorf("speed 0 replay took %v; nothing should be waiting", d)
+	if got := calls.Load(); got != 0 {
+		t.Errorf("Sleeper called %d times at speed 0, want 0", got)
 	}
 }
 
