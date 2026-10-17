@@ -1,0 +1,62 @@
+[Unit]
+Description=Game Narrator - live game narration service (V4L2 capture, OCR, model gateway, USB audio)
+Documentation=https://github.com/dbirks/game-narrator
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=game-narrator
+Group=game-narrator
+# /dev/video* (UVC capture) and audio devices are granted through group
+# membership (docs/spec/10 "UNO Q software deployment"). Devices are probed by
+# `game-narrator doctor`, never assumed to be /dev/video0.
+SupplementaryGroups=video audio
+
+# The binary resolves GAME_NARRATOR_LISTEN / GAME_NARRATOR_DATA_DIR from the
+# environment (see `game-narrator serve --help`); defaults are 127.0.0.1:8080
+# and $XDG_DATA_HOME/game-narrator. GAME_NARRATOR_DATA_DIR is pinned to the
+# StateDirectory: without it the fallback would resolve to
+# $HOME/.local/share/game-narrator — /var/lib/game-narrator/.local/share/
+# game-narrator for the service user (HOME=/var/lib/game-narrator) — nested
+# under, not at, the StateDirectory. The env file is optional (leading '-')
+# and is read after Environment=, so it may override the pin; it must be
+# created by the admin from env.example at 0600 (docs/spec/10).
+Environment=GAME_NARRATOR_DATA_DIR=/var/lib/game-narrator
+EnvironmentFile=-/etc/game-narrator/env
+ExecStart=/usr/bin/game-narrator serve
+
+# Durable data directory (SQLite + content-addressed assets) and configuration
+# directory; systemd creates them at service start if missing. The data
+# directory is user data: the package never deletes it (docs/spec/15).
+StateDirectory=game-narrator
+StateDirectoryMode=0750
+ConfigurationDirectory=game-narrator
+
+Restart=on-failure
+RestartSec=5
+
+# --- hardening ---------------------------------------------------------------
+# The real /dev is intentionally NOT replaced (PrivateDevices stays off) so
+# that /dev/video* and /dev/snd devices work via the video/audio groups above.
+# A SystemCallFilter=@system-service profile is deliberately left for the
+# UNO Q hardware validation (the Go runtime + subprocess supervision of
+# ffmpeg/v4l2-ctl/tesseract must be measured first — ADR 0033).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RemoveIPC=true
+UMask=0027

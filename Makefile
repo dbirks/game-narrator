@@ -14,9 +14,9 @@ COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 LDFLAGS := -X $(PKG).version=$(VERSION) -X $(PKG).commit=$(COMMIT)
 
 # Gate targets that test-full runs for real.
-RUN_GATES := test-unit test-ui diagnostics
+RUN_GATES := test-unit test-ui diagnostics release-snapshot
 # Gate targets that still need implementation (docs/spec/16).
-PENDING_GATES := test-replay test-dolphin test-models test-hardware release-snapshot
+PENDING_GATES := test-replay test-dolphin test-models test-hardware
 
 .PHONY: bootstrap dev build web-build test-unit test-replay test-ui test-dolphin test-models \
         test-hardware test-full lint release-snapshot diagnostics
@@ -98,8 +98,29 @@ test-models:
 test-hardware:
 	@echo "NOT RUN: test-hardware is not implemented yet (see docs/spec/16)" >&2; exit 1
 
+## release-snapshot: local snapshot pipeline (docs/spec/15, ADR 0033).
+## Validates the build, archives, SBOMs, .debs and the OCI image WITHOUT
+## publishing: --snapshot skips all publishing and dockers_v2 snapshot builds
+## never push (verified against goreleaser 2.14 internals). The GHCR repo is
+## not configured by default (GN_DOCKER_REPO unset => docker section disabled);
+## the Makefile sets a local-only repo name so the snapshot image is built and
+## scanned locally. Tagged publishing needs explicit user approval
+## (docs/release.md).
 release-snapshot:
-	@echo "NOT RUN: release-snapshot is not implemented yet (see docs/spec/16)" >&2; exit 1
+	@command -v goreleaser >/dev/null 2>&1 || { echo "NOT RUN: release-snapshot (goreleaser not installed; see docs/spec/16)" >&2; exit 1; }
+	@set -e; \
+	goreleaser check; \
+	if docker info >/dev/null 2>&1; then \
+		echo "release-snapshot: docker available in this session"; \
+		GN_DOCKER_REPO=game-narrator goreleaser release --snapshot --clean; \
+	elif command -v sg >/dev/null 2>&1 && sg docker -c 'docker info' >/dev/null 2>&1; then \
+		echo "release-snapshot: session lacks the docker group — running goreleaser via sg docker"; \
+		sg docker -c "GN_DOCKER_REPO=game-narrator exec goreleaser release --snapshot --clean"; \
+	else \
+		echo "release-snapshot: docker not usable — dockers_v2 stays disabled, no image build"; \
+		goreleaser release --snapshot --clean; \
+	fi; \
+	scripts/release/smoke.sh
 
 ## diagnostics: probe the host honestly — storage, native tools, OCR, capture,
 ## audio, every model role, and with --dev the Dolphin/Xvfb and game image

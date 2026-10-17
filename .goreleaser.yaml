@@ -1,0 +1,143 @@
+# Game Narrator GoReleaser pipeline (docs/spec/15).
+# v2 schema; validate with `goreleaser check`. No publishing is enabled —
+# see docs/release.md and ADR 0033.
+version: 2
+
+project_name: game-narrator
+
+builds:
+  - id: game-narrator
+    main: ./cmd/game-narrator
+    binary: game-narrator
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/dbirks/game-narrator/internal/bootstrap.version={{.Version}}
+      - -X github.com/dbirks/game-narrator/internal/bootstrap.commit={{.Commit}}
+
+# Stage the React UI for go:embed before any build (same steps as `make web-build`).
+before:
+  hooks:
+    - make web-build
+
+archives:
+  - id: game-narrator
+    # game-narrator_<version>_linux_<arch>.tar.gz (tar.gz is the v2 default)
+    files:
+      - README.md
+      - examples/config/config.example.yaml
+      - examples/config/env.example
+      - packaging/systemd/game-narrator.service
+
+checksum:
+  name_template: "checksums.txt"
+
+# SBOM per release archive (docs/spec/15 "Generate SBOM with Syft").
+# cmd defaults to syft; args omit --enrich so the run works offline (enrichment
+# queries external package databases).
+sboms:
+  - id: archives
+    artifacts: archive
+    documents:
+      - game-narrator_{{ .Version }}_{{ .Arch }}.sbom.spdx.json
+    args:
+      - "$artifact"
+      - "--output"
+      - "spdx-json=$document"
+
+# --- OCI image (docs/spec/15, ADR 0006, ADR 0012 Part 2) ---------------------
+# dockers_v2 is verified to exist in the installed goreleaser 2.14.0 (goreleaser
+# check + internal/pipe/docker/v2 source). Behaviour (2.14):
+#   - snapshot runs NEVER push: images are built per platform with --load and
+#     get suffixed tags (<tag>-amd64 / <tag>-arm64);
+#   - tagged releases push a multi-arch manifest list with an SBOM attestation
+#     (--push --attest=type=sbom) — only if GN_DOCKER_REPO is set to a
+#     registry repository you own and you are logged in, e.g.
+#       GN_DOCKER_REPO=ghcr.io/<owner>/game-narrator goreleaser release --clean
+#     (requires explicit user approval; see docs/release.md).
+# Without GN_DOCKER_REPO this section is disabled entirely, so nothing can be
+# pushed by accident.
+dockers_v2:
+  - id: game-narrator
+    # v2 semantics: images = repository names only; tags = tag templates; the
+    # pipe renders <image>:<tag> per pair (and snapshot mode appends -amd64 /
+    # -arm64 to each tag). .Version is the snapshot-aware version
+    # (0.0.0-SNAPSHOT-<sha> in snapshot mode, v1.2.3 on a tagged release);
+    # .Tag is the raw git tag.
+    disable: "{{ if not (isEnvSet \"GN_DOCKER_REPO\") }}true{{ end }}"
+    dockerfile: packaging/Dockerfile
+    images:
+      - "{{ envOrDefault \"GN_DOCKER_REPO\" \"\" }}"
+    tags:
+      - "{{ .Version }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      org.opencontainers.image.title: game-narrator
+      org.opencontainers.image.description: >-
+        Live game narration assistant: V4L2 capture, OCR, model gateway
+        narration decisions, USB audio playback. Embeds the React UI.
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .ShortCommit }}"
+      org.opencontainers.image.source: https://github.com/dbirks/game-narrator
+      org.opencontainers.image.licenses: UNLICENSED
+
+# --- No publishing by default (user has not approved a publish target yet) --
+# Snapshot runs never publish anyway; this additionally blocks tagged
+# `goreleaser release` (GitHub Releases & co.) until explicitly enabled in a
+# reviewed change plus user approval (docs/release.md). Keyless cosign signing
+# is documented there but NOT enabled.
+release:
+  disable: true
+  draft: true
+
+# Debian package for UNO Q (docs/spec/10 "UNO Q software deployment", ADR 0006).
+# .rpm is intentionally omitted: there is no install-smoke environment for it
+# on this host (docs/spec/15: "Optional .rpm if tested; avoid claiming support
+# without install smoke"). See ADR 0033.
+nfpms:
+  - id: game-narrator
+    package_name: game-narrator
+    formats:
+      - deb
+    license: unspecified # README "License: Not yet chosen" — see ADR 0033
+    maintainer: "dbirks (Game Narrator project)"
+    description: >-
+      Live game narration assistant: captures gameplay video, reads on-screen
+      text with OCR, routes narration decisions through a model gateway and
+      speaks the result through a USB audio device.
+    section: games
+    priority: optional
+    dependencies:
+      - ffmpeg
+      - tesseract-ocr
+      - tesseract-ocr-eng
+      - v4l-utils
+      - ca-certificates
+    scripts:
+      postinstall: packaging/deb/postinst.sh
+      preremove: packaging/deb/prerm.sh
+      postremove: packaging/deb/postrm.sh
+    contents:
+      - src: packaging/systemd/game-narrator.service
+        dst: /lib/systemd/system/game-narrator.service
+        file_info:
+          mode: 0o644
+      - src: examples/config/config.example.yaml
+        dst: /etc/game-narrator/config.yaml
+        type: config|noreplace
+        file_info:
+          mode: 0o640
+      - src: examples/config/env.example
+        dst: /etc/game-narrator/env.example
+        file_info:
+          mode: 0o640
