@@ -2,82 +2,117 @@
 
 ## Purpose
 
-Describe how to collect and purge diagnostic material for a support report.
-**There is no `export support bundle` command in this build.** The CLI
-provides `serve`, `migrate`, `admin`, `doctor`, `import-disc`, `version` and
-the benchmark command `bench` (hidden from the top-level listing; see
-`bin/game-narrator --help`) — nothing bundles, scrubs or exports
-diagnostics. That capability is required by
-docs/spec/13 "Logging/privacy" ("Provide `export support bundle` with
-automated scrubber and a preview before export") and is **NOT YET
-IMPLEMENTED** (tracking: docs/spec/13; the privacy constraints below are the
-interim manual policy).
+Collect and purge the diagnostic material for a support report.
+`game-narrator support-bundle` builds one redacted `tar.gz` archive that is
+safe to send to a third party: no tokens, no gateway hostnames, no private
+IPs, no home paths, no database rows, no game text, no frames, crops, audio
+or dialogue (docs/spec/13 "Logging/privacy", AGENTS.md rule 5).
 
-## What to collect manually today
+```sh
+bin/game-narrator support-bundle --data-dir DIR \
+    [--out FILE.tar.gz] [--since 24h] [--include-dev-trace] [--probe]
+```
 
-Everything is either redacted by construction or safe to run locally:
+Flags:
 
-1. **Doctor report** — the primary diagnostic:
+- `--data-dir DIR` — the durable data directory to bundle
+  (default `GAME_NARRATOR_DATA_DIR`, else the XDG default).
+- `--out FILE.tar.gz` — where the archive is written. **Default: the current
+  directory** (`./game-narrator-support-<UTC stamp>.tar.gz`). The app keeps
+  no copies: the bundle lives exactly where `--out` puts it and nothing
+  under the data dir is touched.
+- `--since 24h` — limit the dev-trace metadata to the last `24h`. The app
+  writes no log file (structured JSON goes to stderr, see below), so the
+  window applies to the dev-trace section only.
+- `--include-dev-trace` — include dev-trace *metadata* (session ids, blob
+  hashes, sizes, mtimes). Never include frames, crops, audio or dialogue
+  text; without the flag the section is absent.
+- `--probe` — let the doctor section exercise the configured provider
+  endpoints. Off by default: the bundle is built **offline-safe**, with no
+  network access, and configured roles report as not probed rather than as
+  working.
+
+Exit status: 0 on success, 1 on failure (e.g. no database in the data dir —
+run `bin/game-narrator migrate --data-dir DIR` first), 2 on bad usage.
+
+## What is inside
+
+Every entry is a small JSON document; the archive contains nothing else
+(never the database file, assets, audio or dev-trace blobs):
+
+- `manifest.json` — version, commit, Go version, OS/arch, `created_at`, the
+  data-dir **basename only** (no host path), the sha256 and size of every
+  other entry, and the logging note: the service logs structured JSON to
+  stderr only, so the bundle carries a note instead of log content (the
+  journal to look at is the process journal of `game-narrator serve`).
+- `doctor.json` — the doctor report. Local checks (storage, tools, OCR
+  image, capture devices, audio sinks) ran for real; network provider
+  probes are skipped unless `--probe` (the `mode` field says which).
+- `store.json` — schema version, applied migrations and per-table row
+  **counts only**, never content. The database itself is never copied into
+  a bundle.
+- `config.redacted.json` — the effective model-role configuration: every
+  URL reduced to `scheme://<redacted-host>`, every token/secret value
+  replaced by `<redacted>`, environment variable *names* and set/unset
+  kept (so a recipient can re-check the configuration without seeing
+  secrets).
+- `dev-trace.json` (only with `--include-dev-trace`) — per session: the
+  session id and each stored sample's sha256, size and mtime. The hashes
+  let you correlate the trace with the developer API
+  (`/api/v1/dev/traces/{trace_id}`) without shipping the samples.
+
+## Inspect before sharing
+
+The command prints a preview (path, entry list, sha256 per entry) before
+you move the file. Verify the archive itself, then re-check for anything
+the redaction rules could not have covered:
+
+```sh
+# what is inside (entry names only)
+tar -tzf bundle.tar.gz
+
+# identity, entry hashes and the logging note
+tar -xOf bundle.tar.gz manifest.json | jq .
+
+# store metadata: schema version + table counts (no content)
+tar -xOf bundle.tar.gz store.json | jq '.schema_version, .table_counts'
+
+# redacted config: no hostnames, no token values
+tar -xOf bundle.tar.gz config.redacted.json | jq .
+
+# scan for anything that should not be present (expect no real matches)
+mkdir -p /tmp/gn-check && tar -xzf bundle.tar.gz -C /tmp/gn-check
+grep -rniE 'token|secret|password|/home/|gn_[0-9a-f]{8}' /tmp/gn-check
+rm -rf /tmp/gn-check
+```
+
+## Purging
+
+The bundle is a transient artifact: it lives where `--out` puts it (the
+current directory by default), and the app keeps no copies — there is
+nothing to purge inside `game-narrator` after you are done with it.
+
+1. Verify it with the commands above before sending it.
+2. Delete it once the support exchange is done:
 
    ```sh
-   bin/game-narrator doctor --dev --json   # machine-readable; no URLs, tokens or image paths in it
+   rm bundle.tar.gz        # or the path you gave to --out
+   rm -rf /tmp/gn-check    # and any inspection scratch dir
    ```
 
-   Provider lines never print a URL, a token or a game image path
-   (docs/spec/13; asserted by the recorded doctor tests, ADR 0010 §7).
-2. **System info / health** — `GET /api/v1/system/info`,
-   `GET /api/v1/health/ready` (build version/commit, `os`/`arch`,
-   readiness state).
-3. **Gate evidence** — the per-gate logs and JUnit XML under
-   `artifacts/gates/` and the run's evidence bundle
-   (`artifacts/<run-id>/`), which is what `make test-full` records.
-4. **Event/trace data** for a misbehaving session, via the developer API
-   (`/api/v1/dev/events`, `/api/v1/dev/traces/{trace_id}`) or the
-   `/developer` page — hashes, counts and selected confidence, not
-   full screenshots or waveforms, by default (docs/spec/13 "Logging/privacy").
-
-## Redaction rules for anything you attach
-
-- **Tokens and secrets:** never include `.env`, `GAME_NARRATOR_GATEWAY_TOKEN`
-  values, or the gateway hostname (the artifact scanner
-  `scripts/release/scan-artifacts.sh` fails builds on exactly these, plus
-  `/home/` paths and private file names — docs/release.md "Hard rules").
-- **Game text and copyrighted material:** never attach the game image,
-  savestates, BMG/source dumps, or screenshots that show copyrighted
-  visuals (AGENTS.md rule 5). Diagnostics cite content by hash and count.
-- **Audio:** do not attach voice samples or reference audio — voice data is
-  user data the package is forbidden from deleting, and it never belongs in
-  a support file (docs/spec/14 consent).
-- **The database:** do not attach `game-narrator.sqlite` — it contains the
-  user-curated catalogue and voice references. If storage state matters,
-  describe it (schema version from `migrate`, table counts) instead.
-
-## Purging the collected material
-
-1. Keep only the redacted items above in a scratch dir (e.g.
-   `mktemp -d /gn-support.XXXXXX`).
-2. Verify before sending:
-
-   ```sh
-   grep -rniE 'token|secret|password|/home/|gn_[0-9a-f]{8}' <scratch-dir>   # should match nothing real
-   ```
-
-3. Delete the scratch dir and any local copies:
-
-   ```sh
-   rm -rf <scratch-dir>
-   ```
-
-   `artifacts/` itself is gitignored — but delete any bundle you no longer
-   need rather than letting it accumulate.
+   Do not let bundles accumulate in scratch dirs or home directories; each
+   one is a redacted snapshot of a machine, and keeping old ones is
+   keeping old, possibly more-identifying, snapshots.
 
 ## What NOT to do
 
-- Do not claim a bundle was "exported with the automated scrubber" — no such
-  tool exists yet (no simulation theater, AGENTS.md rule 3).
-- Do not attach developer-trace frame crops or audio as a shortcut; the
-  default log/trace posture is hashes and counts, and the sample-mode
-  storage is quota-bounded and explicitly toggled (docs/spec/13).
-- Do not send anything containing the game image path or hash into a
-  channel that is not the evidence bundle's audience — even hashes reference
-  private user-supplied material (docs/dev-environment.md "Verified gaps" 2).
+- Do not attach the database, game image, savestates, BMG/source dumps,
+  voice samples or any screenshot that shows copyrighted visuals
+  (AGENTS.md rule 5). Diagnostics cite content by hash and count.
+- Do not attach developer-trace frame crops or audio as a shortcut;
+  `--include-dev-trace` ships hashes, sizes and mtimes only.
+- Do not run `--probe` from a machine that should stay offline; it sends
+  real requests to the configured gateways.
+- Do not send anything containing the game image path into a channel that
+  is not the evidence bundle's audience (docs/dev-environment.md
+  "Verified gaps" 2). The bundle does not contain it; do not add it.

@@ -5,6 +5,7 @@
 //	game-narrator serve [--listen host:port] [--data-dir DIR]
 //	game-narrator migrate [--data-dir DIR]
 //	game-narrator doctor [--data-dir DIR] [--dev] [--json]
+//	game-narrator support-bundle --data-dir DIR [--out FILE.tar.gz] [--since 24h] [--include-dev-trace] [--probe]
 //	game-narrator version
 package main
 
@@ -59,6 +60,7 @@ commands:
   migrate  apply pending SQLite migrations and report the schema version
   admin    create or manage accounts and API tokens
   doctor   probe every configured component and report honestly
+  support-bundle  build a redacted diagnostics archive for support (docs/spec/13)
   import-disc import the user's own Wind Waker disc into a local profile
   version  print build information and exit
   help     show this message
@@ -285,7 +287,7 @@ func run(args []string, log *slog.Logger) (int, error) {
 		fmt.Println(bootstrap.Version())
 		return 0, nil
 	case "help", "-h", "--help":
-		fmt.Print(usageText, serveUsageText, migrateUsageText, adminUsageText, doctorUsageText, benchUsageText, importDiscUsageText)
+		fmt.Print(usageText, serveUsageText, migrateUsageText, adminUsageText, doctorUsageText, benchUsageText, importDiscUsageText, supportBundleUsageText)
 		return 0, nil
 	case "serve":
 		return runServe(args[1:], log)
@@ -295,6 +297,8 @@ func run(args []string, log *slog.Logger) (int, error) {
 		return runAdmin(args[1:], log)
 	case "doctor":
 		return runDoctor(args[1:], log)
+	case "support-bundle":
+		return runSupportBundle(args[1:], log)
 	case "bench":
 		return runBench(args[1:], log)
 	case "import-disc":
