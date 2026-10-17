@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"sync"
 	"time"
 
@@ -31,6 +32,16 @@ type Result struct {
 // deadline (docs/spec/01: the router owns cancellation, not the cache); the
 // cache only observes the returned Audio and validates it.
 type GenerationFunc func(ctx context.Context) (tts.Audio, error)
+
+// lruState is the eviction bookkeeping for one cache key. It is deliberately
+// separate from the Index: the index is the durability contract (who owns what
+// bytes) and may be persistent; lruState is process-local recency evidence
+// only, and losing it on a restart costs nothing — the next run re-learns
+// order from LoadAll and from its own accesses.
+type lruState struct {
+	accessed time.Time
+	size     int64 // committed blob size; 0 when unknown (loaded, not generated here)
+}
 
 // call is one in-flight generation, shared by every caller that singleflights
 // on the same key.
@@ -93,6 +104,12 @@ type Cache struct {
 	qaSkips   int64
 	generated int64
 	failed    int64
+
+	// LRU evidence for EvictTransient (docs/spec/13 "Disk full": evict safe
+	// transient cache). lruMu guards lru; it is a separate lock so eviction
+	// never contends with the inflight singleflight map.
+	lruMu sync.Mutex
+	lru   map[CacheKey]lruState
 }
 
 // CacheStats is a snapshot of Cache's decision counters.
@@ -119,16 +136,44 @@ func New(Assets assets.Store, Index Index, maxConcurrentGenerations int) *Cache 
 		Index:    Index,
 		inflight: map[CacheKey]*call{},
 		lim:      newGenLimiter(maxConcurrentGenerations),
+		lru:      make(map[CacheKey]lruState),
 	}
 }
 
 // ensureLoaded runs the index LoadAll exactly once.
 func (c *Cache) ensureLoaded(ctx context.Context) error {
 	c.loadOnce.Do(func() {
-		_, err := c.Index.LoadAll(ctx)
+		loaded, err := c.Index.LoadAll(ctx)
 		c.loadErr = err
+		if err == nil {
+			// Seed the LRU with everything a previous run left behind, all at
+			// the load instant: entries this process has not yet touched are,
+			// by construction, the least recently used, which is exactly the
+			// order an eviction must start from.
+			now := time.Now()
+			c.lruMu.Lock()
+			for k := range loaded {
+				c.lru[k] = lruState{accessed: now}
+			}
+			c.lruMu.Unlock()
+		}
 	})
 	return c.loadErr
+}
+
+// touchLRU records that key was just served or written. Size is the committed
+// blob size when known (generation, or a read) and 0 otherwise; eviction
+// re-stats a blob it is about to remove, so an unknown size only costs one
+// metadata read, never correctness.
+func (c *Cache) touchLRU(key CacheKey, size int64) {
+	c.lruMu.Lock()
+	defer c.lruMu.Unlock()
+	st := c.lru[key]
+	st.accessed = time.Now()
+	if size > 0 {
+		st.size = size
+	}
+	c.lru[key] = st
 }
 
 // Get resolves a cache hit without generating anything. It returns the WAV
@@ -154,6 +199,7 @@ func (c *Cache) Get(ctx context.Context, key CacheKey, override bool) (Result, b
 		return Result{}, false, err
 	}
 	c.bump(&c.hits)
+	c.touchLRU(key, int64(len(wav)))
 	return Result{
 		WAV:        wav,
 		SHA256:     e.SHA256,
@@ -206,6 +252,9 @@ func (c *Cache) GetOrGenerate(ctx context.Context, key CacheKey, prio Priority, 
 			cl.mu.Lock()
 			r, err := cl.result, cl.err
 			cl.mu.Unlock()
+			if err == nil {
+				c.touchLRU(key, int64(len(r.WAV)))
+			}
 			return r, err
 		case <-ctx.Done():
 			return Result{}, ctx.Err()
@@ -253,7 +302,7 @@ func (c *Cache) generate(ctx context.Context, key CacheKey, gen GenerationFunc) 
 		return Result{}, fmt.Errorf("speech: refusing to cache unvalidated audio: %w", err)
 	}
 	// Atomic commit: stage (streaming hash) → commit (visible under hash).
-	id, _, err := c.Assets.PutStaged(ctx, bytes.NewReader(audio.WAV), "")
+	id, staged, err := c.Assets.PutStaged(ctx, bytes.NewReader(audio.WAV), "")
 	if err != nil {
 		return Result{}, fmt.Errorf("speech: staging audio: %w", err)
 	}
@@ -271,6 +320,7 @@ func (c *Cache) generate(ctx context.Context, key CacheKey, gen GenerationFunc) 
 	if err := c.Index.Put(key, entry); err != nil {
 		return Result{}, fmt.Errorf("speech: recording index entry: %w", err)
 	}
+	c.touchLRU(key, staged.Size)
 	return Result{
 		WAV:        audio.WAV,
 		SHA256:     commit.SHA256,
@@ -314,6 +364,92 @@ func (c *Cache) loadBytes(ctx context.Context, hash string) ([]byte, error) {
 		return nil, fmt.Errorf("speech: reading cached audio %s: %w", hash, err)
 	}
 	return b, nil
+}
+
+// EvictTransient reclaims disk by evicting up to maxEntries of the cache's
+// OWN entries, least recently used first (maxEntries <= 0 evicts all). For
+// each evicted key it removes the index entry and the blob it addresses.
+//
+// This is the "evict safe transient cache" half of docs/spec/13's Disk-full
+// row. The safety argument, in one line: the index holds only generated TTS
+// utterances, so every key in it is re-synthesizable, and nothing outside this
+// index names these blobs. Approved voice references and imported source data
+// live in the catalogue's own tables and are never touched — EvictTransient
+// cannot see them and Delete reaches only the exact hash of the entry being
+// evicted. The documented quota is the caller's: the runtime (or operator)
+// decides how many entries to release when a write fails with a capacity
+// error; this method is the mechanism, not the policy.
+//
+// A blob that is already gone (Stat → ErrNotFound) is not a failure: the
+// index entry is still removed, the freed count simply does not include it.
+// Already-removed keys are idempotent no-ops.
+func (c *Cache) EvictTransient(ctx context.Context, maxEntries int) (evicted int, freed int64, err error) {
+	if err := c.ensureLoaded(ctx); err != nil {
+		return 0, 0, err
+	}
+
+	// Snapshot the eviction set under the LRU lock, ordered least-recently
+	// used first. Ties (entries loaded in the same instant) break on the key
+	// so the order is deterministic across runs — eviction order is evidence,
+	// and nondeterministic evidence is hard to audit.
+	type victim struct {
+		key  CacheKey
+		time time.Time
+	}
+	c.lruMu.Lock()
+	victims := make([]victim, 0, len(c.lru))
+	for k, st := range c.lru {
+		victims = append(victims, victim{key: k, time: st.accessed})
+	}
+	c.lruMu.Unlock()
+	sort.Slice(victims, func(i, j int) bool {
+		if !victims[i].time.Equal(victims[j].time) {
+			return victims[i].time.Before(victims[j].time)
+		}
+		return string(victims[i].key) < string(victims[j].key)
+	})
+	if maxEntries > 0 && len(victims) > maxEntries {
+		victims = victims[:maxEntries]
+	}
+
+	for _, v := range victims {
+		e, ok := c.Index.Lookup(v.key)
+		if !ok {
+			c.dropLRU(v.key)
+			continue // already evicted (by this process or a persistent index GC)
+		}
+		size := c.lruSize(v.key)
+		c.dropLRU(v.key)
+		if err := c.Index.Delete(v.key); err != nil {
+			return evicted, freed, fmt.Errorf("speech: evict %s: %w", v.key, err)
+		}
+		evicted++
+		if size <= 0 {
+			if si, serr := c.Assets.Stat(ctx, e.SHA256); serr == nil {
+				size = si.Size
+			}
+		}
+		err := c.Assets.Delete(ctx, e.SHA256)
+		if err != nil && !errors.Is(err, assets.ErrNotFound) {
+			return evicted, freed, fmt.Errorf("speech: evict %s (blob %s…): %w", v.key, e.SHA256[:12], err)
+		}
+		freed += size
+	}
+	return evicted, freed, nil
+}
+
+// dropLRU removes one key's LRU state (evicted or gone from the index).
+func (c *Cache) dropLRU(key CacheKey) {
+	c.lruMu.Lock()
+	delete(c.lru, key)
+	c.lruMu.Unlock()
+}
+
+// lruSize returns the recorded blob size for key; zero when unknown.
+func (c *Cache) lruSize(key CacheKey) int64 {
+	c.lruMu.Lock()
+	defer c.lruMu.Unlock()
+	return c.lru[key].size
 }
 
 // Stats returns the decision counters plus the limiter's pending count.

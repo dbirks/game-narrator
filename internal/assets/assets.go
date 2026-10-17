@@ -82,6 +82,15 @@ type Store interface {
 	// reachability"). With dryRun it only reports what it would delete.
 	DeleteUnreachable(ctx context.Context, reachable func(hash string) bool, dryRun bool) ([]string, error)
 
+	// Delete removes one committed blob and nothing else. It is the primitive
+	// for targeted reclamation (for example evicting a transient audio-cache
+	// entry to make room on a full disk, docs/spec/13 "Disk full"). The store
+	// does not know the catalogue, so reachability is the caller's contract —
+	// exactly as with DeleteUnreachable's predicate: never call it on a hash a
+	// voice reference or imported source still names. A missing hash is
+	// ErrNotFound, not an error to hide.
+	Delete(ctx context.Context, hash string) error
+
 	// RecoverStaging discards staging leftovers from interrupted writes and
 	// reports how many files it removed.
 	RecoverStaging(ctx context.Context) (discarded int, err error)

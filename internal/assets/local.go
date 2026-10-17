@@ -758,6 +758,52 @@ func (l *Local) Verify(ctx context.Context, hash string) error {
 	return nil
 }
 
+// Delete removes exactly one committed blob and nothing else. It resolves the
+// hash through the same safety chain as every other read (normalizeHash,
+// checkChain, openValidated, base-name identity), so a tampered tree cannot
+// redirect it. The fan-out parent is fsynced after removal for the same reason
+// a rename into it is: the deletion of a name must be durable. Symlinks and
+// non-regular files at the address are refused, never followed (docs/spec/14
+// "Filesystem/import").
+//
+// Reachability is deliberately the caller's contract: the store cannot tell a
+// blob that is about to be evicted from a voice reference with identical
+// bytes, and deleting the latter would corrupt approved content
+// (docs/spec/05 voice source of truth). Callers that hold a catalogue (the
+// speech cache's index, the asset GC's predicate) decide it.
+func (l *Local) Delete(ctx context.Context, hash string) error {
+	h, err := normalizeHash(hash)
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	p := l.blobPath(h)
+	if err := l.checkChain(p); err != nil {
+		return err
+	}
+	f, _, err := openValidated(p)
+	if err != nil {
+		return err
+	}
+	// The address is the name, as in every other read path.
+	if filepath.Base(f.Name()) != h {
+		f.Close()
+		return fmt.Errorf("assets: %s is not the blob for %s: %w", f.Name(), h, ErrUnsafePath)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("assets: delete %s: close: %w", h, err)
+	}
+	if err := os.Remove(p); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("assets: delete %s: %w", h, ErrNotFound)
+		}
+		return fmt.Errorf("assets: delete %s: %w", h, err)
+	}
+	return syncDir(filepath.Dir(p))
+}
+
 // readPrefix reads up to sniffLen bytes for content sniffing, leaving the file
 // offset just past them.
 func readPrefix(f *os.File) ([]byte, error) {

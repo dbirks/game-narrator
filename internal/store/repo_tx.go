@@ -58,6 +58,12 @@ var (
 	// ErrRevisionConflict means the caller's expected row version is not the
 	// stored one: somebody else wrote first.
 	ErrRevisionConflict = errors.New("store: revision conflict")
+	// ErrNoSpace means SQLite reported SQLITE_FULL: the database file cannot
+	// grow (disk full, or a PRAGMA max_page_count limit). The transaction was
+	// rolled back and nothing was written. Callers must treat this as a
+	// capacity problem they can act on — refuse the write, evict safe transient
+	// data and retry — never as a server fault (docs/spec/13 "Disk full").
+	ErrNoSpace = errors.New("store: no space")
 	// ErrInvalidTransition means a status move the lifecycle forbids, e.g.
 	// draft → published, which never goes through review (games.ProfileStatus.
 	// CanTransition is the single source of that table).
@@ -277,6 +283,13 @@ func mapWriteError(op string, err error) error {
 		return fmt.Errorf("store: %s: %w", op, err)
 	}
 	code, primary := se.Code(), se.Code()&0xff
+	if primary == sqlite3.SQLITE_FULL {
+		// A full disk is not the caller's data fault and not a server bug: it
+		// is a capacity condition with a well-defined recovery (evict transient
+		// cache, then retry), so it gets its own typed error instead of leaking
+		// as an opaque driver message.
+		return fmt.Errorf("store: %s: %w: %s", op, ErrNoSpace, se.Error())
+	}
 	if primary != sqlite3.SQLITE_CONSTRAINT {
 		return fmt.Errorf("store: %s: %w", op, err)
 	}
@@ -311,6 +324,12 @@ func mapWriteError(op string, err error) error {
 // left as the driver's error: it is retryable and must not be dressed up as
 // "not found".
 func mapReadError(op string, err error) error {
+	var se *sqlite.Error
+	if errors.As(err, &se) && se.Code()&0xff == sqlite3.SQLITE_FULL {
+		// A read that needs the file to grow (WAL growth) meets the same
+		// capacity wall as a write; report it the same way.
+		return fmt.Errorf("store: no space: %w: %s", ErrNoSpace, se.Error())
+	}
 	switch {
 	case err == nil:
 		return nil
