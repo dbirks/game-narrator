@@ -176,22 +176,7 @@ test-models:
 ## GAME_NARRATOR_AUDIO_DEVICE when set. See docs/manuals/13-uno-q-hardware-smoke.md.
 test-hardware:
 	@scripts/gates/run-go-gate.sh test-hardware -count=1 -timeout 15m ./internal/hwsmoke/... ; \
-	gate=$$? ; \
-	# run-go-gate.sh invokes its summariser with `go run`, and go run does not \
-	# propagate the summariser's exit status (`go help run`: "The exit status \
-	# of Run is not the exit status of the compiled binary"), so a NOT RUN-only \
-	# result (summariser exit 2) comes back as 1. Re-derive the documented \
-	# 0/1/2 contract from the JUnit XML the gate wrote and record that value \
-	# for test-full: 0 all passed, 1 any FAIL / go test failure, 2 nothing \
-	# failed but at least one NOT RUN. \
-	rc=$$gate ; \
-	if [ $$gate -ne 0 ] && [ -f artifacts/gates/test-hardware.xml ] ; then \
-		fails=$$(sed -n '1s/.*failures="\([0-9]*\)".*/\1/p' artifacts/gates/test-hardware.xml) ; \
-		skips=$$(sed -n '1s/.*skipped="\([0-9]*\)".*/\1/p' artifacts/gates/test-hardware.xml) ; \
-		if [ "$$fails" = "0" ] && [ -n "$$skips" ] && [ "$$skips" -gt 0 ] 2>/dev/null ; then rc=2 ; fi ; \
-	fi ; \
-	echo $$rc > artifacts/gates/test-hardware.rc ; \
-	exit $$rc
+	rc=$$?; echo $$rc > artifacts/gates/test-hardware.rc ; exit $$rc
 
 ## release-snapshot: local snapshot pipeline (docs/spec/15, ADR 0033).
 ## Validates the build, archives, SBOMs, .debs and the OCI image WITHOUT

@@ -11,6 +11,7 @@
 #   artifacts/gates/NAME.xml     JUnit-style summary
 #   artifacts/gates/NAME.stderr  raw go test stderr (build errors etc.)
 #   artifacts/gates/NAME.json    raw go test -json stream
+#   artifacts/gates/NAME.rc      the gate's final exit code (0/1/2)
 #
 # Exit codes:
 #   0  every test ran and passed
@@ -33,26 +34,34 @@ mkdir -p "$outdir"
 json="$outdir/$name.json"
 xml="$outdir/$name.xml"
 stderr="$outdir/$name.stderr"
+tmp=$(mktemp -d) || { echo "run-go-gate: mktemp failed" >&2; exit 1; }
+trap 'rm -rf "$tmp"' EXIT
 
 go test -json "$@" >"$json" 2>"$stderr"
 goc=$?
+
+# Build the summariser once and exec the binary so its exit status (0/1/2)
+# propagates: `go run` exits 1 for ANY non-zero child exit ("exit status N"),
+# which would collapse the documented 0/1/2 contract.
+if ! go build -o "$tmp/gn-junit" ./scripts/gates/junit; then
+	echo "run-go-gate: failed to build scripts/gates/junit" >&2
+	exit 1
+fi
 
 if command -v go-junit-report >/dev/null 2>&1; then
 	go-junit-report <"$json" >"$xml" 2>>"$stderr"
 	# Still print the per-test PASS/FAIL/SKIP/NOT RUN summary so the gate
 	# output stays readable and NOT RUN setup instructions are visible.
-	go run ./scripts/gates/junit /dev/null <"$json"
+	"$tmp/gn-junit" /dev/null <"$json"
 else
-	go run ./scripts/gates/junit "$xml" <"$json"
+	"$tmp/gn-junit" "$xml" <"$json"
 fi
 rc=$?
 
 # go test failing to build (or exiting non-zero otherwise) is a gate
 # failure even when the summariser classified its output as NOT RUN-only.
-if [ "$goc" -ne 0 ] && [ "$rc" -eq 2 ]; then
+if [ "$goc" -ne 0 ]; then
 	rc=1
 fi
-if [ "$goc" -ne 0 ] && [ "$rc" -eq 0 ]; then
-	rc=1
-fi
+echo "$rc" >"$outdir/$name.rc"
 exit "$rc"
