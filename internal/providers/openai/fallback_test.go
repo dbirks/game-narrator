@@ -31,6 +31,15 @@ const jsonAccept200 = `{"model":"fake-model","choices":[{"index":0,"message":{"r
 
 const toolAccept200 = `{"model":"fake-model","choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"echo_tool","arguments":"{\"text\":\"ping\"}"}}]}}]}`
 
+const (
+	reasoningReject400 = `{"error":{"type":"invalid_request_error","message":"reasoning_effort is not supported by this deployment"}}`
+	pingAccept200      = `{"model":"fake-model","choices":[{"index":0,"message":{"role":"assistant","content":"pong"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2}}`
+	// combinedAccept200 answers both degraded features at once (a JSON object
+	// in the content AND a tool call), which is the only shape that can satisfy
+	// a request that wants both.
+	combinedAccept200 = `{"model":"fake-model","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"{\"ok\":true}","tool_calls":[{"id":"call_1","type":"function","function":{"name":"echo_tool","arguments":"{\"text\":\"ping\"}"}}]}}],"usage":{"prompt_tokens":5,"completion_tokens":3}}`
+)
+
 // scriptedGateway serves one response per request from scripted slices and
 // records the decoded body of every request, so a test can assert the exact
 // wire shape of each attempt (first attempt, capability-fallback retry, ...).
@@ -287,5 +296,183 @@ func TestToolChoiceRequiredWithoutFallbackIsTypedError(t *testing.T) {
 	}
 	if n := len(g.snapshot()); n != 1 {
 		t.Errorf("made %d requests, want 1 (no fallback without the opt-in flag)", n)
+	}
+}
+
+// 400 naming reasoning_effort -> the client retries exactly once without the
+// field (the model default applies) and caches the finding, mirroring the
+// JSON-mode and tool_choice degradations.
+func TestReasoningEffortRejectionRetriesWithoutTheField(t *testing.T) {
+	g := newScriptedGateway(t, []int{http.StatusBadRequest, http.StatusOK}, []string{reasoningReject400, pingAccept200})
+	c := g.client()
+	resp, err := c.Chat(context.Background(), ChatRequest{
+		Messages:        []Message{{Role: "user", Text: "pong?"}},
+		MaxTokens:       32,
+		ReasoningEffort: "low",
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if resp.Text != "pong" {
+		t.Errorf("Text = %q, want pong", resp.Text)
+	}
+	reqs := g.snapshot()
+	if len(reqs) != 2 {
+		t.Fatalf("made %d requests, want 2 (first attempt + degraded retry)", len(reqs))
+	}
+	if eff, _ := reqs[0]["reasoning_effort"].(string); eff != "low" {
+		t.Errorf("first request reasoning_effort = %v, want low", reqs[0]["reasoning_effort"])
+	}
+	if _, present := reqs[1]["reasoning_effort"]; present {
+		t.Errorf("retry must omit reasoning_effort, got %v", reqs[1]["reasoning_effort"])
+	}
+	if caps := c.Capabilities(); caps.ReasoningEffort != CapabilityRejected {
+		t.Errorf("Capabilities().ReasoningEffort = %q, want rejected", caps.ReasoningEffort)
+	}
+}
+
+// The cached "rejected" finding makes the next call skip the doomed first
+// attempt: reasoning_effort is never sent at all.
+func TestReasoningEffortRejectedCacheSkipsDoomedFirstAttempt(t *testing.T) {
+	g := newScriptedGateway(t, []int{http.StatusOK}, []string{pingAccept200})
+	c := g.client()
+	c.reasoningEffortState = CapabilityRejected
+	if _, err := c.Chat(context.Background(), ChatRequest{
+		Messages:        []Message{{Role: "user", Text: "pong?"}},
+		ReasoningEffort: "high",
+	}); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	reqs := g.snapshot()
+	if len(reqs) != 1 {
+		t.Fatalf("made %d requests, want 1 (skip the doomed first attempt)", len(reqs))
+	}
+	if _, present := reqs[0]["reasoning_effort"]; present {
+		t.Errorf("request must omit reasoning_effort after a cached rejection, got %v", reqs[0]["reasoning_effort"])
+	}
+}
+
+// A request without ReasoningEffort sends no reasoning_effort field at all
+// (empty = omit, so gateways that reject the field never see it from roles
+// that have no default).
+func TestReasoningEffortEmptySendsNoField(t *testing.T) {
+	g := newScriptedGateway(t, []int{http.StatusOK}, []string{pingAccept200})
+	c := g.client()
+	if _, err := c.Chat(context.Background(), ChatRequest{Messages: []Message{{Role: "user", Text: "pong?"}}}); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	reqs := g.snapshot()
+	if len(reqs) != 1 {
+		t.Fatalf("made %d requests, want 1", len(reqs))
+	}
+	if _, present := reqs[0]["reasoning_effort"]; present {
+		t.Errorf("request must omit reasoning_effort, got %v", reqs[0]["reasoning_effort"])
+	}
+}
+
+// When BOTH the JSON and the tool_choice capability are rejected in the same
+// call, the second degraded retry must start from the first degraded
+// messages: the final request carries both instructions (JSON-only AND
+// call-a-tool), not just the last one. (Before the fix, the tool_choice
+// rebuild re-derived messages from the ORIGINAL request and discarded the
+// JSON instruction.)
+func TestCombinedJSONAndToolChoiceDegradationKeepsBothInstructions(t *testing.T) {
+	g := newScriptedGateway(t,
+		[]int{http.StatusBadRequest, http.StatusBadRequest, http.StatusOK},
+		[]string{jsonReject400, toolReject400, combinedAccept200})
+	c := g.client()
+	resp, err := c.Chat(context.Background(), ChatRequest{
+		Messages:           []Message{{Role: "user", Text: "use the tool and answer as JSON"}},
+		Tools:              []ToolDef{{Name: "echo_tool", Description: "Echo.", Parameters: json.RawMessage(echoToolSchema)}},
+		ToolChoice:         ToolChoiceRequired,
+		ResponseFormatJSON: true,
+		JSONModeFallback:   true,
+		ToolChoiceFallback: true,
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if resp.Text != `{"ok":true}` || len(resp.ToolCalls) != 1 {
+		t.Fatalf("resp = %+v, want the extracted JSON object and one tool call", resp)
+	}
+	reqs := g.snapshot()
+	if len(reqs) != 3 {
+		t.Fatalf("made %d requests, want 3 (attempt + JSON fallback + tool fallback)", len(reqs))
+	}
+	// Attempt 1: both raw features, no instruction yet.
+	if _, present := reqs[0]["response_format"]; !present {
+		t.Error("first request must send response_format")
+	}
+	if tc, _ := reqs[0]["tool_choice"].(string); tc != "required" {
+		t.Errorf("first tool_choice = %v, want required", reqs[0]["tool_choice"])
+	}
+	if got := systemInstruction(reqs[0]); got != "" {
+		t.Errorf("first request must carry no fallback instruction, got %q", got)
+	}
+	// Attempt 2: JSON degraded (no response_format, JSON instruction),
+	// tool_choice still raw (required).
+	if _, present := reqs[1]["response_format"]; present {
+		t.Errorf("second request must drop response_format, got %v", reqs[1]["response_format"])
+	}
+	if tc, _ := reqs[1]["tool_choice"].(string); tc != "required" {
+		t.Errorf("second tool_choice = %v, want required (only JSON degraded so far)", reqs[1]["tool_choice"])
+	}
+	sys2 := systemInstruction(reqs[1])
+	if !strings.Contains(sys2, "single JSON object only") || strings.Contains(sys2, "calling a tool") {
+		t.Errorf("second request must carry only the JSON instruction, got %q", sys2)
+	}
+	// Attempt 3: BOTH degraded; the instruction must carry BOTH parts — this is
+	// the regression the fix addresses.
+	if _, present := reqs[2]["response_format"]; present {
+		t.Errorf("third request must not send response_format")
+	}
+	if tc, _ := reqs[2]["tool_choice"].(string); tc != "auto" {
+		t.Errorf("third tool_choice = %v, want auto", reqs[2]["tool_choice"])
+	}
+	sys3 := systemInstruction(reqs[2])
+	if !strings.Contains(sys3, "single JSON object only") || !strings.Contains(sys3, "calling a tool") {
+		t.Errorf("third request must carry BOTH fallback instructions, got %q", sys3)
+	}
+	caps := c.Capabilities()
+	if caps.JSONMode != CapabilityRejected || caps.ToolChoiceRequired != CapabilityRejected {
+		t.Errorf("Capabilities() = %+v, want both rejected", caps)
+	}
+}
+
+// The same combined degradation from the CACHED findings: both known-rejected
+// capabilities are skipped up front, so exactly one request goes out and it
+// already carries the composed instruction.
+func TestCombinedJSONAndToolChoiceDegradationFromCacheIsOneRequest(t *testing.T) {
+	g := newScriptedGateway(t, []int{http.StatusOK}, []string{combinedAccept200})
+	c := g.client()
+	c.jsonModeState = CapabilityRejected
+	c.toolChoiceReqState = CapabilityRejected
+	resp, err := c.Chat(context.Background(), ChatRequest{
+		Messages:           []Message{{Role: "user", Text: "use the tool and answer as JSON"}},
+		Tools:              []ToolDef{{Name: "echo_tool", Description: "Echo.", Parameters: json.RawMessage(echoToolSchema)}},
+		ToolChoice:         ToolChoiceRequired,
+		ResponseFormatJSON: true,
+		JSONModeFallback:   true,
+		ToolChoiceFallback: true,
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls = %+v, want one call", resp.ToolCalls)
+	}
+	reqs := g.snapshot()
+	if len(reqs) != 1 {
+		t.Fatalf("made %d requests, want 1 (both findings cached: skip both doomed attempts)", len(reqs))
+	}
+	if _, present := reqs[0]["response_format"]; present {
+		t.Errorf("request must not send response_format, got %v", reqs[0]["response_format"])
+	}
+	if tc, _ := reqs[0]["tool_choice"].(string); tc != "auto" {
+		t.Errorf("tool_choice = %v, want auto", reqs[0]["tool_choice"])
+	}
+	sys := systemInstruction(reqs[0])
+	if !strings.Contains(sys, "single JSON object only") || !strings.Contains(sys, "calling a tool") {
+		t.Errorf("request must carry BOTH fallback instructions, got %q", sys)
 	}
 }

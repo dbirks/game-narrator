@@ -40,6 +40,35 @@ const (
 	RoleSpeechASR Role = "speech_asr"
 )
 
+// ReasoningEffort is the reasoning_effort level an OpenAI-compatible gateway
+// honours on chat completions (docs/spec/06 "Provider registry", ADR 0009
+// "Reasoning effort" amendment). The empty value means "omit the field": the
+// model's own default applies, which on reasoning-capable deployments can
+// burn the entire max_tokens budget on thinking (observed live on
+// qwen3-8-27b: omitted effort → thousands of reasoning tokens, "none" → 0).
+type ReasoningEffort string
+
+// The four levels the gateway accepts. Values are sent to the gateway
+// verbatim, so operators must not invent new ones (LoadRoles validates).
+const (
+	ReasoningEffortNone   ReasoningEffort = "none"
+	ReasoningEffortLow    ReasoningEffort = "low"
+	ReasoningEffortMedium ReasoningEffort = "medium"
+	ReasoningEffortHigh   ReasoningEffort = "high"
+)
+
+// ValidReasoningEffort reports whether e is one of the accepted levels.
+// The empty value is a legal configuration ("omit the field") but is not an
+// accepted level: use it only as "no per-role default", never as something to
+// send.
+func ValidReasoningEffort(e ReasoningEffort) bool {
+	switch e {
+	case ReasoningEffortNone, ReasoningEffortLow, ReasoningEffortMedium, ReasoningEffortHigh:
+		return true
+	}
+	return false
+}
+
 // Protocol names the wire contract an adapter implements.
 type Protocol string
 
@@ -67,14 +96,15 @@ var implementedProtocols = map[Protocol]bool{
 // so an operator can point the service at an existing secret variable instead
 // of copying the secret into a second place.
 const (
-	EnvGatewayURL       = "GAME_NARRATOR_GATEWAY_URL"
-	EnvGatewayTokenEnv  = "GAME_NARRATOR_GATEWAY_TOKEN_ENV"
-	EnvGatewayToken     = "GAME_NARRATOR_GATEWAY_TOKEN" // default named by EnvGatewayTokenEnv
-	envRolePrefix       = "GAME_NARRATOR_ROLE_"
-	envRoleModelSuffix  = "_MODEL"
-	envRoleURLSuffix    = "_URL"
-	envRoleProtoSuffix  = "_PROTOCOL"
-	envRoleTimeoutSufix = "_TIMEOUT"
+	EnvGatewayURL          = "GAME_NARRATOR_GATEWAY_URL"
+	EnvGatewayTokenEnv     = "GAME_NARRATOR_GATEWAY_TOKEN_ENV"
+	EnvGatewayToken        = "GAME_NARRATOR_GATEWAY_TOKEN" // default named by EnvGatewayTokenEnv
+	envRolePrefix          = "GAME_NARRATOR_ROLE_"
+	envRoleModelSuffix     = "_MODEL"
+	envRoleURLSuffix       = "_URL"
+	envRoleProtoSuffix     = "_PROTOCOL"
+	envRoleTimeoutSufix    = "_TIMEOUT"
+	envRoleReasoningSuffix = "_REASONING_EFFORT"
 	// MaskValue replaces any credential in strings meant for logs, UI and
 	// reports.
 	MaskValue = "****"
@@ -102,14 +132,25 @@ type roleSpec struct {
 	deployed bool
 	// note explains a NOT CONFIGURED state to a human reading preflight.
 	note string
+	// reasoningEffort is the per-role default for the reasoning_effort request
+	// field (empty = omit it, the model's default applies). The defaults are
+	// latency-driven (docs/spec/05 timings, ADR 0009 "Reasoning effort"):
+	// the runtime hot paths pin "none" so a reasoning model cannot spend the
+	// whole output budget thinking inside the 10 s ceiling, and the agent
+	// loop pins "low" so one tool call does not cost thousands of reasoning
+	// tokens.
+	reasoningEffort ReasoningEffort
 }
 
 var roleSpecs = map[Role]roleSpec{
-	RoleAgentReasoning: {protocol: ProtocolOpenAIChat, timeout: 30 * time.Second, deployed: true},
-	RoleFastReasoning:  {protocol: ProtocolOpenAIChat, timeout: 10 * time.Second, deployed: true},
+	RoleAgentReasoning: {protocol: ProtocolOpenAIChat, timeout: 30 * time.Second, deployed: true,
+		reasoningEffort: ReasoningEffortLow},
+	RoleFastReasoning: {protocol: ProtocolOpenAIChat, timeout: 10 * time.Second, deployed: true,
+		reasoningEffort: ReasoningEffortNone},
 	// VLM fallback: "3-10 s" upstream; the 10 s ceiling is the default so a
 	// slow gateway answer still lands before the observation is stale.
-	RoleVisionOCRFallback: {protocol: ProtocolOpenAIChatVision, timeout: 10 * time.Second, deployed: true},
+	RoleVisionOCRFallback: {protocol: ProtocolOpenAIChatVision, timeout: 10 * time.Second, deployed: true,
+		reasoningEffort: ReasoningEffortNone},
 	RoleDecision: {
 		protocol: ProtocolSystemOne, timeout: 1500 * time.Millisecond,
 		note: "System One / Clef-Omni endpoint is not deployed yet",
@@ -143,6 +184,12 @@ type RoleConfig struct {
 	// Timeout bounds a single provider request. The router may shorten it for
 	// a specific observation, never extend it silently.
 	Timeout time.Duration
+	// ReasoningEffort is the per-role default for the OpenAI-compatible
+	// adapter's reasoning_effort request field. It is one of the accepted
+	// levels for the roles that have a default (fast_reasoning and
+	// vision_ocr_fallback: none; agent_reasoning: low) and empty for the
+	// others, where empty means "omit the field, the model's default applies".
+	ReasoningEffort ReasoningEffort
 
 	// token is the resolved credential. It is kept so adapters can use it
 	// without re-reading the environment, and it must never reach a String(),
@@ -154,6 +201,12 @@ type RoleConfig struct {
 func RoleEnvVars(role Role) (model, urlOverride, protocol, timeout string) {
 	p := envRolePrefix + string(roleEnvSegment(role))
 	return p + envRoleModelSuffix, p + envRoleURLSuffix, p + envRoleProtoSuffix, p + envRoleTimeoutSufix
+}
+
+// RoleReasoningEffortEnv returns the environment variable name that overrides
+// a role's reasoning effort (GAME_NARRATOR_ROLE_<ROLE>_REASONING_EFFORT).
+func RoleReasoningEffortEnv(role Role) string {
+	return envRolePrefix + string(roleEnvSegment(role)) + envRoleReasoningSuffix
 }
 
 func roleEnvSegment(role Role) string {
@@ -204,8 +257,12 @@ func (c RoleConfig) String() string {
 	if base == "" {
 		base = `""`
 	}
-	return fmt.Sprintf("%s protocol=%s model=%s base_url=%s token_env=%s token=%s timeout=%s state=%s",
-		c.Role, c.Protocol, model, base, c.TokenEnv, token, c.Timeout, c.Status())
+	effort := string(c.ReasoningEffort)
+	if effort == "" {
+		effort = "(omit)"
+	}
+	return fmt.Sprintf("%s protocol=%s model=%s base_url=%s token_env=%s token=%s timeout=%s reasoning_effort=%s state=%s",
+		c.Role, c.Protocol, model, base, c.TokenEnv, token, c.Timeout, effort, c.Status())
 }
 
 // LogValue implements fmt.Stringer-compatible redaction and the slog
@@ -217,14 +274,15 @@ func (c RoleConfig) LogValue() any {
 		token = MaskValue
 	}
 	return map[string]any{
-		"role":      string(c.Role),
-		"protocol":  string(c.Protocol),
-		"model":     c.Model,
-		"base_url":  c.BaseURL,
-		"token_env": c.TokenEnv,
-		"token":     token,
-		"timeout":   c.Timeout.String(),
-		"state":     c.Status(),
+		"role":             string(c.Role),
+		"protocol":         string(c.Protocol),
+		"model":            c.Model,
+		"base_url":         c.BaseURL,
+		"token_env":        c.TokenEnv,
+		"token":            token,
+		"timeout":          c.Timeout.String(),
+		"reasoning_effort": string(c.ReasoningEffort),
+		"state":            c.Status(),
 	}
 }
 
@@ -256,12 +314,13 @@ func LoadRoles(lookup func(string) (string, bool)) (map[Role]RoleConfig, error) 
 		spec := roleSpecs[role]
 		modelEnv, urlEnv, protoEnv, timeoutEnv := RoleEnvVars(role)
 		cfg := RoleConfig{
-			Role:     role,
-			Protocol: spec.protocol,
-			BaseURL:  gatewayURL,
-			TokenEnv: tokenEnv,
-			Timeout:  spec.timeout,
-			token:    token,
+			Role:            role,
+			Protocol:        spec.protocol,
+			BaseURL:         gatewayURL,
+			TokenEnv:        tokenEnv,
+			Timeout:         spec.timeout,
+			ReasoningEffort: spec.reasoningEffort,
+			token:           token,
 		}
 		if model, ok := lookup(modelEnv); ok {
 			cfg.Model = strings.TrimSpace(model)
@@ -293,6 +352,16 @@ func LoadRoles(lookup func(string) (string, bool)) (map[Role]RoleConfig, error) 
 					return nil, fmt.Errorf("invalid %s=%q: timeout must be greater than zero", timeoutEnv, raw)
 				}
 				cfg.Timeout = d
+			}
+		}
+		if raw, ok := lookup(RoleReasoningEffortEnv(role)); ok {
+			if raw = strings.TrimSpace(raw); raw != "" {
+				e := ReasoningEffort(strings.ToLower(raw))
+				if !ValidReasoningEffort(e) {
+					return nil, fmt.Errorf("invalid %s=%q for role %s: reasoning effort must be one of none, low, medium, high",
+						RoleReasoningEffortEnv(role), raw, role)
+				}
+				cfg.ReasoningEffort = e
 			}
 		}
 		roles[role] = cfg
@@ -430,7 +499,7 @@ func EnvKeyList() []string {
 	out := []string{EnvGatewayURL, EnvGatewayTokenEnv, EnvGatewayToken}
 	for _, role := range AllRoles {
 		model, u, proto, timeout := RoleEnvVars(role)
-		out = append(out, model, u, proto, timeout)
+		out = append(out, model, u, proto, timeout, RoleReasoningEffortEnv(role))
 	}
 	return out
 }

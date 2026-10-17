@@ -256,3 +256,100 @@ behind a working call; the `Capabilities()` snapshot and the live findings keep
 that visibility. If the gateway grows to guarantee structured output or forced
 tool calls, the finding flips to `supported` with no code change, and the
 fallback simply stops firing.
+
+## Reasoning effort (2026-10-17 amendment)
+
+Live evidence (orchestrator, `qwen3-8-27b` via the shared gateway, 2026-10-17):
+the gateway honours the `reasoning_effort` chat-completions field —
+`"none"` → 0 reasoning tokens, `"low"` → ~25 on the tool-calling prompt —
+while an omitted field lets the model spend its default budget: with
+`max_tokens=48` a counting prompt consumed the entire budget in
+`reasoning_content` and returned `finish_reason=length` with empty content
+(usage `completion_tokens=48`, `completion_tokens_details.reasoning_tokens=48`).
+Per-request thinking budgets (`thinking_budget`, `thinking_token_budget`,
+`max_thinking_tokens`) are silently ignored by the serving stack, so the
+supported lever is the effort level. This made
+`TestLiveToolCallingExecutesOneTool` fail ~1/5 of runs with
+`finish=length text=""` at `MaxTokens=256`, and left every app role with the
+same exposure (the adapter never sent the field).
+
+1. **Per-role configuration.** `RoleConfig` gains `ReasoningEffort` and
+   `LoadRoles` resolves `GAME_NARRATOR_ROLE_<ROLE>_REASONING_EFFORT`
+   (helper `RoleReasoningEffortEnv`, listed by `EnvKeyList()`). Accepted
+   values are `none | low | medium | high` (case-insensitive); an unknown
+   value is a startup config error naming the role and the variable. The
+   env var overrides the role default; an empty value keeps the default.
+   Defaults are latency-driven (docs/spec/05 timings):
+   `fast_reasoning` and `vision_ocr_fallback` (10 s ceiling, runtime hot
+   paths) → `none`; `agent_reasoning` → `low`; the undeployed roles → empty
+   (the field is omitted and the model default applies). Documented here
+   rather than in `examples/` (out of scope for this change).
+2. **Per-request override.** `openai.ChatRequest.ReasoningEffort` (empty =
+   omit) is sent as `reasoning_effort` and wins over the role default;
+   `NewFromRole` carries the role default into the client, so plain `Chat`
+   calls from role clients are bounded by default. The field is omitted when
+   both are empty, keeping pre-tool request shapes byte-identical.
+3. **Capability degradation, cached.** A 400 naming `reasoning_effort`
+   (matched by `IsReasoningEffortRejection`; the name is also a
+   `kindForStatus` capability hint) degrades once by omitting the field and
+   caches the finding (`Capabilities().ReasoningEffort`) per (base URL,
+   model) exactly like the JSON-mode and tool_choice findings — later calls
+   skip the doomed first attempt. Verified against this gateway the field is
+   accepted, so the degradation is insurance, not the expected path.
+4. **New failure kind `budget_exhausted` + `ErrOutputBudgetExhausted`.** A
+   completion that ends `finish_reason=length` with neither text nor a tool
+   call is the model having spent the whole output budget (usually
+   reasoning) — now a typed, non-retryable `*providers.Error` of kind
+   `budget_exhausted` carrying the gateway usage numbers
+   (`prompt/completion/reasoning`), with `errors.Is(err,
+   ErrOutputBudgetExhausted)`. This extends the docs/spec/06 kind list by one
+   member (the spec's 15 kinds had no "budget consumed, no answer" case);
+   `ValidKind`/taxonomy tests cover it. A reasoning-only answer on
+   `finish_reason=stop` remains a normal response, and a tool call on a
+   `length` finish is a complete answer.
+5. **Combined capability degradation fixed.** When the JSON *and*
+   tool_choice degradations apply, each degraded retry re-derives the request
+   from the current flag set through one composed instruction (both the
+   "single JSON object only" and the call-a-tool parts), so the second
+   rebuild no longer discards the first's instruction. The retry is a bounded
+   loop — each capability degrades at most once, so at most three attempts
+   per call. Unit tests cover the in-call sequence (400 JSON → 400 tool →
+   200, final request carries both instructions) and the cached-both case
+   (single request, composed instruction).
+
+**New tests.** Recorded/synthetic (no network): `TestChatRecordedLengthFinishWithoutAnswerIsBudgetExhausted`,
+`TestChatRecordedLengthFinishWithToolCallIsNotAnError` (both finish-length
+edge cases), `TestChatRecordedNullContentWithReasoningIsNotAnError` (re-scoped
+to `finish=stop`; a reasoning-only answer on `stop` stays a normal response),
+`TestReasoningEffortRejectionRetriesWithoutTheField`,
+`TestReasoningEffortRejectedCacheSkipsDoomedFirstAttempt`,
+`TestReasoningEffortEmptySendsNoField`,
+`TestCombinedJSONAndToolChoiceDegradationKeepsBothInstructions`,
+`TestCombinedJSONAndToolChoiceDegradationFromCacheIsOneRequest`, and
+`TestLoadRolesReasoningEffortDefaultsOverrideAndValidation`. The recorded
+request-shape test additionally asserts `reasoning_effort` is omitted when
+unrequested.
+
+**Live verification (2026-10-17, qwen3-8-27b):**
+
+```
+TestLiveToolCallingExecutesOneTool  -count=5, all PASS (reasoning_effort=low, max_tokens=1024)
+  finish=tool_calls tool=echo_tool latency=1.653s usage=321/53 reasoning_tokens=25
+  finish=tool_calls tool=echo_tool latency=2.702s usage=321/54 reasoning_tokens=26
+  finish=tool_calls tool=echo_tool latency=2.82s  usage=321/53 reasoning_tokens=25
+  finish=tool_calls tool=echo_tool latency=4.179s usage=321/55 reasoning_tokens=27
+  finish=tool_calls tool=echo_tool latency=1.503s usage=321/49 reasoning_tokens=21
+TestLiveReasoningEffortNoneYieldsZeroReasoningTokens  PASS
+  finish=stop latency=449ms usage=17/2 reasoning_tokens=0
+```
+
+The flaky ~1/5 `finish=length text=""` failure at `MaxTokens=256` with the
+model's default effort is gone at the pinned effort + 1024 budget.
+
+**Tradeoff / reversal.** `none` on the runtime roles trades model reasoning
+quality for the 10 s ceiling; a role can be raised via its env var without
+code changes. The `budget_exhausted` kind is additive; removing it (and the
+sentinel) restores the old "bad_schema on empty message" behaviour if a
+future gateway makes the case unreachable. The composed instruction merges
+two system hints into one message; if a future deployment misbehaves with
+combined instructions, the flags still degrade independently per capability.

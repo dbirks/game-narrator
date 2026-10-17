@@ -178,6 +178,9 @@ func TestChatRecordedSendsBearerAuthorizationAndRequestBodyShape(t *testing.T) {
 	if wire.ResponseFormat != nil {
 		t.Error("response_format must be omitted when JSON mode is not requested")
 	}
+	if wire.ReasoningEffort != "" {
+		t.Errorf("reasoning_effort = %q, want the field omitted when not requested", wire.ReasoningEffort)
+	}
 	if len(wire.Messages) != 2 {
 		t.Fatalf("got %d messages", len(wire.Messages))
 	}
@@ -419,15 +422,69 @@ func TestChatRecordedMalformedJSONIsBadSchema(t *testing.T) {
 }
 
 func TestChatRecordedNullContentWithReasoningIsNotAnError(t *testing.T) {
+	// finish_reason "stop" with reasoning only is a complete (if odd)
+	// answer: it must be returned, not rejected.
 	srv, _ := recordedServer(t, http.StatusOK,
-		`{"model":"`+recordedModel+`","choices":[{"index":0,"message":{"role":"assistant","content":null,"reasoning_content":"still thinking"},"finish_reason":"length"}]}`)
+		`{"model":"`+recordedModel+`","choices":[{"index":0,"message":{"role":"assistant","content":null,"reasoning_content":"still thinking"},"finish_reason":"stop"}]}`)
 	c := newTestClient(t, srv)
 	resp, err := c.Chat(context.Background(), ChatRequest{Messages: []Message{{Role: "user", Text: "hi"}}})
 	if err != nil {
 		t.Fatalf("a reasoning-only answer must be returned, not rejected: %v", err)
 	}
-	if resp.Text != "" || resp.Reasoning != "still thinking" || resp.FinishReason != "length" {
+	if resp.Text != "" || resp.Reasoning != "still thinking" || resp.FinishReason != "stop" {
 		t.Errorf("resp = %+v", resp)
+	}
+}
+
+// finish_reason "length" with no text and no tool call is the observed
+// "the model spent the whole output budget reasoning" failure (live on
+// qwen3-8-27b: the budget is consumed by reasoning_content and content comes
+// back empty). It is a typed, non-retryable budget_exhausted error carrying
+// the gateway's usage numbers, so callers can tell it from a schema-less
+// empty message and act (raise the budget or lower the reasoning effort).
+func TestChatRecordedLengthFinishWithoutAnswerIsBudgetExhausted(t *testing.T) {
+	srv, _ := recordedServer(t, http.StatusOK,
+		`{"model":"`+recordedModel+`","choices":[{"index":0,"message":{"role":"assistant","content":"","reasoning_content":"thinking about it"},"finish_reason":"length"}],"usage":{"prompt_tokens":65,"completion_tokens":48,"completion_tokens_details":{"reasoning_tokens":48}}}`)
+	c := newTestClient(t, srv)
+	resp, err := c.Chat(context.Background(), ChatRequest{Messages: []Message{{Role: "user", Text: "hi"}}, MaxTokens: 48})
+	if err == nil {
+		t.Fatal("want ErrOutputBudgetExhausted, got nil error")
+	}
+	if !errors.Is(err, ErrOutputBudgetExhausted) {
+		t.Fatalf("error = %v (%T), want ErrOutputBudgetExhausted", err, err)
+	}
+	var pe *providers.Error
+	if !errors.As(err, &pe) {
+		t.Fatalf("error = %v (%T), want *providers.Error", err, err)
+	}
+	if pe.Kind != providers.KindBudgetExhausted {
+		t.Errorf("Kind = %q, want budget_exhausted (err=%s)", pe.Kind, pe)
+	}
+	if pe.Retryable {
+		t.Error("a budget exhaustion must not be retried blindly")
+	}
+	if !strings.Contains(pe.Msg, "completion=48") || !strings.Contains(pe.Msg, "reasoning=48") {
+		t.Errorf("error message must carry the usage numbers: %q", pe.Msg)
+	}
+	// The response is still returned with its usage, so diagnostics keep the
+	// correlation and the token accounting.
+	if resp.FinishReason != "length" || resp.Usage.Completion != 48 || resp.Usage.Reasoning != 48 || resp.Usage.Prompt != 65 {
+		t.Errorf("resp = %+v, want the length finish and the gateway usage numbers", resp)
+	}
+}
+
+// A length finish that produced a tool call is a complete answer, not a
+// budget failure: tool callers must not be blocked by the empty-text rule.
+func TestChatRecordedLengthFinishWithToolCallIsNotAnError(t *testing.T) {
+	srv, _ := recordedServer(t, http.StatusOK,
+		`{"model":"`+recordedModel+`","choices":[{"index":0,"finish_reason":"length","message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"echo_tool","arguments":"{\"text\":\"ping\"}"}}]}}]}`)
+	c := newTestClient(t, srv)
+	resp, err := c.Chat(context.Background(), ChatRequest{Messages: []Message{{Role: "user", Text: "hi"}}})
+	if err != nil {
+		t.Fatalf("a tool call on a length finish must be returned: %v", err)
+	}
+	if len(resp.ToolCalls) != 1 {
+		t.Errorf("ToolCalls = %+v, want one call", resp.ToolCalls)
 	}
 }
 

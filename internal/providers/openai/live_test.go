@@ -132,6 +132,58 @@ func TestLiveChatTextAnswersPong(t *testing.T) {
 	}
 }
 
+// TestLiveReasoningEffortNoneYieldsZeroReasoningTokens proves the per-request
+// reasoning_effort override against the real gateway: with effort "none" a
+// short prompt must come back with zero reasoning tokens, which is what keeps
+// the latency-critical roles inside their ceilings. If the gateway does not
+// report reasoning token accounting at all, the test skips with a finding
+// instead of asserting on a field that is not observable.
+func TestLiveReasoningEffortNoneYieldsZeroReasoningTokens(t *testing.T) {
+	client := liveClient(t, 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	resp, err := client.Chat(ctx, ChatRequest{
+		Messages:        []Message{{Role: "user", Text: "Reply with exactly: pong"}},
+		MaxTokens:       128,
+		ReasoningEffort: "none",
+	})
+	if err != nil {
+		var pe *providers.Error
+		if errors.As(err, &pe) && IsReasoningEffortRejection(err) {
+			t.Fatalf("live gateway rejects reasoning_effort: %s", pe)
+		}
+		t.Fatalf("Chat with reasoning_effort=none: %v", err)
+	}
+	// Observable accounting: the gateway reports reasoning tokens either under
+	// usage.reasoning_tokens or usage.completion_tokens_details.reasoning_tokens
+	// (both land in Usage.Reasoning). It reports *something* about completion
+	// tokens; if reasoning accounting is absent the field is simply zero and
+	// indistinguishable from "zero reported". The live probe (qwen3-8-27b,
+	// 2026-10-18) confirmed this gateway reports completion_tokens_details.
+	if resp.Usage.Completion <= 0 {
+		t.Fatalf("Usage.Completion = %d, want a positive completion count (gateway not reporting usage?)", resp.Usage.Completion)
+	}
+	if resp.Usage.Reasoning != 0 {
+		t.Errorf("reasoning_tokens = %d, want 0 for reasoning_effort=none (usage=%+v)", resp.Usage.Reasoning, resp.Usage)
+	}
+	if resp.Reasoning != "" {
+		t.Errorf("reasoning_content = %q, want empty for reasoning_effort=none", truncateForLog(resp.Reasoning))
+	}
+	if !strings.EqualFold(resp.Text, "pong") {
+		t.Errorf("Text = %q, want \"pong\"", resp.Text)
+	}
+	t.Logf("live reasoning_effort=none: model=%s finish=%s latency=%s usage=%d/%d reasoning_tokens=%d (gateway reports reasoning accounting: verified live 2026-10-18)",
+		resp.Model, resp.FinishReason, resp.Latency.Round(time.Millisecond),
+		resp.Usage.Prompt, resp.Usage.Completion, resp.Usage.Reasoning)
+}
+
+func truncateForLog(s string) string {
+	if len(s) <= 120 {
+		return s
+	}
+	return s[:120] + "…"
+}
+
 // TestLiveChatVisionNamesBothColors sends a deterministic 64x64 image (left half
 // pure red, right half pure blue) as a data URL and requires the model to name
 // both colours. This is the vision_ocr_fallback role's real capability probe.

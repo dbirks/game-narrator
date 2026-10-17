@@ -60,6 +60,15 @@ var (
 	// coerced into a forced call, which is a capability gap, not a transport
 	// accident. Not retryable by default (a retry cannot add the capability).
 	ErrToolCallMissing = errors.New("openai: a tool call was requested but none arrived")
+	// ErrOutputBudgetExhausted marks a completion that ended with
+	// finish_reason "length" while producing neither text nor a tool call: the
+	// model spent the whole output budget (usually on reasoning) and there is
+	// no answer to use. Callers tell "the model rambled through its budget"
+	// from "the gateway returned nothing" with errors.Is(err,
+	// ErrOutputBudgetExhausted) (kind budget_exhausted, non-retryable); the
+	// gateway's usage numbers ride along in the *providers.Error message and
+	// the returned ChatResponse.
+	ErrOutputBudgetExhausted = errors.New("openai: the output budget was exhausted with no text and no tool call")
 )
 
 // CapabilityState is one entry in a Capabilities snapshot.
@@ -84,6 +93,8 @@ type Capabilities struct {
 	JSONMode CapabilityState
 	// ToolChoiceRequired records the tool_choice=required finding.
 	ToolChoiceRequired CapabilityState
+	// ReasoningEffort records the reasoning_effort field finding.
+	ReasoningEffort CapabilityState
 }
 
 // Message is one chat message. Text carries the content; Images are PNG or
@@ -132,6 +143,11 @@ type ChatRequest struct {
 	// in a *providers.Error). The "tool_choice=required unsupported" finding is
 	// cached per (base URL, model) the same way. Opt-in only.
 	ToolChoiceFallback bool
+	// ReasoningEffort overrides the reasoning_effort field for this one
+	// request; empty sends nothing and the model's default applies. When the
+	// client was built from a role, the role's configured effort is the
+	// sensible default to pass here (request override > role default).
+	ReasoningEffort string
 }
 
 // Usage reports token counts. Reasoning is populated when the gateway returns
@@ -179,14 +195,21 @@ type Client struct {
 	// MaxImageBytes overrides MaxImageBytes for this client; zero uses the
 	// package default.
 	MaxImageBytes int
+	// reasoningEffortDefault is the role default (providers.RoleConfig.
+	// ReasoningEffort) set by NewFromRole. A non-empty ChatRequest.ReasoningEffort
+	// overrides it per request; an empty request value falls back to it. A
+	// client built with New() has no default and never sends the field unless
+	// the request sets it.
+	reasoningEffortDefault string
 
 	// Capability findings are cached for the client's lifetime. A Client is
 	// one (base URL, model) by construction, so a client-lifetime cache is
 	// exactly the required per-(base URL, model) cache. Guarded by mu because a
 	// shared client may serve concurrent requests.
-	mu                 sync.Mutex
-	jsonModeState      CapabilityState
-	toolChoiceReqState CapabilityState
+	mu                   sync.Mutex
+	jsonModeState        CapabilityState
+	toolChoiceReqState   CapabilityState
+	reasoningEffortState CapabilityState
 }
 
 // New returns a client for a base URL. baseURL is validated, not silently
@@ -239,6 +262,11 @@ func NewFromRole(cfg providers.RoleConfig) (*Client, error) {
 		cloned.Timeout = cfg.Timeout
 		c.HTTP = &cloned
 	}
+	// The role's configured reasoning effort becomes the client default so the
+	// app's runtime paths (fast_reasoning / vision_ocr_fallback = none,
+	// agent_reasoning = low) are bounded by default; a per-request
+	// ChatRequest.ReasoningEffort still overrides it.
+	c.reasoningEffortDefault = string(cfg.ReasoningEffort)
 	return c, nil
 }
 
@@ -299,7 +327,7 @@ func (c *Client) maxImageBytes() int {
 func (c *Client) Capabilities() Capabilities {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return Capabilities{JSONMode: c.jsonModeState, ToolChoiceRequired: c.toolChoiceReqState}
+	return Capabilities{JSONMode: c.jsonModeState, ToolChoiceRequired: c.toolChoiceReqState, ReasoningEffort: c.reasoningEffortState}
 }
 
 func (c *Client) jsonModeRejected() bool {
@@ -324,6 +352,18 @@ func (c *Client) setToolChoiceRequired(state CapabilityState) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.toolChoiceReqState = state
+}
+
+func (c *Client) reasoningEffortRejected() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.reasoningEffortState == CapabilityRejected
+}
+
+func (c *Client) setReasoningEffort(state CapabilityState) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reasoningEffortState = state
 }
 
 func (c *Client) endpoint(path string) (string, error) {
@@ -518,7 +558,7 @@ func kindForStatus(status int, providerMsg string) providers.Kind {
 func mentionsCapability(msg string) bool {
 	for _, hint := range []string{"not supported", "unsupported", "does not exist", "no such model",
 		"unknown model", "invalid model", "not found", "unknown role", "response_format", "image",
-		"developer", "max_tokens", "temperature", "tool_choice"} {
+		"developer", "max_tokens", "temperature", "tool_choice", "reasoning_effort"} {
 		if strings.Contains(msg, hint) {
 			return true
 		}
@@ -604,6 +644,11 @@ type chatRequestBody struct {
 	ResponseFormat *responseFormat `json:"response_format,omitempty"`
 	Tools          []wireTool      `json:"tools,omitempty"`
 	ToolChoice     any             `json:"tool_choice,omitempty"`
+	// ReasoningEffort is sent only when non-empty (the gateway honours
+	// "none"/"low"/"medium"/"high" on chat completions; per-request thinking
+	// budget fields are ignored by the serving stacks we tested). The value is
+	// dropped for the retry attempt when the gateway rejects the field.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 type responseFormat struct {
@@ -729,6 +774,9 @@ func (c *Client) buildBody(req ChatRequest, messages []chatMessage, tools []wire
 	if jsonMode {
 		body.ResponseFormat = &responseFormat{Type: "json_object"}
 	}
+	if strings.TrimSpace(req.ReasoningEffort) != "" {
+		body.ReasoningEffort = strings.TrimSpace(req.ReasoningEffort)
+	}
 	return body
 }
 
@@ -740,15 +788,14 @@ func (c *Client) buildBody(req ChatRequest, messages []chatMessage, tools []wire
 // retries without response_format plus a "single JSON object only" instruction
 // and then validates the response is one parseable object; tool_choice=required
 // retries as auto plus a "call a tool" instruction and reports ErrToolCallMissing
-// if no call arrives. The finding is cached per (base URL, model) so later
-// calls skip the doomed first attempt. Without the opt-in flag, a rejection
-// still surfaces as a typed *providers.Error (KindUnsupportedCapability) tagged
-// with the capability sentinel.
+// if no call arrives. A 400 that names reasoning_effort degrades the request
+// to "omit the field" and retries once without it. Each finding is cached per
+// (base URL, model) so later calls skip the doomed first attempt, and when
+// several degradations apply at once the retry carries the composed instruction
+// (all degraded features), never just the last one. Without the opt-in flags,
+// a rejection still surfaces as a typed *providers.Error (KindUnsupportedCapability)
+// tagged with the capability sentinel.
 func (c *Client) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error) {
-	baseMessages, err := c.buildMessages(req)
-	if err != nil {
-		return ChatResponse{}, err
-	}
 	tools, err := toolsToWire(req.Tools)
 	if err != nil {
 		return ChatResponse{}, err
@@ -761,77 +808,120 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error
 	wantJSON := req.ResponseFormatJSON
 	wantRequired := req.ToolChoice == ToolChoiceRequired
 
+	// reasoning_effort is a per-request field: a non-empty
+	// ChatRequest.ReasoningEffort wins over the role default (NewFromRole);
+	// otherwise the role default applies, and the empty value sends nothing
+	// (the model's own default). A cached "rejected" finding means the first
+	// attempt already omits it (skip the doomed first attempt).
+	bodyReq := req
+	if strings.TrimSpace(bodyReq.ReasoningEffort) != "" {
+		bodyReq.ReasoningEffort = strings.TrimSpace(bodyReq.ReasoningEffort)
+	} else {
+		bodyReq.ReasoningEffort = strings.TrimSpace(c.reasoningEffortDefault)
+	}
+
 	// Apply the cached capability findings up front so a known-rejected
 	// capability is skipped on the first attempt and the degraded form is sent
 	// instead (the "skip the doomed first attempt" behaviour).
 	jsonMode := wantJSON
 	jsonDegraded := false
+	toolChoice := req.ToolChoice
+	toolDegraded := false
 	if wantJSON && req.JSONModeFallback && c.jsonModeRejected() {
 		jsonMode = false
 		jsonDegraded = true
-		baseMessages, err = c.buildMessages(ChatRequest{Messages: withJSONOnlyInstruction(req.Messages)})
-		if err != nil {
-			return ChatResponse{}, err
-		}
 	}
-	toolChoice := req.ToolChoice
-	toolDegraded := false
 	if wantRequired && req.ToolChoiceFallback && c.toolChoiceReqRejected() {
 		toolChoice = ToolChoiceAuto
 		toolDegraded = true
-		baseMessages, err = c.buildMessages(ChatRequest{Messages: withToolCallInstruction(req.Messages)})
-		if err != nil {
-			return ChatResponse{}, err
-		}
 	}
-	choice, err := choiceToWire(toolChoice)
+	if bodyReq.ReasoningEffort != "" && c.reasoningEffortRejected() {
+		bodyReq.ReasoningEffort = ""
+	}
+
+	// rebuildBody assembles the wire body for the current attempt from the
+	// live feature flags, so every retry re-derives the messages (with the
+	// composed degraded instruction), tool_choice and reasoning_effort in one
+	// place. When both the JSON and the tool_choice degradation apply, the
+	// instruction carries both parts instead of the second rebuild discarding
+	// the first.
+	rebuildBody := func() (chatRequestBody, error) {
+		msgs, err := c.buildMessages(ChatRequest{Messages: withFallbackInstruction(req.Messages, jsonDegraded, toolDegraded)})
+		if err != nil {
+			return chatRequestBody{}, err
+		}
+		ch, err := choiceToWire(toolChoice)
+		if err != nil {
+			return chatRequestBody{}, err
+		}
+		return c.buildBody(bodyReq, msgs, tools, ch, jsonMode), nil
+	}
+
+	body, err := rebuildBody()
 	if err != nil {
 		return ChatResponse{}, err
 	}
-	body := c.buildBody(req, baseMessages, tools, choice, jsonMode)
 	// Track what the *current* attempt sends so a post-attempt error is only
 	// tagged with a capability sentinel when the failing request actually
 	// exercised the rejected feature.
 	sentJSON := jsonMode
 	sentRequired := toolChoice == ToolChoiceRequired
+	sentReasoning := bodyReq.ReasoningEffort != ""
 
 	var payload chatResponsePayload
 	latency, header, callErr := c.do(ctx, http.MethodPost, endpoint, body, &payload)
-	if callErr != nil {
+	// Bounded degradation loop (docs/spec/06 "Model-serving version and
+	// health negotiation"): a 400 that names a feature the current attempt
+	// sent is a capability finding, not a schema accident — degrade that one
+	// feature, cache the finding and retry. Each capability degrades at most
+	// once (its sent* flag flips and stays off), so a call makes at most
+	// three attempts: the initial attempt plus one retry per rejected
+	// feature. When both the JSON and the tool_choice degradation apply in
+	// one call, the loop degrades them in sequence and every rebuild carries
+	// the composed instruction of all features degraded so far.
+	for callErr != nil {
+		degraded := false
 		switch {
 		// First attempt sent response_format and the gateway rejected it:
 		// degrade once, without response_format, with the JSON instruction.
 		case wantJSON && req.JSONModeFallback && sentJSON && IsJSONModeRejection(callErr):
 			c.setJSONMode(CapabilityRejected)
 			jsonMode, jsonDegraded, sentJSON = false, true, false
-			baseMessages, err = c.buildMessages(ChatRequest{Messages: withJSONOnlyInstruction(req.Messages)})
-			if err != nil {
-				return ChatResponse{}, err
-			}
-			body = c.buildBody(req, baseMessages, tools, choice, jsonMode)
-			latency, header, callErr = c.do(ctx, http.MethodPost, endpoint, body, &payload)
+			degraded = true
 		// First attempt sent tool_choice=required and the gateway rejected it:
 		// degrade once, to auto, with the call-a-tool instruction.
 		case wantRequired && req.ToolChoiceFallback && sentRequired && IsToolChoiceRejection(callErr):
 			c.setToolChoiceRequired(CapabilityRejected)
 			toolChoice = ToolChoiceAuto
 			toolDegraded, sentRequired = true, false
-			baseMessages, err = c.buildMessages(ChatRequest{Messages: withToolCallInstruction(req.Messages)})
-			if err != nil {
-				return ChatResponse{}, err
-			}
-			choice, _ = choiceToWire(toolChoice)
-			body = c.buildBody(req, baseMessages, tools, choice, jsonMode)
-			latency, header, callErr = c.do(ctx, http.MethodPost, endpoint, body, &payload)
+			degraded = true
+		// First attempt sent reasoning_effort and the gateway rejected the
+		// field: degrade once by omitting it (the model default applies).
+		case sentReasoning && IsReasoningEffortRejection(callErr):
+			c.setReasoningEffort(CapabilityRejected)
+			bodyReq.ReasoningEffort = ""
+			sentReasoning = false
+			degraded = true
 		}
-		if callErr != nil {
-			return ChatResponse{}, tagCapabilityError(callErr, wantJSON, sentJSON, wantRequired, sentRequired)
+		if !degraded {
+			break
 		}
+		body, err = rebuildBody()
+		if err != nil {
+			return ChatResponse{}, err
+		}
+		latency, header, callErr = c.do(ctx, http.MethodPost, endpoint, body, &payload)
+	}
+	if callErr != nil {
+		return ChatResponse{}, tagCapabilityError(callErr, wantJSON, sentJSON, wantRequired, sentRequired)
 	}
 
 	out, err := payload.toChatResponse(c.Model)
 	if err != nil {
-		return ChatResponse{}, err
+		// out is returned even on error: the budget-exhausted path fills it
+		// with the finish reason, usage and reasoning so diagnostics keep the
+		// correlation and token accounting of the failed attempt.
+		return out, err
 	}
 	out.Latency = latency
 	// The response body may also carry an id; the header is the correlation
@@ -847,6 +937,9 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error
 	}
 	if wantRequired && sentRequired {
 		c.setToolChoiceRequired(CapabilitySupported)
+	}
+	if sentReasoning {
+		c.setReasoningEffort(CapabilitySupported)
 	}
 
 	// The degraded JSON path: the gateway does not guarantee structured output,
@@ -911,6 +1004,23 @@ func IsToolChoiceRejection(err error) bool {
 	return strings.Contains(strings.ToLower(pe.Msg), "tool_choice")
 }
 
+// IsReasoningEffortRejection reports whether an error looks like a gateway
+// refusing the reasoning_effort field rather than a transport or schema
+// accident, so the adapter can record it as a capability finding and retry
+// once without the field (mirrors IsJSONModeRejection). Matches on the field
+// name in both spellings the serving stacks use.
+func IsReasoningEffortRejection(err error) bool {
+	var pe *providers.Error
+	if !errors.As(err, &pe) {
+		return false
+	}
+	if pe.Kind != providers.KindUnsupportedCapability && pe.Kind != providers.KindBadSchema {
+		return false
+	}
+	lower := strings.ToLower(pe.Msg)
+	return strings.Contains(lower, "reasoning_effort") || strings.Contains(lower, "reasoning effort")
+}
+
 // tagCapabilityError wraps a failed capability request in its typed sentinel
 // (ErrUnsupportedResponseFormat / ErrUnsupportedToolChoice) so callers and
 // diagnostics can match the exact gap. It only tags when the *failing* request
@@ -960,13 +1070,39 @@ func injectInstruction(msgs []Message, instruction string) []Message {
 }
 
 // withJSONOnlyInstruction is the JSON-mode fallback instruction.
-func withJSONOnlyInstruction(msgs []Message) []Message {
-	return injectInstruction(msgs, "Answer with a single JSON object only.")
+const (
+	jsonOnlyInstruction = "Answer with a single JSON object only."
+	toolCallInstruction = "You must answer by calling a tool; do not answer with plain text."
+)
+
+// composeInstruction merges the degraded-capability instructions that apply to
+// the current attempt into one system instruction. Composing (instead of
+// rebuilding from the original messages on every fallback) is what keeps the
+// JSON instruction alive when the tool_choice fallback fires second — and
+// vice versa.
+func composeInstruction(jsonDegraded, toolDegraded bool) string {
+	var parts []string
+	if jsonDegraded {
+		parts = append(parts, jsonOnlyInstruction)
+	}
+	if toolDegraded {
+		parts = append(parts, toolCallInstruction)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, " ")
 }
 
-// withToolCallInstruction is the tool_choice=required fallback instruction.
-func withToolCallInstruction(msgs []Message) []Message {
-	return injectInstruction(msgs, "You must answer by calling a tool; do not answer with plain text.")
+// withFallbackInstruction merges the composed degraded instructions into the
+// leading system message; with no degraded feature it returns msgs unchanged
+// (no empty instruction is ever injected).
+func withFallbackInstruction(msgs []Message, jsonDegraded, toolDegraded bool) []Message {
+	instruction := composeInstruction(jsonDegraded, toolDegraded)
+	if instruction == "" {
+		return msgs
+	}
+	return injectInstruction(msgs, instruction)
 }
 
 // extractJSONObject returns the outermost balanced {...} substring of text as a
@@ -1061,6 +1197,35 @@ func (p chatResponsePayload) toChatResponse(requestedModel string) (ChatResponse
 	if err != nil {
 		return ChatResponse{}, err
 	}
+	usage := Usage{
+		Prompt:     p.Usage.PromptTokens,
+		Completion: p.Usage.CompletionTokens,
+	}
+	if p.Usage.ReasoningTokens != nil {
+		usage.Reasoning = *p.Usage.ReasoningTokens
+	} else if p.Usage.CompletionDetails != nil && p.Usage.CompletionDetails.ReasoningTokens != nil {
+		usage.Reasoning = *p.Usage.CompletionDetails.ReasoningTokens
+	}
+	// finish_reason "length" with neither text nor a tool call means the model
+	// spent the whole output budget (observed live on qwen3-8-27b: it burns
+	// max_tokens on reasoning and emits an empty answer) — a distinct,
+	// actionable failure (raise the budget or lower the reasoning effort) that
+	// callers must not confuse with a schema-less empty message. A
+	// reasoning-only answer on "stop" stays a normal response.
+	if strings.EqualFold(choice.FinishReason, "length") && strings.TrimSpace(text) == "" && len(calls) == 0 {
+		reasoning := ""
+		if choice.Message.ReasoningContent != nil {
+			reasoning = strings.TrimSpace(*choice.Message.ReasoningContent)
+		}
+		e := providers.NewError(providers.KindBudgetExhausted, http.StatusOK,
+			fmt.Sprintf("openai: output budget exhausted: finish_reason=length with no text and no tool calls (usage prompt=%d completion=%d reasoning=%d)",
+				usage.Prompt, usage.Completion, usage.Reasoning))
+		e.Err = ErrOutputBudgetExhausted
+		e.Model = p.Model
+		e.RequestID = p.ID
+		resp := ChatResponse{FinishReason: choice.FinishReason, Model: out.Model, Reasoning: reasoning, Usage: usage, RequestID: p.ID}
+		return resp, e
+	}
 	if strings.TrimSpace(text) == "" && out.Reasoning == "" && len(calls) == 0 {
 		e := providers.NewError(providers.KindBadSchema, http.StatusOK,
 			"openai: response message has no content, no reasoning_content and no tool_calls")
@@ -1070,15 +1235,7 @@ func (p chatResponsePayload) toChatResponse(requestedModel string) (ChatResponse
 	}
 	out.Text = strings.TrimSpace(text)
 	out.ToolCalls = calls
-	out.Usage = Usage{
-		Prompt:     p.Usage.PromptTokens,
-		Completion: p.Usage.CompletionTokens,
-	}
-	if p.Usage.ReasoningTokens != nil {
-		out.Usage.Reasoning = *p.Usage.ReasoningTokens
-	} else if p.Usage.CompletionDetails != nil && p.Usage.CompletionDetails.ReasoningTokens != nil {
-		out.Usage.Reasoning = *p.Usage.CompletionDetails.ReasoningTokens
-	}
+	out.Usage = usage
 	return out, nil
 }
 

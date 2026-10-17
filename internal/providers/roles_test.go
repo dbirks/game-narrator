@@ -282,17 +282,92 @@ func TestRoleEnvVarsUseUppercaseSegments(t *testing.T) {
 		timeout != "GAME_NARRATOR_ROLE_VISION_OCR_FALLBACK_TIMEOUT" {
 		t.Errorf("override envs = %q %q %q", u, proto, timeout)
 	}
-	if got := len(EnvKeyList()); got != 3+4*len(AllRoles) {
-		t.Errorf("EnvKeyList length = %d, want %d", got, 3+4*len(AllRoles))
+	if got := len(EnvKeyList()); got != 3+5*len(AllRoles) {
+		t.Errorf("EnvKeyList length = %d, want %d", got, 3+5*len(AllRoles))
+	}
+	if reasoning := RoleReasoningEffortEnv(RoleVisionOCRFallback); reasoning != "GAME_NARRATOR_ROLE_VISION_OCR_FALLBACK_REASONING_EFFORT" {
+		t.Errorf("reasoning effort env = %q", reasoning)
+	}
+}
+
+// Per-role reasoning effort: the latency-critical runtime roles default to
+// "none", the agent loop to "low", the rest omit the field; the env var
+// overrides per role and unknown values fail startup naming the role.
+func TestLoadRolesReasoningEffortDefaultsOverrideAndValidation(t *testing.T) {
+	// Defaults: no reasoning env set at all.
+	roles, err := LoadRoles(envLookupFunc(map[string]string{}))
+	if err != nil {
+		t.Fatalf("LoadRoles: %v", err)
+	}
+	wantDefaults := map[Role]ReasoningEffort{
+		RoleAgentReasoning:    ReasoningEffortLow,
+		RoleFastReasoning:     ReasoningEffortNone,
+		RoleVisionOCRFallback: ReasoningEffortNone,
+		RoleDecision:          "",
+		RoleVoiceDesign:       "",
+		RoleVoiceClone:        "",
+		RoleSpeechASR:         "",
+	}
+	for _, role := range AllRoles {
+		if got := roles[role].ReasoningEffort; got != wantDefaults[role] {
+			t.Errorf("role %s default ReasoningEffort = %q, want %q", role, got, wantDefaults[role])
+		}
+	}
+
+	// Override: the env var wins over the role default (case-insensitive).
+	env := map[string]string{
+		"GAME_NARRATOR_ROLE_FAST_REASONING_REASONING_EFFORT":  "HIGH",
+		"GAME_NARRATOR_ROLE_AGENT_REASONING_REASONING_EFFORT": "none",
+	}
+	roles, err = LoadRoles(envLookupFunc(env))
+	if err != nil {
+		t.Fatalf("LoadRoles with overrides: %v", err)
+	}
+	if got := roles[RoleFastReasoning].ReasoningEffort; got != ReasoningEffortHigh {
+		t.Errorf("fast_reasoning override = %q, want high", got)
+	}
+	if got := roles[RoleAgentReasoning].ReasoningEffort; got != ReasoningEffortNone {
+		t.Errorf("agent_reasoning override = %q, want none", got)
+	}
+
+	// An empty env var keeps the role default (empty = "leave it to the
+	// default"), it does not clear the default to "omit".
+	env["GAME_NARRATOR_ROLE_FAST_REASONING_REASONING_EFFORT"] = "  "
+	roles, err = LoadRoles(envLookupFunc(env))
+	if err != nil {
+		t.Fatalf("LoadRoles with blank override: %v", err)
+	}
+	if got := roles[RoleFastReasoning].ReasoningEffort; got != ReasoningEffortNone {
+		t.Errorf("fast_reasoning blank override = %q, want the role default none", got)
+	}
+
+	// Unknown value: a configuration error that names the role and the
+	// variable, and never the token.
+	bad := map[string]string{
+		"GAME_NARRATOR_ROLE_FAST_REASONING_REASONING_EFFORT": "maximum",
+		EnvGatewayToken: testToken,
+	}
+	_, err = LoadRoles(envLookupFunc(bad))
+	if err == nil {
+		t.Fatal("want an error for an unknown reasoning effort")
+	}
+	msg := err.Error()
+	for _, want := range []string{"GAME_NARRATOR_ROLE_FAST_REASONING_REASONING_EFFORT", "fast_reasoning", "none, low, medium, high"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q does not mention %q", msg, want)
+		}
+	}
+	if strings.Contains(msg, testToken) {
+		t.Errorf("error leaked the token: %q", msg)
 	}
 }
 
 func TestFailureKindTaxonomy(t *testing.T) {
 	// Every kind in docs/spec/06 must exist and classify retryability.
-	for _, k := range []Kind{KindTimeout, KindUnavailable, KindRateLimited, KindBadSchema, KindAuth,
-		KindPayloadTooLarge, KindUnsupportedCapability, KindWrongCheckpoint, KindVoiceMissing,
-		KindReplicaMismatch, KindDecodeError, KindAudioInvalid, KindContentRefused, KindCancelled,
-		KindStaleResult} {
+	for _, k := range []Kind{KindTimeout, KindUnavailable, KindRateLimited, KindBadSchema,
+		KindBudgetExhausted, KindAuth, KindPayloadTooLarge, KindUnsupportedCapability,
+		KindWrongCheckpoint, KindVoiceMissing, KindReplicaMismatch, KindDecodeError,
+		KindAudioInvalid, KindContentRefused, KindCancelled, KindStaleResult} {
 		if !k.Valid() {
 			t.Errorf("kind %q not recognised by Valid()", k)
 		}

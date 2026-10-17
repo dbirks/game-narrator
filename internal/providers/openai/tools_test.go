@@ -200,6 +200,13 @@ func TestToolDefValidation(t *testing.T) {
 // to auto (docs/spec/06). The separate required probe
 // (TestLiveToolChoiceRequiredIsACapabilityFinding) records that capability
 // finding rather than asserting it.
+//
+// The request also pins reasoning_effort=low with a 1024-token budget: with
+// the model's default effort and MaxTokens 256, ~1/5 of runs spent the whole
+// budget on reasoning and ended finish_reason=length with an empty answer
+// (observed live 2026-10-18). That is exactly the failure
+// ErrOutputBudgetExhausted classifies; the pinned effort keeps the tool call
+// inside the budget.
 func TestLiveToolCallingExecutesOneTool(t *testing.T) {
 	roles, err := providers.LoadRoles(os.LookupEnv)
 	if err != nil {
@@ -227,10 +234,11 @@ func TestLiveToolCallingExecutesOneTool(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	resp, err := client.Chat(ctx, ChatRequest{
-		Messages:   []Message{{Role: "user", Text: `Use the echo_tool function to echo the exact text "agent-live". Do not answer anything else.`}},
-		MaxTokens:  256,
-		Tools:      []ToolDef{{Name: "echo_tool", Description: "Echo the given text back verbatim.", Parameters: json.RawMessage(echoToolSchema)}},
-		ToolChoice: ToolChoiceAuto,
+		Messages:        []Message{{Role: "user", Text: `Use the echo_tool function to echo the exact text "agent-live". Do not answer anything else.`}},
+		MaxTokens:       1024,
+		Tools:           []ToolDef{{Name: "echo_tool", Description: "Echo the given text back verbatim.", Parameters: json.RawMessage(echoToolSchema)}},
+		ToolChoice:      ToolChoiceAuto,
+		ReasoningEffort: "low",
 	})
 	if err != nil {
 		t.Fatalf("live tool Chat: %v", err)
@@ -250,8 +258,9 @@ func TestLiveToolCallingExecutesOneTool(t *testing.T) {
 		t.Errorf("arguments %v missing 'text'", obj)
 	}
 	// Log-safe: model id, finish reason, latency. Never the URL or token.
-	t.Logf("live tool call: model=%s finish=%s tool=%s args_keys=%d latency=%s",
-		resp.Model, resp.FinishReason, call.Name, len(obj), resp.Latency.Round(time.Millisecond))
+	t.Logf("live tool call: model=%s finish=%s tool=%s args_keys=%d latency=%s usage=%d/%d reasoning_tokens=%d",
+		resp.Model, resp.FinishReason, call.Name, len(obj), resp.Latency.Round(time.Millisecond),
+		resp.Usage.Prompt, resp.Usage.Completion, resp.Usage.Reasoning)
 }
 
 // TestLiveToolChoiceRequiredIsACapabilityFinding probes the real behaviour of

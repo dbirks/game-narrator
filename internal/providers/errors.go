@@ -16,10 +16,18 @@ type Kind string
 // adapters implemented later (System One, TTS, ASR) and the router switch on
 // one vocabulary.
 const (
-	KindTimeout               Kind = "timeout"
-	KindUnavailable           Kind = "unavailable"
-	KindRateLimited           Kind = "rate_limited"
-	KindBadSchema             Kind = "bad_schema"
+	KindTimeout     Kind = "timeout"
+	KindUnavailable Kind = "unavailable"
+	KindRateLimited Kind = "rate_limited"
+	KindBadSchema   Kind = "bad_schema"
+	// KindBudgetExhausted extends the docs/spec/06 list (ADR 0009
+	// "Reasoning effort" amendment, 2026-10-18): the completion ended with
+	// finish_reason "length" and produced neither text nor a tool call, so
+	// the model spent the whole output budget (usually on reasoning) instead
+	// of answering. Callers can raise the budget, lower the reasoning
+	// effort, or fail over — but must not retry blindly as if the model were
+	// simply quiet.
+	KindBudgetExhausted       Kind = "budget_exhausted"
 	KindAuth                  Kind = "auth"
 	KindPayloadTooLarge       Kind = "payload_too_large"
 	KindUnsupportedCapability Kind = "unsupported_capability"
@@ -36,8 +44,8 @@ const (
 // ValidKind reports whether k is a taxonomy member.
 func (k Kind) Valid() bool {
 	switch k {
-	case KindTimeout, KindUnavailable, KindRateLimited, KindBadSchema, KindAuth,
-		KindPayloadTooLarge, KindUnsupportedCapability, KindWrongCheckpoint,
+	case KindTimeout, KindUnavailable, KindRateLimited, KindBadSchema, KindBudgetExhausted,
+		KindAuth, KindPayloadTooLarge, KindUnsupportedCapability, KindWrongCheckpoint,
 		KindVoiceMissing, KindReplicaMismatch, KindDecodeError, KindAudioInvalid,
 		KindContentRefused, KindCancelled, KindStaleResult:
 		return true
