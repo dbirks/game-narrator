@@ -77,6 +77,11 @@ type Result struct {
 	// Engine names the producer ("tesseract"), for discrepancy reporting when a
 	// VLM and the local engine disagree.
 	Engine string
+	// Fallback is the docs/spec/05 "include both and the discrepancy" audit row,
+	// populated only by FallbackEngine: both readings, their normalised
+	// discrepancy, which one won and why. nil means the read came from a single
+	// engine and nothing was compared.
+	Fallback *FallbackOutcome
 }
 
 // Line is one recognized line.

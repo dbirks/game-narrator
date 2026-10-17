@@ -135,6 +135,16 @@ type Stats struct {
 	// OCRErrors counts recognitions that failed for a reason other than
 	// cancellation (timeout, engine failure, unavailable).
 	OCRErrors uint64 `json:"ocr_errors"`
+	// OCRFallbackFrames counts reads that went through the VLM fallback path
+	// (docs/spec/05 "compare lightweight OCR against optional VLM fallback",
+	// ADR-0039): the read carries both readings and the discrepancy. The
+	// number of frames where the fallback engaged, for the report and the
+	// developer UI.
+	OCRFallbackFrames uint64 `json:"ocr_fallback_frames"`
+	// OCRFallbackSecondaryCalls counts remote secondary calls actually made —
+	// cache hits and rate-limited frames are not included: this is the number
+	// that bills the gateway, and the one the rate limit is measured against.
+	OCRFallbackSecondaryCalls uint64 `json:"ocr_fallback_secondary_calls"`
 
 	// ReplayDegradedFrames counts frames whose OCR read still failed after the
 	// replay retry policy (ModeReplay only; a clean live run always reports 0).
@@ -213,6 +223,22 @@ type TraceEntry struct {
 	TopScore           float64 `json:"top_score,omitempty"`
 	Reason             string  `json:"reason,omitempty"`
 	Event              string  `json:"event,omitempty"`
+	// OCRFallback is the ocr.fallback trace field (docs/spec/05 "include both
+	// and the discrepancy", ADR-0039): the primary's confidence, the
+	// normalised distance between the two readings, which read won and why.
+	// nil when the read took the single-engine path. The raw readings stay on
+	// the ocr.Result side; this row carries what the developer UI shows.
+	OCRFallback *OCRFallbackTrace `json:"ocr_fallback,omitempty"`
+}
+
+// OCRFallbackTrace is one fallback annotation on a trace row. Chosen is
+// "primary" or "secondary"; Reason is the one-phrase decision (the full
+// vocabulary is on ocr.FallbackOutcome.Reason).
+type OCRFallbackTrace struct {
+	PrimaryConf float64 `json:"primary_conf"`
+	Discrepancy float64 `json:"discrepancy"`
+	Chosen      string  `json:"chosen"`
+	Reason      string  `json:"reason,omitempty"`
 }
 
 func (c *counters) add(f func(*Stats)) {
@@ -230,6 +256,8 @@ func (c *counters) ocrSkipped()              { c.add(func(s *Stats) { s.OCRSkipp
 func (c *counters) ocrCancelled()            { c.add(func(s *Stats) { s.OCRCancelled++ }) }
 func (c *counters) ocrStale()                { c.add(func(s *Stats) { s.OCRStale++ }) }
 func (c *counters) ocrError()                { c.add(func(s *Stats) { s.OCRErrors++ }) }
+func (c *counters) ocrFallbackFrames()       { c.add(func(s *Stats) { s.OCRFallbackFrames++ }) }
+func (c *counters) ocrFallbackSecondary()    { c.add(func(s *Stats) { s.OCRFallbackSecondaryCalls++ }) }
 
 // replayDegraded books one frame whose read the replay could not recover after
 // its retry budget. Rotations materialise a fresh backing array so a Stats copy

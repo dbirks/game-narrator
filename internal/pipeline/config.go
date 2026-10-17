@@ -170,6 +170,15 @@ type Config struct {
 	// fake in tests; both are the same interface so nothing downstream branches.
 	OCR ocr.Engine
 
+	// OCRFallback wraps OCR with an ocr.FallbackEngine when set: OCR stays the
+	// primary read and OCRFallback.Secondary — a VLM behind the
+	// vision_ocr_fallback provider role — is consulted only when the primary
+	// read is unresolved (docs/spec/05 "optional VLM fallback for difficult
+	// fonts", ADR-0039). The runtime sets this only when that role is
+	// configured; nil (the default) keeps the single-engine behaviour, which
+	// is what the role's preflight "NOT CONFIGURED" continues to mean.
+	OCRFallback *OCRFallback
+
 	// Index is the compiled candidate corpus. Safe to share across Runners.
 	Index *matcher.Index
 
@@ -236,6 +245,20 @@ type Config struct {
 	Now func() time.Time
 }
 
+// OCRFallback is the pipeline's view of the VLM fallback (ADR-0039): a
+// secondary engine plus its policy. The pipeline does not construct the
+// secondary itself — building an ocr.VLMEngine over a role-configured
+// provider client is the runtime's job, because the runtime owns the
+// provider clients — so this field is the seam the runtime passes later.
+type OCRFallback struct {
+	// Secondary is consulted when the primary read is unresolved. Required
+	// when OCRFallback is set (Validate reports a nil one).
+	Secondary ocr.Engine
+	// Policy tunes the trigger threshold, rate limit and crop cache. Zero
+	// fields take the documented defaults (ocr package).
+	Policy ocr.FallbackPolicy
+}
+
 // normalize clamps rather than rejecting, except for the three required inputs,
 // which Validate reports. A negative worker count would mean an unusable pool and
 // a zero OCR timeout would mean no bound at all — both have an obvious intended
@@ -297,6 +320,16 @@ func (c Config) normalize() Config {
 	if c.Now == nil {
 		c.Now = time.Now
 	}
+	if c.OCRFallback != nil && c.OCRFallback.Secondary != nil {
+		// The wrap happens here, on the normalised config, so Runner.Config()
+		// reports the engine that actually runs — a caller reading back
+		// "ocr-fallback" knows the fallback was live without guessing.
+		c.OCR = &ocr.FallbackEngine{
+			Primary:   c.OCR,
+			Secondary: c.OCRFallback.Secondary,
+			Policy:    c.OCRFallback.Policy,
+		}
+	}
 	return c
 }
 
@@ -306,6 +339,8 @@ func (c Config) Validate() error {
 	switch {
 	case c.OCR == nil:
 		return ErrNoEngine
+	case c.OCRFallback != nil && c.OCRFallback.Secondary == nil:
+		return errors.New("pipeline: ocr_fallback.secondary is required")
 	case c.Index == nil:
 		return ErrNoIndex
 	case len(c.Regions) == 0:

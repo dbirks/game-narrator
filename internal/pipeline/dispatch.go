@@ -222,6 +222,16 @@ func (r *Runner) applyOutcome(regions []*regionState, o ocrOutcome) {
 		return
 	}
 	if rs != nil {
+		if fb := o.res.Fallback; fb != nil {
+			// The VLM fallback path ran (docs/spec/05, ADR-0039): count the
+			// frame, and count the remote call only when one actually went
+			// out — a cache hit or a rate-limited frame did not bill the
+			// gateway, and the report must say so.
+			r.cnt.ocrFallbackFrames()
+			if fb.Reason != "secondary_cached" && fb.Reason != "secondary_rate_limited" {
+				r.cnt.ocrFallbackSecondary()
+			}
+		}
 		keep := o.res
 		rs.lastOK = &keep
 		rs.lastOKHash = o.job.hash
@@ -550,6 +560,11 @@ func (rs *regionState) emit(r *Runner, ctx context.Context, in chan<- *obsIn, p 
 	if o.OCR != nil {
 		txt = o.OCR.Text
 	}
+	var fb *OCRFallbackTrace
+	if p.ready != nil && p.ready.Fallback != nil {
+		f := p.ready.Fallback
+		fb = &OCRFallbackTrace{PrimaryConf: f.PrimaryConf, Discrepancy: f.Discrepancy, Chosen: f.Chosen, Reason: f.Reason}
+	}
 	r.cnt.observations(1)
 	r.cnt.recordTrace(TraceEntry{
 		FrameSeq:           o.FrameSeq,
@@ -559,6 +574,7 @@ func (rs *regionState) emit(r *Runner, ctx context.Context, in chan<- *obsIn, p 
 		RegionHash:         short(p.a.hash),
 		OCRSkipped:         p.job == nil,
 		OCRText:            txt,
+		OCRFallback:        fb,
 	})
 	if p.job != nil {
 		r.cnt.frameOCR.observe(p.readyAt.Sub(p.at))

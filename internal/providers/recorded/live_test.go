@@ -26,20 +26,12 @@ import (
 // live conditional).
 //
 // Configuration comes from the environment only — GAME_NARRATOR_GATEWAY_URL plus
-// the token variable named by GAME_NARRATOR_GATEWAY_TOKEN_ENV. The vision
-// record/replay test additionally requires GAME_NARRATOR_LIVE_VISION=1, because
-// image input to the gateway model is not confirmed safe. Nothing here
+// the token variable named by GAME_NARRATOR_GATEWAY_TOKEN_ENV. Nothing here
 // prints or stores a URL, host or token, and the cassettes are written to
 // t.TempDir(): live-recorded cassettes are never committed (AGENTS.md rule 5).
 
 const liveSkipMessage = "NOT RUN: set " + providers.EnvGatewayURL + " and the token env named by " +
 	providers.EnvGatewayTokenEnv + " (default " + providers.EnvGatewayToken + ") to run live recorded-provider tests"
-
-// liveVisionSkipMessage gates the vision record/replay test: image input to the
-// gateway model is not confirmed safe (concurrent one-image requests crashed
-// the inference engine), so it only runs when explicitly opted in.
-const liveVisionSkipMessage = "NOT RUN: vision live tests are opt-in (GAME_NARRATOR_LIVE_VISION=1); " +
-	"image input to the gateway model is not confirmed safe"
 
 const defaultLiveModel = "qwen3-8-27b"
 
@@ -262,9 +254,6 @@ func TestLiveRecordThenReplayTextChat(t *testing.T) {
 }
 
 func TestLiveRecordThenReplayVisionChat(t *testing.T) {
-	if os.Getenv("GAME_NARRATOR_LIVE_VISION") != "1" {
-		t.Skip(liveVisionSkipMessage)
-	}
 	harness := newLiveHarness(t, providers.RoleVisionOCRFallback, 4*time.Minute)
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
