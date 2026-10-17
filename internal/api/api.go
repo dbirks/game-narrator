@@ -26,6 +26,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/assets"
 	"github.com/dbirks/game-narrator/internal/auth"
 	"github.com/dbirks/game-narrator/internal/bootstrap"
+	"github.com/dbirks/game-narrator/internal/dolphin"
 	"github.com/dbirks/game-narrator/internal/events"
 	"github.com/dbirks/game-narrator/internal/games/adapter"
 	rt "github.com/dbirks/game-narrator/internal/runtime"
@@ -151,6 +152,14 @@ type Server struct {
 	// as the voice.auditions job kind. nil answers 503 under /api/v1/voices for
 	// the same honest-degradation reason as every other unwired subsystem.
 	voices *voiceDeps
+
+	// dolphinBridge wires the developer-only Dolphin automation bridge behind
+	// /api/v1/dev/dolphin (docs/spec/11, ADR-0007). It is a dev-host tool: the
+	// routes additionally answer 501 unless GAME_NARRATOR_DEV_DOLPHIN=1, and
+	// 503 when nil, so a production process cannot launch an emulator or inject
+	// controller input through the API no matter what a developer-role caller
+	// asks it to.
+	dolphinBridge dolphin.Bridge
 }
 
 // ReadinessFunc answers GET /api/v1/health/ready. It returns the per-dependency
@@ -382,6 +391,17 @@ func (s *Server) Handler() http.Handler {
 	routes.register(mux, http.MethodGet, "/api/v1/dev/events", s.handleDevEvents)
 	routes.register(mux, http.MethodGet, "/api/v1/dev/traces/{trace_id}", s.handleDevTraces)
 	routes.register(mux, http.MethodGet, "/api/v1/dev/assets/{sha256}", s.handleDevAsset)
+
+	// Developer Dolphin bridge (docs/spec/11, ADR-0007): launch, status,
+	// input, screenshot and stop for the isolated, dev-only emulator. The
+	// scope table's /api/v1/dev prefix grant makes every one of these
+	// developer-only; the opt-in env and the unwired-bridge 503 sit inside the
+	// handlers (dolphin.go), not the scope table.
+	routes.register(mux, http.MethodPost, "/api/v1/dev/dolphin/launch", s.handleDolphinLaunch)
+	routes.register(mux, http.MethodGet, "/api/v1/dev/dolphin", s.handleDolphinStatus)
+	routes.register(mux, http.MethodPost, "/api/v1/dev/dolphin/input", s.handleDolphinInput)
+	routes.register(mux, http.MethodPost, "/api/v1/dev/dolphin/screenshot", s.handleDolphinScreenshot)
+	routes.register(mux, http.MethodPost, "/api/v1/dev/dolphin/stop", s.handleDolphinStop)
 
 	// Onboarding agent (docs/spec/08 "APIs", ADR-0028): the run lives as a
 	// durable agent.run job; this surface starts, chats with, watches and

@@ -20,6 +20,7 @@ import (
 
 	"github.com/dbirks/game-narrator/internal/agent"
 	"github.com/dbirks/game-narrator/internal/auth"
+	"github.com/dbirks/game-narrator/internal/dolphin"
 	"github.com/dbirks/game-narrator/internal/games"
 	"github.com/dbirks/game-narrator/internal/profileio"
 	"github.com/dbirks/game-narrator/internal/runtime"
@@ -76,6 +77,11 @@ var literalEnums = map[string][]string{
 	// per-instance registration states the registry reconciliation writes.
 	"VoiceRevision.properties.state":     {store.VoiceStateDraft, store.VoiceStateAuditioning, store.VoiceStateApproved, store.VoiceStateRetired},
 	"VoiceRegistration.properties.state": {store.VoiceRegPending, store.VoiceRegReady, store.VoiceRegInvalid},
+	// The dev-only Dolphin bridge (docs/spec/11) writes these lifecycle states
+	// in internal/dolphin/state.go; the dev API serves them verbatim in the
+	// status route, so the vocabulary is pinned here like the other
+	// api-owned literals.
+	"DolphinStatus.properties.state": {string(dolphin.StateStopped), string(dolphin.StateLaunching), string(dolphin.StateRunning), string(dolphin.StateFailed)},
 }
 
 func TestOpenAPIEnumVocabulariesMatchTheDomainEnums(t *testing.T) {

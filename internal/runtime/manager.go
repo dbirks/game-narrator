@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/dbirks/game-narrator/internal/capture"
 	"github.com/dbirks/game-narrator/internal/events"
 	"github.com/dbirks/game-narrator/internal/jobs"
 	"github.com/dbirks/game-narrator/internal/recognition"
@@ -96,6 +97,13 @@ type Options struct {
 
 	OCR     ocr.Engine
 	Tracker recognition.Config // zero = the mode's documented defaults
+
+	// DevDolphin is the dev-only seam that hands a running Dolphin bridge's
+	// frame source to a session (docs/spec/11, ADR-0007). It is called only
+	// for a kind:dolphin request on an explicit GAME_NARRATOR_DEV_DOLPHIN opt-
+	// in; nil (the default) keeps that kind a 501, which is the production
+	// shape: the core runtime never imports or launches the emulator itself.
+	DevDolphin func() (capture.Source, error)
 
 	Log *slog.Logger
 }

@@ -1154,6 +1154,106 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/dev/dolphin/launch": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Launch the isolated Dolphin emulator (dev host, explicit opt-in).
+     * @description Starts a private Xvfb and the emulator against the user-supplied image named by GAME_NARRATOR_GAME_IMAGE_PATH (the path itself is never accepted or returned; only its SHA-256 is reported). Launch is long (emulator boot plus render-window resolution), so it runs in the background and the answer is the status as known at dispatch; poll GET /api/v1/dev/dolphin until state is "running" or "failed". The run outlives the request: only POST /api/v1/dev/dolphin/stop (or the process's own death) ends it. Answers 501 without the GAME_NARRATOR_DEV_DOLPHIN opt-in, 503 when no bridge is wired into the process, 409 while a launch is already in flight.
+     */
+    post: operations["dolphinLaunch"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/dev/dolphin": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * The bridge's self-report: state, pids, render window, image hash.
+     * @description The bridge's Status verbatim: state (stopped/launching/running/failed), the private display, the dolphin and Xvfb pids, the resolved render window id and region, the controller-pipe connection fact, the isolated user dir, and the game image by SHA-256 and size — never by path. Poll this after POST /api/v1/dev/dolphin/launch until state is "running" or "failed". Answers 501 without the GAME_NARRATOR_DEV_DOLPHIN opt-in, 503 when no bridge is wired into the process.
+     */
+    get: operations["dolphinStatus"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/dev/dolphin/input": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Inject controller input through the isolated pad (dev host, explicit opt-in).
+     * @description Presses/releases the named buttons and sets the named axes through the bridge's persistent controller-pipe writer, holding for hold_ms (0 = the bridge default, calibrated against the emulated frame time). Synchronous: the answer is the write to the controller device, not a claim that the game reacted — the scene predicate (the readiness evidence) is the acceptance proof. Button and axis names are a closed set: an unknown name or an out-of-range axis is a 400, not a silent drop. Answers 501 without the opt-in, 503 when unwired, 409 while the bridge is not running.
+     */
+    post: operations["dolphinInput"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/dev/dolphin/screenshot": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * The render window's current frame, as a fresh PNG.
+     * @description An X11 grab of the render window's current region (the window is re-resolved on demand, because batch mode re-parents the framebuffer window when the game takes over). The image is served and deliberately not stored: nothing here adds it to the asset store, the event log or the disk. Answers 501 without the opt-in, 503 when unwired, 409 while the bridge is not running.
+     */
+    post: operations["dolphinScreenshot"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/dev/dolphin/stop": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Stop the emulator and the private display (idempotent).
+     * @description Closes the controller pipe, stops the emulator gracefully (bounded wait, then the process group is signalled), stops the Xvfb the bridge started, and clears the state so the bridge can Launch again with a fresh isolated dir. Idempotent: stopping something already stopped is the same 200 answer, because the condition is not an error. The bridge's lifetime context does the same teardown on its own when cancelled, and the OS kills every child on the process's abrupt death — this route is the explicit, operator-visible form of that. Answers 501 without the opt-in, 503 when unwired.
+     */
+    post: operations["dolphinStop"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1938,6 +2038,73 @@ export interface components {
     VoicePreviewRequest: {
       /** @description The line to synthesise in the approved voice. */
       text: string;
+    };
+    /** @description The launch body. Every member is optional: the game image comes from the process environment only (GAME_NARRATOR_GAME_IMAGE_PATH) and is never accepted here, the user dir is always a fresh isolated dir, and the defaults are the proven config (OGL backend, native resolution, no savestate or movie). */
+    DolphinLaunchRequest: {
+      /** @description The render backend; "OGL" is the proven default on this host (ADR-0007). */
+      backend?: string;
+      /** @description The expected render window width; 0 = the emulator's native size. The resolved geometry wins and is reported in the status. */
+      width?: number;
+      /** @description The expected render window height; 0 = native. */
+      height?: number;
+      /** @description An optional savestate to load at start (Dolphin --save_state semantics). */
+      save_state?: string;
+      /** @description An optional movie file to run (Dolphin --movie semantics). */
+      movie?: string;
+    };
+    /** @description The controller input body: a closed set of button and axis names with range-checked values; an unknown name or an out-of-range axis is a 400, not a silent drop. hold_ms is the hold between PRESS and RELEASE; 0 = the bridge default (calibrated against the emulated frame time, not wall-clock game time). */
+    DolphinInputRequest: {
+      /** @description Names: a b x y z start l r up down left right. A true value presses the button for the hold; the bridge releases it afterwards. */
+      buttons?: {
+        [key: string]: boolean;
+      };
+      /** @description Names: main_x main_y stick_x stick_y in -1..1 (sticks), l r in 0..1 (triggers). The bridge resets them to neutral after the inject. */
+      axes?: {
+        [key: string]: number;
+      };
+      /** @description The hold between PRESS and RELEASE, in milliseconds; 0 = the bridge default (500 ms). */
+      hold_ms?: number;
+    };
+    /** @description The bridge's self-report. It carries host paths only where a trusted developer on the box needs them (user_dir), and the game image by SHA-256 and size — the image path itself is never present in any response. */
+    DolphinStatus: {
+      /**
+       * @description The lifecycle: stopped (nothing running), launching (Xvfb/emulator coming up), running (render window resolved, frames capturable), failed (last_error names why).
+       * @enum {string}
+       */
+      state: "stopped" | "launching" | "running" | "failed";
+      /** @description The private X display (e.g. ":91"); empty when nothing is running. */
+      display?: string;
+      /** @description The emulator's pid; 0 when not running. */
+      dolphin_pid?: number;
+      /** @description The bridge-started Xvfb's pid; 0 when not running (a caller-supplied display is the caller's to own and report). */
+      xvfb_pid?: number;
+      /** @description The render window's xwininfo id (hex); re-resolved on demand because batch mode re-parents the framebuffer window when the game takes over. */
+      render_window?: string;
+      region?: components["schemas"]["DolphinRegion"];
+      /** @description The controller device the pad is mapped to (the isolated user dir's Pipes/pipe1). */
+      pipe_device?: string;
+      /** @description Whether the emulator has opened the controller pipe yet (a false value is normal during early boot). */
+      pipe_connected: boolean;
+      /** @description The fresh isolated Dolphin user dir for this run (never the real ~/.local/share/dolphin-emu). */
+      user_dir?: string;
+      /** @description The SHA-256 of the game image the run uses (the provenance; the path itself is never reported). */
+      image_sha256?: string;
+      /** @description The image size in bytes. */
+      image_size?: number;
+      /**
+       * Format: date-time
+       * @description When WaitForGameFrame last reported a real game frame (the entropy/differ predicate, not process existence); zero time when never.
+       */
+      first_game_frame_at?: string;
+      /** @description The failure text of the last failed launch (state = failed). */
+      last_error?: string;
+    };
+    /** @description A pixel rectangle in the X root window: the render window's absolute geometry, resolved via xwininfo (never the whole root). */
+    DolphinRegion: {
+      X: number;
+      Y: number;
+      W: number;
+      H: number;
     };
   };
   responses: {
@@ -4001,6 +4168,134 @@ export interface operations {
       401: components["responses"]["Problem"];
       403: components["responses"]["Problem"];
       413: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  dolphinLaunch: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["DolphinLaunchRequest"];
+      };
+    };
+    responses: {
+      /** @description The launch is in flight (or already complete); the body is the status as known at dispatch. */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DolphinStatus"];
+        };
+      };
+      400: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
+      501: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  dolphinStatus: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The current bridge status. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DolphinStatus"];
+        };
+      };
+      501: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  dolphinInput: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["DolphinInputRequest"];
+      };
+    };
+    responses: {
+      /** @description The input was written; the body is the status after the inject. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DolphinStatus"];
+        };
+      };
+      400: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
+      501: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  dolphinScreenshot: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The current frame. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "image/png": string;
+        };
+      };
+      409: components["responses"]["Problem"];
+      501: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  dolphinStop: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Stopped (or already stopped); the body is the status. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DolphinStatus"];
+        };
+      };
+      501: components["responses"]["Problem"];
       503: components["responses"]["Problem"];
       default: components["responses"]["Problem"];
     };

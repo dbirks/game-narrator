@@ -70,6 +70,10 @@
   {
    "name": "voices",
    "description": "Voice setup: auditioning, consent-gated approval, provider registration and preview (docs/spec/07, docs/spec/14)."
+  },
+  {
+   "name": "dev",
+   "description": "Developer-only inspection and hardware tooling (docs/spec/08; the scope table grants the whole /api/v1/dev prefix to the developer role)."
   }
  ],
  "paths": {
@@ -130,7 +134,7 @@
       }
      },
      "503": {
-      "description": "Not ready — the same body, so a load balancer sees one shape for both outcomes and `checks` names what failed. A failure of the endpoint itself (a wrong method, an unwired route) is the problem+json default like anywhere else.",
+      "description": "Not ready \u2014 the same body, so a load balancer sees one shape for both outcomes and `checks` names what failed. A failure of the endpoint itself (a wrong method, an unwired route) is the problem+json default like anywhere else.",
       "content": {
        "application/json": {
         "schema": {
@@ -921,7 +925,7 @@
      "games"
     ],
     "summary": "The title library, cursor-paginated.",
-    "description": "Ordering is by ULID id, which is what makes a page boundary a row identity rather than an offset a concurrent import could shift (docs/spec/12's no-duplicates-or-gaps property). Text search is per revision (GET /api/v1/profiles/{id}/messages/search), because a match is only meaningful against one edition's script; ?q= here is refused rather than answered with an unfiltered list, which would read as “no title matches”.",
+    "description": "Ordering is by ULID id, which is what makes a page boundary a row identity rather than an offset a concurrent import could shift (docs/spec/12's no-duplicates-or-gaps property). Text search is per revision (GET /api/v1/profiles/{id}/messages/search), because a match is only meaningful against one edition's script; ?q= here is refused rather than answered with an unfiltered list, which would read as \u201cno title matches\u201d.",
     "x-required-role": "viewer",
     "parameters": [
      {
@@ -3641,6 +3645,207 @@
      }
     }
    }
+  },
+  "/api/v1/dev/dolphin/launch": {
+   "post": {
+    "operationId": "dolphinLaunch",
+    "tags": [
+     "dev"
+    ],
+    "summary": "Launch the isolated Dolphin emulator (dev host, explicit opt-in).",
+    "description": "Starts a private Xvfb and the emulator against the user-supplied image named by GAME_NARRATOR_GAME_IMAGE_PATH (the path itself is never accepted or returned; only its SHA-256 is reported). Launch is long (emulator boot plus render-window resolution), so it runs in the background and the answer is the status as known at dispatch; poll GET /api/v1/dev/dolphin until state is \"running\" or \"failed\". The run outlives the request: only POST /api/v1/dev/dolphin/stop (or the process's own death) ends it. Answers 501 without the GAME_NARRATOR_DEV_DOLPHIN opt-in, 503 when no bridge is wired into the process, 409 while a launch is already in flight.",
+    "x-required-role": "developer",
+    "x-dev-opt-in": "GAME_NARRATOR_DEV_DOLPHIN=1",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/DolphinLaunchRequest"
+       }
+      }
+     }
+    },
+    "responses": {
+     "202": {
+      "description": "The launch is in flight (or already complete); the body is the status as known at dispatch.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/DolphinStatus"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "409": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "501": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "503": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   }
+  },
+  "/api/v1/dev/dolphin": {
+   "get": {
+    "operationId": "dolphinStatus",
+    "tags": [
+     "dev"
+    ],
+    "summary": "The bridge's self-report: state, pids, render window, image hash.",
+    "description": "The bridge's Status verbatim: state (stopped/launching/running/failed), the private display, the dolphin and Xvfb pids, the resolved render window id and region, the controller-pipe connection fact, the isolated user dir, and the game image by SHA-256 and size \u2014 never by path. Poll this after POST /api/v1/dev/dolphin/launch until state is \"running\" or \"failed\". Answers 501 without the GAME_NARRATOR_DEV_DOLPHIN opt-in, 503 when no bridge is wired into the process.",
+    "x-required-role": "developer",
+    "x-dev-opt-in": "GAME_NARRATOR_DEV_DOLPHIN=1",
+    "responses": {
+     "200": {
+      "description": "The current bridge status.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/DolphinStatus"
+        }
+       }
+      }
+     },
+     "501": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "503": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   }
+  },
+  "/api/v1/dev/dolphin/input": {
+   "post": {
+    "operationId": "dolphinInput",
+    "tags": [
+     "dev"
+    ],
+    "summary": "Inject controller input through the isolated pad (dev host, explicit opt-in).",
+    "description": "Presses/releases the named buttons and sets the named axes through the bridge's persistent controller-pipe writer, holding for hold_ms (0 = the bridge default, calibrated against the emulated frame time). Synchronous: the answer is the write to the controller device, not a claim that the game reacted \u2014 the scene predicate (the readiness evidence) is the acceptance proof. Button and axis names are a closed set: an unknown name or an out-of-range axis is a 400, not a silent drop. Answers 501 without the opt-in, 503 when unwired, 409 while the bridge is not running.",
+    "x-required-role": "developer",
+    "x-dev-opt-in": "GAME_NARRATOR_DEV_DOLPHIN=1",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/DolphinInputRequest"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "The input was written; the body is the status after the inject.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/DolphinStatus"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "409": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "501": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "503": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   }
+  },
+  "/api/v1/dev/dolphin/screenshot": {
+   "post": {
+    "operationId": "dolphinScreenshot",
+    "tags": [
+     "dev"
+    ],
+    "summary": "The render window's current frame, as a fresh PNG.",
+    "description": "An X11 grab of the render window's current region (the window is re-resolved on demand, because batch mode re-parents the framebuffer window when the game takes over). The image is served and deliberately not stored: nothing here adds it to the asset store, the event log or the disk. Answers 501 without the opt-in, 503 when unwired, 409 while the bridge is not running.",
+    "x-required-role": "developer",
+    "x-dev-opt-in": "GAME_NARRATOR_DEV_DOLPHIN=1",
+    "responses": {
+     "200": {
+      "description": "The current frame.",
+      "content": {
+       "image/png": {
+        "schema": {
+         "type": "string",
+         "contentEncoding": "binary"
+        }
+       }
+      }
+     },
+     "409": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "501": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "503": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   }
+  },
+  "/api/v1/dev/dolphin/stop": {
+   "post": {
+    "operationId": "dolphinStop",
+    "tags": [
+     "dev"
+    ],
+    "summary": "Stop the emulator and the private display (idempotent).",
+    "description": "Closes the controller pipe, stops the emulator gracefully (bounded wait, then the process group is signalled), stops the Xvfb the bridge started, and clears the state so the bridge can Launch again with a fresh isolated dir. Idempotent: stopping something already stopped is the same 200 answer, because the condition is not an error. The bridge's lifetime context does the same teardown on its own when cancelled, and the OS kills every child on the process's abrupt death \u2014 this route is the explicit, operator-visible form of that. Answers 501 without the opt-in, 503 when unwired.",
+    "x-required-role": "developer",
+    "x-dev-opt-in": "GAME_NARRATOR_DEV_DOLPHIN=1",
+    "responses": {
+     "200": {
+      "description": "Stopped (or already stopped); the body is the status.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/DolphinStatus"
+        }
+       }
+      }
+     },
+     "501": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "503": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   }
   }
  },
  "components": {
@@ -3661,7 +3866,7 @@
     "type": "http",
     "scheme": "bearer",
     "bearerFormat": "opaque",
-    "description": "Authorization: Bearer gn_…, minted by POST /api/v1/users/{id}/tokens or game-narrator admin token."
+    "description": "Authorization: Bearer gn_\u2026, minted by POST /api/v1/users/{id}/tokens or game-narrator admin token."
    }
   },
   "parameters": {
@@ -4788,7 +4993,7 @@
    },
    "JobDetail": {
     "type": "object",
-    "description": "A job plus the attempt history that makes a crash visible (docs/spec/13). It is spelled out rather than composed with allOf over Job, because the two shapes genuinely disagree on one member: internal/api/jobs.go's jobDetailResponse embeds the list DTO (whose `attempts` is an integer retry counter) and then re-declares `attempts` as the history array, and encoding/json keeps the shallower field — so the detail response carries the history and *not* the count, which only the list gives. ADR-0017 records that as a deviation owned by the queue milestone's file rather than renaming it from here.",
+    "description": "A job plus the attempt history that makes a crash visible (docs/spec/13). It is spelled out rather than composed with allOf over Job, because the two shapes genuinely disagree on one member: internal/api/jobs.go's jobDetailResponse embeds the list DTO (whose `attempts` is an integer retry counter) and then re-declares `attempts` as the history array, and encoding/json keeps the shallower field \u2014 so the detail response carries the history and *not* the count, which only the list gives. ADR-0017 records that as a deviation owned by the queue milestone's file rather than renaming it from here.",
     "required": [
      "id",
      "kind",
@@ -5149,7 +5354,7 @@
    },
    "EditionList": {
     "type": "object",
-    "description": "Every edition of one game. Unpaginated by decision: a title has a handful (region × language × disc revision), and internal/store/repo_catalog.go reads them as one slice.",
+    "description": "Every edition of one game. Unpaginated by decision: a title has a handful (region \u00d7 language \u00d7 disc revision), and internal/store/repo_catalog.go reads them as one slice.",
     "required": [
      "editions"
     ],
@@ -5179,7 +5384,7 @@
    },
    "MessageList": {
     "type": "object",
-    "description": "One page of a revision's dialogue. `profile_etag` is the revision's current If-Match token, so the dialogue browser can edit straight from this page instead of fetching the profile once per keystroke. It is the same integer as the profile's ETag header, from the same row — a convenience member, not a second token.",
+    "description": "One page of a revision's dialogue. `profile_etag` is the revision's current If-Match token, so the dialogue browser can edit straight from this page instead of fetching the profile once per keystroke. It is the same integer as the profile's ETag header, from the same row \u2014 a convenience member, not a second token.",
     "required": [
      "messages",
      "profile_etag"
@@ -5237,7 +5442,7 @@
    },
    "RegionList": {
     "type": "object",
-    "description": "One revision's region set — every rectangle text is read from, with the values that may be null because the source did not state them.",
+    "description": "One revision's region set \u2014 every rectangle text is read from, with the values that may be null because the source did not state them.",
     "required": [
      "regions"
     ],
@@ -6058,7 +6263,7 @@
    },
    "VoiceRevision": {
     "type": "object",
-    "description": "One voice revision. A revision is immutable once approved: the reference bytes, transcript, design model and consent record are frozen (docs/spec/07, ADR-0005). States move forward only: draft → auditioning → approved → retired.",
+    "description": "One voice revision. A revision is immutable once approved: the reference bytes, transcript, design model and consent record are frozen (docs/spec/07, ADR-0005). States move forward only: draft \u2192 auditioning \u2192 approved \u2192 retired.",
     "required": [
      "id",
      "character",
@@ -6366,6 +6571,151 @@
       "type": "string",
       "maxLength": 4000,
       "description": "The line to synthesise in the approved voice."
+     }
+    }
+   },
+   "DolphinLaunchRequest": {
+    "type": "object",
+    "description": "The launch body. Every member is optional: the game image comes from the process environment only (GAME_NARRATOR_GAME_IMAGE_PATH) and is never accepted here, the user dir is always a fresh isolated dir, and the defaults are the proven config (OGL backend, native resolution, no savestate or movie).",
+    "properties": {
+     "backend": {
+      "type": "string",
+      "description": "The render backend; \"OGL\" is the proven default on this host (ADR-0007)."
+     },
+     "width": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The expected render window width; 0 = the emulator's native size. The resolved geometry wins and is reported in the status."
+     },
+     "height": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The expected render window height; 0 = native."
+     },
+     "save_state": {
+      "type": "string",
+      "description": "An optional savestate to load at start (Dolphin --save_state semantics)."
+     },
+     "movie": {
+      "type": "string",
+      "description": "An optional movie file to run (Dolphin --movie semantics)."
+     }
+    }
+   },
+   "DolphinInputRequest": {
+    "type": "object",
+    "description": "The controller input body: a closed set of button and axis names with range-checked values; an unknown name or an out-of-range axis is a 400, not a silent drop. hold_ms is the hold between PRESS and RELEASE; 0 = the bridge default (calibrated against the emulated frame time, not wall-clock game time).",
+    "properties": {
+     "buttons": {
+      "type": "object",
+      "description": "Names: a b x y z start l r up down left right. A true value presses the button for the hold; the bridge releases it afterwards.",
+      "additionalProperties": {
+       "type": "boolean"
+      }
+     },
+     "axes": {
+      "type": "object",
+      "description": "Names: main_x main_y stick_x stick_y in -1..1 (sticks), l r in 0..1 (triggers). The bridge resets them to neutral after the inject.",
+      "additionalProperties": {
+       "type": "number"
+      }
+     },
+     "hold_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The hold between PRESS and RELEASE, in milliseconds; 0 = the bridge default (500 ms)."
+     }
+    }
+   },
+   "DolphinStatus": {
+    "type": "object",
+    "description": "The bridge's self-report. It carries host paths only where a trusted developer on the box needs them (user_dir), and the game image by SHA-256 and size \u2014 the image path itself is never present in any response.",
+    "required": [
+     "state",
+     "pipe_connected"
+    ],
+    "properties": {
+     "state": {
+      "type": "string",
+      "enum": [
+       "stopped",
+       "launching",
+       "running",
+       "failed"
+      ],
+      "description": "The lifecycle: stopped (nothing running), launching (Xvfb/emulator coming up), running (render window resolved, frames capturable), failed (last_error names why)."
+     },
+     "display": {
+      "type": "string",
+      "description": "The private X display (e.g. \":91\"); empty when nothing is running."
+     },
+     "dolphin_pid": {
+      "type": "integer",
+      "description": "The emulator's pid; 0 when not running."
+     },
+     "xvfb_pid": {
+      "type": "integer",
+      "description": "The bridge-started Xvfb's pid; 0 when not running (a caller-supplied display is the caller's to own and report)."
+     },
+     "render_window": {
+      "type": "string",
+      "description": "The render window's xwininfo id (hex); re-resolved on demand because batch mode re-parents the framebuffer window when the game takes over."
+     },
+     "region": {
+      "$ref": "#/components/schemas/DolphinRegion"
+     },
+     "pipe_device": {
+      "type": "string",
+      "description": "The controller device the pad is mapped to (the isolated user dir's Pipes/pipe1)."
+     },
+     "pipe_connected": {
+      "type": "boolean",
+      "description": "Whether the emulator has opened the controller pipe yet (a false value is normal during early boot)."
+     },
+     "user_dir": {
+      "type": "string",
+      "description": "The fresh isolated Dolphin user dir for this run (never the real ~/.local/share/dolphin-emu)."
+     },
+     "image_sha256": {
+      "type": "string",
+      "description": "The SHA-256 of the game image the run uses (the provenance; the path itself is never reported)."
+     },
+     "image_size": {
+      "type": "integer",
+      "description": "The image size in bytes."
+     },
+     "first_game_frame_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When WaitForGameFrame last reported a real game frame (the entropy/differ predicate, not process existence); zero time when never."
+     },
+     "last_error": {
+      "type": "string",
+      "description": "The failure text of the last failed launch (state = failed)."
+     }
+    }
+   },
+   "DolphinRegion": {
+    "type": "object",
+    "description": "A pixel rectangle in the X root window: the render window's absolute geometry, resolved via xwininfo (never the whole root).",
+    "required": [
+     "X",
+     "Y",
+     "W",
+     "H"
+    ],
+    "properties": {
+     "X": {
+      "type": "integer"
+     },
+     "Y": {
+      "type": "integer"
+     },
+     "W": {
+      "type": "integer"
+     },
+     "H": {
+      "type": "integer"
      }
     }
    }

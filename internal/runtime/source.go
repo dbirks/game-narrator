@@ -25,6 +25,12 @@ const (
 	SourceKindV4L2        = "v4l2"
 	SourceKindDolphin     = "dolphin"
 	EnvReplayRoots        = "GAME_NARRATOR_REPLAY_ROOTS"
+	// EnvDevDolphin mirrors internal/dolphin.EnvDevDolphin: the runtime admits
+	// the dolphin frame source only on an explicit developer opt-in. The name
+	// is duplicated rather than imported so the core package keeps no
+	// dependency on the dev-only hardware package (the closure below is the
+	// only seam between them); a runtime test asserts the two stay equal.
+	EnvDevDolphin = "GAME_NARRATOR_DEV_DOLPHIN"
 )
 
 // replaySpeed is the pacing of a replayed session. Speed 0 drains the
@@ -148,7 +154,17 @@ func isUnder(root, p string) bool {
 // test_pattern is FFmpeg's testsrc2 through the same supervised subprocess
 // the live capture uses (ADR-0012 part 1), so a dev host without a capture
 // card still gets real frames through the production consumer.
-func buildFrameSource(kind, dir string, roots []string) (capture.Source, error) {
+//
+// dolphin is the dev-only live emulator source (docs/spec/11, ADR-0007): it
+// is admitted only when the operator opted in via EnvDevDolphin AND a bridge
+// closure was wired into the manager. Either half missing answers 501
+// (ErrSourceUnsupported) — the runtime never fakes the emulator and never
+// launches one itself; the closure is the one place the dev bridge hands a
+// ready frame source to the pipeline.
+func buildFrameSource(kind, dir string, roots []string, devDolphin func() (capture.Source, error), lookupEnv func(string) (string, bool)) (capture.Source, error) {
+	if lookupEnv == nil {
+		lookupEnv = os.LookupEnv
+	}
 	switch kind {
 	case SourceKindReplay:
 		dir, err := resolveReplayDir(dir, roots)
@@ -160,7 +176,15 @@ func buildFrameSource(kind, dir string, roots []string) (capture.Source, error) 
 		// 640x480 at the clip's 10 Hz cadence: the tracker's documented knobs
 		// are sized to a 10 Hz recording, and the pattern needs no device.
 		return ffmpegpipe.TestSource(640, 480, 10), nil
-	case SourceKindV4L2, SourceKindDolphin:
+	case SourceKindDolphin:
+		if v, _ := lookupEnv(EnvDevDolphin); v != "1" && v != "true" {
+			return nil, fmt.Errorf("runtime: frame source kind %q is not enabled in this build (set %s=1 on a dev host with the bridge wired): %w", kind, EnvDevDolphin, ErrSourceUnsupported)
+		}
+		if devDolphin == nil {
+			return nil, fmt.Errorf("runtime: frame source kind %q is enabled (%s=1) but no Dolphin bridge closure is wired into this process: %w", kind, EnvDevDolphin, ErrSourceUnsupported)
+		}
+		return devDolphin()
+	case SourceKindV4L2:
 		return nil, fmt.Errorf("runtime: frame source kind %q is not implemented in this build: %w", kind, ErrSourceUnsupported)
 	default:
 		return nil, fmt.Errorf("runtime: unknown frame source kind %q: %w", kind, ErrUnknownSourceKind)

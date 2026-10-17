@@ -1,0 +1,222 @@
+package dolphin
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// The isolated user dir layout this bridge creates before launch. Every file
+// exists because ADR-0007 proved it on this host; nothing else is touched.
+//
+//	Config/Dolphin.ini   [Core] GFXBackend (declarative; the CLI --video_backend
+//	                     is the binding path on 2609), [Input] BackgroundInput
+//	                     = True (MANDATORY: without it the unfocused render
+//	                     window makes Dolphin skip polling every controller
+//	                     source, the Pipes FIFO included — a silent no-op),
+//	                     plus no-fullscreen / no-confirm best-effort keys.
+//	Config/GCPadNew.ini  [GCPad1] bound to the Pipes device Pipe/0/pipe1 with
+//	                     the button/axis control names the upstream Pipes
+//	                     backend exposes (Button <tok>, Axis <MAIN|C> <X|Y>
+//	                     +/-, Axis <L|R> +).
+//	Config/Logger.ini    WriteToFile so user/Logs/dolphin.log records the
+//	                     booted title and backend — the only place the
+//	                     emulator records them (ADR-0007).
+//	Pipes/pipe1          the FIFO; any file in <user>/Pipes/ becomes device
+//	                     "Pipe/<i>/<filename>" (upstream Pipes::Init).
+//
+// Savestates: not controllable headless on this build (no dolphin-tool, no
+// proven hotkey path into an unfocused Xvfb window). SaveSnapshot is
+// therefore screenshot-only and the ADR records savestates as NOT SUPPORTED.
+const (
+	pipeFileName = "pipe1"
+	pipeDevice   = "Pipe/0/pipe1"
+)
+
+// gcPadPipeSection is the [GCPad1] block for the Pipes device. Button tokens
+// and axis control names are exactly what upstream Pipes.cpp registers
+// (s_button_tokens: A B X Y Z START L R D_UP D_DOWN D_LEFT D_RIGHT; axes:
+// "Axis MAIN X +|-", "Axis MAIN Y +|-", "Axis C ...", "Axis L +", "Axis R +").
+// The GCPadNew.ini key spellings ("Main Stick/Up", "Triggers/L", ...) are the
+// 2609 ones verified against the spike's isolated user dir.
+const gcPadPipeSection = `[GCPad1]
+Device = Pipe/0/pipe1
+Buttons/A = ` + "`Button A`" + `
+Buttons/B = ` + "`Button B`" + `
+Buttons/X = ` + "`Button X`" + `
+Buttons/Y = ` + "`Button Y`" + `
+Buttons/Z = ` + "`Button Z`" + `
+Buttons/Start = ` + "`Button START`" + `
+Main Stick/Up = ` + "`Axis MAIN Y +`" + `
+Main Stick/Down = ` + "`Axis MAIN Y -`" + `
+Main Stick/Left = ` + "`Axis MAIN X -`" + `
+Main Stick/Right = ` + "`Axis MAIN X +`" + `
+Main Stick/Calibration = 100.00 141.42 100.00 141.42 100.00 141.42 100.00 141.42
+C-Stick/Up = ` + "`Axis C Y +`" + `
+C-Stick/Down = ` + "`Axis C Y -`" + `
+C-Stick/Left = ` + "`Axis C X -`" + `
+C-Stick/Right = ` + "`Axis C X +`" + `
+C-Stick/Calibration = 100.00 141.42 100.00 141.42 100.00 141.42 100.00 141.42
+Triggers/L = ` + "`Axis L +`" + `
+Triggers/R = ` + "`Axis R +`" + `
+D-Pad/Up = ` + "`Button D_UP`" + `
+D-Pad/Down = ` + "`Button D_DOWN`" + `
+D-Pad/Left = ` + "`Button D_LEFT`" + `
+D-Pad/Right = ` + "`Button D_RIGHT`" + `
+`
+
+// dolphinIni writes the [Core]/[Input] config. BackgroundInput is part of the
+// input contract, not a tuning option (ADR-0007): it is always True.
+func dolphinIni(backend string) string {
+	var b strings.Builder
+	b.WriteString("[Core]\n")
+	b.WriteString("GFXBackend = " + backend + "\n\n")
+	b.WriteString("[GPU]\n")
+	// 1x internal resolution and no vsync: llvmpipe is a CPU rasteriser
+	// (ADR-0007) and these are the two knobs the spike's boot gate used.
+	b.WriteString("Settings/InternalResolution = 1\n")
+	b.WriteString("Hardware/VSync = False\n\n")
+	b.WriteString("[MainWindow]\n")
+	// Best-effort declarative keys; --batch is the mechanism that actually
+	// suppresses the main UI, and Xvfb has no window manager to fullscreen
+	// anything. Unknown keys are ignored and preserved by Dolphin's parser.
+	b.WriteString("Fullscreen = False\n")
+	b.WriteString("ConfirmOnClose = False\n\n")
+	b.WriteString("[Input]\n")
+	b.WriteString("BackgroundInput = True\n")
+	return b.String()
+}
+
+// loggerIni is the spike's file-logging config so user/Logs/dolphin.log proves
+// the booted title and backend (docs/spec/11: "record emulator build +
+// config + shaders/video backend").
+const loggerIni = `[Logs]
+BOOT = True
+CORE = True
+GP = True
+Video = True
+Host GPU = True
+DVD = True
+EXI = True
+SI = True
+DSPHLE = True
+JIT = True
+COMMON = True
+MASTER = True
+[Options]
+WriteToConsole = False
+WriteToFile = True
+WriteToWindow = False
+`
+
+// writeUserConfig lays the whole isolated config down before launch. It is
+// idempotent: an existing file is patched in place (the [GCPad1] section is
+// replaced wholesale, BackgroundInput forced on, other sections preserved),
+// which keeps a re-run against an existing user dir honest instead of
+// silently diverging from what Dolphin itself would write.
+func writeUserConfig(userDir, backend string) error {
+	cfg := filepath.Join(userDir, "Config")
+	if err := os.MkdirAll(cfg, 0o755); err != nil {
+		return fmt.Errorf("dolphin: create Config dir: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg, "Dolphin.ini"), []byte(dolphinIni(backend)), 0o644); err != nil {
+		return fmt.Errorf("dolphin: write Dolphin.ini: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Join(userDir, "Config"), "Logger.ini"), []byte(loggerIni), 0o644); err != nil {
+		return fmt.Errorf("dolphin: write Logger.ini: %w", err)
+	}
+	if err := writeGCPadNew(userDir); err != nil {
+		return err
+	}
+	pipePath := filepath.Join(userDir, "Pipes", pipeFileName)
+	if err := makeFIFO(pipePath); err != nil {
+		return fmt.Errorf("dolphin: create controller FIFO %s: %w", pipeFileName, err)
+	}
+	return nil
+}
+
+// writeGCPadNew patches [GCPad1] to the Pipes mapping. When the file does not
+// exist (a fresh isolated dir) only [GCPad1] is written: Dolphin fills the
+// remaining pads with its defaults on first run, and the mapping lines are
+// proven to survive a clean exit unchanged (the spike's exit-rewrite check).
+func writeGCPadNew(userDir string) error {
+	path := filepath.Join(userDir, "Config", "GCPadNew.ini")
+	existing := ""
+	if b, err := os.ReadFile(path); err == nil {
+		existing = string(b)
+	}
+
+	var out string
+	if existing == "" {
+		out = gcPadPipeSection
+	} else {
+		// Split into sections, replace [GCPad1] wholesale (a leftover
+		// "Device = Keyboard" line is exactly the bug the spike's patcher
+		// deleted), keep every other section verbatim.
+		blocks := splitSections(existing)
+		seen := false
+		for i, blk := range blocks {
+			if strings.HasPrefix(strings.TrimSpace(blk), "[GCPad1]") {
+				blocks[i] = gcPadPipeSection
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			blocks = append(blocks, gcPadPipeSection)
+		}
+		out = strings.Join(blocks, "")
+	}
+	if err := os.WriteFile(path, []byte(out), 0o644); err != nil {
+		return fmt.Errorf("dolphin: write GCPadNew.ini: %w", err)
+	}
+	return nil
+}
+
+// splitSections breaks an ini file into per-[Section] blocks. A line that is
+// not inside a section (ini preamble) sticks to the first block. Manual
+// rather than regex: Go's RE2 has no lookahead, and ini structure is
+// line-oriented anyway.
+func splitSections(ini string) []string {
+	var blocks []string
+	cur := ""
+	for _, line := range strings.Split(ini, "\n") {
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			if cur != "" {
+				blocks = append(blocks, cur)
+			}
+			cur = line + "\n"
+			continue
+		}
+		cur += line + "\n"
+	}
+	if cur != "" {
+		blocks = append(blocks, cur)
+	}
+	return blocks
+}
+
+// makeFIFO creates the FIFO if it is not already one. A regular file at the
+// path is an error, not a silent replacement: overwriting it would change the
+// device Dolphin binds to, and a FIFO at the path from a previous run is
+// exactly what a re-run wants.
+func makeFIFO(path string) error {
+	fi, err := os.Lstat(path)
+	if err == nil {
+		if fi.Mode()&os.ModeNamedPipe != 0 {
+			return nil
+		}
+		return fmt.Errorf("dolphin: %s exists and is not a FIFO", filepath.Base(path))
+	}
+	if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	if err := mkFIFO(path, 0o644); err != nil {
+		return err
+	}
+	return nil
+}

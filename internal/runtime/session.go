@@ -130,7 +130,7 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 	if err != nil {
 		return Info{}, fmt.Errorf("runtime: build candidate index: %w", err)
 	}
-	src, err := buildFrameSource(kind, req.FrameSource.Dir, m.opts.ReplayRoots)
+	src, err := buildFrameSource(kind, req.FrameSource.Dir, m.opts.ReplayRoots, m.opts.DevDolphin, nil)
 	if err != nil {
 		return Info{}, err
 	}

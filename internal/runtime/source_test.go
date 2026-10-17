@@ -1,12 +1,15 @@
 package runtime_test
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/dbirks/game-narrator/internal/capture"
+	"github.com/dbirks/game-narrator/internal/dolphin"
 	"github.com/dbirks/game-narrator/internal/runtime"
 )
 
@@ -85,6 +88,70 @@ func TestStartValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDolphinSourceAdmission pins the dev-only gate on the dolphin frame
+// source (docs/spec/11, ADR-0007): the kind is refused without the opt-in
+// (the "dolphin not implemented" case above), refused with the opt-in but no
+// bridge closure wired into the manager (the production shape — the runtime
+// never launches the emulator itself), and only admitted when both are
+// present, at which point the closure is the one seam that hands a running
+// bridge's frame source to the session.
+func TestDolphinSourceAdmission(t *testing.T) {
+	corpusPresent(t)
+	e := newEnv(t, withFakeOCR(map[string]string{}, 0))
+	profileID, _ := seedSyntheticProfile(t, e.st, true)
+
+	// The two packages each own a copy of the opt-in name (the core runtime
+	// keeps no dependency on the dev-only package); a typo in either would
+	// make the opt-in a silent no-op, so the names are pinned equal here.
+	if runtime.EnvDevDolphin != dolphin.EnvDevDolphin {
+		t.Fatalf("the opt-in names disagree: runtime=%q dolphin=%q", runtime.EnvDevDolphin, dolphin.EnvDevDolphin)
+	}
+
+	// Opt-in set, no closure wired: still refused — the opt-in alone must
+	// not admit the kind.
+	m := mustManagerWithDolphin(t, e, nil)
+	_, err := m.Start(context.Background(), runtime.StartRequest{
+		ProfileID:   profileID,
+		FrameSource: runtime.FrameSource{Kind: runtime.SourceKindDolphin},
+	})
+	if !errors.Is(err, runtime.ErrSourceUnsupported) {
+		t.Fatalf("opt-in without a wired closure = %v, want ErrSourceUnsupported", err)
+	}
+
+	// Opt-in set and the closure wired: the closure is consulted — the error
+	// it returns is the one Start surfaces, proving the hand-off seam.
+	bridgeErr := errors.New("dolphin-bridge-not-running")
+	m = mustManagerWithDolphin(t, e, func() (capture.Source, error) { return nil, bridgeErr })
+	_, err = m.Start(context.Background(), runtime.StartRequest{
+		ProfileID:   profileID,
+		FrameSource: runtime.FrameSource{Kind: runtime.SourceKindDolphin},
+	})
+	if !errors.Is(err, bridgeErr) {
+		t.Fatalf("the wired closure's error was not surfaced: %v, want %v", err, bridgeErr)
+	}
+}
+
+// mustManagerWithDolphin builds a manager with the dev opt-in set in the
+// environment and the given bridge closure (nil = unwired, the production
+// shape).
+func mustManagerWithDolphin(t *testing.T, e *env, dev func() (capture.Source, error)) *runtime.Manager {
+	t.Helper()
+	t.Setenv(runtime.EnvDevDolphin, "1")
+	m, err := runtime.New(runtime.Options{
+		Store:       e.st,
+		Hub:         e.hub,
+		AssetsRoot:  e.assets,
+		ReplayRoots: e.roots,
+		OCR:         e.ocr,
+		DevDolphin:  dev,
+	})
+	if err != nil {
+		t.Fatalf("runtime.New: %v", err)
+	}
+	t.Cleanup(m.Close)
+	return m
 }
 
 // TestDevTraceUnavailable is the honest 503: a runtime without a configured
