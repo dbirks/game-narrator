@@ -1,0 +1,8217 @@
+{
+ "schema_version": 1,
+ "set": "bench-synthetic-001",
+ "origin": "generated_synthetic",
+ "seed_base": 20260709,
+ "profile_file": "profile.json",
+ "samples": [
+  {
+   "id": "bn0001",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell rang twice before anyone looked up.",
+   "message_id": "demo-page-1",
+   "speaker": "keeper",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0002",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell rang twice before anyone looked up.",
+   "message_id": "demo-page-1",
+   "speaker": "keeper",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0003",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell rang twice before anyone looked up.",
+   "message_id": "demo-page-1",
+   "speaker": "keeper",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0004",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell rang twice before anyone looked up.",
+   "message_id": "demo-page-1",
+   "speaker": "keeper",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0005",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell rang twice before anyone looked up.",
+   "message_id": "demo-page-1",
+   "speaker": "keeper",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0006",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell rang twice before anyone looked up.",
+   "message_id": "demo-page-1",
+   "speaker": "keeper",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0007",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell rang twice before anyone looked up.",
+   "message_id": "demo-page-1",
+   "speaker": "keeper",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0008",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell rang twice before anyone looked up.",
+   "message_id": "demo-page-1",
+   "speaker": "keeper",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0009",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell rang twice before anyone looked up.",
+   "message_id": "demo-page-1",
+   "speaker": "keeper",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0010",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody in the village had seen that boat before.",
+   "message_id": "demo-page-2",
+   "speaker": "harbourmaster",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0011",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody in the village had seen that boat before.",
+   "message_id": "demo-page-2",
+   "speaker": "harbourmaster",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0012",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody in the village had seen that boat before.",
+   "message_id": "demo-page-2",
+   "speaker": "harbourmaster",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0013",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody in the village had seen that boat before.",
+   "message_id": "demo-page-2",
+   "speaker": "harbourmaster",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0014",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody in the village had seen that boat before.",
+   "message_id": "demo-page-2",
+   "speaker": "harbourmaster",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0015",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody in the village had seen that boat before.",
+   "message_id": "demo-page-2",
+   "speaker": "harbourmaster",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0016",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody in the village had seen that boat before.",
+   "message_id": "demo-page-2",
+   "speaker": "harbourmaster",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0017",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody in the village had seen that boat before.",
+   "message_id": "demo-page-2",
+   "speaker": "harbourmaster",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0018",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody in the village had seen that boat before.",
+   "message_id": "demo-page-2",
+   "speaker": "harbourmaster",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0019",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell rang twice before the fog lifted.",
+   "message_id": "demo-x01",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0020",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell rang twice before the fog lifted.",
+   "message_id": "demo-x01",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0021",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell rang twice before the fog lifted.",
+   "message_id": "demo-x01",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0022",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell rang twice before the fog lifted.",
+   "message_id": "demo-x01",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0023",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell rang twice before the fog lifted.",
+   "message_id": "demo-x01",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0024",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell rang twice before the fog lifted.",
+   "message_id": "demo-x01",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0025",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell rang twice before the fog lifted.",
+   "message_id": "demo-x01",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0026",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell rang twice before the fog lifted.",
+   "message_id": "demo-x01",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0027",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell rang twice before the fog lifted.",
+   "message_id": "demo-x01",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0028",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell was missing from the wreck.",
+   "message_id": "demo-x02",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0029",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell was missing from the wreck.",
+   "message_id": "demo-x02",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0030",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell was missing from the wreck.",
+   "message_id": "demo-x02",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0031",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell was missing from the wreck.",
+   "message_id": "demo-x02",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0032",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell was missing from the wreck.",
+   "message_id": "demo-x02",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0033",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell was missing from the wreck.",
+   "message_id": "demo-x02",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0034",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell was missing from the wreck.",
+   "message_id": "demo-x02",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0035",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell was missing from the wreck.",
+   "message_id": "demo-x02",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0036",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell was missing from the wreck.",
+   "message_id": "demo-x02",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0037",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody in the village had mentioned the boat before.",
+   "message_id": "demo-x03",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0038",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody in the village had mentioned the boat before.",
+   "message_id": "demo-x03",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0039",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody in the village had mentioned the boat before.",
+   "message_id": "demo-x03",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0040",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody in the village had mentioned the boat before.",
+   "message_id": "demo-x03",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0041",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody in the village had mentioned the boat before.",
+   "message_id": "demo-x03",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0042",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody in the village had mentioned the boat before.",
+   "message_id": "demo-x03",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0043",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody in the village had mentioned the boat before.",
+   "message_id": "demo-x03",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0044",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody in the village had mentioned the boat before.",
+   "message_id": "demo-x03",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0045",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody in the village had mentioned the boat before.",
+   "message_id": "demo-x03",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0046",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The keeper left the lamp burning all night.",
+   "message_id": "demo-x04",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0047",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The keeper left the lamp burning all night.",
+   "message_id": "demo-x04",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0048",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The keeper left the lamp burning all night.",
+   "message_id": "demo-x04",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0049",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The keeper left the lamp burning all night.",
+   "message_id": "demo-x04",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0050",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The keeper left the lamp burning all night.",
+   "message_id": "demo-x04",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0051",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The keeper left the lamp burning all night.",
+   "message_id": "demo-x04",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0052",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The keeper left the lamp burning all night.",
+   "message_id": "demo-x04",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0053",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The keeper left the lamp burning all night.",
+   "message_id": "demo-x04",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0054",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The keeper left the lamp burning all night.",
+   "message_id": "demo-x04",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0055",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Someone had moved the crates before tide turn.",
+   "message_id": "demo-x05",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0056",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Someone had moved the crates before tide turn.",
+   "message_id": "demo-x05",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0057",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Someone had moved the crates before tide turn.",
+   "message_id": "demo-x05",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0058",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Someone had moved the crates before tide turn.",
+   "message_id": "demo-x05",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0059",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Someone had moved the crates before tide turn.",
+   "message_id": "demo-x05",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0060",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Someone had moved the crates before tide turn.",
+   "message_id": "demo-x05",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0061",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Someone had moved the crates before tide turn.",
+   "message_id": "demo-x05",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0062",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Someone had moved the crates before tide turn.",
+   "message_id": "demo-x05",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0063",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Someone had moved the crates before tide turn.",
+   "message_id": "demo-x05",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0064",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The waterline was higher than the last chart said.",
+   "message_id": "demo-x06",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0065",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The waterline was higher than the last chart said.",
+   "message_id": "demo-x06",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0066",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The waterline was higher than the last chart said.",
+   "message_id": "demo-x06",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0067",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The waterline was higher than the last chart said.",
+   "message_id": "demo-x06",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0068",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The waterline was higher than the last chart said.",
+   "message_id": "demo-x06",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0069",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The waterline was higher than the last chart said.",
+   "message_id": "demo-x06",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0070",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The waterline was higher than the last chart said.",
+   "message_id": "demo-x06",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0071",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The waterline was higher than the last chart said.",
+   "message_id": "demo-x06",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0072",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The waterline was higher than the last chart said.",
+   "message_id": "demo-x06",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0073",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "A rowboat sat untied beneath the broken jetty.",
+   "message_id": "demo-x07",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0074",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "A rowboat sat untied beneath the broken jetty.",
+   "message_id": "demo-x07",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0075",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "A rowboat sat untied beneath the broken jetty.",
+   "message_id": "demo-x07",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0076",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "A rowboat sat untied beneath the broken jetty.",
+   "message_id": "demo-x07",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0077",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "A rowboat sat untied beneath the broken jetty.",
+   "message_id": "demo-x07",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0078",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "A rowboat sat untied beneath the broken jetty.",
+   "message_id": "demo-x07",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0079",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "A rowboat sat untied beneath the broken jetty.",
+   "message_id": "demo-x07",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0080",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "A rowboat sat untied beneath the broken jetty.",
+   "message_id": "demo-x07",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0081",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "A rowboat sat untied beneath the broken jetty.",
+   "message_id": "demo-x07",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0082",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody mentioned the light that went out at dusk.",
+   "message_id": "demo-x08",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0083",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody mentioned the light that went out at dusk.",
+   "message_id": "demo-x08",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0084",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody mentioned the light that went out at dusk.",
+   "message_id": "demo-x08",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0085",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody mentioned the light that went out at dusk.",
+   "message_id": "demo-x08",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0086",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody mentioned the light that went out at dusk.",
+   "message_id": "demo-x08",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0087",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody mentioned the light that went out at dusk.",
+   "message_id": "demo-x08",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0088",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody mentioned the light that went out at dusk.",
+   "message_id": "demo-x08",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0089",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody mentioned the light that went out at dusk.",
+   "message_id": "demo-x08",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0090",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody mentioned the light that went out at dusk.",
+   "message_id": "demo-x08",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0091",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbourmaster kept his ledger in the upper drawer.",
+   "message_id": "demo-x09",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0092",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbourmaster kept his ledger in the upper drawer.",
+   "message_id": "demo-x09",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0093",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbourmaster kept his ledger in the upper drawer.",
+   "message_id": "demo-x09",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0094",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbourmaster kept his ledger in the upper drawer.",
+   "message_id": "demo-x09",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0095",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbourmaster kept his ledger in the upper drawer.",
+   "message_id": "demo-x09",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0096",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbourmaster kept his ledger in the upper drawer.",
+   "message_id": "demo-x09",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0097",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbourmaster kept his ledger in the upper drawer.",
+   "message_id": "demo-x09",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0098",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbourmaster kept his ledger in the upper drawer.",
+   "message_id": "demo-x09",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0099",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbourmaster kept his ledger in the upper drawer.",
+   "message_id": "demo-x09",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0100",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Something had been dragged across the slipway.",
+   "message_id": "demo-x10",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0101",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Something had been dragged across the slipway.",
+   "message_id": "demo-x10",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0102",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Something had been dragged across the slipway.",
+   "message_id": "demo-x10",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0103",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Something had been dragged across the slipway.",
+   "message_id": "demo-x10",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0104",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Something had been dragged across the slipway.",
+   "message_id": "demo-x10",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0105",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Something had been dragged across the slipway.",
+   "message_id": "demo-x10",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0106",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Something had been dragged across the slipway.",
+   "message_id": "demo-x10",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0107",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Something had been dragged across the slipway.",
+   "message_id": "demo-x10",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0108",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Something had been dragged across the slipway.",
+   "message_id": "demo-x10",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0109",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The tide would not turn for another hour.",
+   "message_id": "demo-x11",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0110",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The tide would not turn for another hour.",
+   "message_id": "demo-x11",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0111",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The tide would not turn for another hour.",
+   "message_id": "demo-x11",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0112",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The tide would not turn for another hour.",
+   "message_id": "demo-x11",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0113",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The tide would not turn for another hour.",
+   "message_id": "demo-x11",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0114",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The tide would not turn for another hour.",
+   "message_id": "demo-x11",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0115",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The tide would not turn for another hour.",
+   "message_id": "demo-x11",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0116",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The tide would not turn for another hour.",
+   "message_id": "demo-x11",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0117",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The tide would not turn for another hour.",
+   "message_id": "demo-x11",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0118",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Every window on the quay faced the same direction.",
+   "message_id": "demo-x12",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0119",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Every window on the quay faced the same direction.",
+   "message_id": "demo-x12",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0120",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Every window on the quay faced the same direction.",
+   "message_id": "demo-x12",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0121",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Every window on the quay faced the same direction.",
+   "message_id": "demo-x12",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0122",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Every window on the quay faced the same direction.",
+   "message_id": "demo-x12",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0123",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Every window on the quay faced the same direction.",
+   "message_id": "demo-x12",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Serif",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0124",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Every window on the quay faced the same direction.",
+   "message_id": "demo-x12",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0125",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Every window on the quay faced the same direction.",
+   "message_id": "demo-x12",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0126",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Every window on the quay faced the same direction.",
+   "message_id": "demo-x12",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Liberation Mono",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0127",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell rang twice before anyone looked up.",
+   "message_id": "demo-page-1",
+   "speaker": "keeper",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "640x480",
+    "noise": 1
+   }
+  },
+  {
+   "id": "bn0128",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody in the village had seen that boat before.",
+   "message_id": "demo-page-2",
+   "speaker": "harbourmaster",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "640x480",
+    "noise": 1
+   }
+  },
+  {
+   "id": "bn0129",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell rang twice before the fog lifted.",
+   "message_id": "demo-x01",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "640x480",
+    "noise": 1
+   }
+  },
+  {
+   "id": "bn0130",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbour bell was missing from the wreck.",
+   "message_id": "demo-x02",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "640x480",
+    "noise": 1
+   }
+  },
+  {
+   "id": "bn0131",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody in the village had mentioned the boat before.",
+   "message_id": "demo-x03",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "640x480",
+    "noise": 1
+   }
+  },
+  {
+   "id": "bn0132",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The keeper left the lamp burning all night.",
+   "message_id": "demo-x04",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "640x480",
+    "noise": 1
+   }
+  },
+  {
+   "id": "bn0133",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Someone had moved the crates before tide turn.",
+   "message_id": "demo-x05",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "640x480",
+    "noise": 1
+   }
+  },
+  {
+   "id": "bn0134",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The waterline was higher than the last chart said.",
+   "message_id": "demo-x06",
+   "speaker": "villager",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "640x480",
+    "noise": 1
+   }
+  },
+  {
+   "id": "bn0135",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "A rowboat sat untied beneath the broken jetty.",
+   "message_id": "demo-x07",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "640x480",
+    "noise": 1
+   }
+  },
+  {
+   "id": "bn0136",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Nobody mentioned the light that went out at dusk.",
+   "message_id": "demo-x08",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "640x480",
+    "noise": 1
+   }
+  },
+  {
+   "id": "bn0137",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The harbourmaster kept his ledger in the upper drawer.",
+   "message_id": "demo-x09",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "640x480",
+    "noise": 1
+   }
+  },
+  {
+   "id": "bn0138",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Something had been dragged across the slipway.",
+   "message_id": "demo-x10",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "640x480",
+    "noise": 1
+   }
+  },
+  {
+   "id": "bn0139",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "The tide would not turn for another hour.",
+   "message_id": "demo-x11",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "640x480",
+    "noise": 1
+   }
+  },
+  {
+   "id": "bn0140",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Every window on the quay faced the same direction.",
+   "message_id": "demo-x12",
+   "speaker": "unknown",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "DejaVu Sans",
+    "resolution": "640x480",
+    "noise": 1
+   }
+  },
+  {
+   "id": "bn0141",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "",
+   "message_id": null,
+   "speaker": "unknown",
+   "text_kind": "empty",
+   "scene": "synthetic-harbour",
+   "intended_speech": false,
+   "split": "tuning",
+   "variant": {
+    "font": "",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0142",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "",
+   "message_id": null,
+   "speaker": "unknown",
+   "text_kind": "empty",
+   "scene": "synthetic-harbour",
+   "intended_speech": false,
+   "split": "tuning",
+   "variant": {
+    "font": "",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0143",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "",
+   "message_id": null,
+   "speaker": "unknown",
+   "text_kind": "empty",
+   "scene": "synthetic-harbour",
+   "intended_speech": false,
+   "split": "tuning",
+   "variant": {
+    "font": "",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0144",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "",
+   "message_id": null,
+   "speaker": "unknown",
+   "text_kind": "empty",
+   "scene": "synthetic-harbour",
+   "intended_speech": false,
+   "split": "holdout",
+   "variant": {
+    "font": "",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  }
+ ]
+}

@@ -14,12 +14,12 @@ COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 LDFLAGS := -X $(PKG).version=$(VERSION) -X $(PKG).commit=$(COMMIT)
 
 # Gate targets that test-full runs for real.
-RUN_GATES := test-unit test-ui diagnostics release-snapshot
+RUN_GATES := test-unit test-ui diagnostics release-snapshot bench
 # Gate targets that still need implementation (docs/spec/16).
 PENDING_GATES := test-replay test-dolphin test-models test-hardware
 
 .PHONY: bootstrap dev build web-build test-unit test-replay test-ui test-dolphin test-models \
-        test-hardware test-full lint release-snapshot diagnostics
+        test-hardware test-full lint release-snapshot diagnostics bench
 
 ## web-build: build the React UI and stage it for go:embed
 web-build:
@@ -73,6 +73,18 @@ test-full: $(RUN_GATES)
 	done; \
 	echo "NOT RUN: test-full is incomplete because the gates above are unimplemented (see docs/spec/16)" >&2; \
 	exit 1
+
+## bench: the docs/spec/12 benchmark gate — the holdout split of the committed
+## synthetic set, replayed through the real pipeline (real Tesseract, real
+## matcher), graded against the generated ground truth. Prints the holdout
+## report; artifacts land in artifacts/bench/ (gitignored). Holds under the
+## five-minute test-full budget (measured ~3 min, 2026-10).
+bench:
+	@command -v tesseract >/dev/null 2>&1 || { echo "NOT RUN: bench (tesseract not installed; see docs/spec/16)" >&2; exit 1; }
+	@command -v magick >/dev/null 2>&1 || { echo "NOT RUN: bench (ImageMagick not installed; see docs/spec/16)" >&2; exit 1; }
+	@mkdir -p artifacts
+	go run ./cmd/game-narrator bench --set testdata/bench/bench-synthetic-001 --split holdout --out artifacts/bench
+	@cat artifacts/bench/report.md
 
 ## Release and remaining verification gates — intentionally not implemented.
 test-replay:

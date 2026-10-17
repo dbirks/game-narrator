@@ -1,0 +1,97 @@
+{
+ "schema_version": 1,
+ "id": "bench-synthetic-001",
+ "origin": "generated_synthetic",
+ "description": "Synthetic benchmark script: the docs/spec/11 synthetic profile lines with speaker attribution, for the internal/bench harness (ADR-0038). No real game content.",
+ "scene": "synthetic-harbour",
+ "regions": [
+  {
+   "id": "bottom",
+   "type": "textbox",
+   "x": 0.0975,
+   "y": 0.7565,
+   "w": 0.8025,
+   "h": 0.1515
+  }
+ ],
+ "messages": [
+  {
+   "id": "demo-page-1",
+   "text": "The harbour bell rang twice before anyone looked up.",
+   "speaker": "keeper"
+  },
+  {
+   "id": "demo-page-2",
+   "text": "Nobody in the village had seen that boat before.",
+   "speaker": "harbourmaster"
+  },
+  {
+   "id": "demo-x01",
+   "text": "The harbour bell rang twice before the fog lifted.",
+   "speaker": "villager"
+  },
+  {
+   "id": "demo-x02",
+   "text": "The harbour bell was missing from the wreck.",
+   "speaker": "villager"
+  },
+  {
+   "id": "demo-x03",
+   "text": "Nobody in the village had mentioned the boat before.",
+   "speaker": "villager"
+  },
+  {
+   "id": "demo-x04",
+   "text": "The keeper left the lamp burning all night.",
+   "speaker": "villager"
+  },
+  {
+   "id": "demo-x05",
+   "text": "Someone had moved the crates before tide turn.",
+   "speaker": "villager"
+  },
+  {
+   "id": "demo-x06",
+   "text": "The waterline was higher than the last chart said.",
+   "speaker": "villager"
+  },
+  {
+   "id": "demo-x07",
+   "text": "A rowboat sat untied beneath the broken jetty.",
+   "speaker": "unknown"
+  },
+  {
+   "id": "demo-x08",
+   "text": "Nobody mentioned the light that went out at dusk.",
+   "speaker": "unknown"
+  },
+  {
+   "id": "demo-x09",
+   "text": "The harbourmaster kept his ledger in the upper drawer.",
+   "speaker": "unknown"
+  },
+  {
+   "id": "demo-x10",
+   "text": "Something had been dragged across the slipway.",
+   "speaker": "unknown"
+  },
+  {
+   "id": "demo-x11",
+   "text": "The tide would not turn for another hour.",
+   "speaker": "unknown"
+  },
+  {
+   "id": "demo-x12",
+   "text": "Every window on the quay faced the same direction.",
+   "speaker": "unknown"
+  }
+ ],
+ "edges": [
+  {
+   "from": "demo-page-1",
+   "to": "demo-page-2",
+   "type": "next",
+   "confidence": 0.9
+  }
+ ]
+}

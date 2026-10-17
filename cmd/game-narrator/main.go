@@ -285,7 +285,7 @@ func run(args []string, log *slog.Logger) (int, error) {
 		fmt.Println(bootstrap.Version())
 		return 0, nil
 	case "help", "-h", "--help":
-		fmt.Print(usageText, serveUsageText, migrateUsageText, adminUsageText, doctorUsageText, importDiscUsageText)
+		fmt.Print(usageText, serveUsageText, migrateUsageText, adminUsageText, doctorUsageText, benchUsageText, importDiscUsageText)
 		return 0, nil
 	case "serve":
 		return runServe(args[1:], log)
@@ -295,6 +295,8 @@ func run(args []string, log *slog.Logger) (int, error) {
 		return runAdmin(args[1:], log)
 	case "doctor":
 		return runDoctor(args[1:], log)
+	case "bench":
+		return runBench(args[1:], log)
 	case "import-disc":
 		return runImportDisc(args[1:], log)
 	default:
