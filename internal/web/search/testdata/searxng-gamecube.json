@@ -1,0 +1,47 @@
+{
+  "_comment": "Recorded response shape of a self-hosted SearXNG instance JSON API (GET /search?q=...&format=json), representative values. Includes one non-http URL and one URL-less hit to exercise the provider's defensive filters.",
+  "query": "GameCube",
+  "number_of_results": { "int": 0, "float": 0.0 },
+  "results": [
+    {
+      "url": "https://en.wikipedia.org/wiki/Nintendo_GameCube",
+      "title": "Nintendo GameCube - Wikipedia",
+      "content": "The Nintendo GameCube is a home video game console released by Nintendo in North America and Japan in 2001 and in Europe and Australia in 2002. It was Nintendo's fourth home console.",
+      "category": "general",
+      "engine": "wikipedia",
+      "score": 4.9,
+      "publishedDate": "2024-11-02T12:00:00"
+    },
+    {
+      "url": "https://gcdb.org/wiki/Help:Getting_Started",
+      "title": "GCDB - Getting Started with GameCube data",
+      "content": "Documentation for the GameCube database project: message data, NPT files, extraction tools and region notes.",
+      "category": "it",
+      "engine": "searxng",
+      "score": 3.7
+    },
+    {
+      "url": "https://example-modding.org/gamecube",
+      "title": "GameCube modding resources",
+      "content": "Community page listing GameCube modding tools, script formats and ROM layout references.",
+      "category": "general",
+      "engine": "duckduckgo",
+      "score": 2.9
+    },
+    {
+      "url": "javascript:void(0)",
+      "title": "Script scheme hit (must be dropped)",
+      "content": "Non-http(s) result; the provider must drop it."
+    },
+    {
+      "url": "",
+      "title": "No-URL hit (must be dropped)",
+      "content": "Result without a URL; the provider must drop it."
+    }
+  ],
+  "answers": [],
+  "corrections": [],
+  "infoboxes": [],
+  "suggestions": ["GameCube modding", "GameCube script formats"],
+  "unresponsive_engines": []
+}

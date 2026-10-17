@@ -1,0 +1,78 @@
+{
+  "_comment": "Recorded responses from Exa's public streamable-HTTP MCP endpoint (https://mcp.exa.ai/mcp), shape as returned on 2026-07. toolCallHits is the JSON array the web_search_exa tool returns as its text content; the test server serializes it to the string form the tool produces. Not live-captured bytes: reconstructed from the documented response shape with representative values.",
+  "initializeResult": {
+    "protocolVersion": "2025-06-18",
+    "capabilities": {
+      "tools": { "listChanged": false },
+      "resources": {},
+      "prompts": {}
+    },
+    "serverInfo": { "name": "exa-mcp-server", "version": "2.0.0" }
+  },
+  "toolsListResult": {
+    "tools": [
+      {
+        "name": "crawling_and_searching",
+        "description": "Fetch one or more URLs and return their content as clean markdown.",
+        "inputSchema": {
+          "type": "object",
+          "properties": { "urls": { "type": "string" } },
+          "required": ["urls"]
+        }
+      },
+      {
+        "name": "web_search_exa",
+        "description": "Find the most relevant web pages for a natural language query using Exa's retrieval engine.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": { "type": "string", "description": "Natural language search query" },
+            "numResults": { "type": "integer", "description": "Number of results to return (max 100)" }
+          },
+          "required": ["query"]
+        }
+      },
+      {
+        "name": "company_research",
+        "description": "Research a company: overview, funding, key people.",
+        "inputSchema": {
+          "type": "object",
+          "properties": { "companyName": { "type": "string" } },
+          "required": ["companyName"]
+        }
+      }
+    ]
+  },
+  "toolCallHits": [
+    {
+      "title": "Nintendo GameCube - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Nintendo_GameCube",
+      "text": "The Nintendo GameCube (Japanese: ニンテンドーゲームキューブ) is a home video game console released by Nintendo in 2001. Its successor, the Wii, was released in 2006. The console competed with Sony's PlayStation 2 and Microsoft's Xbox in the sixth generation of video games.",
+      "score": 0.9821,
+      "published": "2024-11-02T00:00:00.000Z",
+      "author": "Wikipedia"
+    },
+    {
+      "title": "GameCube | GCDB",
+      "url": "https://gcdb.org/wiki/GameCube",
+      "text": "The GameCube (GC) is an 8th generation... platform overview, game list, memory card format and modding documentation for the Nintendo GameCube.",
+      "score": 0.9144
+    },
+    {
+      "title": "GameCube modding and script formats",
+      "url": "https://example-modding.org/gamecube/scripts",
+      "text": "How GameCube games store dialogue: NPT/NPDT text formats, BML message data, and community extractors.",
+      "score": 0.8712,
+      "description": "Community documentation on GameCube message data."
+    },
+    {
+      "title": "Bad result (dropped by URL filter)",
+      "url": "file:///etc/passwd",
+      "text": "This hit must be dropped: not an absolute http(s) URL."
+    }
+  ],
+  "toolCallResult": {
+    "content": [ { "type": "text", "textFromHits": true } ],
+    "isError": false
+  }
+}
