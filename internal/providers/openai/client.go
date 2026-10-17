@@ -39,10 +39,19 @@ const (
 
 // Message is one chat message. Text carries the content; Images are PNG or
 // JPEG bytes sent as base64 data URLs, in order, after the text part.
+//
+// Tool-call fields (docs/spec/03 "typed tool calls"):
+//   - an assistant message that called tools sets ToolCalls; Text may be empty;
+//   - a tool-result message (Role "tool") sets ToolCallID linking it to the
+//     call being answered; Text carries the (wrapped) result.
 type Message struct {
 	Role   string
 	Text   string
 	Images [][]byte
+	// ToolCalls is only set on assistant messages.
+	ToolCalls []ToolCall
+	// ToolCallID is only set on role "tool" messages.
+	ToolCallID string
 }
 
 // ChatRequest is the provider-neutral request for one chat completion.
@@ -51,6 +60,12 @@ type ChatRequest struct {
 	MaxTokens          int
 	Temperature        *float64
 	ResponseFormatJSON bool
+	// Tools declares the functions the model may call. Empty sends no
+	// "tools" field at all, keeping pre-tool requests byte-identical for
+	// gateways that reject the field (docs/spec/06 compatibility tests).
+	Tools []ToolDef
+	// ToolChoice constrains tool use; empty sends nothing.
+	ToolChoice ToolChoice
 }
 
 // Usage reports token counts. Reasoning is populated when the gateway returns
@@ -75,7 +90,10 @@ type ChatResponse struct {
 	// Model is the model id reported by the response, which may differ from
 	// the requested alias.
 	Model string
-	Usage Usage
+	// ToolCalls are the function invocations the model asked to execute.
+	// Empty on a plain answer; when set, Text may legitimately be empty.
+	ToolCalls []ToolCall
+	Usage     Usage
 	// Latency measures request write through full response body read.
 	Latency time.Duration
 	// RequestID comes from the x-request-id (or request-id) response header.
@@ -453,8 +471,10 @@ func extractProviderMessage(body []byte) string {
 
 // chatMessage is the wire form of one message.
 type chatMessage struct {
-	Role    string `json:"role"`
-	Content any    `json:"content"`
+	Role       string         `json:"role"`
+	Content    any            `json:"content"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
+	ToolCalls  []wireToolCall `json:"tool_calls,omitempty"`
 }
 
 type contentPart struct {
@@ -474,6 +494,8 @@ type chatRequestBody struct {
 	Temperature    *float64        `json:"temperature,omitempty"`
 	Stream         bool            `json:"stream"`
 	ResponseFormat *responseFormat `json:"response_format,omitempty"`
+	Tools          []wireTool      `json:"tools,omitempty"`
+	ToolChoice     any             `json:"tool_choice,omitempty"`
 }
 
 type responseFormat struct {
@@ -497,6 +519,40 @@ func (c *Client) buildMessages(req ChatRequest) ([]chatMessage, error) {
 			// rejected with a 400. Fail locally with the same taxonomy kind.
 			return nil, providers.NewError(providers.KindUnsupportedCapability, 0,
 				`openai: message role "developer" is not supported by this gateway; use "system" or "user"`)
+		}
+		if strings.EqualFold(role, "tool") {
+			// A tool-result message: the content is the (wrapped) result text
+			// and tool_call_id is what links it to the call being answered.
+			if m.ToolCallID == "" {
+				return nil, providers.NewError(providers.KindBadSchema, 0, fmt.Sprintf("openai: message %d has role tool but no tool_call_id", i))
+			}
+			if m.ToolCalls != nil || len(m.Images) != 0 {
+				return nil, providers.NewError(providers.KindBadSchema, 0, fmt.Sprintf("openai: message %d (tool) must carry text only", i))
+			}
+			out = append(out, chatMessage{Role: role, Content: m.Text, ToolCallID: m.ToolCallID})
+			continue
+		}
+		if len(m.ToolCalls) > 0 {
+			// An assistant tool-call message. An empty Text becomes JSON null,
+			// which the verified gateway returns and accepts (qwen3-8-27b sends
+			// content null on a tool_calls turn).
+			if !strings.EqualFold(role, "assistant") {
+				return nil, providers.NewError(providers.KindBadSchema, 0, fmt.Sprintf("openai: message %d carries tool_calls but is not an assistant message", i))
+			}
+			cm := chatMessage{Role: role, ToolCalls: toolCallsToWire(m.ToolCalls)}
+			if strings.TrimSpace(m.Text) != "" {
+				cm.Content = m.Text
+			}
+			for j, c := range m.ToolCalls {
+				if strings.TrimSpace(c.ID) == "" || strings.TrimSpace(c.Name) == "" {
+					return nil, providers.NewError(providers.KindBadSchema, 0, fmt.Sprintf("openai: message %d tool_call %d has no id or name", i, j))
+				}
+				if len(c.Arguments) > 0 && !json.Valid(c.Arguments) {
+					return nil, providers.NewError(providers.KindBadSchema, 0, fmt.Sprintf("openai: message %d tool_call %s has invalid JSON arguments", i, c.ID))
+				}
+			}
+			out = append(out, cm)
+			continue
 		}
 		if len(m.Images) == 0 {
 			out = append(out, chatMessage{Role: role, Content: m.Text})
@@ -550,9 +606,19 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error
 	if err != nil {
 		return ChatResponse{}, err
 	}
+	tools, err := toolsToWire(req.Tools)
+	if err != nil {
+		return ChatResponse{}, err
+	}
+	choice, err := choiceToWire(req.ToolChoice)
+	if err != nil {
+		return ChatResponse{}, err
+	}
 	body := chatRequestBody{
-		Model:    c.Model,
-		Messages: messages,
+		Model:      c.Model,
+		Messages:   messages,
+		Tools:      tools,
+		ToolChoice: choice,
 	}
 	if req.MaxTokens > 0 {
 		body.MaxTokens = req.MaxTokens
@@ -613,9 +679,10 @@ type chatResponsePayload struct {
 		Index        int    `json:"index"`
 		FinishReason string `json:"finish_reason"`
 		Message      struct {
-			Role             string  `json:"role"`
-			Content          *string `json:"content"`
-			ReasoningContent *string `json:"reasoning_content"`
+			Role             string          `json:"role"`
+			Content          *string         `json:"content"`
+			ReasoningContent *string         `json:"reasoning_content"`
+			ToolCalls        json.RawMessage `json:"tool_calls"`
 		} `json:"message"`
 		Text *string `json:"text"`
 	} `json:"choices"`
@@ -662,14 +729,19 @@ func (p chatResponsePayload) toChatResponse(requestedModel string) (ChatResponse
 	if choice.Message.ReasoningContent != nil {
 		out.Reasoning = strings.TrimSpace(*choice.Message.ReasoningContent)
 	}
-	if strings.TrimSpace(text) == "" && out.Reasoning == "" {
+	calls, err := parseToolCalls(choice.Message.ToolCalls)
+	if err != nil {
+		return ChatResponse{}, err
+	}
+	if strings.TrimSpace(text) == "" && out.Reasoning == "" && len(calls) == 0 {
 		e := providers.NewError(providers.KindBadSchema, http.StatusOK,
-			"openai: response message has no content and no reasoning_content")
+			"openai: response message has no content, no reasoning_content and no tool_calls")
 		e.Model = out.Model
 		e.RequestID = p.ID
 		return ChatResponse{}, e
 	}
 	out.Text = strings.TrimSpace(text)
+	out.ToolCalls = calls
 	out.Usage = Usage{
 		Prompt:     p.Usage.PromptTokens,
 		Completion: p.Usage.CompletionTokens,
