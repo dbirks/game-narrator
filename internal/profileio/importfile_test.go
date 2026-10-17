@@ -98,7 +98,7 @@ func TestImportFileRegistersProvenanceAndMessages(t *testing.T) {
 	if src.ContentSHA256 != report.SHA256 {
 		t.Errorf("source sha256 = %q, want %q", src.ContentSHA256, report.SHA256)
 	}
-	if src.Parser != "generic@1.0.0" {
+	if src.Parser != "generic@1.1.0" {
 		t.Errorf("parser = %q, want adapter-id@version", src.Parser)
 	}
 	if src.Rights != games.RightsUserSupplied {

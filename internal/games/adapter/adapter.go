@@ -107,7 +107,7 @@ type Manifest struct {
 	// build emits (docs/spec/04 "schema compatibility"). A reader refuses a
 	// result whose SchemaVersion exceeds what it understands rather than
 	// silently ignoring a field — the same rule internal/providers/recorded
-	// applies to cassettes.
+	// applies to cassettes. Version 2 added Speakers/SpeakerKeys/SpeakerColumn.
 	SchemaVersion int `json:"schemaVersion"`
 
 	Description string `json:"description"`
@@ -384,6 +384,28 @@ const (
 	ColPage    LogicalColumn = "page"
 )
 
+// SpeakerRef is one distinct speaker label a source named itself. It is source
+// evidence, not an adapter's guess: docs/spec/04's "never invent a speaker" rule
+// covers rows without a named speaker, while a speaker the user's own file names
+// is a fact the importer may turn into a characters row.
+type SpeakerRef struct {
+	// Key is the matching key: the name normalised the same way message text is
+	// normalised (textnorm, case-folded, whitespace-collapsed). Two labels that
+	// differ only in case, spacing or the compatibility folds map to one key, so
+	// the importer can bind them to one character instead of two.
+	Key string
+
+	// DisplayName is the label exactly as written in the source on its first
+	// occurrence. It becomes the characters.name of a character created for it,
+	// which is why it is not normalised: the roster shows what the script said.
+	DisplayName string
+
+	// Aliases are the other spellings the source used that normalise to Key, in
+	// first-occurrence order, DisplayName excluded. They become characters.aliases
+	// of a created character and are merged into a reused one.
+	Aliases []string
+}
+
 // ParseResult is what an adapter produces. It is a value, not a live cursor: the
 // caller validates each Message, decides on duplicates against the database, and
 // writes in one transaction (docs/spec/02 "Transaction workflows").
@@ -392,6 +414,27 @@ type ParseResult struct {
 	Pages    []games.MessagePage
 	Warnings []Warning
 	Stats    Stats
+
+	// Speakers lists the distinct speaker labels the source named, in the order
+	// their first-occurring label appears. Adapters that find no speaker labels
+	// leave it empty (a nil slice, which the importer reads as "none").
+	Speakers []SpeakerRef
+
+	// SpeakerKeys is a per-message sidecar parallel to Messages: SpeakerKeys[i]
+	// is the Speakers key of the speaker named on Messages[i], or "" when the row
+	// carries no label. The sidecar exists instead of a field on games.Message
+	// because the parser must not invent a characters row to point at —
+	// messages.speaker_id is a foreign key the importer resolves (and may
+	// reconcile against an existing roster) — and because keeping
+	// games.Message unchanged keeps the stored row's contract identical for
+	// adapters that do not report speakers at all. An adapter that fills
+	// Speakers must fill this in parallel for every message it appends.
+	SpeakerKeys []string
+
+	// SpeakerColumn names the source column (header or key) the labels came from,
+	// so the importer can record the provenance of an attribution the source
+	// file itself supplied. "" when the source carried no speaker column.
+	SpeakerColumn string
 }
 
 // Warning is a non-fatal defect, located for the importer report. Column is a

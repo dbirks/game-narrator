@@ -90,6 +90,8 @@ type ImportReport struct {
 	Pages        int               `json:"pages_written"`
 	Batches      int               `json:"write_batches"`
 	ReusedSource bool              `json:"reused_source"`
+	Characters   int               `json:"characters_created"`
+	Speakers     int               `json:"messages_linked_to_speakers"`
 	Duration     time.Duration     `json:"duration"`
 }
 
@@ -117,10 +119,18 @@ const maxReportedWarnings = 100
 //  4. Write messages in batches of ImportBatchSize, reconciling by
 //     (source, source_message_id) so a re-import updates rows instead of adding
 //     copies of them.
+//  5. Bind the source's own speaker labels to the roster: a label the file
+//     named is source evidence, so it becomes a characters row (reused by the
+//     parse's normalized key, or created) and the row's messages point at it
+//     with a source-column attribution and a script_order speaker assertion.
+//     Rows the file left unnamed keep unknown attribution: nothing is invented
+//     (docs/spec/04 "Generic adapter minimum").
 //
 // Idempotence is a property of the whole path, not of one step: the same bytes
 // imported twice into the same revision leave one source row, the same message
-// ids, and the same count.
+// ids, the same count, the same roster (a label already in the roster is reused,
+// not re-created) and one script_order assertion per named message (derived ids
+// plus the (message, character, method) triple make a re-import a no-op).
 func ImportFile(ctx context.Context, deps Deps, req ImportRequest) (ImportReport, error) {
 	start := time.Now()
 	var report ImportReport
@@ -277,7 +287,34 @@ func ImportFile(ctx context.Context, deps Deps, req ImportRequest) (ImportReport
 		report.Inserted = len(parsed.Messages)
 	}
 
+	// ── 5. bind the source's own speaker labels to the roster ────────────────
+	// A label the user's file named is source evidence (docs/spec/04's
+	// "never invent a speaker" covers unnamed rows only), so it becomes a
+	// characters row — an existing one, matched by the parse's normalized key,
+	// or a new one — and the row's messages point at it. The messages' ids must
+	// already be final (the reconciliation above), because the assertions
+	// derived from them are keyed on the stored message id.
+	resolution, err := resolveSpeakers(ctx, deps.Store, req.ProfileID, req.Parse.TextNorm, parsed, sourceID)
+	if err != nil {
+		return report, err
+	}
+	report.Warnings = append(report.Warnings, resolution.warnings...)
+	report.Characters = resolution.created
+	linkSpeakers(parsed, resolution)
+	report.Speakers = resolution.linked
+	if len(resolution.characters) > 0 {
+		// Characters precede messages and assertions: both foreign keys run
+		// that way (0002_content.sql), so the order is load-bearing, not
+		// ceremonial.
+		if err := deps.Store.PutCharacters(ctx, req.ProfileID, resolution.characters); err != nil {
+			return report, fmt.Errorf("profileio: write speaker characters: %w", err)
+		}
+	}
+
 	if err := writeMessages(ctx, deps, req.ProfileID, parsed, &report); err != nil {
+		return report, err
+	}
+	if err := writeSpeakerAssertions(ctx, deps, req.ProfileID, parsed, resolution, &report); err != nil {
 		return report, err
 	}
 	report.Duration = time.Since(start)

@@ -211,8 +211,12 @@ func decorate(t *testing.T, e *env, profileID string, content store.ProfileConte
 		Status:             games.CharacterProposed,
 		CreatedAt:          now,
 	}
+	// "Barnacle" is deliberately absent from the fixture's speaker column: the
+	// import now creates roster rows for every named speaker, so a curator row
+	// that reused one of those names would make the by-name comparison below
+	// ambiguous (two rows, one name).
 	second := games.Character{
-		ID: games.NewID(), ProfileID: profileID, Name: "Corvin",
+		ID: games.NewID(), ProfileID: profileID, Name: "Barnacle",
 		Aliases:            json.RawMessage(`[]`),
 		VisualDescriptors:  json.RawMessage(`["rope-stained coat"]`),
 		Role:               "crew",
@@ -295,7 +299,7 @@ func decorate(t *testing.T, e *env, profileID string, content store.ProfileConte
 	assertion := games.SpeakerAssertion{
 		ID: games.NewID(), ProfileID: profileID, MessageID: msgs[2].ID, CharacterID: second.ID,
 		Method: games.AssertionScriptOrder, AssertedAt: now,
-		Evidence: json.RawMessage(`[{"column":"speaker","value":"Corvin"}]`), Posterior: 0.4,
+		Evidence: json.RawMessage(`[{"column":"speaker","value":"Barnacle"}]`), Posterior: 0.4,
 	}
 	if err := assertion.Validate(); err != nil {
 		t.Fatalf("assertion fixture invalid: %v", err)

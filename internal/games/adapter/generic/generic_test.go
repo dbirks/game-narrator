@@ -105,6 +105,10 @@ func assertResultSane(t *testing.T, res *adapter.ParseResult, norm textnorm.Opti
 			t.Errorf("page %d references message %s that is not in the result", p.Ordinal, p.MessageID)
 		}
 	}
+	if len(res.SpeakerKeys) != len(res.Messages) {
+		t.Errorf("SpeakerKeys has %d entries for %d messages; the sidecar must stay parallel to Messages",
+			len(res.SpeakerKeys), len(res.Messages))
+	}
 	if res.Stats.Imported > res.Stats.Rows {
 		t.Errorf("imported %d messages from %d rows", res.Stats.Imported, res.Stats.Rows)
 	}
@@ -881,7 +885,7 @@ func TestManifestMatchesFixtures(t *testing.T) {
 	if err := m.Validate(); err != nil {
 		t.Fatalf("the shipped manifest is invalid: %v", err)
 	}
-	if m.ID != ID || m.Version != "1.0.0" {
+	if m.ID != ID || m.Version != Version {
 		t.Errorf("identity changed: %+v", m)
 	}
 	for _, f := range m.Fixtures {

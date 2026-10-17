@@ -58,6 +58,21 @@ func TestDigestTamperRejected(t *testing.T) {
 	dropped := cloneDocument(doc)
 	msgs := dropped["messages"].([]any)
 	dropped["messages"] = msgs[:len(msgs)-1]
+	// The dropped message may carry speaker assertions: drop those too, so the
+	// tampered document stays internally consistent and it is the digest — not
+	// the reference check — that catches the edit.
+	if row, ok := msgs[len(msgs)-1].(map[string]any); ok {
+		if removedID, _ := row["id"].(string); removedID != "" {
+			list := dropped["speaker_assertions"].([]any)
+			kept := list[:0]
+			for _, a := range list {
+				if m, _ := a.(map[string]any); m["message"] != removedID {
+					kept = append(kept, a)
+				}
+			}
+			dropped["speaker_assertions"] = kept
+		}
+	}
 	if _, err := ImportManifest(fresh.ctx, fresh.deps, bytes.NewReader(encodeDocument(t, dropped)), ImportManifestOptions{}); !errors.Is(err, ErrDigestMismatch) {
 		t.Errorf("dropped message: err = %v, want ErrDigestMismatch", err)
 	}
@@ -168,6 +183,9 @@ func TestDigestSurvivesRelabelling(t *testing.T) {
 				*field = mint(*field)
 			}
 		}
+		// The attribution evidence names the source row by id; an id left
+		// inside the payload would be a reference the relabelling forgot.
+		rel.Messages[i].Evidence = remapRefs(rel.Messages[i].Evidence, remap)
 	}
 	for i := range rel.MessageEdges {
 		rel.MessageEdges[i].From = mint(rel.MessageEdges[i].From)
@@ -181,6 +199,8 @@ func TestDigestSurvivesRelabelling(t *testing.T) {
 		rel.SpeakerAssertions[i].ID = mint(rel.SpeakerAssertions[i].ID)
 		rel.SpeakerAssertions[i].Message = mint(rel.SpeakerAssertions[i].Message)
 		rel.SpeakerAssertions[i].Character = mint(rel.SpeakerAssertions[i].Character)
+		// The assertion's evidence names the source row by id too.
+		rel.SpeakerAssertions[i].Evidence = remapRefs(rel.SpeakerAssertions[i].Evidence, remap)
 	}
 	if len(remap) < 8 {
 		t.Fatalf("only %d ids were relabelled; the fixture is not exercising references", len(remap))

@@ -16,9 +16,14 @@ const (
 	ID = "generic"
 	// Version is the adapter's semver. A parse that produces different messages
 	// from the same file bumps this (docs/spec/04 "versioned adapter manifest").
-	Version = "1.0.0"
-	// SchemaVersion is the ParseResult shape this build emits.
-	SchemaVersion = 1
+	Version = "1.1.0"
+	// SchemaVersion is the ParseResult shape this build emits. Version 2 added
+	// the speaker sidecar (Speakers/SpeakerKeys/SpeakerColumn): the same
+	// messages, plus the source's own labels resolved into matching keys. The
+	// semver bumps because a re-import of an old file through the new build
+	// produces a different result shape, which is the signal a cached revision
+	// is stale (docs/spec/04 "Adapter evolution and repair").
+	SchemaVersion = 2
 )
 
 // Formats this adapter reads. They are the ParseOptions.Format values.

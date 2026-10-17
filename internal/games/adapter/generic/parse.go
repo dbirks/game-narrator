@@ -121,6 +121,12 @@ type builder struct {
 	seenKeys map[string]bool
 	jsonLine int
 
+	// speakerIndex and speakerSpells build ParseResult.Speakers: a key onto its
+	// Speakers entry, and the raw spellings seen for it, in first-occurrence
+	// order. They are released in finalize with the rest of the parse state.
+	speakerIndex  map[string]int
+	speakerSpells map[string][]string
+
 	// evidenceCache and flagsCache share the encoded provenance of rows whose
 	// labels repeat, which is the normal case in a script (one hundred lines by
 	// "Marla"). A ParseResult's JSON columns are read-only by convention; a caller
@@ -185,6 +191,8 @@ func newBuilder(ctx context.Context, opts adapter.ParseOptions, format string) (
 		byID:          make(map[string]int, 1024),
 		evidenceCache: map[string]json.RawMessage{},
 		flagsCache:    map[string]json.RawMessage{},
+		speakerIndex:  map[string]int{},
+		speakerSpells: map[string][]string{},
 	}, nil
 }
 
@@ -447,6 +455,7 @@ func (b *builder) skipRow(line int, column, format string, args ...any) {
 // itself.
 func (b *builder) finalize() *adapter.ParseResult {
 	res := b.res
+	res.SpeakerColumn = b.columns[adapter.ColSpeaker]
 	for _, it := range b.items {
 		original := it.text
 		pages := it.pages()
@@ -489,7 +498,10 @@ func (b *builder) finalize() *adapter.ParseResult {
 			// foreign key to characters and no such row exists yet — resolving
 			// labels into characters is onboarding's job and a curator's decision
 			// (docs/spec/04: "use scene signals, neighbouring message chain,
-			// screenshot evidence and operator corrections").
+			// screenshot evidence and operator corrections"). What the parse does
+			// add is the matching key: the label folded the way message text is,
+			// so the importer can bind case- and spacing-variants to one
+			// character instead of two.
 			msg.AttributionStatus = games.AttributionProposed
 			msg.AttributionConfidence = proposedSpeakerConfidence
 			msg.AttributionEvidence = b.evidenceFor(it.speaker)
@@ -502,6 +514,15 @@ func (b *builder) finalize() *adapter.ParseResult {
 			continue
 		}
 		res.Messages = append(res.Messages, msg)
+		if key := b.speakerKeyOf(it); key != "" {
+			// Registered only for messages that actually land: a speaker whose
+			// sole row was skipped must not become an unresolvable roster entry,
+			// and Speakers/SpeakerKeys must stay exactly in lockstep.
+			res.SpeakerKeys = append(res.SpeakerKeys, key)
+			b.registerSpeaker(key, it.speaker)
+		} else {
+			res.SpeakerKeys = append(res.SpeakerKeys, "")
+		}
 		res.Stats.Imported++
 
 		if len(pages) == 1 && it.pageID == "" {
@@ -543,7 +564,46 @@ func (b *builder) finalize() *adapter.ParseResult {
 	b.byID = nil
 	b.evidenceCache = nil
 	b.flagsCache = nil
+	b.speakerIndex = nil
+	b.speakerSpells = nil
 	return res
+}
+
+// speakerKeyOf returns the sidecar key for a message the caller is about to
+// append: the folded speaker label when one was kept, "" otherwise. It is
+// computed from the item rather than the registered Speakers entry because a
+// label that folds to nothing (punctuation only) is kept as evidence but has no
+// key to reconcile against.
+func (b *builder) speakerKeyOf(it *item) string {
+	if it.speaker == "" {
+		return ""
+	}
+	return b.folder.Normalize(it.speaker)
+}
+
+// registerSpeaker records one occurrence of a speaker label under its folded
+// key. The first spelling seen becomes the DisplayName, later ones are aliases
+// when they differ from it. A label that differs only in case or spacing folds
+// to the same key as its first occurrence and so becomes an alias of one
+// character, not a second (docs/spec/04: the source's own labels are source
+// evidence, and a roster must not list one person twice for one typo).
+func (b *builder) registerSpeaker(key, spelling string) {
+	if idx, ok := b.speakerIndex[key]; ok {
+		seen := b.speakerSpells[key]
+		for _, s := range seen {
+			if s == spelling {
+				return
+			}
+		}
+		if spelling != b.res.Speakers[idx].DisplayName {
+			b.res.Speakers[idx].Aliases = append(b.res.Speakers[idx].Aliases, spelling)
+		}
+		b.speakerSpells[key] = append(seen, spelling)
+		return
+	}
+	b.speakerIndex[key] = len(b.res.Speakers)
+	b.res.Speakers = append(b.res.Speakers, adapter.SpeakerRef{Key: key, DisplayName: spelling})
+	b.speakerSpells[key] = []string{spelling}
 }
 
 // proposedSpeakerConfidence is what a source's own label is worth. Not 1.0: a
