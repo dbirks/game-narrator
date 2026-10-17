@@ -19,15 +19,19 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/api"
+	"github.com/dbirks/game-narrator/internal/assets"
 	"github.com/dbirks/game-narrator/internal/auth"
 	"github.com/dbirks/game-narrator/internal/bootstrap"
 	"github.com/dbirks/game-narrator/internal/doctor"
 	"github.com/dbirks/game-narrator/internal/events"
+	"github.com/dbirks/game-narrator/internal/games/adapter"
+	"github.com/dbirks/game-narrator/internal/games/adapter/generic"
 	"github.com/dbirks/game-narrator/internal/jobs"
 	"github.com/dbirks/game-narrator/internal/store"
 )
@@ -282,6 +286,39 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 	}
 	log.Info("database ready", "applied", len(applied), "schema_version", schemaVersion)
 
+	// The content-addressed asset store (ADR-0014) sits beside the database in the
+	// same durable directory, because a backup that restores one and not the other
+	// restores a catalogue full of pointers to bytes that do not exist. Staging is
+	// recovered before the listener starts: an upload interrupted by the last
+	// process is not resumable (the client's connection is gone), so its scratch
+	// files are discarded rather than left to accumulate.
+	assetStore, err := assets.NewLocal(AssetDir(cfg.DataDir), assets.WithMaxSize(maxAssetBlobBytes))
+	if err != nil {
+		return 1, fmt.Errorf("opening the asset store in %s: %w", AssetDir(cfg.DataDir), err)
+	}
+	if discarded, err := assetStore.RecoverStaging(ctx); err != nil {
+		return 1, fmt.Errorf("recovering the asset staging area: %w", err)
+	} else if discarded > 0 {
+		log.Warn("discarded upload staging left by the previous process",
+			"staging_entries", discarded, "reason", "an interrupted upload is not resumable: the client is gone (ADR-0014)")
+	}
+	log.Info("asset store ready", "root_basename", filepath.Base(AssetDir(cfg.DataDir)))
+
+	// The source adapters linked into this build decide what an uploaded script
+	// can be read as. The generic column-mapping adapter is the one Milestone 1
+	// ships with; game-specific extractors join the same registry in later
+	// milestones, and POST …/import reports the formats this list can actually
+	// read rather than accepting an upload nothing can parse.
+	adapters := adapter.NewRegistry()
+	if err := generic.Register(adapters); err != nil {
+		return 1, fmt.Errorf("linking the generic script adapter: %w", err)
+	}
+	adapterIDs := make([]string, 0, len(adapters.Adapters()))
+	for _, m := range adapters.Adapters() {
+		adapterIDs = append(adapterIDs, m.ID)
+	}
+	log.Info("source adapters linked", "adapters", adapterIDs)
+
 	// Durable event log and fan-out hub (docs/spec/08 "Event stream
 	// reliability"): SQLite assigns the global seq; the hub replays a
 	// reconnecting browser past its in-memory ring from that log.
@@ -304,6 +341,21 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 		Timeout:     time.Minute,
 	}); err != nil {
 		return 1, fmt.Errorf("registering system.noop job kind: %w", err)
+	}
+	// The import worker (docs/spec/08 "staged source/profiles", ADR-0017): the API
+	// lands the bytes and queues this kind, so the queue is what reports progress
+	// and the parse report. Resumable because re-running it is the design — the
+	// payload names a content hash, not a temporary file, so a worker that starts
+	// after a crash reads the same bytes and profileio reconciles by
+	// (source, source_message_id) instead of duplicating rows (docs/spec/02 "Import
+	// resume by content hash").
+	if err := runner.Register(api.JobKindImportFile,
+		api.ImportFileJobHandler(st, assetStore, adapters), jobs.RegisterOpts{
+			Concurrency: 1,
+			Resumable:   true,
+			Timeout:     importJobTimeout,
+		}); err != nil {
+		return 1, fmt.Errorf("registering %s job kind: %w", api.JobKindImportFile, err)
 	}
 	recovery, err := jobsStore.RecoverOnStartup(ctx, runner.ResumableKinds())
 	if err != nil {
@@ -362,6 +414,8 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 		api.WithEvents(hub),
 		api.WithJobs(jobsStore),
 		api.WithAuth(auth.NewService(authRepo, auth.WithLogger(log)), authRepo),
+		api.WithStore(st),
+		api.WithImport(assetStore, adapters, runner),
 		api.WithTrustedProxy(trustedProxyCIDRs(os.LookupEnv)...),
 	).Handler(), log)
 	if err := srv.Run(runCtx); err != nil {
@@ -376,6 +430,27 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 	<-shutdownDone
 	return 0, nil
 }
+
+// AssetDir is the content-addressed asset root of a data directory
+// (docs/spec/02 "Asset store contract", ADR-0014). It sits beside the database
+// file rather than under a cache directory on purpose: the two are one body of
+// durable state, and a restore that brings back the catalogue's pointers without
+// the bytes they point at produces a library that cannot be re-parsed or
+// re-audited. ADR-0017 records the layout.
+func AssetDir(dataDir string) string { return filepath.Join(dataDir, "assets") }
+
+// maxAssetBlobBytes is the per-blob ceiling the asset store enforces, independent
+// of the API's own upload cap. It is above any script the docs/spec/16 benchmark
+// describes and above a spoken-line audio asset with room to spare, while still
+// being small enough that one malformed request cannot fill the appliance's disk
+// (docs/spec/14 "Filesystem/import").
+const maxAssetBlobBytes = 512 << 20
+
+// importJobTimeout bounds one import.file attempt. A 10 000-message script parses
+// and writes in seconds on the target hardware; an hour would hide a wedged
+// parser until the lease had already been stolen, and a minute would cut off the
+// low-end device doing legitimate work (docs/spec/16's performance budget).
+const importJobTimeout = 10 * time.Minute
 
 // jobDrainBudget bounds graceful in-flight job drain. It stays under
 // bootstrap.ShutdownTimeout so a forced job cancellation and its retry

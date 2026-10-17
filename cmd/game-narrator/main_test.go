@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"testing"
@@ -1094,6 +1096,287 @@ func TestServeRequiresAuthenticationAndCompletesTheFirstRunCycle(t *testing.T) {
 			t.Fatalf("%s: %d, want %d (%s)", st.name, resp.StatusCode, st.want, trimForLog(string(body)))
 		}
 	}
+}
+
+// TestServeCatalogAndImportOverTheWire is the binary-level proof of Milestone 1's
+// acceptance criterion: a real process, a real data directory, the CLI's own
+// migrate/admin commands, and then the catalog API driven end to end — create a
+// title idempotently, add an edition, open a draft, upload the synthetic script as
+// a browser would, watch the durable job run to succeeded, edit a line under its
+// ETag and download the result. Nothing here is mocked: the import runs in the
+// serve command's own job runner against the asset store it opened, which is what
+// makes "the wiring is present" (rather than "the handler works") a tested claim
+// (AGENTS.md "no simulation theatre").
+func TestServeCatalogAndImportOverTheWire(t *testing.T) {
+	clearGatewayEnv(t)
+	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	dataDir := filepath.Join(t.TempDir(), "catalog-serve")
+	addr := freeListenAddress(t)
+	if code, err := run([]string{"migrate", "--data-dir", dataDir}, log); err != nil || code != 0 {
+		t.Fatalf("migrate: code=%d err=%v", code, err)
+	}
+	token := adminTokenForTest(t, dataDir, log, "admin", "admin", "catalog-probe")
+
+	serveDone := make(chan int, 1)
+	go func() {
+		code, err := run([]string{"serve", "--listen", addr, "--data-dir", dataDir}, log)
+		if err != nil {
+			t.Errorf("serve: %v", err)
+		}
+		serveDone <- code
+	}()
+	defer func() {
+		syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		select {
+		case code := <-serveDone:
+			if code != 0 {
+				t.Errorf("serve exit code = %d, want 0 after a clean drain", code)
+			}
+		case <-time.After(20 * time.Second):
+			t.Error("serve did not exit after SIGTERM")
+		}
+	}()
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	base := "http://" + addr + "/api/v1"
+	waitReady(t, client, addr)
+
+	do := func(method, path string, body []byte, hdr map[string]string) (int, map[string]any, http.Header, []byte) {
+		t.Helper()
+		req, err := http.NewRequest(method, base+path, bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		for k, v := range hdr {
+			req.Header.Set(k, v)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		var parsed map[string]any
+		if len(raw) > 0 && json.Valid(raw) {
+			if err := json.Unmarshal(raw, &parsed); err != nil {
+				t.Fatalf("%s %s: body is not JSON: %v (%s)", method, path, err, trimForLog(string(raw)))
+			}
+		}
+		return resp.StatusCode, parsed, resp.Header, raw
+	}
+	must := func(want int, what string, code int, _ map[string]any, _ http.Header, raw []byte) {
+		t.Helper()
+		if code != want {
+			t.Fatalf("%s = %d, want %d (%s)", what, code, want, trimForLog(string(raw)))
+		}
+	}
+
+	// The contract is public and is the build's own.
+	code, doc, _, _ := do(http.MethodGet, "/openapi.json", nil, nil)
+	must(http.StatusOK, "GET /openapi.json", code, doc, nil, nil)
+	if doc["openapi"] != "3.1.0" {
+		t.Fatalf("the served contract declares %v", doc["openapi"])
+	}
+	// An anonymous caller gets nothing else. `do` always presents the token, so
+	// this one request is made without it on purpose.
+	anon, err := http.Get(base + "/games")
+	if err != nil {
+		t.Fatalf("anonymous GET /games: %v", err)
+	}
+	anonRaw, _ := io.ReadAll(io.LimitReader(anon.Body, 4096))
+	anon.Body.Close()
+	if anon.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("GET /games without a credential = %d, want 401 (%s)", anon.StatusCode, trimForLog(string(anonRaw)))
+	}
+
+	jsonType := map[string]string{"Content-Type": "application/json"}
+	code, game, _, raw := do(http.MethodPost, "/games",
+		[]byte(`{"slug":"synthetic-adventure","title":"Synthetic Adventure","platform":"gamecube-like"}`),
+		map[string]string{"Content-Type": "application/json", "Idempotency-Key": "serve-1"})
+	must(http.StatusCreated, "POST /games", code, game, nil, raw)
+	gameID, _ := game["id"].(string)
+	if gameID == "" {
+		t.Fatalf("no game id in %s", trimForLog(string(raw)))
+	}
+	code, replay, replayHdr, _ := do(http.MethodPost, "/games",
+		[]byte(`{"slug":"synthetic-adventure","title":"Synthetic Adventure","platform":"gamecube-like"}`),
+		map[string]string{"Content-Type": "application/json", "Idempotency-Key": "serve-1"})
+	must(http.StatusCreated, "the replayed POST /games", code, replay, nil, nil)
+	if replay["id"] != gameID {
+		t.Fatalf("the replay created a second game: %v vs %v", replay["id"], gameID)
+	}
+	if replayHdr.Get("Idempotency-Replayed") != "true" {
+		t.Errorf("the replay did not say so: %v", replayHdr)
+	}
+
+	code, edition, _, raw := do(http.MethodPost, "/games/"+gameID+"/editions",
+		[]byte(`{"region":"us","language":"en","revision":"rev1"}`),
+		map[string]string{"Content-Type": "application/json", "Idempotency-Key": "serve-2"})
+	must(http.StatusCreated, "POST /games/{id}/editions", code, edition, nil, raw)
+	editionID, _ := edition["id"].(string)
+
+	code, draft, draftHdr, raw := do(http.MethodPost, "/editions/"+editionID+"/profiles", nil, jsonType)
+	must(http.StatusCreated, "POST /editions/{id}/profiles", code, draft, nil, raw)
+	profileID, _ := draft["id"].(string)
+	etag := draftHdr.Get("ETag")
+	if etag != `"1"` {
+		t.Errorf("a fresh draft carries ETag %s, want \"1\"", etag)
+	}
+
+	// The upload, as a browser sends it.
+	csvBytes, err := os.ReadFile(filepath.Join("..", "..", "internal", "games", "adapter", "generic",
+		"testdata", "synthetic-adventure.csv"))
+	if err != nil {
+		t.Fatalf("read the synthetic script: %v", err)
+	}
+	var multipartBody bytes.Buffer
+	mw := multipart.NewWriter(&multipartBody)
+	part, err := mw.CreateFormFile("file", "synthetic-adventure.csv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(csvBytes); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.WriteField("rights", "user_supplied"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	code, accepted, _, raw := do(http.MethodPost, "/profiles/"+profileID+"/import", multipartBody.Bytes(),
+		map[string]string{"Content-Type": mw.FormDataContentType()})
+	must(http.StatusAccepted, "POST /profiles/{id}/import", code, accepted, nil, raw)
+	jobID, _ := accepted["job_id"].(string)
+	if jobID == "" {
+		t.Fatalf("the 202 named no job: %s", trimForLog(string(raw)))
+	}
+
+	deadline := time.Now().Add(60 * time.Second)
+	var state string
+	for time.Now().Before(deadline) && state != "succeeded" {
+		code, job, _, _ := do(http.MethodGet, "/jobs/"+jobID, nil, nil)
+		must(http.StatusOK, "GET /jobs/{id}", code, job, nil, nil)
+		state, _ = job["state"].(string)
+		if state == "failed" || state == "cancelled" {
+			t.Fatalf("the import job ended in %q: %s", state, trimForLog(fmt.Sprint(job)))
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if state != "succeeded" {
+		t.Fatalf("the import job never succeeded, last state %q", state)
+	}
+
+	// The content is now readable, searchable and editable through the same API.
+	code, page, _, raw := do(http.MethodGet, "/profiles/"+profileID+"/messages?limit=10", nil, nil)
+	must(http.StatusOK, "GET /profiles/{id}/messages", code, page, nil, raw)
+	msgs, _ := page["messages"].([]any)
+	if len(msgs) != 10 {
+		t.Fatalf("limit=10 returned %d messages", len(msgs))
+	}
+	first, _ := msgs[0].(map[string]any)
+	msgID, _ := first["id"].(string)
+	if moved, _ := page["profile_etag"].(string); moved == "" {
+		t.Error("the message page carries no revision token for the editor to write with")
+	}
+
+	code, search, _, raw := do(http.MethodGet, "/profiles/"+profileID+"/messages/search?q=harbourmaster", nil, nil)
+	must(http.StatusOK, "GET …/messages/search", code, search, nil, raw)
+	if hits, _ := search["hits"].([]any); len(hits) == 0 {
+		t.Fatalf("the full-text index found nothing for a word in the script: %s", trimForLog(string(raw)))
+	}
+
+	// The write. The import moved the row version, so the token the draft was
+	// handed at creation is now correctly stale: a binary that still accepted it
+	// would be accepting a write from an editor who had lost the race.
+	staleCode, _, staleHdr, staleRaw := do(http.MethodPatch, "/profiles/"+profileID+"/messages/"+msgID,
+		[]byte(`{"speech_text":"lost the race"}`),
+		map[string]string{"Content-Type": "application/json", "If-Match": etag})
+	if staleCode != http.StatusPreconditionFailed {
+		t.Fatalf("a write under a superseded token = %d, want 412 (%s)", staleCode, trimForLog(string(staleRaw)))
+	}
+	if !strings.Contains(string(staleRaw), "PROFILE_REVISION_CONFLICT") {
+		t.Errorf("the stale-token refusal is not the documented conflict: %s", trimForLog(string(staleRaw)))
+	}
+	current := staleHdr.Get("ETag")
+	if current == "" || current == etag {
+		t.Fatalf("the 412 named the current token as %q, and the draft's was %s", current, etag)
+	}
+	code, edited, editedHdr, raw := do(http.MethodPatch, "/profiles/"+profileID+"/messages/"+msgID,
+		[]byte(`{"speech_text":"The harbourmaster is counting the crates again."}`),
+		map[string]string{"Content-Type": "application/json", "If-Match": current})
+	must(http.StatusOK, "PATCH with the current token", code, edited, nil, raw)
+	msg, _ := edited["message"].(map[string]any)
+	if msg["speech_text"] != "The harbourmaster is counting the crates again." {
+		t.Errorf("speech_text did not take: %v", msg["speech_text"])
+	}
+	if msg["original_text"] != first["original_text"] {
+		t.Errorf("the edit changed original_text: %v → %v", first["original_text"], msg["original_text"])
+	}
+	if editedHdr.Get("ETag") == current {
+		t.Error("the write did not move the revision token")
+	}
+
+	// And the revision can leave the appliance as the manifest that documents it.
+	code, _, exportHdr, exportRaw := do(http.MethodGet, "/profiles/"+profileID+"/export", nil, nil)
+	if code != http.StatusOK {
+		t.Fatalf("GET …/export = %d (%s)", code, trimForLog(string(exportRaw)))
+	}
+	if cd := exportHdr.Get("Content-Disposition"); !strings.Contains(cd, ".gnprofile.json") {
+		t.Errorf("Content-Disposition = %q", cd)
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(exportRaw, &manifest); err != nil {
+		t.Fatalf("the export is not a manifest: %v", err)
+	}
+	if _, ok := manifest["messages"].([]any); !ok {
+		t.Fatalf("the manifest carries no messages: %v", sortedKeysOf(manifest))
+	}
+
+	// The durable state the run produced is on disk where serve said it would be:
+	// one data directory, database plus content-addressed blobs (ADR-0017).
+	if _, err := os.Stat(store.DBPath(dataDir)); err != nil {
+		t.Errorf("the database is not under the data directory: %v", err)
+	}
+	if entries, err := filepath.Glob(filepath.Join(AssetDir(dataDir), "blobs", "*", "*", "*")); err != nil || len(entries) == 0 {
+		t.Errorf("no blob landed in the asset store under %s (%v)", AssetDir(dataDir), err)
+	}
+}
+
+// doWithHeader issues one request with a single header pair and returns what
+// `do` returns, for the retry an editor performs after a 412.
+func doWithHeader(t *testing.T, client *http.Client, base, token, method, path, payload, ifMatch string) (int, map[string]any, http.Header, []byte) {
+	t.Helper()
+	req, err := http.NewRequest(method, base+path, strings.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", ifMatch)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, path, err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	var parsed map[string]any
+	if len(raw) > 0 && json.Valid(raw) {
+		if err := json.Unmarshal(raw, &parsed); err != nil {
+			t.Fatalf("body is not JSON: %v (%s)", err, trimForLog(string(raw)))
+		}
+	}
+	return resp.StatusCode, parsed, resp.Header, raw
+}
+
+func sortedKeysOf(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // newJar keeps session cookies across the cycle's steps, the way a browser

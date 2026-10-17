@@ -1,0 +1,1284 @@
+{
+  "openapi": "3.1.0",
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "info": {
+    "title": "Game Narrator API",
+    "version": "1.0.0",
+    "summary": "The /api/v1 surface of the Game Narrator appliance.",
+    "description": "Hand-written and contract-tested. internal/api/openapi_contract_test.go fails when a route is registered without being documented here, when an operation's x-required-role disagrees with the auth scope table, or when a handler's success body stops validating against the schema below (docs/spec/08, ADR-0017). Errors are RFC 9457 problem+json documents carrying the stable code member of docs/spec/08's error contract plus the X-Request-Id correlation header. Reads of a profile revision carry an ETag equal to its quoted row_version; the writes that change one require it back as If-Match (412 on mismatch, 428 when absent). x-required-role is the minimum role the scope table grants an operation; public means no credential is needed. The table itself is auth.DefaultPolicy, explained in docs/adr/0016-authentication-and-sessions.md."
+  },
+  "servers": [
+    { "url": "/", "description": "The appliance itself: the API and the embedded UI share one origin (default 127.0.0.1:8080)." }
+  ],
+  "security": [ { "gnSession": [], "csrfToken": [] }, { "bearerToken": [] } ],
+  "tags": [
+    { "name": "health", "description": "Liveness, readiness and build information." },
+    { "name": "auth", "description": "First-run setup, sessions, and the caller's own identity." },
+    { "name": "users", "description": "Account and API-token administration (admin)." },
+    { "name": "games", "description": "The title library and its editions." },
+    { "name": "profiles", "description": "Profile revisions: draft, review, publication." },
+    { "name": "messages", "description": "The dialogue content of one revision." },
+    { "name": "portability", "description": "Import and export of scripts and profiles." },
+    { "name": "jobs", "description": "The durable background queue." },
+    { "name": "events", "description": "The multiplexed SSE stream." },
+    { "name": "contract", "description": "This document." }
+  ],
+  "paths": {
+    "/api/v1/health/live": {
+      "get": {
+        "operationId": "getHealthLive",
+        "tags": ["health"],
+        "summary": "Process liveness; no dependency probing.",
+        "x-required-role": "public",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The process is up.",
+            "content": { "application/json": { "schema": { "type": "object", "required": ["status"], "properties": { "status": { "type": "string", "const": "ok" } } } } }
+          },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/health/ready": {
+      "get": {
+        "operationId": "getHealthReady",
+        "tags": ["health"],
+        "summary": "Dependency readiness; a failing dependency answers 503.",
+        "description": "checks is always an object: a dependency appears only once something has probed it, so an empty map honestly means nothing is wired rather than everything works (docs/spec/13).",
+        "x-required-role": "public",
+        "security": [],
+        "responses": {
+          "200": { "description": "Ready.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HealthStatus" } } } },
+          "503": { "description": "Not ready — the same body, so a load balancer sees one shape for both outcomes and `checks` names what failed. A failure of the endpoint itself (a wrong method, an unwired route) is the problem+json default like anywhere else.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HealthStatus" } } } },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/system/info": {
+      "get": {
+        "operationId": "getSystemInfo",
+        "tags": ["health"],
+        "summary": "Build, Go and machine capacity. Never paths, hostnames or secrets.",
+        "x-required-role": "public",
+        "security": [],
+        "responses": {
+          "200": { "description": "Build information.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SystemInfo" } } } },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/events": {
+      "get": {
+        "operationId": "getEvents",
+        "tags": ["events"],
+        "summary": "The multiplexed SSE stream, with Last-Event-ID replay.",
+        "description": "Every frame carries id: <global seq>. A cursor older than the durable log's window is answered with events.resync_required before live frames. Decision-family payloads only reach a developer-or-above stream (docs/spec/08: partial data redacted when not in developer mode).",
+        "x-required-role": "viewer",
+        "parameters": [
+          { "name": "last_event_id", "in": "query", "schema": { "type": "string" }, "description": "Query-string form of the Last-Event-ID header, for clients that cannot set headers." },
+          { "name": "session_id", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "An open event stream.", "content": { "text/event-stream": { "schema": { "type": "string" } } } },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/auth/status": {
+      "get": {
+        "operationId": "getAuthStatus",
+        "tags": ["auth"],
+        "summary": "Whether the appliance is still unclaimed.",
+        "x-required-role": "public",
+        "security": [],
+        "responses": {
+          "200": { "description": "Setup state.", "content": { "application/json": { "schema": { "type": "object", "required": ["setup_required", "loopback_setup"], "properties": { "setup_required": { "type": "boolean" }, "loopback_setup": { "type": "boolean" } } } } } },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/auth/setup": {
+      "post": {
+        "operationId": "postAuthSetup",
+        "tags": ["auth"],
+        "summary": "Claim the appliance by creating the first admin (loopback only).",
+        "x-required-role": "public",
+        "security": [],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["username", "password"], "properties": { "username": { "type": "string" }, "password": { "type": "string", "format": "password" } } } } } },
+        "responses": {
+          "201": { "description": "The admin exists; no session was minted.", "content": { "application/json": { "schema": { "type": "object", "required": ["user", "message"], "properties": { "user": { "$ref": "#/components/schemas/User" }, "message": { "type": "string" } } } } } },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/auth/login": {
+      "post": {
+        "operationId": "postAuthLogin",
+        "tags": ["auth"],
+        "summary": "Exchange credentials for a session cookie and a CSRF token.",
+        "x-required-role": "public",
+        "security": [],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["username", "password"], "properties": { "username": { "type": "string" }, "password": { "type": "string", "format": "password" } } } } } },
+        "responses": {
+          "200": { "description": "Signed in.", "content": { "application/json": { "schema": { "type": "object", "required": ["user", "csrf_token", "expires_at", "idle_expires_at"], "properties": { "user": { "$ref": "#/components/schemas/User" }, "csrf_token": { "type": "string" }, "expires_at": { "type": "string", "format": "date-time" }, "idle_expires_at": { "type": "string", "format": "date-time" } } } } } },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "operationId": "postAuthLogout",
+        "tags": ["auth"],
+        "summary": "Revoke the calling session.",
+        "x-required-role": "viewer",
+        "responses": {
+          "204": { "description": "Signed out." },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/auth/me": {
+      "get": {
+        "operationId": "getAuthMe",
+        "tags": ["auth"],
+        "summary": "Who the caller is, and the CSRF token for its session.",
+        "x-required-role": "viewer",
+        "responses": {
+          "200": { "description": "The principal.", "content": { "application/json": { "schema": { "type": "object", "required": ["user", "auth_method"], "properties": { "user": { "$ref": "#/components/schemas/User" }, "csrf_token": { "type": "string" }, "auth_method": { "type": "string", "enum": ["cookie", "token"] }, "expires_at": { "type": "string", "format": "date-time" }, "grants": { "type": "object", "propertyNames": { "type": "string" }, "additionalProperties": { "type": "string" } } } } } } },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/auth/password": {
+      "post": {
+        "operationId": "postAuthPassword",
+        "tags": ["auth"],
+        "summary": "Change the caller's password; revokes every session and token of the account.",
+        "x-required-role": "viewer",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["current_password", "new_password"], "properties": { "current_password": { "type": "string", "format": "password" }, "new_password": { "type": "string", "format": "password" } } } } } },
+        "responses": {
+          "200": { "description": "Changed; re-authentication is required.", "content": { "application/json": { "schema": { "type": "object", "required": ["reauth_required", "sessions_revoked", "tokens_revoked", "password_changed_at"], "properties": { "reauth_required": { "type": "boolean" }, "sessions_revoked": { "type": "integer" }, "tokens_revoked": { "type": "integer" }, "password_changed_at": { "type": "string", "format": "date-time" } } } } } },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/users": {
+      "get": {
+        "operationId": "listUsers",
+        "tags": ["users"],
+        "summary": "Every account. Never a hash.",
+        "x-required-role": "admin",
+        "responses": {
+          "200": { "description": "The account list.", "content": { "application/json": { "schema": { "type": "object", "required": ["users"], "properties": { "users": { "type": "array", "items": { "$ref": "#/components/schemas/User" } } } } } } },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      },
+      "post": {
+        "operationId": "createUser",
+        "tags": ["users"],
+        "summary": "Create an account with a role no higher than the caller's.",
+        "x-required-role": "admin",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["username", "password", "role"], "properties": { "username": { "type": "string" }, "password": { "type": "string", "format": "password" }, "role": { "$ref": "#/components/schemas/Role" } } } } } },
+        "responses": {
+          "201": { "description": "Created.", "content": { "application/json": { "schema": { "type": "object", "required": ["user"], "properties": { "user": { "$ref": "#/components/schemas/User" } } } } } },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/users/{id}/disable": {
+      "post": {
+        "operationId": "disableUser",
+        "tags": ["users"],
+        "summary": "Withdraw an account, revoking its sessions and tokens in the same transaction.",
+        "x-required-role": "admin",
+        "parameters": [{ "$ref": "#/components/parameters/UserId" }],
+        "responses": {
+          "200": { "description": "Withdrawn.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UserWithRevocations" } } } },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/users/{id}/enable": {
+      "post": {
+        "operationId": "enableUser",
+        "tags": ["users"],
+        "summary": "Restore an account. Revocations are not undone.",
+        "x-required-role": "admin",
+        "parameters": [{ "$ref": "#/components/parameters/UserId" }],
+        "responses": {
+          "200": { "description": "Restored.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UserWithRevocations" } } } },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/users/{id}/password": {
+      "post": {
+        "operationId": "adminResetPassword",
+        "tags": ["users"],
+        "summary": "Admin password reset; revokes the account's sessions and tokens.",
+        "x-required-role": "admin",
+        "parameters": [{ "$ref": "#/components/parameters/UserId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["password"], "properties": { "password": { "type": "string", "format": "password" } } } } } },
+        "responses": {
+          "200": { "description": "Reset.", "content": { "application/json": { "schema": { "type": "object", "required": ["reauth_required", "sessions_revoked", "tokens_revoked"], "properties": { "reauth_required": { "type": "boolean" }, "sessions_revoked": { "type": "integer" }, "tokens_revoked": { "type": "integer" } } } } } },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/users/{id}/tokens": {
+      "get": {
+        "operationId": "listTokens",
+        "tags": ["users"],
+        "summary": "An account's API tokens, by label. Never the secret.",
+        "x-required-role": "admin",
+        "parameters": [{ "$ref": "#/components/parameters/UserId" }],
+        "responses": {
+          "200": { "description": "The token list.", "content": { "application/json": { "schema": { "type": "object", "required": ["tokens"], "properties": { "tokens": { "type": "array", "items": { "$ref": "#/components/schemas/Token" } } } } } } },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      },
+      "post": {
+        "operationId": "createToken",
+        "tags": ["users"],
+        "summary": "Mint an API token. The secret appears once, in this response.",
+        "x-required-role": "admin",
+        "parameters": [{ "$ref": "#/components/parameters/UserId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name", "role"], "properties": { "name": { "type": "string" }, "role": { "$ref": "#/components/schemas/Role" }, "expires_in_days": { "type": "integer", "minimum": 0, "maximum": 3650 } } } } } },
+        "responses": {
+          "201": { "description": "Minted.", "content": { "application/json": { "schema": { "type": "object", "required": ["token", "id", "role", "note"], "properties": { "token": { "type": "string" }, "id": { "type": "string" }, "role": { "$ref": "#/components/schemas/Role" }, "note": { "type": "string" } } } } } },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/users/{id}/tokens/{tid}/revoke": {
+      "post": {
+        "operationId": "revokeToken",
+        "tags": ["users"],
+        "summary": "Revoke one API token permanently.",
+        "x-required-role": "admin",
+        "parameters": [{ "$ref": "#/components/parameters/UserId" }, { "name": "tid", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": { "description": "Revoked.", "content": { "application/json": { "schema": { "type": "object", "required": ["revoked", "id"], "properties": { "revoked": { "type": "boolean" }, "id": { "type": "string" } } } } } },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/games": {
+      "get": {
+        "operationId": "listGames",
+        "tags": ["games"],
+        "summary": "The title library, cursor-paginated.",
+        "description": "Ordering is by ULID id, which is what makes a page boundary a row identity rather than an offset a concurrent import could shift (docs/spec/12's no-duplicates-or-gaps property). Text search is per revision (GET /api/v1/profiles/{id}/messages/search), because a match is only meaningful against one edition's script; ?q= here is refused rather than answered with an unfiltered list, which would read as \u201cno title matches\u201d.",
+        "x-required-role": "viewer",
+        "parameters": [
+          { "$ref": "#/components/parameters/Cursor" },
+          { "$ref": "#/components/parameters/Limit" },
+          { "name": "q", "in": "query", "schema": { "type": "string" }, "description": "Not supported on this collection: any value answers 501 NOT_SUPPORTED." }
+        ],
+        "responses": {
+          "200": { "description": "One page.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GameList" } } } },
+          "400": { "$ref": "#/components/responses/Problem" },
+          "501": { "$ref": "#/components/responses/Problem" },
+          "503": { "$ref": "#/components/responses/Problem" },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      },
+      "post": {
+        "operationId": "createGame",
+        "tags": ["games"],
+        "summary": "Add a title family.",
+        "description": "Requires an Idempotency-Key. The same key with the same body replays the original 201 with Idempotency-Replayed: true; the same key with a different body is a 422. A duplicate slug is a separate fact and answers 409: a collision to resolve, not a retry to absorb (ADR-0017).",
+        "x-required-role": "curator",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["slug", "title"], "properties": { "slug": { "type": "string", "maxLength": 80 }, "title": { "type": "string", "maxLength": 200 }, "description": { "type": "string", "maxLength": 4000 }, "platform": { "type": "string", "maxLength": 100 }, "user_tags": { "type": "array", "items": { "type": "string" } } } } } } },
+        "responses": {
+          "201": { "description": "Created.", "headers": { "Location": { "schema": { "type": "string" }, "description": "The new game's path." } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Game" } } } },
+          "400": { "$ref": "#/components/responses/Problem" },
+          "409": { "$ref": "#/components/responses/Problem" },
+          "422": { "$ref": "#/components/responses/Problem" },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/games/{id}": {
+      "get": {
+        "operationId": "getGame",
+        "tags": ["games"],
+        "summary": "One title family, by ULID id or by slug.",
+        "x-required-role": "viewer",
+        "parameters": [{ "$ref": "#/components/parameters/GameId" }],
+        "responses": {
+          "200": { "description": "The game.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Game" } } } },
+          "404": { "$ref": "#/components/responses/Problem" },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      },
+      "patch": {
+        "operationId": "patchGame",
+        "tags": ["games"],
+        "summary": "Correct a title family's metadata in place.",
+        "description": "Games and editions carry no row version: docs/spec/08 puts ETag/If-Match on profile revisions, and internal/store/repo_catalog.go explains why a lost title edit is a nuisance while a lost dialogue edit is corruption. An omitted field is left alone and an empty object is a no-op that answers 200 with the unchanged row.",
+        "x-required-role": "curator",
+        "parameters": [{ "$ref": "#/components/parameters/GameId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "slug": { "type": "string", "maxLength": 80 }, "title": { "type": "string", "maxLength": 200 }, "description": { "type": "string", "maxLength": 4000 }, "platform": { "type": "string", "maxLength": 100 }, "user_tags": { "type": "array", "items": { "type": "string" } } } } } } },
+        "responses": {
+          "200": { "description": "The updated game.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Game" } } } },
+          "404": { "$ref": "#/components/responses/Problem" },
+          "422": { "$ref": "#/components/responses/Problem" },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/games/{id}/editions": {
+      "get": {
+        "operationId": "listEditions",
+        "tags": ["games"],
+        "summary": "Every edition (region x language x disc revision) of one title.",
+        "x-required-role": "viewer",
+        "parameters": [{ "$ref": "#/components/parameters/GameId" }],
+        "responses": {
+          "200": { "description": "The editions.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EditionList" } } } },
+          "404": { "$ref": "#/components/responses/Problem" },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      },
+      "post": {
+        "operationId": "createEdition",
+        "tags": ["games"],
+        "summary": "Bind a game to a region, language and disc revision.",
+        "description": "editions_identity_idx makes (game, region, language, revision) unique, so re-declaring the same disc is a 409 rather than a second row.",
+        "x-required-role": "curator",
+        "parameters": [{ "$ref": "#/components/parameters/GameId" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "region": { "type": "string", "maxLength": 32 }, "language": { "type": "string", "maxLength": 32 }, "revision": { "type": "string", "maxLength": 64 }, "source_identity": { "type": "string", "description": "Lowercase hex SHA-256 of the exact image this edition was observed against." }, "display_aspect": { "type": ["number", "null"], "exclusiveMinimum": 0 }, "locale": { "type": "string", "maxLength": 32 }, "compatibility_notes": { "type": "string", "maxLength": 4000 } } } } } },
+        "responses": {
+          "201": { "description": "Created.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Edition" } } } },
+          "404": { "$ref": "#/components/responses/Problem" },
+          "409": { "$ref": "#/components/responses/Problem" },
+          "422": { "$ref": "#/components/responses/Problem" },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/editions/{id}/profiles": {
+      "get": {
+        "operationId": "listProfiles",
+        "tags": ["profiles"],
+        "summary": "Every revision of one edition, lowest first.",
+        "description": "Deliberately unpaginated: the row count grows once per human publish click (internal/store/repo_profiles.go argues it).",
+        "x-required-role": "viewer",
+        "parameters": [{ "$ref": "#/components/parameters/EditionId" }],
+        "responses": {
+          "200": { "description": "The revision list.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProfileList" } } } },
+          "404": { "$ref": "#/components/responses/Problem" },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      },
+      "post": {
+        "operationId": "createDraftProfile",
+        "tags": ["profiles"],
+        "summary": "Start a new draft lineage for one edition.",
+        "description": "Takes no body: the revision number is server-owned, and a field that looks like one is refused rather than ignored.",
+        "x-required-role": "curator",
+        "parameters": [{ "$ref": "#/components/parameters/EditionId" }],
+        "responses": {
+          "201": { "description": "The new draft.", "headers": { "ETag": { "schema": { "type": "string" } }, "Location": { "schema": { "type": "string" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Profile" } } } },
+          "400": { "$ref": "#/components/responses/Problem" },
+          "404": { "$ref": "#/components/responses/Problem" },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/editions/{id}/profiles/import-manifest": {
+      "post": {
+        "operationId": "importManifestProfile",
+        "tags": ["portability"],
+        "summary": "Re-import a .gnprofile.json as a brand-new draft of this edition.",
+        "description": "Never an overwrite: ids are minted again and every internal reference is remapped, because a re-import that could target a published revision would be a way to edit what sessions are narrating (ADR-0015). sources_needing_bytes names the source hashes this appliance does not hold, i.e. what must be re-attached before the revision can be re-parsed or audited.",
+        "x-required-role": "curator",
+        "parameters": [{ "$ref": "#/components/parameters/EditionId" }, { "name": "force", "in": "query", "schema": { "type": "boolean" }, "description": "Accept a language or region mismatch against the target edition. For the deliberate case only." }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProfileManifest" } } } },
+        "responses": {
+          "201": { "description": "A new draft exists.", "content": { "application/json": { "schema": { "type": "object", "required": ["profile", "sources_needing_bytes", "report"], "properties": { "profile": { "$ref": "#/components/schemas/Profile" }, "sources_needing_bytes": { "type": "array", "items": { "type": "string" } }, "report": { "type": "object", "required": ["profile_id", "edition_id", "game_id", "created_catalog", "messages_written", "messages_withheld", "sources_registered", "missing_blobs", "present_blobs", "digest", "preferred_voice_id"], "properties": { "profile_id": { "type": "string" }, "edition_id": { "type": "string" }, "game_id": { "type": "string" }, "created_catalog": { "type": "boolean" }, "messages_written": { "type": "integer" }, "messages_withheld": { "type": "integer" }, "sources_registered": { "type": "integer" }, "missing_blobs": { "type": "array", "items": { "type": "string" } }, "present_blobs": { "type": "array", "items": { "type": "string" } }, "digest": { "type": "string" }, "preferred_voice_id": { "type": "string" } } } } } } }},
+          "409": { "$ref": "#/components/responses/Problem" },
+          "422": { "$ref": "#/components/responses/Problem" },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/editions/{id}/published": {
+      "get": {
+        "operationId": "getPublishedProfile",
+        "tags": ["profiles"],
+        "summary": "The one revision this edition serves to sessions.",
+        "description": "404 when nothing is published: a session that cannot name a revision must refuse to start rather than choose one (docs/spec/13).",
+        "x-required-role": "viewer",
+        "parameters": [{ "$ref": "#/components/parameters/EditionId" }],
+        "responses": {
+          "200": { "description": "The live revision.", "headers": { "ETag": { "schema": { "type": "string" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Profile" } } } },
+          "404": { "$ref": "#/components/responses/Problem" },
+          "409": { "$ref": "#/components/responses/Problem" },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/profiles/{id}": {
+      "get": {
+        "operationId": "getProfile",
+        "tags": ["profiles"],
+        "summary": "One revision, with its concurrency token.",
+        "x-required-role": "viewer",
+        "parameters": [{ "$ref": "#/components/parameters/ProfileId" }],
+        "responses": {
+          "200": { "description": "The revision. ETag is its quoted row_version; the writes below require it back as If-Match.", "headers": { "ETag": { "schema": { "type": "string" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Profile" } } } },
+          "404": { "$ref": "#/components/responses/Problem" },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/profiles/{id}/revisions": {
+      "post": {
+        "operationId": "createProfileRevision",
+        "tags": ["profiles"],
+        "summary": "Derive a new draft from this revision: the only way to edit shipped content.",
+        "description": "No If-Match: the parent may be immutable, which is exactly the case this call exists for, and a snapshot cannot corrupt the row it read.",
+        "x-required-role": "curator",
+        "parameters": [{ "$ref": "#/components/parameters/ProfileId" }],
+        "responses": {
+          "201": { "description": "The derived draft.", "headers": { "ETag": { "schema": { "type": "string" } }, "Location": { "schema": { "type": "string" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Profile" } } } },
+          "404": { "$ref": "#/components/responses/Problem" },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/profiles/{id}/status": {
+      "post": {
+        "operationId": "setProfileStatus",
+        "tags": ["profiles"],
+        "summary": "Move a revision along draft to review (and back), or retire a published one.",
+        "description": "to=published is refused with 409: publication is the validated, digested, pointer-swapped, audited act, not a column write. The reachable targets are in the revision's own next_states.",
+        "x-required-role": "curator",
+        "parameters": [{ "$ref": "#/components/parameters/ProfileId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["to"], "properties": { "to": { "$ref": "#/components/schemas/ProfileStatus" } } } } } },
+        "responses": {
+          "200": { "description": "Moved. ETag is the new row_version.", "headers": { "ETag": { "schema": { "type": "string" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Profile" } } } },
+          "400": { "$ref": "#/components/responses/Problem" },
+          "409": { "$ref": "#/components/responses/Problem" },
+          "412": { "$ref": "#/components/responses/Problem" },
+          "428": { "$ref": "#/components/responses/Problem" },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/profiles/{id}/publish": {
+      "post": {
+        "operationId": "publishProfile",
+        "tags": ["profiles"],
+        "summary": "Ship a review-ready revision, atomically archiving its predecessor.",
+        "description": "The publish gate runs first and lists every finding. A refusal is 422 with code CONTENT_RIGHTS_REVIEW_REQUIRED when the finding is the rights gate and VALIDATION_FAILED otherwise, and problems names every issue either way (docs/spec/03's review screen).",
+        "x-required-role": "curator",
+        "parameters": [{ "$ref": "#/components/parameters/ProfileId" }],
+        "responses": {
+          "200": { "description": "Published.", "headers": { "ETag": { "schema": { "type": "string" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Profile" } } } },
+          "409": { "$ref": "#/components/responses/Problem" },
+          "412": { "$ref": "#/components/responses/Problem" },
+          "422": { "$ref": "#/components/responses/Problem" },
+          "428": { "$ref": "#/components/responses/Problem" },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/profiles/{id}/publish-actions": {
+      "get": {
+        "operationId": "listPublishActions",
+        "tags": ["profiles"],
+        "summary": "The publication history of this revision's edition, newest first.",
+        "x-required-role": "viewer",
+        "parameters": [{ "$ref": "#/components/parameters/ProfileId" }, { "$ref": "#/components/parameters/Limit" }],
+        "responses": {
+          "200": { "description": "The audit trail.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PublishActionList" } } } },
+          "404": { "$ref": "#/components/responses/Problem" },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/profiles/{id}/messages": {
+      "get": {
+        "operationId": "listMessages",
+        "tags": ["messages"],
+        "summary": "One page of a revision's dialogue.",
+        "description": "profile_etag is the revision's current If-Match token, so the dialogue browser can edit from the list without one round trip per keystroke.",
+        "x-required-role": "viewer",
+        "parameters": [
+          { "$ref": "#/components/parameters/ProfileId" },
+          { "name": "kind", "in": "query", "schema": { "$ref": "#/components/schemas/TextKind" } },
+          { "name": "scene", "in": "query", "schema": { "type": "string" } },
+          { "name": "speaker", "in": "query", "schema": { "type": "string" } },
+          { "$ref": "#/components/parameters/Cursor" },
+          { "$ref": "#/components/parameters/Limit" }
+        ],
+        "responses": {
+          "200": { "description": "One page.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MessageList" } } } },
+          "400": { "$ref": "#/components/responses/Problem" },
+          "404": { "$ref": "#/components/responses/Problem" },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/profiles/{id}/messages/search": {
+      "get": {
+        "operationId": "searchMessages",
+        "tags": ["messages"],
+        "summary": "Full-text search inside one revision.",
+        "description": "bm25 is SQLite's own score, lower is better, passed through unmodified: a rescaled number invites comparisons across queries and SQLite versions it cannot support. A query shorter than the trigram minimum takes the prefix-scan path and scores 0, which is the store's honest this-was-not-ranked value.",
+        "x-required-role": "viewer",
+        "parameters": [{ "$ref": "#/components/parameters/ProfileId" }, { "name": "q", "in": "query", "required": true, "schema": { "type": "string", "minLength": 1 } }, { "$ref": "#/components/parameters/SearchLimit" }],
+        "responses": {
+          "200": { "description": "Ranked hits.", "headers": { "ETag": { "schema": { "type": "string" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MessageSearchResult" } } } },
+          "400": { "$ref": "#/components/responses/Problem" },
+          "404": { "$ref": "#/components/responses/Problem" },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/profiles/{id}/messages/{mid}": {
+      "get": {
+        "operationId": "getMessage",
+        "tags": ["messages"],
+        "summary": "One message with its display pages.",
+        "x-required-role": "viewer",
+        "parameters": [{ "$ref": "#/components/parameters/ProfileId" }, { "name": "mid", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": { "description": "The message and its pages.", "headers": { "ETag": { "schema": { "type": "string" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MessageDetail" } } } },
+          "404": { "$ref": "#/components/responses/Problem" },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      },
+      "patch": {
+        "operationId": "patchMessage",
+        "tags": ["messages"],
+        "summary": "Edit the speech rendering. original_text is not writable here.",
+        "description": "If-Match carries the profile revision's row version, which is the unit of concurrency: the store moves it exactly once per write, so two editors of one revision cannot silently overwrite each other (ADR-0015). A published or archived revision answers 409. A body carrying original_text answers 400 rather than being ignored.",
+        "x-required-role": "curator",
+        "parameters": [{ "$ref": "#/components/parameters/ProfileId" }, { "name": "mid", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["speech_text"], "additionalProperties": false, "properties": { "speech_text": { "type": "string", "maxLength": 8000 } } } } } },
+        "responses": {
+          "200": { "description": "Edited. ETag is the revision's new token.", "headers": { "ETag": { "schema": { "type": "string" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MessageDetail" } } } },
+          "400": { "$ref": "#/components/responses/Problem" },
+          "404": { "$ref": "#/components/responses/Problem" },
+          "409": { "$ref": "#/components/responses/Problem" },
+          "412": { "$ref": "#/components/responses/Problem" },
+          "422": { "$ref": "#/components/responses/Problem" },
+          "428": { "$ref": "#/components/responses/Problem" },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/profiles/{id}/characters": {
+      "get": {
+        "operationId": "listCharacters",
+        "tags": ["profiles"],
+        "summary": "A revision's roster.",
+        "x-required-role": "viewer",
+        "parameters": [{ "$ref": "#/components/parameters/ProfileId" }],
+        "responses": {
+          "200": { "description": "The roster.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CharacterList" } } } },
+          "404": { "$ref": "#/components/responses/Problem" },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/profiles/{id}/regions": {
+      "get": {
+        "operationId": "listRegions",
+        "tags": ["profiles"],
+        "summary": "A revision's OCR regions.",
+        "x-required-role": "viewer",
+        "parameters": [{ "$ref": "#/components/parameters/ProfileId" }],
+        "responses": {
+          "200": { "description": "The regions.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RegionList" } } } },
+          "404": { "$ref": "#/components/responses/Problem" },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/profiles/{id}/import": {
+      "post": {
+        "operationId": "importProfileFile",
+        "tags": ["portability"],
+        "summary": "Upload a script into a draft revision; the parse runs as a job.",
+        "description": "The bytes are hashed and committed to the asset store synchronously, so provenance exists whatever the parser then does, and the parse is queued as an import.file job: its progress and report are at GET /api/v1/jobs/{id} and on the event stream as job.* frames. Re-uploading the same bytes to the same revision reconciles by (source, source_message_id) instead of duplicating (docs/spec/02 Import resume by content hash). Two request shapes are accepted because the two clients differ: a browser sends multipart/form-data with a file part and the mapping as form fields; a script pipes the bytes with a Content-Type and the mapping as query parameters. rights=unknown is refused with 422 JOB_REQUIRES_INPUT rather than stored: a file the user handed over has a known rights position (docs/spec/01 invariant 6).",
+        "x-required-role": "curator",
+        "parameters": [
+          { "$ref": "#/components/parameters/ProfileId" },
+          { "$ref": "#/components/parameters/IdempotencyKeyOptional" },
+          { "name": "format", "in": "query", "schema": { "type": "string", "enum": ["csv", "tsv", "json", "jsonl", "txt"] } },
+          { "name": "rights", "in": "query", "schema": { "$ref": "#/components/schemas/RightsStatus" } },
+          { "name": "language", "in": "query", "schema": { "type": "string", "maxLength": 32 } },
+          { "name": "default_kind", "in": "query", "schema": { "$ref": "#/components/schemas/TextKind" } },
+          { "name": "trust", "in": "query", "schema": { "type": "number", "minimum": 0, "maximum": 1 } },
+          { "name": "file_name", "in": "query", "schema": { "type": "string" } },
+          { "name": "column_text", "in": "query", "schema": { "type": "string" } },
+          { "name": "column_id", "in": "query", "schema": { "type": "string" } },
+          { "name": "column_speaker", "in": "query", "schema": { "type": "string" } },
+          { "name": "column_kind", "in": "query", "schema": { "type": "string" } },
+          { "name": "column_scene", "in": "query", "schema": { "type": "string" } },
+          { "name": "column_page", "in": "query", "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": { "schema": { "type": "object", "required": ["file"], "properties": { "file": { "type": "string", "contentEncoding": "binary" }, "format": { "type": "string" }, "rights": { "type": "string" }, "language": { "type": "string" }, "default_kind": { "type": "string" }, "trust": { "type": "string" }, "column_text": { "type": "string" }, "column_id": { "type": "string" }, "column_speaker": { "type": "string" }, "column_kind": { "type": "string" }, "column_scene": { "type": "string" }, "column_page": { "type": "string" } } } },
+            "text/csv": { "schema": { "type": "string" } },
+            "text/tab-separated-values": { "schema": { "type": "string" } },
+            "application/json": { "schema": { "type": "string" } },
+            "text/plain": { "schema": { "type": "string" } }
+          }
+        },
+        "responses": {
+          "202": { "description": "Stored and queued.", "headers": { "Location": { "schema": { "type": "string" }, "description": "The job's path." } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ImportAccepted" } } } },
+          "404": { "$ref": "#/components/responses/Problem" },
+          "409": { "$ref": "#/components/responses/Problem" },
+          "413": { "$ref": "#/components/responses/Problem" },
+          "415": { "$ref": "#/components/responses/Problem" },
+          "422": { "$ref": "#/components/responses/Problem" },
+          "503": { "$ref": "#/components/responses/Problem" },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/profiles/{id}/export": {
+      "get": {
+        "operationId": "exportProfile",
+        "tags": ["portability"],
+        "summary": "Download this revision as a .gnprofile.json manifest.",
+        "description": "The default is rights-filtered: source pointers are always carried, and text derived from a source whose rights position is unresolved is withheld with a redacted_reason naming why (docs/spec/14). bytes=true additionally packs the source blobs into a .gnpack and needs acknowledge_copyright=true, which is a human decision this API never supplies on a caller's behalf.",
+        "x-required-role": "viewer",
+        "parameters": [
+          { "$ref": "#/components/parameters/ProfileId" },
+          { "name": "bytes", "in": "query", "schema": { "type": "boolean" } },
+          { "name": "acknowledge_copyright", "in": "query", "schema": { "type": "boolean" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "The manifest (application/json), or a .gnpack when bytes=true.",
+            "headers": {
+              "Content-Disposition": { "schema": { "type": "string" } },
+              "ETag": { "schema": { "type": "string" } },
+              "X-Profile-Sha256": { "schema": { "type": "string" }, "description": "The manifest's content digest." }
+            },
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ProfileManifest" } },
+              "application/x-tar": { "schema": { "type": "string", "contentEncoding": "binary" } }
+            }
+          },
+          "404": { "$ref": "#/components/responses/Problem" },
+          "422": { "$ref": "#/components/responses/Problem" },
+          "503": { "$ref": "#/components/responses/Problem" },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/jobs": {
+      "get": {
+        "operationId": "listJobs",
+        "tags": ["jobs"],
+        "summary": "The durable queue, newest first.",
+        "x-required-role": "viewer",
+        "parameters": [
+          { "name": "state", "in": "query", "schema": { "$ref": "#/components/schemas/JobState" } },
+          { "name": "kind", "in": "query", "schema": { "type": "string" } },
+          { "$ref": "#/components/parameters/Cursor" },
+          { "$ref": "#/components/parameters/Limit" }
+        ],
+        "responses": {
+          "200": { "description": "One page.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobList" } } } },
+          "400": { "$ref": "#/components/responses/Problem" },
+          "503": { "$ref": "#/components/responses/Problem" },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/jobs/{id}": {
+      "get": {
+        "operationId": "getJob",
+        "tags": ["jobs"],
+        "summary": "One job with its attempt history.",
+        "x-required-role": "viewer",
+        "parameters": [{ "$ref": "#/components/parameters/JobId" }],
+        "responses": {
+          "200": { "description": "The job.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobDetail" } } } },
+          "404": { "$ref": "#/components/responses/Problem" },
+          "503": { "$ref": "#/components/responses/Problem" },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/jobs/{id}/cancel": {
+      "post": {
+        "operationId": "cancelJob",
+        "tags": ["jobs"],
+        "summary": "Cancel a queued or running job (cooperative).",
+        "x-required-role": "operator",
+        "parameters": [{ "$ref": "#/components/parameters/JobId" }],
+        "responses": {
+          "200": { "description": "Cancelled.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Job" } } } },
+          "404": { "$ref": "#/components/responses/Problem" },
+          "409": { "$ref": "#/components/responses/Problem" },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/jobs/{id}/retry": {
+      "post": {
+        "operationId": "retryJob",
+        "tags": ["jobs"],
+        "summary": "Re-queue a failed or cancelled job.",
+        "x-required-role": "operator",
+        "parameters": [{ "$ref": "#/components/parameters/JobId" }],
+        "responses": {
+          "200": { "description": "Re-queued.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Job" } } } },
+          "404": { "$ref": "#/components/responses/Problem" },
+          "409": { "$ref": "#/components/responses/Problem" },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/api/v1/openapi.json": {
+      "get": {
+        "operationId": "getOpenAPIDocument",
+        "tags": ["contract"],
+        "summary": "This document, embedded in the binary that serves it.",
+        "description": "Public: it is how a client learns to authenticate, and a schema behind credentials cannot be the thing that writes them. It carries no game content, no paths and no secrets (ADR-0017).",
+        "x-required-role": "public",
+        "security": [],
+        "responses": {
+          "200": { "description": "The OpenAPI 3.1 document.", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "500": { "$ref": "#/components/responses/Problem" },
+          "default": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "gnSession": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "gn_session",
+        "description": "HttpOnly SameSite=Strict session cookie minted by POST /api/v1/auth/login."
+      },
+      "csrfToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-CSRF-Token",
+        "description": "Required with the session cookie on every unsafe method. Ignored for bearer-token callers, which a browser cannot attach cross-site."
+      },
+      "bearerToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "opaque",
+        "description": "Authorization: Bearer gn_…, minted by POST /api/v1/users/{id}/tokens or game-narrator admin token."
+      }
+    },
+    "parameters": {
+      "UserId": { "name": "id", "in": "path", "required": true, "description": "Account ULID. A malformed id answers 404, the same as an unknown one, so the route cannot enumerate id shapes.", "schema": { "type": "string" } },
+      "GameId": { "name": "id", "in": "path", "required": true, "description": "Game ULID or slug.", "schema": { "type": "string" } },
+      "EditionId": { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } },
+      "ProfileId": { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } },
+      "JobId": { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } },
+      "IdempotencyKeyOptional": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": false,
+        "description": "Honoured durably here rather than in the process's memory: the queue's unique idempotency_key column stores it, scoped to kind + principal + revision, so a retry after a dropped 202 gets the same job back instead of a second parse. Sending the same key with different bytes is a 422. The response cannot be replayed from a cache because the work may still be running; the job resource is the answer (ADR-0017).",
+        "schema": { "type": "string", "maxLength": 200 }
+      },
+      "Cursor": { "name": "cursor", "in": "query", "schema": { "type": "string" }, "description": "An opaque next_cursor issued by this service for the same list. Anything else is a 400, not an empty page." },
+      "Limit": { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 }, "description": "Hard upper bound 200. Out-of-range is refused rather than clamped: a clamped limit makes a client's 'give me everything' look successful while it silently received 50." },
+      "SearchLimit": { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 }, "description": "Search hits carry whole message rows, so the ceiling is tighter than a list's." },
+      "IdempotencyKey": { "name": "Idempotency-Key", "in": "header", "required": true, "description": "At most 200 characters. Same key + same body replays the stored response; same key + different body is a 422. Held in the process's memory only: a restart forgets it, and a retried POST then lands on the store's own uniqueness rules instead (ADR-0017).", "schema": { "type": "string", "maxLength": 200 } }
+    },
+    "responses": {
+      "Problem": {
+        "description": "RFC 9457 problem+json. code is the stable member of docs/spec/08's error contract; X-Request-Id correlates it with the server log and the event stream.",
+        "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } }
+      }
+    },
+    "schemas": {
+      "Problem": {
+        "type": "object",
+        "description": "An RFC 9457 problem document. `code` is the stable member of docs/spec/08's error contract and is present on every problem the catalog, profile, message and import handlers of ADR-0017 write; the authorization gate and the router's 404/405 (internal/api/middleware.go, ADR-0016) predate it and answer without one, so it is documented here rather than required.",
+        "required": ["type", "title", "status", "detail", "instance", "request_id"],
+        "properties": {
+          "type": { "type": "string", "description": "urn:game-narrator:error:<slug>" },
+          "title": { "type": "string" },
+          "status": { "type": "integer" },
+          "detail": { "type": "string" },
+          "instance": { "type": "string", "description": "The request path that produced it." },
+          "request_id": { "type": "string" },
+          "code": { "type": "string", "description": "One of: RESOURCE_NOT_FOUND, RESOURCE_CONFLICT, VALIDATION_FAILED, PROFILE_REVISION_CONFLICT, PROFILE_IMMUTABLE, PROFILE_TRANSITION_INVALID, CONTENT_RIGHTS_REVIEW_REQUIRED, UNKNOWN_GAME_EDITION, JOB_REQUIRES_INPUT, IDEMPOTENCY_KEY_REQUIRED, IDEMPOTENCY_KEY_REUSED, UPLOAD_TOO_LARGE, INVALID_PARAMETER, NOT_SUPPORTED, SUBSYSTEM_UNAVAILABLE, INTERNAL." },
+          "problems": { "type": "array", "items": { "type": "string" }, "description": "Every finding, for the publish gate and the importer report (docs/spec/03's review screen)." }
+        }
+      },
+      "HealthStatus": {
+        "type": "object",
+        "required": ["status", "checks"],
+        "properties": {
+          "status": { "type": "string", "enum": ["ok", "fail"] },
+          "checks": { "type": "object", "propertyNames": { "type": "string" }, "additionalProperties": { "type": "object" } }
+        }
+      },
+      "SystemInfo": {
+        "type": "object",
+        "required": ["version", "commit", "go_version", "os", "arch", "num_cpu", "started_at"],
+        "properties": {
+          "version": { "type": "string" },
+          "commit": { "type": "string" },
+          "go_version": { "type": "string" },
+          "os": { "type": "string" },
+          "arch": { "type": "string" },
+          "num_cpu": { "type": "integer" },
+          "started_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Role": { "type": "string", "enum": ["viewer", "curator", "operator", "developer", "admin"] },
+      "User": {
+        "type": "object",
+        "description": "No field can hold a password hash or a token digest.",
+        "required": ["id", "username", "role", "disabled", "created_at", "password_changed_at"],
+        "properties": {
+          "id": { "type": "string" },
+          "username": { "type": "string" },
+          "role": { "$ref": "#/components/schemas/Role" },
+          "disabled": { "type": "boolean" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "password_changed_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "UserWithRevocations": {
+        "type": "object",
+        "required": ["user", "sessions_revoked", "tokens_revoked"],
+        "properties": {
+          "user": { "$ref": "#/components/schemas/User" },
+          "sessions_revoked": { "type": "integer" },
+          "tokens_revoked": { "type": "integer" }
+        }
+      },
+      "Token": {
+        "type": "object",
+        "required": ["id", "name", "role", "created_at"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "role": { "$ref": "#/components/schemas/Role" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "last_used_at": { "type": "string", "format": "date-time" },
+          "expires_at": { "type": "string", "format": "date-time" },
+          "revoked_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Game": {
+        "type": "object",
+        "description": "A title family (docs/spec/02 Entity catalog: games). Metadata only: no row version, no content.",
+        "required": ["id", "slug", "title", "description", "platform", "user_tags", "created_at"],
+        "properties": {
+          "id": { "type": "string", "description": "ULID." },
+          "slug": { "type": "string", "maxLength": 80 },
+          "title": { "type": "string", "maxLength": 200 },
+          "description": { "type": "string", "maxLength": 4000 },
+          "platform": { "type": "string", "maxLength": 100 },
+          "user_tags": { "type": "array", "items": { "type": "string" } },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Edition": {
+        "type": "object",
+        "description": "One region/language/disc-revision binding (editions).",
+        "required": ["id", "game_id", "region", "language", "revision", "source_identity", "display_aspect", "locale", "compatibility_notes"],
+        "properties": {
+          "id": { "type": "string" },
+          "game_id": { "type": "string" },
+          "region": { "type": "string", "maxLength": 32 },
+          "language": { "type": "string", "maxLength": 32 },
+          "revision": { "type": "string", "maxLength": 64 },
+          "source_identity": { "type": "string", "description": "Lowercase hex SHA-256, or empty when no image was observed." },
+          "display_aspect": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+          "locale": { "type": "string", "maxLength": 32 },
+          "compatibility_notes": { "type": "string", "maxLength": 4000 }
+        }
+      },
+      "ProfileStatus": {
+        "type": "string",
+        "enum": ["draft", "review", "published", "archived"],
+        "description": "draft is editable; review is frozen for approval; published is immutable and what sessions pin; archived stays addressable but is no longer selectable. Archived is terminal."
+      },
+      "Profile": {
+        "type": "object",
+        "description": "One revision of one edition. row_version is not a field: it is the ETag header (quoted decimal), which is what If-Match carries back.",
+        "required": ["id", "edition_id", "revision_num", "parent_revision", "status", "manifest_digest", "next_states"],
+        "properties": {
+          "id": { "type": "string" },
+          "edition_id": { "type": "string" },
+          "revision_num": { "type": "integer", "minimum": 1 },
+          "parent_revision": { "type": ["integer", "null"], "minimum": 1 },
+          "status": { "$ref": "#/components/schemas/ProfileStatus" },
+          "manifest_digest": { "type": "string", "description": "Empty until a publication has computed it. It is also the first component of every audio cache key." },
+          "published_at": { "type": "string", "format": "date-time" },
+          "preferred_voice_id": { "type": "string" },
+          "publication_author": { "type": "string" },
+          "next_states": { "type": "array", "items": { "$ref": "#/components/schemas/ProfileStatus" }, "description": "The lifecycle moves this revision can still make, from the transition table." }
+        }
+      },
+      "PublishAction": {
+        "type": "object",
+        "description": "One entry of an edition's publication history: what shipped, what it retired, who decided, which digest was validated, and what the gate found.",
+        "required": ["id", "edition_id", "profile_id", "action", "result", "actor", "result_row_version", "problems", "created_at"],
+        "properties": {
+          "id": { "type": "string" },
+          "edition_id": { "type": "string" },
+          "profile_id": { "type": "string" },
+          "superseded_profile_id": { "type": "string" },
+          "action": { "type": "string", "enum": ["publish", "archive", "rejected"] },
+          "result": { "type": "string", "enum": ["succeeded", "rejected"] },
+          "actor": { "type": "string" },
+          "manifest_digest": { "type": "string" },
+          "expected_row_version": { "type": "integer" },
+          "result_row_version": { "type": "integer" },
+          "problems": { "type": "array", "items": { "type": "string" } },
+          "detail": { "type": "string", "description": "The writer's own context as a JSON document, e.g. {\"via\":\"SetProfileStatus\"}." },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "TextKind": {
+        "type": "string",
+        "enum": ["dialogue", "sign", "item", "menu", "tutorial", "system", "other"],
+        "description": "messages.text_kind: the content class that selects OCR defaults and speech rendering style."
+      },
+      "RightsStatus": {
+        "type": "string",
+        "enum": ["user_supplied", "licensed", "unknown"],
+        "description": "What may be done with a source's bytes. unknown is never accepted on an upload and never publishable (docs/spec/14)."
+      },
+      "AttributionStatus": {
+        "type": "string",
+        "enum": ["unknown", "proposed", "confirmed", "rejected"],
+        "description": "The confidence ladder behind speaker_id, kept separate from it: a name on screen is evidence, not a foreign key (docs/spec/02)."
+      },
+      "Message": {
+        "type": "object",
+        "description": "Canonical source text plus its renderings (messages). Not an occurrence, a page, an utterance or an audio asset.",
+        "required": ["id", "profile_id", "original_text", "markup", "normalized_text", "speech_text", "text_kind", "attribution_status", "attribution_confidence", "attribution_evidence", "flags", "revision", "created_at", "updated_at"],
+        "properties": {
+          "id": { "type": "string" },
+          "profile_id": { "type": "string" },
+          "source_id": { "type": "string", "description": "Absent when no source row backs the line, which is always the case for a manual entry." },
+          "source_message_id": { "type": "string", "description": "The source-side identity re-imports reconcile on. Present whenever source_id is." },
+          "original_text": { "type": "string", "description": "Exactly what the source said. Read-only through this API." },
+          "markup": { "type": "array", "items": { "type": "object" } },
+          "normalized_text": { "type": "string" },
+          "speech_text": { "type": "string", "description": "The curator's speaking rendering. The only writable text field." },
+          "language": { "type": "string" },
+          "text_kind": { "$ref": "#/components/schemas/TextKind" },
+          "scene_id": { "type": "string" },
+          "speaker_id": { "type": "string" },
+          "attribution_status": { "$ref": "#/components/schemas/AttributionStatus" },
+          "attribution_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "attribution_evidence": { "type": "array", "items": { "type": "object" } },
+          "flags": { "type": "object" },
+          "revision": { "type": "integer", "minimum": 1 },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "MessagePage": {
+        "type": "object",
+        "description": "One display page of a message (message_pages). A page is not an utterance.",
+        "required": ["message_id", "ordinal", "page_text", "visible_prefixes", "display_controls", "timing_json"],
+        "properties": {
+          "message_id": { "type": "string" },
+          "ordinal": { "type": "integer", "minimum": 1 },
+          "source_page_id": { "type": "string" },
+          "page_text": { "type": "string" },
+          "visible_prefixes": { "type": "array", "items": { "type": "string" } },
+          "display_controls": { "type": "array", "items": { "type": "object" } },
+          "timing_json": { "type": "object" }
+        }
+      },
+      "MessageDetail": {
+        "type": "object",
+        "description": "One message plus its display pages. pages is [] rather than absent when the message has none.",
+        "required": ["message", "pages"],
+        "properties": {
+          "message": { "$ref": "#/components/schemas/Message" },
+          "pages": { "type": "array", "items": { "$ref": "#/components/schemas/MessagePage" } }
+        }
+      },
+      "MessageHit": {
+        "type": "object",
+        "required": ["message", "bm25"],
+        "properties": {
+          "message": { "$ref": "#/components/schemas/Message" },
+          "bm25": { "type": "number", "description": "SQLite's bm25, lower is better. 0 means the prefix-scan path did not rank this hit." }
+        }
+      },
+      "Character": {
+        "type": "object",
+        "required": ["id", "profile_id", "name", "aliases", "visual_descriptors", "personality_summary", "role", "verified_source_refs", "status", "created_at"],
+        "properties": {
+          "id": { "type": "string" },
+          "profile_id": { "type": "string" },
+          "name": { "type": "string", "maxLength": 200 },
+          "aliases": { "type": "array", "items": { "type": "string" } },
+          "visual_descriptors": { "type": "array", "items": { "type": "object" } },
+          "personality_summary": { "type": "string", "maxLength": 4000 },
+          "role": { "type": "string", "maxLength": 100 },
+          "verified_source_refs": { "type": "array", "items": { "type": "string" } },
+          "portrait_asset_id": { "type": "string", "description": "A content hash, not a path: the bytes live in the asset store (ADR-0014)." },
+          "status": { "type": "string", "enum": ["proposed", "confirmed", "retired"], "description": "characters.status (games.CharacterStatus). Retired, not rejected: a name the reviewer decided against stays out of the roster rather than becoming a denial of the source." },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Region": {
+        "type": "object",
+        "description": "One named rectangle of the screen where text is read. Rect* are normalised [0,1] fractions of the display frame, so aspect conversion stays in the adapter (docs/spec/04).",
+        "required": ["id", "profile_id", "label", "region_type", "detect_method", "rect_x", "rect_y", "rect_w", "rect_h", "min_aspect", "max_aspect", "min_width_px", "min_height_px", "ocr_settings", "mask_asset_ids", "reliability", "revision", "updated_at"],
+        "properties": {
+          "id": { "type": "string" },
+          "profile_id": { "type": "string" },
+          "scene_id": { "type": "string" },
+          "label": { "type": "string", "maxLength": 200 },
+          "region_type": { "type": "string", "enum": ["textbox", "speaker_label", "subtitle", "sign", "item", "menu", "tutorial", "hud", "other"] },
+          "detect_method": { "type": "string", "enum": ["manual", "auto_discovered", "imported", "inferred"] },
+          "rect_x": { "type": "number", "minimum": 0, "maximum": 1 },
+          "rect_y": { "type": "number", "minimum": 0, "maximum": 1 },
+          "rect_w": { "type": "number", "minimum": 0, "maximum": 1 },
+          "rect_h": { "type": "number", "minimum": 0, "maximum": 1 },
+          "min_aspect": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+          "max_aspect": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+          "min_width_px": { "type": ["integer", "null"], "minimum": 1 },
+          "min_height_px": { "type": ["integer", "null"], "minimum": 1 },
+          "ocr_settings": { "type": "object" },
+          "mask_asset_ids": { "type": "array", "items": { "type": "string" } },
+          "reliability": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+          "revision": { "type": "integer", "minimum": 1 },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "JobState": {
+        "type": "string",
+        "enum": ["queued", "running", "succeeded", "failed", "cancelled", "recoverable", "requires_input"]
+      },
+      "Job": {
+        "type": "object",
+        "required": ["id", "kind", "state", "priority", "attempts", "max_attempts", "trace_id", "created_at", "updated_at"],
+        "properties": {
+          "id": { "type": "string" },
+          "kind": { "type": "string", "description": "import.file, voice.*, agent.*, system.noop." },
+          "state": { "$ref": "#/components/schemas/JobState" },
+          "priority": { "type": "integer" },
+          "attempts": { "type": "integer" },
+          "max_attempts": { "type": "integer" },
+          "payload": { "type": "object", "description": "The job's inputs as JSON, passed through rather than re-encoded." },
+          "result": { "type": "object", "description": "The job's outcome or structured error." },
+          "parent_id": { "type": "string" },
+          "trace_id": { "type": "string", "description": "The correlation id its events carry." },
+          "run_after": { "type": "string", "format": "date-time" },
+          "idempotency_key": { "type": "string" },
+          "lease_owner": { "type": "string" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "JobAttempt": {
+        "type": "object",
+        "required": ["attempt", "started_at", "outcome"],
+        "properties": {
+          "attempt": { "type": "integer" },
+          "started_at": { "type": "string", "format": "date-time" },
+          "finished_at": { "type": "string", "format": "date-time" },
+          "outcome": { "type": "string", "enum": ["running", "succeeded", "failed", "cancelled", "timed_out", "crashed", "requires_input"] },
+          "error": { "type": "string" }
+        }
+      },
+      "JobDetail": {
+        "type": "object",
+        "description": "A job plus the attempt history that makes a crash visible (docs/spec/13). It is spelled out rather than composed with allOf over Job, because the two shapes genuinely disagree on one member: internal/api/jobs.go's jobDetailResponse embeds the list DTO (whose `attempts` is an integer retry counter) and then re-declares `attempts` as the history array, and encoding/json keeps the shallower field — so the detail response carries the history and *not* the count, which only the list gives. ADR-0017 records that as a deviation owned by the queue milestone's file rather than renaming it from here.",
+        "required": ["id", "kind", "state", "priority", "attempts", "max_attempts", "trace_id", "created_at", "updated_at"],
+        "properties": {
+          "id": { "type": "string" },
+          "kind": { "type": "string" },
+          "state": { "$ref": "#/components/schemas/JobState" },
+          "priority": { "type": "integer" },
+          "attempts": { "type": "array", "items": { "$ref": "#/components/schemas/JobAttempt" }, "description": "The attempt history, not the retry count: see the schema description." },
+          "max_attempts": { "type": "integer" },
+          "payload": { "type": "object" },
+          "result": { "type": "object" },
+          "parent_id": { "type": "string" },
+          "trace_id": { "type": "string" },
+          "run_after": { "type": "string", "format": "date-time" },
+          "idempotency_key": { "type": "string" },
+          "lease_owner": { "type": "string" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ImportAccepted": {
+        "type": "object",
+        "description": "The upload is durable and the parse is queued. Progress and the parse report are the job's.",
+        "required": ["job_id", "job_kind", "profile_id", "sha256", "size", "media_type", "state", "detail"],
+        "properties": {
+          "job_id": { "type": "string" },
+          "job_kind": { "type": "string", "const": "import.file" },
+          "profile_id": { "type": "string" },
+          "sha256": { "type": "string", "description": "The content address the bytes were committed under." },
+          "size": { "type": "integer", "minimum": 0 },
+          "media_type": { "type": "string", "description": "Sniffed from the bytes, never from a caller-supplied header." },
+          "state": { "$ref": "#/components/schemas/JobState" },
+          "detail": { "type": "string" }
+        }
+      },
+      "ImportReport": {
+        "type": "object",
+        "description": "The result_json of a succeeded import.file job: what the parse saw, in the shape docs/spec/03's review screen reads.",
+        "required": ["source_id", "sha256", "size", "media_type", "adapter", "format", "stats", "warnings", "warnings_truncated", "messages_inserted", "messages_updated", "pages_written", "write_batches", "reused_source", "duration"],
+        "properties": {
+          "source_id": { "type": "string" },
+          "sha256": { "type": "string" },
+          "size": { "type": "integer" },
+          "media_type": { "type": "string" },
+          "adapter": { "type": "string", "description": "id@semver, so which importer build produced these rows stays answerable (docs/spec/04)." },
+          "format": { "type": "string" },
+          "stats": { "type": "object", "required": ["rows", "imported", "skipped"], "properties": { "rows": { "type": "integer" }, "imported": { "type": "integer" }, "skipped": { "type": "integer" } } },
+          "warnings": { "type": "array", "items": { "type": "object", "required": ["line", "msg"], "properties": { "line": { "type": "integer" }, "column": { "type": "string" }, "msg": { "type": "string" } } } },
+          "warnings_truncated": { "type": "boolean" },
+          "messages_inserted": { "type": "integer" },
+          "messages_updated": { "type": "integer" },
+          "pages_written": { "type": "integer" },
+          "write_batches": { "type": "integer" },
+          "reused_source": { "type": "boolean" },
+          "duration": { "type": "string" }
+        }
+      },
+      "ProfileManifest": {
+        "type": "object",
+        "description": "The .gnprofile.json document (docs/spec/17 formalised, docs/spec/02 Profile portability). It carries source *pointers* and rights-filtered text; the bytes themselves never travel by default.",
+        "required": ["schema_version", "profile_id", "edition", "publication", "messages", "manifest_digest"],
+        "properties": {
+          "schema_version": { "type": "string", "const": "1.0" },
+          "profile_id": { "type": "string" },
+          "edition": {
+            "type": "object",
+            "required": ["slug", "title"],
+            "properties": {
+              "slug": { "type": "string" },
+              "title": { "type": "string" },
+              "platform": { "type": "string" },
+              "region": { "type": "string" },
+              "language": { "type": "string" },
+              "revision": { "type": "string" },
+              "locale": { "type": "string" },
+              "identity": { "type": ["string", "null"] }
+            }
+          },
+          "publication": {
+            "type": "object",
+            "required": ["status", "revision"],
+            "properties": {
+              "status": { "$ref": "#/components/schemas/ProfileStatus" },
+              "revision": { "type": "integer" },
+              "parent_revision": { "type": ["integer", "null"] },
+              "author": { "type": "string" }
+            }
+          },
+          "sources": { "type": "array", "items": { "type": "object" } },
+          "characters": { "type": "array", "items": { "type": "object" } },
+          "scenes": { "type": "array", "items": { "type": "object" } },
+          "regions": { "type": "array", "items": { "type": "object" } },
+          "messages": { "type": "array", "items": { "type": "object" } },
+          "message_edges": { "type": "array", "items": { "type": "object" } },
+          "speaker_assertions": { "type": "array", "items": { "type": "object" } },
+          "manifest_digest": { "type": "string", "description": "A fingerprint of content, computed so it survives a re-import's id remapping." }
+        }
+      }
+,
+      "GameList": {
+        "type": "object",
+        "description": "One page of the library. `next_cursor` is present exactly when another page exists: an absent member is the end of the walk, not an empty page. A token this service did not issue is a 400.",
+        "required": ["games"],
+        "properties": {
+          "games": { "type": "array", "items": { "$ref": "#/components/schemas/Game" } },
+          "next_cursor": { "type": "string" }
+        }
+      },
+      "EditionList": {
+        "type": "object",
+        "description": "Every edition of one game. Unpaginated by decision: a title has a handful (region × language × disc revision), and internal/store/repo_catalog.go reads them as one slice.",
+        "required": ["editions"],
+        "properties": {
+          "editions": { "type": "array", "items": { "$ref": "#/components/schemas/Edition" } }
+        }
+      },
+      "ProfileList": {
+        "type": "object",
+        "description": "Every revision of one edition, lowest revision_num first.",
+        "required": ["profiles"],
+        "properties": {
+          "profiles": { "type": "array", "items": { "$ref": "#/components/schemas/Profile" } }
+        }
+      },
+      "MessageList": {
+        "type": "object",
+        "description": "One page of a revision's dialogue. `profile_etag` is the revision's current If-Match token, so the dialogue browser can edit straight from this page instead of fetching the profile once per keystroke. It is the same integer as the profile's ETag header, from the same row — a convenience member, not a second token.",
+        "required": ["messages", "profile_etag"],
+        "properties": {
+          "messages": { "type": "array", "items": { "$ref": "#/components/schemas/Message" } },
+          "profile_etag": { "type": "string", "description": "Quoted decimal row_version, identical to the ETag of GET /api/v1/profiles/{id}." },
+          "next_cursor": { "type": "string" }
+        }
+      },
+      "MessageSearchResult": {
+        "type": "object",
+        "description": "A ranked hit list. A phrase that occurs nowhere is an empty array, never a 404: silence and absence are different facts and the browser must show the second one.",
+        "required": ["query", "hits"],
+        "properties": {
+          "query": { "type": "string", "description": "Echoed so a client can tell which search this page answers." },
+          "hits": { "type": "array", "items": { "$ref": "#/components/schemas/MessageHit" } }
+        }
+      },
+      "CharacterList": {
+        "type": "object",
+        "description": "One revision's roster. Always an array, never null: a generated client typed as Character[] must not receive null.",
+        "required": ["characters"],
+        "properties": {
+          "characters": { "type": "array", "items": { "$ref": "#/components/schemas/Character" } }
+        }
+      },
+      "RegionList": {
+        "type": "object",
+        "description": "One revision's region set — every rectangle text is read from, with the values that may be null because the source did not state them.",
+        "required": ["regions"],
+        "properties": {
+          "regions": { "type": "array", "items": { "$ref": "#/components/schemas/Region" } }
+        }
+      },
+      "PublishActionList": {
+        "type": "object",
+        "description": "An edition's publication history, newest first: what shipped, what it retired, what was refused and which findings refused it (docs/spec/16 answers those from the database).",
+        "required": ["publish_actions"],
+        "properties": {
+          "publish_actions": { "type": "array", "items": { "$ref": "#/components/schemas/PublishAction" } }
+        }
+      },
+      "JobList": {
+        "type": "object",
+        "description": "One page of the durable queue.",
+        "required": ["jobs"],
+        "properties": {
+          "jobs": { "type": "array", "items": { "$ref": "#/components/schemas/Job" } },
+          "next_cursor": { "type": "string" }
+        }
+      }
+    }
+  }
+}

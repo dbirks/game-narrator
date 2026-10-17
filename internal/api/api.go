@@ -23,9 +23,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dbirks/game-narrator/internal/assets"
 	"github.com/dbirks/game-narrator/internal/auth"
 	"github.com/dbirks/game-narrator/internal/bootstrap"
 	"github.com/dbirks/game-narrator/internal/events"
+	"github.com/dbirks/game-narrator/internal/games/adapter"
 	"github.com/dbirks/game-narrator/internal/store"
 	"github.com/dbirks/game-narrator/internal/webassets"
 )
@@ -103,6 +105,27 @@ type Server struct {
 	// carried separately from authSvc because the service owns credential rules
 	// and never list-and-manage routes; the routes need both.
 	users *store.AuthStore
+
+	// store backs the catalog, profile, message, publication and search routes
+	// (catalog.go, profiles.go, messages.go, importexport.go). nil answers 503
+	// there for the same honest-degradation reason as hub and jobStore: "no
+	// games" and "no catalogue wired" are different facts, and an empty list
+	// reports the wrong one.
+	store *store.Store
+
+	// assets is the content-addressed blob store an upload is committed to
+	// before its job is queued (ADR-0014); adapters is the parser registry
+	// linked into this build; jobQueue is what makes POST …/import a 202 instead
+	// of a request-path parse.
+	assets   assets.Store
+	adapters *adapter.Registry
+	jobQueue JobQueue
+
+	// idempotency remembers the responses of keyed creates so a retried POST
+	// cannot create two games (docs/spec/08 "Conventions"). It is per-process by
+	// construction and ADR-0017 says so out loud; the durable queue owns the
+	// cross-restart case through its own idempotency_key column.
+	idempotency *idempotencyStore
 }
 
 // ReadinessFunc answers GET /api/v1/health/ready. It returns the per-dependency
@@ -168,6 +191,34 @@ func WithAuthPolicy(p *auth.Policy) Option {
 	}
 }
 
+// WithStore wires the catalogue behind the game, edition, profile, message,
+// publication and search routes. As with every other subsystem option, an
+// unwired server says 503 rather than serving an empty library.
+func WithStore(st *store.Store) Option {
+	return func(s *Server) { s.store = st }
+}
+
+// WithImport wires the three collaborators an import needs: the asset store the
+// upload is committed to, the adapter registry that decides what can be read,
+// and the queue the parse is handed to. Passing them together is deliberate —
+// an import missing one of the three answers a different 503 sentence, and the
+// option makes "partially wired" hard to express at the call site.
+func WithImport(as assets.Store, reg *adapter.Registry, queue JobQueue) Option {
+	return func(s *Server) {
+		s.assets = as
+		s.adapters = reg
+		s.jobQueue = queue
+	}
+}
+
+// JobQueue is the slice of the durable queue this package uses: enqueue one job,
+// learn whether it was new. *jobs.Runner satisfies it (the production wiring,
+// because the runner is what publishes job.queued), and so does a bare
+// *store.JobsStore for a test that wants the row without a worker.
+type JobQueue interface {
+	Enqueue(ctx context.Context, p store.EnqueueParams) (*store.Job, bool, error)
+}
+
 // WithTrustedProxy declares CIDR (or single-address) strings whose
 // X-Forwarded-Proto may set the Secure cookie flag. An unparsable entry is
 // logged and skipped rather than silently widening trust: the safe reading of a
@@ -209,11 +260,12 @@ func New(build bootstrap.BuildInfo, startedAt time.Time, log *slog.Logger, opts 
 		log = slog.Default()
 	}
 	s := &Server{
-		build:     build,
-		startedAt: startedAt.UTC(),
-		log:       log,
-		webFS:     webassets.FS(),
-		policy:    auth.DefaultPolicy(),
+		build:       build,
+		startedAt:   startedAt.UTC(),
+		log:         log,
+		webFS:       webassets.FS(),
+		policy:      auth.DefaultPolicy(),
+		idempotency: newIdempotencyStore(),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -240,7 +292,7 @@ func (s *Server) Handler() http.Handler {
 	// Public, in the sense of docs/spec/08's health/system contract: no game
 	// content, no paths, no secrets. Every other route is granted a role by
 	// auth.DefaultPolicy, keyed by these same method+path pairs —
-	// TestEveryRegisteredRouteIsCovered is what keeps the two lists from
+	// TestEveryRegisteredRouteIsCoveredByTheScopeTable is what keeps the two lists from
 	// drifting.
 	routes.register(mux, http.MethodGet, "/api/v1/health/live", s.handleLive)
 	routes.register(mux, http.MethodGet, "/api/v1/health/ready", s.handleReady)
@@ -273,6 +325,40 @@ func (s *Server) Handler() http.Handler {
 	routes.register(mux, http.MethodGet, "/api/v1/jobs/{id}", s.handleJobGet)
 	routes.register(mux, http.MethodPost, "/api/v1/jobs/{id}/cancel", s.handleJobCancel)
 	routes.register(mux, http.MethodPost, "/api/v1/jobs/{id}/retry", s.handleJobRetry)
+
+	// Catalog, profile lifecycle and portability (docs/spec/08 "APIs": games,
+	// editions, profiles, messages, characters, regions, import, export,
+	// publish). Which role each one needs is the scope table's business, not this
+	// file's; TestEveryRegisteredRouteIsCoveredByTheScopeTable and
+	// TestOpenAPIDocMatchesTheRouter are what keep the router, the table and the
+	// contract from drifting apart (ADR-0017).
+	routes.register(mux, http.MethodGet, "/api/v1/games", s.handleGamesList)
+	routes.register(mux, http.MethodPost, "/api/v1/games", s.handleGameCreate)
+	routes.register(mux, http.MethodGet, "/api/v1/games/{id}", s.handleGameGet)
+	routes.register(mux, http.MethodPatch, "/api/v1/games/{id}", s.handleGamePatch)
+	routes.register(mux, http.MethodGet, "/api/v1/games/{id}/editions", s.handleEditionList)
+	routes.register(mux, http.MethodPost, "/api/v1/games/{id}/editions", s.handleEditionCreate)
+	routes.register(mux, http.MethodGet, "/api/v1/editions/{id}/profiles", s.handleProfileListForEdition)
+	routes.register(mux, http.MethodPost, "/api/v1/editions/{id}/profiles", s.handleProfileDraftCreate)
+	routes.register(mux, http.MethodPost, "/api/v1/editions/{id}/profiles/import-manifest", s.handleImportManifest)
+	routes.register(mux, http.MethodGet, "/api/v1/editions/{id}/published", s.handlePublishedProfile)
+	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}", s.handleProfileGet)
+	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/revisions", s.handleProfileRevision)
+	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/status", s.handleProfileStatus)
+	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/publish", s.handleProfilePublish)
+	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/publish-actions", s.handlePublishActions)
+	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/messages", s.handleMessagesList)
+	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/messages/search", s.handleMessageSearch)
+	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/messages/{mid}", s.handleMessageGet)
+	routes.register(mux, http.MethodPatch, "/api/v1/profiles/{id}/messages/{mid}", s.handleMessagePatch)
+	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/characters", s.handleProfileCharacters)
+	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/regions", s.handleProfileRegions)
+	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/import", s.handleImportFile)
+	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/export", s.handleProfileExport)
+
+	// The machine-readable contract itself. Public: it is how a client learns to
+	// authenticate, and it carries no game content and no host paths.
+	routes.register(mux, http.MethodGet, "/api/v1/openapi.json", s.handleOpenAPI)
 
 	// "/" is the least specific pattern, so it only receives requests that no
 	// method+path pattern above matched.

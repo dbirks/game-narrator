@@ -138,6 +138,25 @@ func DefaultPolicy() *Policy {
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/games/{id}/profiles", Access: Require(RoleViewer)},
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/games/{id}/download", Access: Require(RoleViewer)},
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/games/{id}/export", Access: Require(RoleCurator)},
+		// The catalog reads of ADR-0017, spelled out because the generic
+		// /api/v1/games/{rest...} and /api/v1/profiles/{rest...} rules below are
+		// *curator* rules — correct for writes, wrong for the library browser a
+		// viewer is (docs/spec/09): a viewer page has to be able to read the
+		// library, an edition's revisions and a revision's dialogue.
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/games/{id}/editions", Access: Require(RoleViewer)},
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/editions/{id}/profiles", Access: Require(RoleViewer)},
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/editions/{id}/published", Access: Require(RoleViewer)},
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/profiles/{id}", Access: Require(RoleViewer)},
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/profiles/{id}/messages", Access: Require(RoleViewer)},
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/profiles/{id}/messages/search", Access: Require(RoleViewer)},
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/profiles/{id}/publish-actions", Access: Require(RoleViewer)},
+		// An export is viewer-readable because its default form is the
+		// rights-filtered manifest (docs/spec/02 "Profile portability"): text
+		// derived from a source whose rights position is unresolved is withheld
+		// by profileio itself, and the .gnpack form that carries the bytes needs
+		// the copyright acknowledgement the route refuses to supply on a
+		// caller's behalf.
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/profiles/{id}/export", Access: Require(RoleViewer)},
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/profiles/{id}/characters", Access: Require(RoleViewer)},
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/profiles/{id}/regions", Access: Require(RoleViewer)},
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/profiles/{id}/messages/{mid}", Access: Require(RoleViewer)},
@@ -145,12 +164,21 @@ func DefaultPolicy() *Policy {
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/jobs/{id}", Access: Require(RoleViewer)},
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/diagnostics/{id}", Access: Require(RoleViewer)},
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/events", Access: Require(RoleViewer)},
-		Grant{Method: http.MethodGet, Pattern: "/api/v1/openapi.json", Access: Require(RoleViewer)},
+		// The contract is how a client learns to authenticate, so it cannot sit
+		// behind the credential it describes. It carries no game content, no
+		// paths and no secrets, and docs/spec/09's generated TypeScript client
+		// is built from this file (docs/spec/08 "Conventions", ADR-0017). This is
+		// the one ADR-0016 grant Milestone 1 widened; the fail-closed default for
+		// an *unknown* path is untouched.
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/openapi.json", Access: Public()},
 
 		// Anything else under a content prefix — including every write to a game,
-		// profile, source or publication route that a later milestone registers —
-		// is curator.
+		// edition, profile, source or publication route that a later milestone
+		// registers — is curator. The /api/v1/editions prefix joins games and
+		// profiles here for the same reason: an edition's revisions are curated
+		// content, and the readable half of it is enumerated above.
 		Grant{Method: "", Pattern: "/api/v1/games/{rest...}", Access: Require(RoleCurator)},
+		Grant{Method: "", Pattern: "/api/v1/editions/{rest...}", Access: Require(RoleCurator)},
 		Grant{Method: "", Pattern: "/api/v1/profiles/{rest...}", Access: Require(RoleCurator)},
 		Grant{Method: "", Pattern: "/api/v1/sources/{rest...}", Access: Require(RoleCurator)},
 		Grant{Method: "", Pattern: "/api/v1/scenes/{rest...}", Access: Require(RoleCurator)},
