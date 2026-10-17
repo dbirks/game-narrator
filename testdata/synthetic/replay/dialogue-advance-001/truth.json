@@ -1,0 +1,674 @@
+[
+ {
+  "file": "frame-001.png",
+  "ts_ns": 100000000,
+  "box_present": false,
+  "box_alpha": 0.0,
+  "text": "",
+  "text_is_full_line": false,
+  "line": "",
+  "variant": "empty_scene",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-002.png",
+  "ts_ns": 200000000,
+  "box_present": false,
+  "box_alpha": 0.0,
+  "text": "",
+  "text_is_full_line": false,
+  "line": "",
+  "variant": "empty_scene",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-003.png",
+  "ts_ns": 300000000,
+  "box_present": false,
+  "box_alpha": 0.0,
+  "text": "",
+  "text_is_full_line": false,
+  "line": "",
+  "variant": "empty_scene",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-004.png",
+  "ts_ns": 400000000,
+  "box_present": true,
+  "box_alpha": 0.45,
+  "text": "",
+  "text_is_full_line": false,
+  "line": "",
+  "variant": "box_appearing",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-005.png",
+  "ts_ns": 500000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "",
+  "text_is_full_line": false,
+  "line": "",
+  "variant": "box_appearing",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-006.png",
+  "ts_ns": 600000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "The",
+  "text_is_full_line": false,
+  "line": "a",
+  "variant": "revealing",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-007.png",
+  "ts_ns": 700000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "The harbour",
+  "text_is_full_line": false,
+  "line": "a",
+  "variant": "revealing",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-008.png",
+  "ts_ns": 800000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "The harbour bell",
+  "text_is_full_line": false,
+  "line": "a",
+  "variant": "revealing",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-009.png",
+  "ts_ns": 900000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "The harbour bell rang",
+  "text_is_full_line": false,
+  "line": "a",
+  "variant": "revealing",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-010.png",
+  "ts_ns": 1000000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "The harbour bell rang twice",
+  "text_is_full_line": false,
+  "line": "a",
+  "variant": "revealing",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-011.png",
+  "ts_ns": 1100000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "The harbour bell rang twice before",
+  "text_is_full_line": false,
+  "line": "a",
+  "variant": "revealing",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-012.png",
+  "ts_ns": 1200000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "The harbour bell rang twice before anyone",
+  "text_is_full_line": false,
+  "line": "a",
+  "variant": "revealing",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-013.png",
+  "ts_ns": 1300000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "The harbour bell rang twice before anyone looked up.",
+  "text_is_full_line": true,
+  "line": "a",
+  "variant": "revealing",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-014.png",
+  "ts_ns": 1400000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "The harbour bell rang twice before anyone looked up.",
+  "text_is_full_line": true,
+  "line": "a",
+  "variant": "stable",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-015.png",
+  "ts_ns": 1500000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "The harbour bell rang twice before anyone looked up.",
+  "text_is_full_line": true,
+  "line": "a",
+  "variant": "stable",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-016.png",
+  "ts_ns": 1600000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "The harbour bell rang twice before anyone looked up.",
+  "text_is_full_line": true,
+  "line": "a",
+  "variant": "stable",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-017.png",
+  "ts_ns": 1700000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "The harbour bell rang twice before anyone looked up.",
+  "text_is_full_line": true,
+  "line": "a",
+  "variant": "stable",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-018.png",
+  "ts_ns": 1800000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "The harbour bell rang twice before anyone looked up.",
+  "text_is_full_line": true,
+  "line": "a",
+  "variant": "stable",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-019.png",
+  "ts_ns": 1900000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "Nobody in the village had seen that boat before.",
+  "text_is_full_line": true,
+  "line": "b",
+  "variant": "page_two",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-020.png",
+  "ts_ns": 2000000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "Nobody in the village had seen that boat before.",
+  "text_is_full_line": true,
+  "line": "b",
+  "variant": "page_two",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-021.png",
+  "ts_ns": 2100000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "Nobody in the village had seen that boat before.",
+  "text_is_full_line": true,
+  "line": "b",
+  "variant": "page_two",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-022.png",
+  "ts_ns": 2200000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "Nobody in the village had seen that boat before.",
+  "text_is_full_line": true,
+  "line": "b",
+  "variant": "page_two",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-023.png",
+  "ts_ns": 2300000000,
+  "box_present": false,
+  "box_alpha": 0.0,
+  "text": "",
+  "text_is_full_line": false,
+  "line": "",
+  "variant": "box_dismissed",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-024.png",
+  "ts_ns": 2400000000,
+  "box_present": false,
+  "box_alpha": 0.0,
+  "text": "",
+  "text_is_full_line": false,
+  "line": "",
+  "variant": "box_dismissed",
+  "rect": {
+   "x": 0.096875,
+   "y": 0.75625,
+   "w": 0.80625,
+   "h": 0.158333
+  },
+  "box": {
+   "x": 0.07,
+   "y": 0.72,
+   "w": 0.86,
+   "h": 0.23
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ }
+]
