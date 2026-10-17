@@ -24,7 +24,7 @@ RUN_GATES := test-unit test-ui diagnostics release-snapshot bench \
              test-replay test-dolphin test-models test-hardware
 
 .PHONY: bootstrap dev build web-build test-unit test-replay test-ui test-dolphin test-models \
-        test-hardware test-full lint release-snapshot diagnostics bench
+        test-hardware test-full lint release-snapshot diagnostics bench soak
 
 ## web-build: build the React UI and stage it for go:embed
 web-build:
@@ -209,6 +209,16 @@ release-snapshot:
 ## checks. Exits 1 only when a configured component is actually broken.
 diagnostics: build
 	$(BIN) doctor --dev
+
+## soak: the docs/spec/12 long soak pair — 1h of replay load, then 2h of
+## simulated provider/network chaos (the TestSoakLong budgets; ADR-0045).
+## Each run gets an explicit -timeout that outlives the run plus the bounded
+## stop phase. Hours-long by design, so it is not part of test-full; the
+## race-enabled coverage of the same composition is TestSoakShort in
+## test-unit. Reports land under artifacts/soak/<run-id>/.
+soak:
+	@GAME_NARRATOR_SOAK_DURATION=1h go test -count=1 -timeout 1h15m ./internal/soak/ -run TestSoakLong -v
+	@GAME_NARRATOR_SOAK_DURATION=2h GAME_NARRATOR_SOAK_CHAOS=1 go test -count=1 -timeout 2h15m ./internal/soak/ -run TestSoakLong -v
 
 ## help: list targets
 .PHONY: help
