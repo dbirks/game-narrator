@@ -1,7 +1,8 @@
 # Operational manuals
 
 The twelve runbooks required by [docs/spec/13](../spec/13-observability-and-resilience.md),
-"Operational manuals required". Each file states its purpose, preconditions,
+"Operational manuals required", plus the UNO Q hardware-smoke runbook (M8,
+docs/spec/16). Each file states its purpose, preconditions,
 steps (real commands), verification, and what NOT to do. Anything that depends
 on a feature that is not committed yet is marked `NOT YET IMPLEMENTED` with the
 tracking item, and hardware-dependent claims are marked `NOT VERIFIED` per
@@ -21,6 +22,7 @@ AGENTS.md rule 12.
 | Diagnosing wrong speaker | [10-diagnosing-wrong-speaker.md](10-diagnosing-wrong-speaker.md) |
 | Purging redacted support bundles | [11-purging-support-bundles.md](11-purging-support-bundles.md) |
 | Rollback after failed release | [12-rollback-after-failed-release.md](12-rollback-after-failed-release.md) |
+| UNO Q hardware smoke (M8) | [13-uno-q-hardware-smoke.md](13-uno-q-hardware-smoke.md) |
 
 Blocked items these manuals point at are tracked in
 [docs/status/blocked.md](../status/blocked.md); the release runbook is
