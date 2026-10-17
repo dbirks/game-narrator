@@ -1,0 +1,44 @@
+# GN-T046 (mode S) — the voice is missing on the serving replica.
+# Catalog: docs/test-plan/scenario-catalog.md GN-T046 "Gateway routes voice
+# request to unregistered replica — S,L — affinity/fallback; never wrong
+# builtin voice".
+#
+# The TTS replica answers the gateway's unknown-voice error for the
+# scenario's voice. The harness must never substitute a different or
+# builtin voice: every speech event names the configured voice, and the
+# terminal outcome is either that voice or silence with a reason.
+# Every frame and sentence here is generated (docs/spec/11 "Fixture origins").
+schema_version: 1
+catalog: GN-T046
+id: synthetic/gn-t046-voice-missing
+origin: generated_synthetic
+profile: dialogue-advance-001
+mode: frame_replay
+input:
+  frames_dir: testdata/synthetic/replay/dialogue-advance-001
+  timestamps: timestamps.json
+inference:
+  decision: recorded
+  tts: recorded
+  voice: synthetic-narrator
+faults:
+  - kind: voice_missing_on_replica
+    voice: synthetic-narrator
+assertions:
+  # The fault fired, and only once.
+  - type: fault_count
+    kind: voice_missing_on_replica
+    count: 1
+  # Never a different voice: every speech event names synthetic-narrator,
+  # and the outcome for it is silence with a reason (voice_missing).
+  - type: no_voice_substitution
+    voice: synthetic-narrator
+  # The outage is at the voice layer, not the text layer: both lines still
+  # committed.
+  - type: message_committed_count
+    message_id: demo-page-1
+    count: 1
+  - type: message_committed_count
+    message_id: demo-page-2
+    count: 1
+  - type: no_stale_generation_applied

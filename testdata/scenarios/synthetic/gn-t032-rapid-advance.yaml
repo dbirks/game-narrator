@@ -1,0 +1,60 @@
+# GN-T032 (mode S) — rapid textbox advance with dropped frames.
+# Catalog: docs/test-plan/scenario-catalog.md GN-T032 "Textbox appears/
+# disappears rapidly — S,R,D,L — no duplicate or stale speech; event fences".
+#
+# The clip advances from page 1 to page 2 at capture time 1900 ms. Two frames
+# around the advance (1500..1600 ms) are dropped by the fault-injection
+# layer: both harness layers (the pipeline replay and the provider sidecar)
+# see the same withheld frames, and the recognition must still commit both
+# lines, cancel the first line's audio at the advance, and keep every line
+# fenced. Every frame and sentence here is generated (docs/spec/11 "Fixture
+# origins"); the origin field carries that claim.
+schema_version: 1
+catalog: GN-T032
+id: synthetic/gn-t032-rapid-advance
+origin: generated_synthetic
+profile: dialogue-advance-001
+mode: frame_replay
+input:
+  frames_dir: testdata/synthetic/replay/dialogue-advance-001
+  timestamps: timestamps.json
+inference:
+  decision: recorded
+  tts: recorded
+  voice: synthetic-narrator
+faults:
+  # Window [from_ms, to_ms) on the capture clock: the frames at 1500 and
+  # 1600 ms are withheld, so four of page 1's stable frames survive.
+  - kind: drop_frames
+    from_ms: 1500
+    to_ms: 1700
+assertions:
+  # The fault fired, and only once (first activation is reported).
+  - type: fault_count
+    kind: drop_frames
+    count: 1
+  # Both lines commit despite the dropped frames.
+  - type: message_committed_count
+    message_id: demo-page-1
+    count: 1
+  - type: message_committed_count
+    message_id: demo-page-2
+    count: 1
+  # The advance cancels the first line's in-flight audio, exactly once
+  # (docs/spec/05 "COMMITTED->ADVANCING: cancel previous speech generation").
+  - type: speech_cancelled
+    reason: dialogue_advanced
+    count: 1
+  # No stale speech: a cancelled or never-started line may not complete.
+  - type: no_stale_speech
+    message_id: demo-page-1
+  # No duplicate speech for the repeated observations of the stable box.
+  - type: no_duplicate_speech
+    message_id: demo-page-1
+  - type: no_duplicate_commit
+  # No invented line: every commit names one of the two real lines.
+  - type: committed_only
+    names:
+      - demo-page-1
+      - demo-page-2
+  - type: no_stale_generation_applied

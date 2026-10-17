@@ -1,0 +1,45 @@
+# GN-T034 (mode S) — the same decision reply delivered twice.
+# Catalog: docs/test-plan/scenario-catalog.md GN-T034 "Model response delayed
+# past dialogue advance — S,D,L — late result discarded on generation
+# mismatch". The duplicate-delivery half of the row: a gateway redelivery of
+# the same answer must not produce a second speech.
+#
+# Page 1's confirmed answer is delivered twice, with the same sequence,
+# back to back. The session's duplicate-seq fence must discard the second
+# delivery, and page 1 must still get exactly one utterance.
+# Every frame and sentence here is generated (docs/spec/11 "Fixture origins").
+schema_version: 1
+catalog: GN-T034
+id: synthetic/gn-t034-decision-duplicate
+origin: generated_synthetic
+profile: dialogue-advance-001
+mode: frame_replay
+input:
+  frames_dir: testdata/synthetic/replay/dialogue-advance-001
+  timestamps: timestamps.json
+inference:
+  decision: recorded
+  tts: recorded
+  voice: synthetic-narrator
+faults:
+  - kind: decision_duplicate
+    message: demo-page-1
+assertions:
+  # The fault fired, and only once.
+  - type: fault_count
+    kind: decision_duplicate
+    count: 1
+  # The second delivery was discarded by the duplicate-seq fence, not applied.
+  - type: duplicate_result_discarded
+    message_id: demo-page-1
+  # One speech only: the duplicate reply must not re-start the utterance.
+  - type: no_duplicate_speech
+    message_id: demo-page-1
+  - type: no_duplicate_commit
+  - type: message_committed_count
+    message_id: demo-page-1
+    count: 1
+  - type: message_committed_count
+    message_id: demo-page-2
+    count: 1
+  - type: no_stale_generation_applied

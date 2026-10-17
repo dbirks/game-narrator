@@ -3,6 +3,7 @@ package scenario
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/events"
@@ -70,6 +71,22 @@ func evaluateAssertion(a Assertion, evs []events.Envelope, stats pipeline.Stats,
 		return evalNoStaleGeneration(stats)
 	case "events_order":
 		return evalEventsOrder(a, evs)
+	case "no_stale_speech":
+		return evalNoStaleSpeech(a, evs)
+	case "no_duplicate_speech":
+		return evalNoDuplicateSpeech(a, evs)
+	case "late_result_discarded":
+		return evalLateResultDiscarded(a, evs)
+	case "duplicate_result_discarded":
+		return evalDuplicateResultDiscarded(a, evs)
+	case "no_voice_substitution":
+		return evalNoVoiceSubstitution(a, evs)
+	case "fault_count":
+		return evalFaultCount(a, evs)
+	case "committed_only":
+		return evalCommittedOnly(a, evs)
+	case "provider_degraded":
+		return evalProviderDegraded(a, evs)
 	default:
 		return false, fmt.Sprintf("internal: assertion type %q has no evaluator", a.Type)
 	}
@@ -300,4 +317,329 @@ func evalReplayNotDegraded(stats pipeline.Stats) (bool, string) {
 	}
 	return false, fmt.Sprintf("%d frame(s) lost their OCR read even after the replay retry policy: frame seq(s) %v",
 		stats.ReplayDegradedFrames, stats.ReplayDegradedFrameSeqs)
+}
+
+// --- M7 provider-fault assertions -------------------------------------------
+//
+// These read the merged timeline: the pipeline's recognition events, the
+// sidecar session's speech lifecycle and the harness's decision/provider
+// events. They are the assertions AGENTS.md's failure-injection list owes
+// ("dropped frames, delayed/duplicated model responses, endpoint loss, voice
+// missing on a replica, rapid textbox advances") in a form a report can show.
+
+// speechPayload is the subset of the speech event payloads the assertions
+// read. The session's speech.cancelled payload has no voice_id: the
+// cancellation names the occurrence, and the occurrence's voice is the one
+// the ready/started events carried.
+type speechPayload struct {
+	MessageID  string `json:"message_id"`
+	Occurrence string `json:"dialogue_occurrence_id"`
+	VoiceID    string `json:"voice_id"`
+	Reason     string `json:"reason"`
+	Result     string `json:"result"`
+	Error      string `json:"error"`
+}
+
+func decodeSpeech(e events.Envelope) (speechPayload, bool) {
+	var p speechPayload
+	if err := json.Unmarshal(e.Data, &p); err != nil {
+		return speechPayload{}, false
+	}
+	return p, true
+}
+
+type decisionPayload struct {
+	MessageID string `json:"message_id"`
+	Accepted  bool   `json:"accepted"`
+	Applied   bool   `json:"applied"`
+	Reason    string `json:"reason"`
+}
+
+func decodeDecision(e events.Envelope) (decisionPayload, bool) {
+	var p decisionPayload
+	if err := json.Unmarshal(e.Data, &p); err != nil {
+		return decisionPayload{}, false
+	}
+	return p, true
+}
+
+// lastCommittedMessageID is the message of the newest message.committed in
+// the log: the line the dialogue is standing on at the end of the run.
+func lastCommittedMessageID(evs []events.Envelope) string {
+	last := ""
+	for _, e := range evs {
+		if e.Name != events.MessageCommitted {
+			continue
+		}
+		p, ok := decodeCommitted(e)
+		if ok {
+			last = p.MessageID
+		}
+	}
+	return last
+}
+
+// evalNoStaleSpeech: no completed utterance (speech.ended with the terminal
+// result "ended") for a line the dialogue has moved past. The last committed
+// line legitimately ends; every other line that finished speaking after the
+// advance is the stale speech docs/spec/12 forbids. A line that was cancelled
+// (speech.cancelled) is the correct behaviour, not a failure.
+func evalNoStaleSpeech(a Assertion, evs []events.Envelope) (bool, string) {
+	last := lastCommittedMessageID(evs)
+	var offenders []string
+	endedTotal := 0
+	for _, e := range evs {
+		if e.Name != events.SpeechEnded {
+			continue
+		}
+		p, ok := decodeSpeech(e)
+		if !ok || p.MessageID != a.MessageID {
+			continue
+		}
+		endedTotal++
+		if p.Result == "ended" && a.MessageID != last {
+			offenders = append(offenders, fmt.Sprintf("speech.ended result=ended for %q (last committed line is %q)", a.MessageID, last))
+		}
+	}
+	if len(offenders) > 0 {
+		return false, strings.Join(offenders, "; ")
+	}
+	if endedTotal == 0 {
+		return true, fmt.Sprintf("no utterance completed for %q (cancelled or never started)", a.MessageID)
+	}
+	return true, fmt.Sprintf("no stale utterance for %q (%d speech.ended event(s), none a completed stale line)", a.MessageID, endedTotal)
+}
+
+// evalNoDuplicateSpeech: one utterance per occurrence. A duplicated provider
+// reply must not become two speakings of the same line: the session's
+// occurrence and phase fences refuse the second lifecycle, and this
+// assertion is the timeline-side proof.
+func evalNoDuplicateSpeech(a Assertion, evs []events.Envelope) (bool, string) {
+	started, endedOK := map[string]int{}, map[string]int{}
+	for _, e := range evs {
+		var p speechPayload
+		var ok bool
+		switch e.Name {
+		case events.SpeechStarted:
+			p, ok = decodeSpeech(e)
+			if !ok || p.MessageID != a.MessageID {
+				continue
+			}
+			started[p.Occurrence]++
+		case events.SpeechEnded:
+			p, ok = decodeSpeech(e)
+			if !ok || p.MessageID != a.MessageID || p.Result != "ended" {
+				continue
+			}
+			endedOK[p.Occurrence]++
+		}
+	}
+	var offenders []string
+	for occ, n := range started {
+		if n > 1 {
+			offenders = append(offenders, fmt.Sprintf("occurrence %s started %d times", occ, n))
+		}
+	}
+	for occ, n := range endedOK {
+		if n > 1 {
+			offenders = append(offenders, fmt.Sprintf("occurrence %s completed %d times", occ, n))
+		}
+	}
+	if len(offenders) > 0 {
+		return false, fmt.Sprintf("message %q: %s", a.MessageID, strings.Join(offenders, "; "))
+	}
+	return true, fmt.Sprintf("message %q: at most one utterance per occurrence (%d occurrence(s) started)", a.MessageID, len(started))
+}
+
+// staleReasons are the session fence reasons that mark a late provider result
+// as discarded (docs/spec/01 invariant 2): the generation moved on, or the
+// observation the answer describes was superseded.
+var staleReasons = map[string]bool{"stale_generation": true, "stale_observation": true}
+
+// evalLateResultDiscarded: a decision reply for the named line arrived after
+// the dialogue advanced, and the session's fence discarded it. The discard is
+// the safety property (docs/spec/17 "record(stale), discard"); this
+// assertion reads the harness's decision.resolved record of it.
+func evalLateResultDiscarded(a Assertion, evs []events.Envelope) (bool, string) {
+	var found int
+	var why string
+	for _, e := range evs {
+		if e.Name != events.DecisionResolved {
+			continue
+		}
+		p, ok := decodeDecision(e)
+		if !ok || p.MessageID != a.MessageID {
+			continue
+		}
+		if !p.Applied && staleReasons[p.Reason] {
+			found++
+			why = p.Reason
+		}
+	}
+	if found == 0 {
+		return false, fmt.Sprintf("no decision.resolved discarding the late result for %q (want applied=false with reason stale_generation/stale_observation)", a.MessageID)
+	}
+	return true, fmt.Sprintf("late decision result for %q discarded %d time(s), last reason %q", a.MessageID, found, why)
+}
+
+// evalDuplicateResultDiscarded: the same decision reply was delivered twice
+// and the session's duplicate-seq fence discarded the second delivery.
+func evalDuplicateResultDiscarded(a Assertion, evs []events.Envelope) (bool, string) {
+	var found int
+	for _, e := range evs {
+		if e.Name != events.DecisionResolved {
+			continue
+		}
+		p, ok := decodeDecision(e)
+		if !ok || p.MessageID != a.MessageID {
+			continue
+		}
+		if !p.Applied && p.Reason == "duplicate_seq" {
+			found++
+		}
+	}
+	if found == 0 {
+		return false, fmt.Sprintf("no decision.resolved discarding the duplicated delivery for %q (want applied=false with reason duplicate_seq)", a.MessageID)
+	}
+	return true, fmt.Sprintf("duplicated decision delivery for %q discarded %d time(s) by the duplicate-seq fence", a.MessageID, found)
+}
+
+// evalNoVoiceSubstitution: every speech event names the configured voice, and
+// the voice layer reached a terminal outcome for it — either the correct
+// voice completed (result "ended") or silence with a reason (result
+// "failed" naming the voice-missing fault). A speech event naming any other
+// voice — a builtin fallback, a different speaker — is the silent
+// substitution docs/spec/16 M7 forbids.
+func evalNoVoiceSubstitution(a Assertion, evs []events.Envelope) (bool, string) {
+	var foreign []string
+	terminalOK, terminalFailed := 0, 0
+	for _, e := range evs {
+		switch e.Name {
+		case events.SpeechReady, events.SpeechStarted, events.SpeechEnded:
+		default:
+			continue
+		}
+		p, ok := decodeSpeech(e)
+		if !ok {
+			continue
+		}
+		if p.VoiceID == "" {
+			continue
+		}
+		if p.VoiceID != a.Voice {
+			foreign = append(foreign, fmt.Sprintf("%s names voice %q", e.Name, p.VoiceID))
+			continue
+		}
+		if e.Name == events.SpeechEnded {
+			switch {
+			case p.Result == "ended":
+				terminalOK++
+			case p.Result == "failed" && strings.Contains(p.Error, "voice_missing"):
+				terminalFailed++
+			}
+		}
+	}
+	if len(foreign) > 0 {
+		return false, fmt.Sprintf("speech event(s) name a different voice: %s", strings.Join(foreign, "; "))
+	}
+	if terminalOK+terminalFailed == 0 {
+		return false, fmt.Sprintf("no terminal speech outcome for voice %q (want result ended, or failed naming voice_missing)", a.Voice)
+	}
+	return true, fmt.Sprintf("voice %q: no substitution (completed %d, silence-with-reason %d)", a.Voice, terminalOK, terminalFailed)
+}
+
+type faultPayload struct {
+	Kind string `json:"kind"`
+}
+
+// evalFaultCount: the fault.injected events of the named kind occurred exactly
+// count times. One event per fault entry (first activation), so a scenario
+// with one drop_frames entry counts one; the unit tests in faults_test.go
+// prove each fault fires at its configured time.
+func evalFaultCount(a Assertion, evs []events.Envelope) (bool, string) {
+	n := 0
+	for _, e := range evs {
+		if e.Name != eventNameFaultInjected {
+			continue
+		}
+		var p faultPayload
+		if err := json.Unmarshal(e.Data, &p); err != nil {
+			continue
+		}
+		if p.Kind == a.Kind {
+			n++
+		}
+	}
+	if n != a.Count {
+		return false, fmt.Sprintf("fault %q injected %d time(s), want %d", a.Kind, n, a.Count)
+	}
+	return true, fmt.Sprintf("fault %q injected %d time(s), as expected", a.Kind, n)
+}
+
+// evalCommittedOnly: every committed message names one of the listed lines.
+// The matcher can only commit profile messages, but an assertion that proves
+// it keeps the report honest about \"no invented line\" (GN-T014's
+// wording) when a provider fault tempts a fallback path.
+func evalCommittedOnly(a Assertion, evs []events.Envelope) (bool, string) {
+	allowed := make(map[string]bool, len(a.Names))
+	for _, n := range a.Names {
+		allowed[n] = true
+	}
+	var offenders []string
+	total := 0
+	for _, e := range evs {
+		if e.Name != events.MessageCommitted {
+			continue
+		}
+		p, ok := decodeCommitted(e)
+		if !ok {
+			continue
+		}
+		total++
+		if !allowed[p.MessageID] {
+			offenders = append(offenders, p.MessageID)
+		}
+	}
+	if len(offenders) > 0 {
+		return false, fmt.Sprintf("commit(s) outside the allowed lines: %v (allowed %v)", offenders, a.Names)
+	}
+	return true, fmt.Sprintf("%d commit(s), all within %v", total, a.Names)
+}
+
+type degradedPayload struct {
+	Role     string `json:"role"`
+	Degraded bool   `json:"degraded"`
+}
+
+// evalProviderDegraded: the named role went degraded on the timeline, and —
+// when the assertion asks for it — recovered: a later provider.degraded with
+// degraded=false for the same role. The pair is the \"clean degraded state\"
+// docs/spec/13 owes: the failure is visible, and the recovery is not a
+// silent guess.
+func evalProviderDegraded(a Assertion, evs []events.Envelope) (bool, string) {
+	var degradedAt int
+	recoveredAt := -1
+	for i, e := range evs {
+		if e.Name != events.ProviderDegraded {
+			continue
+		}
+		var p degradedPayload
+		if err := json.Unmarshal(e.Data, &p); err != nil || p.Role != a.Role {
+			continue
+		}
+		if p.Degraded {
+			if degradedAt < 0 {
+				degradedAt = i
+			}
+		} else if degradedAt >= 0 && i > degradedAt {
+			recoveredAt = i
+		}
+	}
+	if degradedAt < 0 {
+		return false, fmt.Sprintf("no provider.degraded with degraded=true for role %q", a.Role)
+	}
+	if a.Recovered && recoveredAt < 0 {
+		return false, fmt.Sprintf("provider %q degraded (event %d) but no later provider.degraded with degraded=false", a.Role, degradedAt)
+	}
+	return true, fmt.Sprintf("provider %q: degradation visible%s", a.Role, map[bool]string{true: ", recovery after it", false: ""}[a.Recovered])
 }

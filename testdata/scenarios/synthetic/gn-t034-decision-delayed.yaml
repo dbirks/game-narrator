@@ -1,0 +1,54 @@
+# GN-T034 (mode S) — model response delayed past the dialogue advance.
+# Catalog: docs/test-plan/scenario-catalog.md GN-T034 "Model response delayed
+# past dialogue advance — S,D,L — late result discarded on generation
+# mismatch".
+#
+# The decision endpoint holds every reply requested at/after 1300 ms for
+# 900 ms. Page 1's decision is asked when its commit lands (~1500 ms) and
+# must therefore arrive at ~2400 ms — after page 2 has committed (~2100 ms)
+# and bumped the utterance generation. The session's generation fence must
+# discard the late answer, and nothing may be spoken for the old line.
+# Every frame and sentence here is generated (docs/spec/11 "Fixture origins").
+schema_version: 1
+catalog: GN-T034
+id: synthetic/gn-t034-decision-delayed
+origin: generated_synthetic
+profile: dialogue-advance-001
+mode: frame_replay
+input:
+  frames_dir: testdata/synthetic/replay/dialogue-advance-001
+  timestamps: timestamps.json
+inference:
+  decision: recorded
+  tts: recorded
+  voice: synthetic-narrator
+faults:
+  - kind: decision_delay
+    after_ms: 1300
+    delay_ms: 900
+assertions:
+  # The fault fired, and only once.
+  - type: fault_count
+    kind: decision_delay
+    count: 1
+  # The late answer was recorded as discarded, not applied
+  # (docs/spec/01 invariant 2: a stale reply is discarded, never applied).
+  - type: late_result_discarded
+    message_id: demo-page-1
+  # Nothing was spoken for the old line: its decision never applied, so the
+  # voice layer never ran for it.
+  - type: no_stale_speech
+    message_id: demo-page-1
+  # The current line still committed and still got its decision applied.
+  - type: message_committed_count
+    message_id: demo-page-1
+    count: 1
+  - type: message_committed_count
+    message_id: demo-page-2
+    count: 1
+  # No invented line while the provider was slow.
+  - type: committed_only
+    names:
+      - demo-page-1
+      - demo-page-2
+  - type: no_stale_generation_applied

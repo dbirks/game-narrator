@@ -1,0 +1,50 @@
+# GN-T047 (mode S) — TTS stream partial / cancel. BLOCKED.
+# Catalog: docs/test-plan/scenario-catalog.md GN-T047 "TTS stream partial/
+# cancel — S,L — no stale audio, temporary file cleanup".
+#
+# This scenario is status: blocked, and the runner must report it as
+# BLOCKED — never as a pass (ADR-0037 "blocked ≠ pass"). It is listed in
+# docs/status/blocked.md with its unblock steps.
+#
+# Why it is blocked: the scenario's fault (the TTS endpoint dying while an
+# utterance is being synthesized) has no honest expression in today's
+# provider contract. The TTS wire is one atomic request/response —
+# Generate returns a validated WAV or an error — so a stream has no partial
+# to be interrupted, and the session's speech lifecycle has no "synthesis
+# aborted mid-stream" phase to fence against. Running the scenario against
+# the atomic contract would exercise a property the product does not have,
+# and a test that asserts on behaviour the runtime lacks is simulation
+# theater (AGENTS.md "No simulation theater").
+schema_version: 1
+catalog: GN-T047
+id: synthetic/gn-t047-tts-partial-cancel
+origin: generated_synthetic
+profile: dialogue-advance-001
+mode: frame_replay
+status: blocked
+reason: "The TTS provider contract is atomic (Generate returns a full validated WAV or an error): there is no partial stream to interrupt mid-utterance, and the session speech lifecycle has no synthesis-aborted phase to fence against. Asserting 'no stale audio, temporary file cleanup' on a stream the product does not stream would test a property the runtime lacks. Unblock when the TTS contract carries a streamed/cancellable synthesis endpoint (or the session adds a synthesis-failed-mid-playback phase); then express the fault as a tts-role endpoint_down window inside one utterance and run the assertions below."
+input:
+  frames_dir: testdata/synthetic/replay/dialogue-advance-001
+  timestamps: timestamps.json
+inference:
+  decision: recorded
+  tts: recorded
+  voice: synthetic-narrator
+faults:
+  # The intended fault, documented so the unblock is a mechanical edit:
+  # the TTS endpoint dies while the second line is being synthesized.
+  - kind: endpoint_down
+    role: tts
+    from_ms: 1900
+    to_ms: 2100
+# What the scenario will assert once unblocked.
+assertions:
+  - type: fault_count
+    kind: endpoint_down
+    count: 1
+  - type: no_stale_speech
+    message_id: demo-page-2
+  - type: no_duplicate_speech
+    message_id: demo-page-2
+  - type: no_voice_substitution
+    voice: synthetic-narrator

@@ -1,0 +1,57 @@
+# GN-T044 (mode S) — gateway decision route offline mid-session.
+# Catalog: docs/test-plan/scenario-catalog.md GN-T044 "Gateway model route
+# offline — S,D,L — cached-only path, clean degraded state".
+#
+# The decision endpoint answers 503 for every request captured between 1200
+# and 2000 ms. Page 1's decision (asked at its commit, ~1500 ms) hits the
+# outage: the runtime must abstain — the local chain's commitment stands,
+# the degraded state is visible on the timeline, and no voice is requested
+# without the decision's evidence. Page 2's decision (~2100 ms, after the
+# window) recovers: the clean degraded state is the pair of events, not the
+# silence. Every frame and sentence here is generated (docs/spec/11 "Fixture
+# origins").
+schema_version: 1
+catalog: GN-T044
+id: synthetic/gn-t044-endpoint-loss
+origin: generated_synthetic
+profile: dialogue-advance-001
+mode: frame_replay
+input:
+  frames_dir: testdata/synthetic/replay/dialogue-advance-001
+  timestamps: timestamps.json
+inference:
+  decision: recorded
+  tts: recorded
+  voice: synthetic-narrator
+faults:
+  - kind: endpoint_down
+    role: decision
+    from_ms: 1200
+    to_ms: 2000
+assertions:
+  # The fault fired, and only once.
+  - type: fault_count
+    kind: endpoint_down
+    count: 1
+  # The degraded state is visible, and it recovers after the window closes:
+  # the clean degraded state docs/spec/06 owes is a visible pair of events.
+  - type: provider_degraded
+    role: decision
+    recovered: true
+  # The outage did not block the local chain: both lines still committed.
+  - type: message_committed_count
+    message_id: demo-page-1
+    count: 1
+  - type: message_committed_count
+    message_id: demo-page-2
+    count: 1
+  # Abstain, not guess: nothing was spoken for the line whose decision hit
+  # the outage, so there is no stale speech to guard — the guard stays.
+  - type: no_stale_speech
+    message_id: demo-page-1
+  # No invented line on the abstain path.
+  - type: committed_only
+    names:
+      - demo-page-1
+      - demo-page-2
+  - type: no_stale_generation_applied

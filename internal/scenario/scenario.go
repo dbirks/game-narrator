@@ -3,6 +3,7 @@ package scenario
 import (
 	"fmt"
 	"os"
+	"regexp"
 )
 
 // Origin values (docs/spec/12 "provenance"): where the frames and their labels
@@ -40,6 +41,9 @@ var inferenceKinds = map[string]bool{InferenceNone: true, InferenceRecorded: tru
 // SchemaVersion is the only scenario schema this loader understands.
 const SchemaVersion = 1
 
+// catalogRe is the shape of a docs/test-plan/scenario-catalog.md row id.
+var catalogRe = regexp.MustCompile(`^GN-T[0-9]{3}$`)
+
 // Scenario is one docs/spec/17 "E2E scenario YAML" document.
 type Scenario struct {
 	SchemaVersion int
@@ -50,6 +54,19 @@ type Scenario struct {
 	Input         Input
 	Inference     Inference
 	Assertions    []Assertion
+	// Faults is the M7 fault-injection block (synthetic scenarios only):
+	// typed adversities the harness injects into the frame stream and the
+	// fake provider endpoints. A scenario that carries faults must be
+	// origin:generated_synthetic — the loader refuses the combination.
+	Faults []Fault
+	// Status is the only value a scenario may report before running: Status
+	// blocked with a Reason, or absent (runnable). A blocked scenario is
+	// reported as BLOCKED, never passed (ADR-0037).
+	Status string
+	Reason string
+	// Catalog is the docs/test-plan/scenario-catalog.md row (e.g. "GN-T034")
+	// this scenario exercises, when the scenario was authored against a row.
+	Catalog string
 }
 
 // Input names where the frames and their recording manifest live, as paths
@@ -63,10 +80,16 @@ type Input struct {
 type Inference struct {
 	Decision string
 	TTS      string
+	// Voice is the voice id the harness requests from the TTS layer. Required
+	// when TTS is not "none": a scenario that asks for speech must name the
+	// voice it expects, or its no_voice_substitution assertion has nothing to
+	// protect.
+	Voice string
 }
 
-// Assertion is one check Evaluate runs. Load validates the shape per type and
-// remembers the source line, so a report can point at the authoring mistake.
+// Assertion is one check Evaluate runs. Load validates the shape per type
+// and remembers the source line, so a report can point at the authoring
+// mistake.
 type Assertion struct {
 	Type       string
 	MessageID  string
@@ -74,7 +97,12 @@ type Assertion struct {
 	Reason     string
 	Count      int
 	Names      []string
-	Line       int
+	// M7 provider-fault assertions.
+	Voice     string // no_voice_substitution: the voice every speech event must name
+	Kind      string // fault_count: the fault kind counted
+	Role      string // provider_degraded: the provider role watched
+	Recovered bool   // provider_degraded: require the recovery event too
+	Line      int
 }
 
 // knownAssertionTypes is the closed vocabulary. An unknown type is a load
@@ -86,6 +114,14 @@ var knownAssertionTypes = map[string]bool{
 	"no_duplicate_commit":         true,
 	"no_stale_generation_applied": true,
 	"events_order":                true,
+	"no_stale_speech":             true,
+	"no_duplicate_speech":         true,
+	"late_result_discarded":       true,
+	"duplicate_result_discarded":  true,
+	"no_voice_substitution":       true,
+	"fault_count":                 true,
+	"committed_only":              true,
+	"provider_degraded":           true,
 }
 
 // allowedFields is the exact field set each type accepts besides type. Extra
@@ -98,6 +134,14 @@ var allowedFields = map[string]map[string]bool{
 	"no_duplicate_commit":         {},
 	"no_stale_generation_applied": {},
 	"events_order":                {"names": true},
+	"no_stale_speech":             {"message_id": true},
+	"no_duplicate_speech":         {"message_id": true},
+	"late_result_discarded":       {"message_id": true},
+	"duplicate_result_discarded":  {"message_id": true},
+	"no_voice_substitution":       {"voice": true},
+	"fault_count":                 {"kind": true, "count": true},
+	"committed_only":              {"names": true},
+	"provider_degraded":           {"role": true, "recovered": true},
 }
 
 // Load reads the scenario YAML at path and validates it. Every error carries
@@ -139,6 +183,16 @@ func fromNode(root *ynode) (*Scenario, error) {
 	if !root.hasKey("id") || s.ID == "" {
 		return nil, fmt.Errorf("line %d: id is required (non-empty string)", root.vals["id"].line)
 	}
+	// catalog is the docs/test-plan/scenario-catalog.md row this scenario
+	// exercises (optional; the M2 baseline scenario predates the catalog).
+	// It is a label, not a key: the loader validates its shape so a typo can
+	// never silently detach a scenario from the row it claims to cover.
+	if catalog, line, ok := root.scalarStr("catalog"); ok {
+		if !catalogRe.MatchString(catalog) {
+			return nil, fmt.Errorf("line %d: catalog must look like GN-T042 (got %q)", line, catalog)
+		}
+		s.Catalog = catalog
+	}
 	origin, line, ok := root.scalarStr("origin")
 	if !ok || !origins[origin] {
 		return nil, fmt.Errorf("line %d: origin is required and must be one of generated_synthetic, captured, dolphin, hardware (got %q)", line, origin)
@@ -179,9 +233,49 @@ func fromNode(root *ynode) (*Scenario, error) {
 	if !ok || !inferenceKinds[s.Inference.TTS] {
 		return nil, fmt.Errorf("line %d: inference.tts must be one of none, recorded, live (got %q)", line, s.Inference.TTS)
 	}
+	s.Inference.Voice, _, _ = inf.scalarStr("voice") // optional; the harness validates it when TTS is on
+
+	// status / reason: the blocked register (ADR-0037). status is closed:
+	// the only value the loader understands is "blocked".
+	if status, l, ok := root.scalarStr("status"); ok {
+		if status != StatusBlocked {
+			return nil, fmt.Errorf("line %d: status must be %q (got %q)", l, StatusBlocked, status)
+		}
+		s.Status = status
+	}
+	if reason, l, ok := root.scalarStr("reason"); ok {
+		if reason == "" {
+			return nil, fmt.Errorf("line %d: reason is required (non-empty string) when present", l)
+		}
+		s.Reason = reason
+	}
+	if s.Status == StatusBlocked && s.Reason == "" {
+		l, _ := root.child("status")
+		return nil, fmt.Errorf("line %d: status %q requires a reason", l.line, StatusBlocked)
+	}
+
+	// faults: the M7 injection block. Synthetic scenarios only — a captured,
+	// dolphin or hardware scenario naming faults would present an injected
+	// adversity as a property of the real source, and the loader refuses the
+	// combination instead of carrying the lie into a report.
+	if items, line, ok := root.listAt("faults"); ok {
+		if s.Origin != OriginGeneratedSynthetic {
+			return nil, fmt.Errorf("line %d: faults are only allowed for origin %q (got %q)", line, OriginGeneratedSynthetic, s.Origin)
+		}
+		var ferr error
+		s.Faults, ferr = parseFaults(items)
+		if ferr != nil {
+			return nil, ferr
+		}
+	}
 
 	items, line, ok := root.listAt("assertions")
 	if !ok {
+		// A blocked scenario names what it would have checked once unblocked,
+		// but the check is not owed today: the assertions are optional.
+		if s.Status == StatusBlocked {
+			return &s, nil
+		}
 		return nil, fmt.Errorf("line %d: assertions is required (a list)", line)
 	}
 	if len(items) == 0 {
@@ -196,8 +290,9 @@ func fromNode(root *ynode) (*Scenario, error) {
 }
 
 var topLevelKeys = map[string]bool{
-	"schema_version": true, "id": true, "origin": true, "profile": true,
+	"schema_version": true, "id": true, "catalog": true, "origin": true, "profile": true,
 	"mode": true, "input": true, "inference": true, "assertions": true,
+	"faults": true, "status": true, "reason": true,
 	// Carried by the spec's own example; accepted and ignored until a milestone
 	// consumes it.
 	"reports": true,
