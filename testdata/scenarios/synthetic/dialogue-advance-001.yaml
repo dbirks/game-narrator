@@ -1,0 +1,50 @@
+# E2E scenario for the synthetic 24-frame dialogue-advance clip
+# (docs/spec/17 "E2E scenario YAML", docs/spec/12 "Frame replay").
+#
+# Every frame and sentence here is generated, not captured from a game
+# (docs/spec/11 "Fixture origins"): the origin field carries that claim so a
+# report can never present this as real-game coverage.
+schema_version: 1
+id: synthetic/dialogue-advance-001
+origin: generated_synthetic
+profile: dialogue-advance-001
+mode: frame_replay
+input:
+  frames_dir: testdata/synthetic/replay/dialogue-advance-001
+  timestamps: timestamps.json
+inference:
+  # M2 frame replay runs the local chain (OCR, matcher, session) with no model
+  # endpoints: docs/spec/12 "Frame replay … recorded Clef/VLM", here the stricter
+  # "none" because the synthetic lines rank exactly and never need a second opinion.
+  decision: none
+  tts: none
+assertions:
+  # The typewriter reveals page 1; the full line is on screen at frame 13.
+  # The commit must land within 1500 ms (capture clock, not wall clock) of the
+  # first frame that truth.json labels as the full line.
+  - type: message_detected
+    message_id: demo-page-1
+    max_delay_ms: 1500
+  # Page 2 appears as an instant second page and must commit too.
+  - type: message_detected
+    message_id: demo-page-2
+    max_delay_ms: 1500
+  # One commitment per line: repeated observations of a stable box must not
+  # re-commit (docs/spec/16 M2 "repeat observation doesn't create duplicate speech").
+  - type: message_committed_count
+    message_id: demo-page-1
+    count: 1
+  - type: message_committed_count
+    message_id: demo-page-2
+    count: 1
+  # The page advance must cancel the first line's in-flight speech, and exactly
+  # once (docs/spec/05 "COMMITTED->ADVANCING: cancel previous speech generation").
+  - type: speech_cancelled
+    reason: dialogue_advanced
+    count: 1
+  # A dialogue occurrence commits at most once (docs/spec/12 "No duplicated speech
+  # for repeated observations of same dialogue occurrence").
+  - type: no_duplicate_commit
+  # The generation fence is absolute: a stale reply must be discarded, never
+  # applied (docs/spec/01 invariant 2; the pipeline counts it in Stats).
+  - type: no_stale_generation_applied
