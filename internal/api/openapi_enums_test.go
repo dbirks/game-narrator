@@ -23,6 +23,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/games"
 	"github.com/dbirks/game-narrator/internal/profileio"
 	"github.com/dbirks/game-narrator/internal/runtime"
+	"github.com/dbirks/game-narrator/internal/store"
 )
 
 // domainEnums maps a documented schema (or a "Schema.properties.member" path) onto
@@ -70,6 +71,11 @@ var literalEnums = map[string][]string{
 	"OnboardingToolCallView.properties.status": {"pending", string(agent.StatusSucceeded), string(agent.StatusFailed), string(agent.StatusRefused), string(agent.StatusTimeout), string(agent.StatusCancelled)},
 	"OnboardingReviewItem.properties.kind":     {"publish", "tool"},
 	"OnboardingReviewItem.properties.state":    {"pending", "resolved"},
+	// The voice workflow (M4, docs/spec/07): the revision lifecycle the store
+	// enforces (draft → auditioning → approved → retired, one-way) and the
+	// per-instance registration states the registry reconciliation writes.
+	"VoiceRevision.properties.state":     {store.VoiceStateDraft, store.VoiceStateAuditioning, store.VoiceStateApproved, store.VoiceStateRetired},
+	"VoiceRegistration.properties.state": {store.VoiceRegPending, store.VoiceRegReady, store.VoiceRegInvalid},
 }
 
 func TestOpenAPIEnumVocabulariesMatchTheDomainEnums(t *testing.T) {

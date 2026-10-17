@@ -27,6 +27,7 @@ const embeddedUrl = `http://127.0.0.1:${ports.embedded}`;
 const catalogUrl = `http://127.0.0.1:${ports.catalog}`;
 const developerUrl = `http://127.0.0.1:${ports.developer}`;
 const onboardingUrl = `http://127.0.0.1:${ports.onboarding}`;
+const voicesUrl = `http://127.0.0.1:${ports.voices}`;
 const embeddedBinary = resolve(import.meta.dirname, "..", "bin", "game-narrator");
 // The replay allowlist for the inspector's server: the repo's testdata, named
 // explicitly (ADR-0024 "replay allowlist") rather than relying on the
@@ -75,7 +76,7 @@ export default defineConfig({
     {
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
-      testIgnore: /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts/,
+      testIgnore: /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts/,
     },
     {
       name: "embedded",
@@ -107,6 +108,15 @@ export default defineConfig({
       // (test-only; a production appliance admits none).
       testMatch: /onboarding\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: onboardingUrl },
+    },
+    {
+      name: "voices",
+      // The voice setup workflow (docs/spec/07): the packaged binary with the
+      // speech roles and the registry pointed at the scripted TTS instance
+      // (web/e2e/fake-tts.mjs), so auditions, approval, registration and the
+      // preview cache-hit are driven through the real binary with no model.
+      testMatch: /voices\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: voicesUrl },
     },
   ],
   webServer: [
@@ -185,6 +195,38 @@ export default defineConfig({
         GAME_NARRATOR_ROLE_AGENT_REASONING_URL: `http://127.0.0.1:${ports.fakeModel}/v1`,
         GAME_NARRATOR_WEB_ALLOW_PRIVATE: "1",
         GAME_NARRATOR_WEB_PRIVATE_ALLOW: `127.0.0.1:${ports.fakeModel}`,
+      },
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The scripted TTS instance (web/e2e/fake-tts.mjs): the VoiceDesign and
+      // Base checkpoints plus the /audio/voices registry. Started before the
+      // voices server so the role URLs it is given are already listening.
+      command: `node web/e2e/fake-tts.mjs ${ports.fakeTTS}`,
+      cwd: "..",
+      url: `http://127.0.0.1:${ports.fakeTTS}/healthz`,
+      reuseExistingServer: false,
+      timeout: 30_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The voice workflow on the packaged binary: the speech roles speak to
+      // the scripted instance, and the registry is the direct Base service —
+      // the same instance, which is exactly how the port-forwarded deployment
+      // resolves (docs/spec/06: the registry lives only on the Base service).
+      command: `node web/e2e/serve.mjs voices 127.0.0.1:${ports.voices} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${voicesUrl}/api/v1/health/live`,
+      env: {
+        GAME_NARRATOR_GATEWAY_URL: `http://127.0.0.1:${ports.fakeTTS}/v1`,
+        GAME_NARRATOR_GATEWAY_TOKEN: "fake-e2e-token",
+        GAME_NARRATOR_ROLE_VOICE_DESIGN_MODEL: "fake-voicedesign",
+        GAME_NARRATOR_ROLE_VOICE_CLONE_MODEL: "fake-base",
+        GAME_NARRATOR_TTS_BASE_DIRECT_URL: `http://127.0.0.1:${ports.fakeTTS}/v1`,
       },
       reuseExistingServer: false,
       timeout: 60_000,

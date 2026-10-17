@@ -17,4 +17,9 @@ export const ports = {
   onboarding: 18098,
   /** the scripted model gateway + malicious fixture page (web/e2e/fake-model.mjs). */
   fakeModel: 18099,
+  /** the scripted TTS instance (web/e2e/fake-tts.mjs) the voice spec points the
+   *  speech roles and the registry at. */
+  fakeTTS: 18100,
+  /** the packaged binary the voice workflow drives (voices.spec.ts). */
+  voices: 18101,
 } as const;

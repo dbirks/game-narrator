@@ -316,6 +316,12 @@ function RevisionRow({
         >
           Dialogue
         </Link>
+        <Link
+          to={`/games/${gameId}/voices?profile=${encodeURIComponent(profile.id)}`}
+          data-testid={`voices-${profile.revision_num}`}
+        >
+          Voices
+        </Link>
         <a
           href={portabilityApi.exportUrl(profile.id)}
           data-testid={`export-${profile.revision_num}`}

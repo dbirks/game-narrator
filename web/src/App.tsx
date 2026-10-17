@@ -11,6 +11,7 @@ import { LoginPage } from "./pages/Login";
 import { NewGamePage } from "./pages/NewGame";
 import { NotFoundPage } from "./pages/NotFound";
 import { SetupPage } from "./pages/Setup";
+import { VoicesPage } from "./pages/Voices";
 
 /**
  * Routes (docs/spec/09 "Routes and page requirements"). Milestone 1 builds the
@@ -68,6 +69,14 @@ export function App() {
           element={
             <RequireAuth>
               <DialoguePage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/games/:id/voices"
+          element={
+            <RequireAuth>
+              <VoicesPage />
             </RequireAuth>
           }
         />

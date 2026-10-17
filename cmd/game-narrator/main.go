@@ -10,7 +10,10 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -32,13 +35,19 @@ import (
 	"github.com/dbirks/game-narrator/internal/bootstrap"
 	"github.com/dbirks/game-narrator/internal/doctor"
 	"github.com/dbirks/game-narrator/internal/events"
+	"github.com/dbirks/game-narrator/internal/games"
 	"github.com/dbirks/game-narrator/internal/games/adapter"
 	"github.com/dbirks/game-narrator/internal/games/adapter/generic"
+	"github.com/dbirks/game-narrator/internal/games/adapter/windwaker"
+	"github.com/dbirks/game-narrator/internal/gcdisc"
 	"github.com/dbirks/game-narrator/internal/jobs"
 	"github.com/dbirks/game-narrator/internal/providers"
 	"github.com/dbirks/game-narrator/internal/providers/router"
+	"github.com/dbirks/game-narrator/internal/providers/tts"
 	"github.com/dbirks/game-narrator/internal/runtime"
+	"github.com/dbirks/game-narrator/internal/speech"
 	"github.com/dbirks/game-narrator/internal/store"
+	"github.com/dbirks/game-narrator/internal/voices"
 	"github.com/dbirks/game-narrator/internal/web"
 	"github.com/dbirks/game-narrator/internal/web/search"
 )
@@ -50,6 +59,7 @@ commands:
   migrate  apply pending SQLite migrations and report the schema version
   admin    create or manage accounts and API tokens
   doctor   probe every configured component and report honestly
+  import-disc import the user's own Wind Waker disc into a local profile
   version  print build information and exit
   help     show this message
 
@@ -172,6 +182,58 @@ flags:
     	print the report as JSON instead of a table
 `
 
+const importDiscUsageText = `usage: game-narrator import-disc [--data-dir DIR] [--image PATH] [--game-slug SLUG] [--publish]
+Import the user's own GameCube disc (the Wind Waker reference adapter) into a
+local profile. The disc image is read in place and never copied; the extracted
+BMG message archive is hashed and stored in the local, content-addressed asset
+store only (docs/spec/14, AGENTS.md rule 5) — game text never leaves the
+machine, and this command prints counts, never text.
+
+What it does, in order:
+  1. resolves the image from --image or GAME_NARRATOR_GAME_IMAGE_PATH,
+  2. opens it (gcdisc) and checks the game id starts with GZL,
+  3. extracts res/Msg/bmgres.arc -> first .bmg and parses it with the
+     windwaker-bmg adapter (byte-faithful original_text, normalized and
+     speech renderings, a versioned SpeechRenderingRules revision),
+  4. creates or reuses the game (slug), the edition (region from the disc id,
+     language en) and a draft profile,
+  5. writes one sources row (game_extract / user_supplied, the BMG content
+     sha256, parser windwaker-bmg@<version>, and the coverage note)
+  6. imports every message, then stores the BMG bytes in the asset store.
+
+It is idempotent by content: a second run against the same data dir finds the
+existing source row (same BMG sha256) and the profile's messages and reports
+the count instead of duplicating rows.
+
+--publish moves the draft through review and publishes it (the local gate is
+the user's own review; nothing is uploaded). It is a deliberate, local act on
+the user's own data and is off by default.
+
+exit status: 0 on success (including an idempotent re-run), 1 on failure,
+2 on bad usage.
+
+flags:
+  -data-dir string
+     durable data directory; overrides GAME_NARRATOR_DATA_DIR
+  -image string
+     path to the disc image (.gcm/.ciso); defaults to GAME_NARRATOR_GAME_IMAGE_PATH
+  -game-slug string
+     slug of the game to create or reuse (default "wind-waker")
+  -publish
+     after importing, move the draft through review and publish it
+`
+
+// EnvGameImage is the environment variable that names the user's disc image
+// for import-disc. It is read here (the command boundary) rather than in an
+// internal package because the game-image path is operator-local configuration
+// and must never be logged or committed (docs/spec/13, AGENTS.md rule 5).
+const EnvGameImage = "GAME_NARRATOR_GAME_IMAGE_PATH"
+
+// importDiscGameIDPrefix is the game-id prefix the reference adapter accepts.
+// A disc whose id does not start with it is refused before any parse, so a
+// mislabelled image cannot be imported under the Wind Waker adapter's rules.
+const importDiscGameIDPrefix = "GZL"
+
 // stdout is where command output goes. It is a variable so tests can assert
 // the exact lines the CLI prints without capturing the real process stdout.
 var stdout io.Writer = os.Stdout
@@ -223,7 +285,7 @@ func run(args []string, log *slog.Logger) (int, error) {
 		fmt.Println(bootstrap.Version())
 		return 0, nil
 	case "help", "-h", "--help":
-		fmt.Print(usageText, serveUsageText, migrateUsageText, adminUsageText, doctorUsageText)
+		fmt.Print(usageText, serveUsageText, migrateUsageText, adminUsageText, doctorUsageText, importDiscUsageText)
 		return 0, nil
 	case "serve":
 		return runServe(args[1:], log)
@@ -233,6 +295,8 @@ func run(args []string, log *slog.Logger) (int, error) {
 		return runAdmin(args[1:], log)
 	case "doctor":
 		return runDoctor(args[1:], log)
+	case "import-disc":
+		return runImportDisc(args[1:], log)
 	default:
 		fmt.Fprintf(os.Stderr, "game-narrator: unknown command %q\n\n%s%s", cmd, usageText, serveUsageText)
 		return 2, fmt.Errorf("%w: unknown command %q", errUsage, cmd)
@@ -391,6 +455,25 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 	}); err != nil {
 		return 1, fmt.Errorf("registering %s job kind: %w", agent.JobKind, err)
 	}
+	// The voice workflow (docs/spec/07): audition generation runs as the
+	// voice.auditions job, and the service owns the consent-gated approval, the
+	// namespaced registry names and the fingerprint-keyed preview cache. A
+	// missing speech endpoint is a degraded mode, not a boot failure: the
+	// /api/v1/voices routes then answer 503 and doctor names what is missing
+	// (docs/spec/13). A malformed GAME_NARRATOR_* value, by contrast, fails the
+	// boot loudly, the same way the agent wiring does.
+	voiceSvc, voiceCloser, err := newVoiceWiring(st, assetStore, log)
+	if err != nil {
+		return 1, fmt.Errorf("wiring the voice workflow: %w", err)
+	}
+	if voiceCloser != nil {
+		defer voiceCloser()
+	}
+	if voiceSvc != nil {
+		if err := runner.Register(voices.JobKind, voices.JobHandler(voiceSvc), voices.JobHandlerOpts()); err != nil {
+			return 1, fmt.Errorf("registering %s job kind: %w", voices.JobKind, err)
+		}
+	}
 	recovery, err := jobsStore.RecoverOnStartup(ctx, runner.ResumableKinds())
 	if err != nil {
 		return 1, fmt.Errorf("recovering interrupted jobs: %w", err)
@@ -470,7 +553,7 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 		log.Info("event hub closed")
 	}()
 
-	srv := bootstrap.NewServer(cfg, api.New(build, time.Now(), log,
+	apiOpts := []api.Option{
 		api.WithReadiness(storeReadiness(st, log)),
 		api.WithEvents(hub),
 		api.WithJobs(jobsStore),
@@ -481,6 +564,14 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 		api.WithStore(st),
 		api.WithImport(assetStore, adapters, runner),
 		api.WithTrustedProxy(trustedProxyCIDRs(os.LookupEnv)...),
+	}
+	if voiceSvc != nil {
+		// The queue is what the 202 audition create enqueues onto; the same
+		// runner the voice.auditions job executes on.
+		apiOpts = append(apiOpts, api.WithVoices(voiceSvc, runner))
+	}
+	srv := bootstrap.NewServer(cfg, api.New(build, time.Now(), log,
+		apiOpts...,
 	).Handler(), log)
 	if err := srv.Run(runCtx); err != nil {
 		// A bind failure returns before ctx is cancelled; the shutdown
@@ -574,6 +665,88 @@ func newAgentWiring(st *store.Store, assetStore *assets.Local, adapters *adapter
 		return nil, nil, err
 	}
 	return handler, func() {}, nil
+}
+
+// newVoiceWiring builds the voice workflow from the same role environment the
+// rest of the process reads (docs/spec/06, docs/spec/07):
+//
+//	GAME_NARRATOR_GATEWAY_URL / GAME_NARRATOR_GATEWAY_TOKEN_ENV
+//	GAME_NARRATOR_ROLE_VOICE_DESIGN_MODEL   VoiceDesign checkpoint (auditions)
+//	GAME_NARRATOR_ROLE_VOICE_CLONE_MODEL    Base checkpoint (preview/register)
+//	GAME_NARRATOR_TTS_BASE_DIRECT_URL       the direct Base instance (registry)
+//
+// A missing endpoint degrades: nil service, one log line naming the missing
+// variable, and /api/v1/voices answers 503. Nothing a log line names is a URL
+// or a token (AGENTS.md rule 5).
+func newVoiceWiring(st *store.Store, assetStore *assets.Local, log *slog.Logger) (*voices.Service, func(), error) {
+	roles, err := providers.LoadRoles(os.LookupEnv)
+	if err != nil {
+		return nil, nil, fmt.Errorf("loading provider roles: %w", err)
+	}
+	var missing []string
+	if !roles[providers.RoleVoiceDesign].Configured() {
+		missing = append(missing, "GAME_NARRATOR_ROLE_VOICE_DESIGN_MODEL")
+	}
+	if !roles[providers.RoleVoiceClone].Configured() {
+		missing = append(missing, "GAME_NARRATOR_ROLE_VOICE_CLONE_MODEL")
+	}
+	// The registry lives only on the direct Base service (docs/spec/06): in
+	// production the role override names it, and the direct-URL variable is the
+	// test-harness spelling (an orchestrator port-forward, docs/spec/12). Neither
+	// value is ever logged.
+	directURL := strings.TrimSpace(os.Getenv("GAME_NARRATOR_ROLE_VOICE_CLONE_REGISTRY_URL"))
+	if directURL == "" {
+		directURL = strings.TrimSpace(os.Getenv("GAME_NARRATOR_TTS_BASE_DIRECT_URL"))
+	}
+	if directURL == "" {
+		missing = append(missing, "GAME_NARRATOR_TTS_BASE_DIRECT_URL")
+	}
+	if strings.TrimSpace(roles[providers.RoleVoiceDesign].BaseURL) == "" ||
+		strings.TrimSpace(roles[providers.RoleVoiceDesign].Token()) == "" {
+		missing = append(missing, "GAME_NARRATOR_GATEWAY_URL or the token env it names")
+	}
+	if len(missing) > 0 {
+		log.Info("voice workflow not wired: the speech endpoints are not configured; /api/v1/voices answers 503",
+			"missing", strings.Join(missing, ", "))
+		return nil, func() {}, nil
+	}
+
+	designCfg, cloneCfg := roles[providers.RoleVoiceDesign], roles[providers.RoleVoiceClone]
+	designClient, err := tts.NewFromRole(designCfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("design client: %w", err)
+	}
+	cloneClient, err := tts.NewFromRole(cloneCfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("clone client: %w", err)
+	}
+	registry, err := tts.NewRegistry(directURL, cloneCfg.Token())
+	if err != nil {
+		return nil, nil, fmt.Errorf("voice registry: %w", err)
+	}
+
+	svc := &voices.Service{
+		Store: st, Assets: assetStore, Design: designClient, Base: cloneClient,
+		Registry:      registry,
+		Speech:        speech.New(assetStore, speech.NewMemIndex(), 8),
+		InstanceID:    voices.DefaultInstanceID,
+		BaseModelID:   cloneCfg.Model,
+		BackendDigest: previewBackendDigest(cloneCfg.Model),
+	}
+	if err := voices.New(svc); err != nil {
+		return nil, nil, fmt.Errorf("voice service: %w", err)
+	}
+	log.Info("voice workflow ready",
+		"design_model", designCfg.Model, "clone_model", cloneCfg.Model, "instance", svc.InstanceID)
+	return svc, func() {}, nil
+}
+
+// previewBackendDigest is the preview cache key's backend_config_digest
+// (ADR-0023): it changes when the synthesis backend configuration changes,
+// which is the only moment cached previews must stop being reusable.
+func previewBackendDigest(model string) string {
+	sum := sha256.Sum256([]byte("voice-preview-v1|" + model))
+	return hex.EncodeToString(sum[:])[:8]
 }
 
 // privateWebPolicy builds the fetcher policy for the agent's web tool from the
@@ -1048,3 +1221,305 @@ func runDoctor(args []string, log *slog.Logger) (int, error) {
 	}
 	return 0, nil
 }
+
+// importDiscTimeout bounds one disc import: the BMG of the reference disc
+// parses in well under a second; the bound exists so a wedged read (a disc
+// image on a dying network share) is reported instead of hanging the shell.
+const importDiscTimeout = 5 * time.Minute
+
+// runImportDisc is the local disc-import command (docs/spec/04 "Wind Waker
+// reference adapter"). It is deliberately a thin, honest driver over the
+// adapter and the store: the game-specific knowledge (which file, which tags,
+// which region letter) lives in the windwaker adapter, not here.
+func runImportDisc(args []string, log *slog.Logger) (int, error) {
+	fs := flag.NewFlagSet("import-disc", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	fs.Usage = func() { fmt.Fprint(os.Stderr, importDiscUsageText) }
+	dataDir := fs.String("data-dir", "", "durable data directory; overrides "+bootstrap.EnvDataDir)
+	image := fs.String("image", "", "disc image path; defaults to "+EnvGameImage)
+	gameSlug := fs.String("game-slug", "wind-waker", "slug of the game to create or reuse")
+	publish := fs.Bool("publish", false, "move the draft through review and publish it")
+	if err := fs.Parse(args); err != nil {
+		return 2, fmt.Errorf("%w: %v", errUsage, err)
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "game-narrator import-disc: unexpected argument %q\n", fs.Arg(0))
+		return 2, fmt.Errorf("%w: unexpected argument", errUsage)
+	}
+	if *gameSlug == "" {
+		fmt.Fprint(os.Stderr, importDiscUsageText)
+		return 2, fmt.Errorf("%w: --game-slug must be non-empty", errUsage)
+	}
+
+	// The image path resolves from the flag first, then the environment. The
+	// path is never logged and never stored: only the BMG's content hash is.
+	imagePath := strings.TrimSpace(*image)
+	if imagePath == "" {
+		imagePath = strings.TrimSpace(os.Getenv(EnvGameImage))
+	}
+	if imagePath == "" {
+		fmt.Fprint(os.Stderr, importDiscUsageText)
+		return 2, fmt.Errorf("%w: no disc image: pass --image or set %s", errUsage, EnvGameImage)
+	}
+	if _, err := os.Stat(imagePath); err != nil {
+		return 1, fmt.Errorf("disc image not readable: %w", err)
+	}
+
+	cfg, err := bootstrap.LoadConfig("", *dataDir, os.LookupEnv)
+	if err != nil {
+		return 2, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), importDiscTimeout)
+	defer cancel()
+
+	st, err := openDataStore(ctx, cfg.DataDir, log)
+	if err != nil {
+		return 1, err
+	}
+	defer closeStore(st, log)
+
+	assetStore, err := assets.NewLocal(AssetDir(cfg.DataDir), assets.WithMaxSize(maxAssetBlobBytes))
+	if err != nil {
+		return 1, fmt.Errorf("opening the asset store in %s: %w", AssetDir(cfg.DataDir), err)
+	}
+
+	// Open the disc in place. gcdisc never copies the image; it reads the
+	// header, the filesystem and the one RARC the adapter needs.
+	d, err := gcdisc.Open(imagePath)
+	if err != nil {
+		return 1, fmt.Errorf("opening the disc image: %w", err)
+	}
+	defer d.Close()
+
+	gameID := d.Header().GameID
+	if !strings.HasPrefix(gameID, importDiscGameIDPrefix) {
+		// Refuse a mislabelled image before any parse: the adapter's rules are
+		// Wind Waker's, and importing another game's text under them would be a
+		// provenance lie the user could not audit later.
+		return 1, fmt.Errorf("disc game id %q does not start with %q: the reference adapter only reads Wind Waker images; a different title needs its own adapter", gameID, importDiscGameIDPrefix)
+	}
+	region := windwaker.DiscRegion(gameID)
+
+	// The adapter is the only place that knows the disc layout and the tag
+	// table; the command hands it the open disc and takes canonical messages.
+	ww := windwaker.New().(windwaker.Adapter)
+
+	// ── game ────────────────────────────────────────────────────────────────
+	game, err := st.GetGameBySlug(ctx, *gameSlug)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			return 1, fmt.Errorf("looking up game %q: %w", *gameSlug, err)
+		}
+		game = games.Game{
+			ID:        games.NewID(),
+			Slug:      *gameSlug,
+			Title:     "The Legend of Zelda: The Wind Waker",
+			Platform:  "gamecube",
+			UserTags:  json.RawMessage(`[]`),
+			CreatedAt: nowStampRFC3339(),
+		}
+		if err := st.CreateGame(ctx, game); err != nil {
+			return 1, fmt.Errorf("creating game %q: %w", *gameSlug, err)
+		}
+		log.Info("import-disc: game created", "game", game.ID, "slug", game.Slug)
+	}
+
+	// ── edition (region from the disc id, language en) ────────────────────
+	editions, err := st.ListEditions(ctx, game.ID)
+	if err != nil {
+		return 1, fmt.Errorf("listing editions: %w", err)
+	}
+	var edition *games.Edition
+	for i := range editions {
+		if editions[i].Region == region && editions[i].Language == "en" {
+			edition = &editions[i]
+			break
+		}
+	}
+	if edition == nil {
+		edition = &games.Edition{
+			ID:       games.NewID(),
+			GameID:   game.ID,
+			Region:   region,
+			Language: "en",
+			Revision: "1",
+		}
+		if err := st.CreateEdition(ctx, *edition); err != nil {
+			return 1, fmt.Errorf("creating edition: %w", err)
+		}
+		log.Info("import-disc: edition created", "edition", edition.ID, "region", region)
+	}
+
+	// ── draft profile (reuse the existing one so re-runs do not stack) ────
+	profiles, err := st.ListProfiles(ctx, edition.ID)
+	if err != nil {
+		return 1, fmt.Errorf("listing profiles: %w", err)
+	}
+	profile := games.Profile{}
+	for i := range profiles {
+		if profiles[i].Status == games.StatusDraft {
+			profile = profiles[i]
+			break
+		}
+	}
+	if profile.ID == "" {
+		profile, err = st.CreateDraftProfile(ctx, edition.ID)
+		if err != nil {
+			return 1, fmt.Errorf("creating draft profile: %w", err)
+		}
+		log.Info("import-disc: draft profile created", "profile", profile.ID)
+	}
+
+	// ── extract + hash the BMG before anything is written ─────────────────
+	bmgBytes, err := windwaker.ExtractBMG(d)
+	if err != nil {
+		return 1, err
+	}
+	bmgSHA := sha256.Sum256(bmgBytes)
+	bmgHex := hex.EncodeToString(bmgSHA[:])
+
+	// Idempotency by content: if this exact BMG was already imported into this
+	// profile, the source row and its messages exist. Report the count and do
+	// not write a second copy (a re-run is not a new import).
+	sources, err := st.ListSources(ctx, profile.ID)
+	if err != nil {
+		return 1, fmt.Errorf("listing sources: %w", err)
+	}
+	sourceID := ""
+	for i := range sources {
+		if sources[i].ContentSHA256 == bmgHex {
+			sourceID = sources[i].ID
+			break
+		}
+	}
+	if sourceID != "" {
+		existing, _, err := st.ListMessages(ctx, profile.ID, store.MessageFilter{}, "", 1)
+		if err != nil {
+			return 1, fmt.Errorf("counting existing messages: %w", err)
+		}
+		_ = existing
+		total, err := countProfileMessages(ctx, st, profile.ID)
+		if err != nil {
+			return 1, err
+		}
+		fmt.Fprintf(stdout, "already imported: %s @ %s (profile %s, %d messages); nothing written\n",
+			windwaker.ID, windwaker.Version, profile.ID, total)
+		return 0, nil
+	}
+
+	// ── source row ─────────────────────────────────────────────────────────
+	// The URI is a descriptive scheme, not a file:// path: it names what the
+	// bytes are without committing the operator's absolute path into the store
+	// (docs/spec/14), and it sidesteps the file:// + rights-unknown special
+	// case by carrying rights user_supplied from the start.
+	source := games.Source{
+		ID:            games.NewID(),
+		ProfileID:     profile.ID,
+		SourceType:    games.SourceGameExtract,
+		URI:           "gcdisc://" + gameID + "/res/Msg/bmgres.arc",
+		RetrievedAt:   nowStampRFC3339(),
+		ContentSHA256: bmgHex,
+		MimeType:      "application/octet-stream",
+		Rights:        games.RightsUserSupplied,
+		Trust:         1.0,
+		Parser:        windwaker.ID + "@" + windwaker.Version,
+		CoverageNotes: "windwaker reference import",
+	}
+	sourceID = source.ID
+
+	// ── parse ──────────────────────────────────────────────────────────────
+	res, err := ww.ParseDisc(ctx, d, adapter.ParseOptions{
+		ProfileID: profile.ID,
+		SourceID:  sourceID,
+		Language:  "en",
+	})
+	if err != nil {
+		return 1, fmt.Errorf("parsing the disc: %w", err)
+	}
+
+	// The coverage note is counts and structure only: how many entries the
+	// archive held, how many became rows, the rules revision, and the honest
+	// graph decision. No message text.
+	source.CoverageNotes = fmt.Sprintf(
+		"%s@%s: %d entries, %d imported, %d skipped; rules %s; %s",
+		windwaker.ID, windwaker.Version, res.Stats.Rows, res.Stats.Imported, res.Stats.Skipped,
+		windwaker.RulesRevision, windwaker.GraphNote)
+
+	if err := st.PutSources(ctx, profile.ID, []games.Source{source}); err != nil {
+		return 1, fmt.Errorf("writing the source row: %w", err)
+	}
+
+	// ── messages ───────────────────────────────────────────────────────────
+	// Batch the write: 4 411 rows in one transaction is fine on the target
+	// hardware, and a mid-transaction failure rolls the whole import back
+	// rather than leaving a half profile (docs/spec/02 "Transaction workflows").
+	if err := st.PutMessages(ctx, profile.ID, res.Messages, nil); err != nil {
+		return 1, fmt.Errorf("writing messages: %w", err)
+	}
+
+	// ── asset store (the BMG bytes, and only the BMG bytes) ───────────────
+	staged, info, err := assetStore.PutStaged(ctx, bytes.NewReader(bmgBytes), bmgHex)
+	if err != nil {
+		return 1, fmt.Errorf("staging the BMG in the asset store: %w", err)
+	}
+	if _, err := assetStore.Commit(ctx, staged); err != nil {
+		assetStore.Abort(ctx, staged)
+		return 1, fmt.Errorf("committing the BMG to the asset store: %w", err)
+	}
+	log.Info("import-disc: BMG stored in the local asset store", "sha256_prefix", info.SHA256[:12], "bytes", len(bmgBytes))
+
+	fmt.Fprintf(stdout, "imported %d messages (%d skipped) from %s into profile %s\n",
+		res.Stats.Imported, res.Stats.Skipped, gameID, profile.ID)
+
+	// ── optional publish ───────────────────────────────────────────────────
+	if *publish {
+		if err := publishDraft(ctx, st, profile.ID, log); err != nil {
+			return 1, fmt.Errorf("publishing: %w", err)
+		}
+		fmt.Fprintf(stdout, "published profile %s\n", profile.ID)
+	}
+	return 0, nil
+}
+
+// publishDraft moves a draft through review and publishes it, re-reading the
+// row version at each hop so a concurrent editor is detected, not clobbered
+// (docs/spec/12's revision token, applied to the CLI's own two hops).
+func publishDraft(ctx context.Context, st *store.Store, profileID string, log *slog.Logger) error {
+	p, rev, err := st.GetProfile(ctx, profileID)
+	if err != nil {
+		return fmt.Errorf("reading the profile: %w", err)
+	}
+	if err := st.SetProfileStatus(ctx, profileID, games.StatusReview, rev); err != nil {
+		return fmt.Errorf("moving %s to review: %w", p.Status, err)
+	}
+	p, rev, err = st.GetProfile(ctx, profileID)
+	if err != nil {
+		return fmt.Errorf("re-reading the profile: %w", err)
+	}
+	if _, err := st.Publish(ctx, profileID, rev, "import-disc"); err != nil {
+		return err
+	}
+	log.Info("import-disc: profile published", "profile", profileID)
+	return nil
+}
+
+// countProfileMessages counts a profile's messages with one bounded scan.
+func countProfileMessages(ctx context.Context, st *store.Store, profileID string) (int, error) {
+	total := 0
+	cursor := ""
+	for {
+		msgs, next, err := st.ListMessages(ctx, profileID, store.MessageFilter{}, cursor, 500)
+		if err != nil {
+			return total, err
+		}
+		total += len(msgs)
+		if next == "" {
+			return total, nil
+		}
+		cursor = next
+	}
+}
+
+// nowStampRFC3339 is the store's timestamp spelling: UTC RFC3339, so rows this
+// command writes sort and compare with rows the server writes.
+func nowStampRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }

@@ -24,6 +24,9 @@ import (
 	"github.com/dbirks/game-narrator/internal/auth"
 	"github.com/dbirks/game-narrator/internal/bootstrap"
 	"github.com/dbirks/game-narrator/internal/games"
+	"github.com/dbirks/game-narrator/internal/games/adapter"
+	"github.com/dbirks/game-narrator/internal/games/adapter/windwaker"
+	"github.com/dbirks/game-narrator/internal/gcdisc"
 	"github.com/dbirks/game-narrator/internal/scenario"
 	"github.com/dbirks/game-narrator/internal/store"
 )
@@ -1656,4 +1659,185 @@ func seedSyntheticProfileForServe(t *testing.T, st *store.Store) string {
 		t.Fatalf("Publish: %v", err)
 	}
 	return published.ID
+}
+
+// --- import-disc ----------------------------------------------------------
+//
+// The import-disc tests split the same way the windwaker package does: usage
+// errors run everywhere, and the end-to-end import runs only when the
+// operator's own disc image is present (env-gated, NOT RUN otherwise). The
+// end-to-end test asserts counts through the store — never message text.
+
+func TestRunImportDiscUsageErrors(t *testing.T) {
+	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	// No image anywhere: a clean env, an explicit failure with exit 2.
+	t.Setenv(EnvGameImage, "")
+	code, err := run([]string{"import-disc", "--data-dir", t.TempDir()}, log)
+	if code != 2 {
+		t.Fatalf("no image: exit code = %d, want 2 (err %v)", code, err)
+	}
+	if err == nil {
+		t.Fatal("no image: expected a usage error")
+	}
+	// An unreadable image path is a runtime failure (exit 1), not usage.
+	code, _ = run([]string{"import-disc", "--data-dir", t.TempDir(), "--image", "/nonexistent/dump.ciso"}, log)
+	if code != 1 {
+		t.Fatalf("unreadable image: exit code = %d, want 1", code)
+	}
+	// An unknown flag is usage (exit 2).
+	code, _ = run([]string{"import-disc", "--nope"}, log)
+	if code != 2 {
+		t.Fatalf("unknown flag: exit code = %d, want 2", code)
+	}
+}
+
+// TestRunImportDiscEndToEnd imports the operator's real disc into a temp data
+// dir and asserts the store holds exactly the messages the adapter parsed —
+// counts only, no text (docs/spec/14, AGENTS.md rule 5). It also asserts the
+// idempotent re-run reports without duplicating.
+func TestRunImportDiscEndToEnd(t *testing.T) {
+	imagePath := os.Getenv(EnvGameImage)
+	if imagePath == "" {
+		t.Skip("NOT RUN: " + EnvGameImage + " is not set (import-disc end-to-end needs the operator's disc)")
+	}
+	if _, err := os.Stat(imagePath); err != nil {
+		t.Skip("NOT RUN: disc image not found at " + imagePath)
+	}
+	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	dataDir := t.TempDir()
+
+	// The expected count comes from parsing the disc through the same
+	// adapter the command uses: what the adapter yields is what the store
+	// must hold.
+	d, err := gcdisc.Open(imagePath)
+	if err != nil {
+		t.Fatalf("open disc: %v", err)
+	}
+	defer d.Close()
+	ww := windwaker.New().(windwaker.Adapter)
+	parsed, err := ww.ParseDisc(context.Background(), d, adapter.ParseOptions{
+		ProfileID: "01ARZ3NDEKTSV4RRFFQ69C5BYW",
+		Language:  "en",
+	})
+	if err != nil {
+		t.Fatalf("parse the disc for the expected count: %v", err)
+	}
+	want := len(parsed.Messages)
+	if want == 0 {
+		t.Fatal("the adapter parsed no messages; the disc is not a readable Wind Waker image")
+	}
+
+	first := captureStdout(t, func() int {
+		code, err := run([]string{"import-disc", "--data-dir", dataDir, "--image", imagePath}, log)
+		if err != nil {
+			t.Fatalf("import-disc: %v", err)
+		}
+		return code
+	})
+	if first.code != 0 {
+		t.Fatalf("import-disc exit code = %d, want 0 (output %q)", first.code, first.output)
+	}
+
+	st, err := store.Open(context.Background(), store.DBPath(dataDir))
+	if err != nil {
+		t.Fatalf("open the import data dir: %v", err)
+	}
+	defer st.Close()
+
+	game, err := st.GetGameBySlug(context.Background(), "wind-waker")
+	if err != nil {
+		t.Fatalf("game %q not found after import: %v", "wind-waker", err)
+	}
+	got, err := countMessagesForTest(context.Background(), st, game)
+	if err != nil {
+		t.Fatalf("counting messages: %v", err)
+	}
+	if got != want {
+		t.Fatalf("store holds %d messages, the adapter parsed %d", got, want)
+	}
+
+	// The source row records the adapter identity and the content hash; the
+	// asset store holds the BMG bytes under that hash.
+	sources, err := sourcesForTest(context.Background(), st, game)
+	if err != nil {
+		t.Fatalf("listing sources: %v", err)
+	}
+	if len(sources) != 1 {
+		t.Fatalf("store holds %d source rows, want 1", len(sources))
+	}
+	src := sources[0]
+	if src.SourceType != games.SourceGameExtract || src.Rights != games.RightsUserSupplied {
+		t.Fatalf("source row type/rights = %s/%s, want game_extract/user_supplied", src.SourceType, src.Rights)
+	}
+	if src.Parser != windwaker.ID+"@"+windwaker.Version {
+		t.Fatalf("source parser = %q, want %q", src.Parser, windwaker.ID+"@"+windwaker.Version)
+	}
+
+	// Idempotency: a second run must report, not duplicate.
+	second := captureStdout(t, func() int {
+		code, err := run([]string{"import-disc", "--data-dir", dataDir, "--image", imagePath}, log)
+		if err != nil {
+			t.Fatalf("second import-disc: %v", err)
+		}
+		return code
+	})
+	if second.code != 0 {
+		t.Fatalf("second import-disc exit code = %d, want 0 (output %q)", second.code, second.output)
+	}
+	if !strings.Contains(second.output, "already imported") {
+		t.Fatalf("second run did not report idempotency: %q", second.output)
+	}
+	got, err = countMessagesForTest(context.Background(), st, game)
+	if err != nil {
+		t.Fatalf("recounting messages: %v", err)
+	}
+	if got != want {
+		t.Fatalf("after the second run the store holds %d messages, want %d (re-run duplicated rows)", got, want)
+	}
+}
+
+// countMessagesForTest counts a game's messages across all of its profiles.
+func countMessagesForTest(ctx context.Context, st *store.Store, game games.Game) (int, error) {
+	editions, err := st.ListEditions(ctx, game.ID)
+	if err != nil {
+		return 0, err
+	}
+	total := 0
+	for _, e := range editions {
+		profiles, err := st.ListProfiles(ctx, e.ID)
+		if err != nil {
+			return 0, err
+		}
+		for _, p := range profiles {
+			n, err := countProfileMessages(ctx, st, p.ID)
+			if err != nil {
+				return 0, err
+			}
+			total += n
+		}
+	}
+	return total, nil
+}
+
+// sourcesForTest lists a game's source rows across all of its profiles.
+func sourcesForTest(ctx context.Context, st *store.Store, game games.Game) ([]games.Source, error) {
+	editions, err := st.ListEditions(ctx, game.ID)
+	if err != nil {
+		return nil, err
+	}
+	var out []games.Source
+	for _, e := range editions {
+		profiles, err := st.ListProfiles(ctx, e.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range profiles {
+			s, err := st.ListSources(ctx, p.ID)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, s...)
+		}
+	}
+	return out, nil
 }

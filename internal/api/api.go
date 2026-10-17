@@ -145,6 +145,12 @@ type Server struct {
 	// construction and ADR-0017 says so out loud; the durable queue owns the
 	// cross-restart case through its own idempotency_key column.
 	idempotency *idempotencyStore
+
+	// voices wires the voice setup workflow (voices.go): audition creation is
+	// queue-backed (the 202 carries a job_id) and the slow VoiceDesign calls run
+	// as the voice.auditions job kind. nil answers 503 under /api/v1/voices for
+	// the same honest-degradation reason as every other unwired subsystem.
+	voices *voiceDeps
 }
 
 // ReadinessFunc answers GET /api/v1/health/ready. It returns the per-dependency
@@ -420,6 +426,18 @@ func (s *Server) Handler() http.Handler {
 	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/regions", s.handleProfileRegions)
 	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/import", s.handleImportFile)
 	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/export", s.handleProfileExport)
+
+	// The voice setup workflow (docs/spec/08 "APIs": voice list/auditions/
+	// approve/register/preview). The 202 audition job runs as voices.JobKind;
+	// which role each route needs is the scope table's business.
+	routes.register(mux, http.MethodGet, "/api/v1/voices", s.handleVoiceList)
+	routes.register(mux, http.MethodPost, "/api/v1/voices/auditions", s.handleVoiceAuditionsCreate)
+	routes.register(mux, http.MethodGet, "/api/v1/voices/{id}", s.handleVoiceGet)
+	routes.register(mux, http.MethodGet, "/api/v1/voices/{id}/auditions/{aid}", s.handleVoiceAuditionAudio)
+	routes.register(mux, http.MethodPost, "/api/v1/voices/{id}/approve", s.handleVoiceApprove)
+	routes.register(mux, http.MethodPost, "/api/v1/voices/{id}/register", s.handleVoiceRegister)
+	routes.register(mux, http.MethodPost, "/api/v1/voices/{id}/preview", s.handleVoicePreview)
+	routes.register(mux, http.MethodGet, "/api/v1/voices/{id}/registrations", s.handleVoiceRegistrations)
 
 	// The machine-readable contract itself. Public: it is how a client learns to
 	// authenticate, and it carries no game content and no host paths.

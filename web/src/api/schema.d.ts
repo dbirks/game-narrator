@@ -826,6 +826,154 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/voices": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Voice revisions, all of them or one character's. */
+    get: operations["listVoices"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/voices/auditions": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Start one design attempt: draft revision plus a job generating the audition clips.
+     * @description The draft revision exists at 202 (state draft); the VoiceDesign calls run as the voice.auditions job the job_id names. A 503 SUBSYSTEM_UNAVAILABLE means the job queue is not wired in this process.
+     */
+    post: operations["createVoiceAuditions"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/voices/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** One voice revision with its auditions and registrations. */
+    get: operations["getVoice"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/voices/{id}/auditions/{aid}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** One audition clip as audio/wav. */
+    get: operations["getVoiceAuditionAudio"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/voices/{id}/approve": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Freeze one audition as the canonical reference (consent-gated).
+     * @description The revision must be auditioning; the consent record is recorded on the frozen row and an empty consent is refused (400 CONSENT_REQUIRED, docs/spec/14). Approving is the one-way door: the state machine does not move back.
+     */
+    post: operations["approveVoice"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/voices/{id}/register": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Run one reconciliation pass for this revision on this instance.
+     * @description Idempotent: a voice already present is reported present and nothing is re-uploaded. A conflicting name is reported invalid with the reason, not overwritten (docs/spec/06).
+     */
+    post: operations["registerVoice"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/voices/{id}/preview": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Synthesise one line in the approved voice.
+     * @description The cache key carries the revision fingerprint, so the second identical preview is an X-Cache: HIT with no TTS request (docs/spec/07 step 7); a re-approval is a disjoint key space.
+     */
+    post: operations["previewVoice"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/voices/{id}/registrations": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** The per-instance registration rows for one revision. */
+    get: operations["listVoiceRegistrations"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/openapi.json": {
     parameters: {
       query?: never;
@@ -1692,6 +1840,105 @@ export interface components {
       media_type?: string;
       detail?: string;
     };
+    /** @description One voice revision. A revision is immutable once approved: the reference bytes, transcript, design model and consent record are frozen (docs/spec/07, ADR-0005). States move forward only: draft → auditioning → approved → retired. */
+    VoiceRevision: {
+      id: string;
+      /** @description The character slug this voice belongs to. */
+      character: string;
+      /** @description Monotonic per character; approving never mutates an earlier revision. */
+      revision: number;
+      /** @enum {string} */
+      state: "draft" | "auditioning" | "approved" | "retired";
+      /** @description The editable voice brief fed to VoiceDesign. */
+      design_instruction: string;
+      language?: string;
+      /** @description Present once approved: the exact text the reference speaks. */
+      ref_transcript?: string;
+      /** @description Present once approved: the content identity of the canonical reference. */
+      reference_sha256?: string;
+      /** @description Present once approved: the voice-revision fingerprint that keys the TTS cache (docs/spec/07). */
+      fingerprint?: string;
+      /** @description Present once approved: the consent record that gated the freeze (docs/spec/14). */
+      consent_provenance?: string;
+      approved_by?: string;
+      /** Format: date-time */
+      approved_at?: string;
+      audition_ids: string[];
+      /** Format: date-time */
+      created_at: string;
+      /** Format: date-time */
+      updated_at: string;
+      /** @description Present on the detail view: the per-instance registration state. */
+      registrations?: components["schemas"]["VoiceRegistration"][];
+    };
+    /** @description One audition clip: a VoiceDesign candidate on a fixed synthetic line (never game text, docs/spec/03). */
+    VoiceAudition: {
+      id: string;
+      index: number;
+      /** @description The synthetic line the clip speaks. */
+      transcript: string;
+      /** @description The VoiceDesign checkpoint that produced it. */
+      model_id: string;
+      /** @description Content identity of the clip; the address the approval freezes. */
+      sha256: string;
+      duration_ms: number;
+      latency_ms?: number;
+      /** @description The provider origin recorded on the audio. */
+      origin?: string;
+      request_id?: string;
+      /** Format: date-time */
+      created_at: string;
+    };
+    /** @description The full state of one revision: the revision, its audition rows and its registrations. */
+    VoiceDetail: components["schemas"]["VoiceRevision"] & {
+      auditions: components["schemas"]["VoiceAudition"][];
+    };
+    /** @description One per-instance registration row (docs/spec/06 VoiceRegistryManager). ready means the instance lists the voice; invalid carries the reason. */
+    VoiceRegistration: {
+      instance_id: string;
+      /** @description The namespaced name: gn_<voice8>_<character>_v<revision>_<digest8> (or a gn_test_ name in tests). */
+      registered_name: string;
+      remote_digest?: string;
+      /** @enum {string} */
+      state: "pending" | "ready" | "invalid";
+      /** @description Present when state is invalid: why the registration is not usable. */
+      err?: string;
+      /** Format: date-time */
+      last_verified_at?: string;
+    };
+    VoiceRegistrations: {
+      voice_id: string;
+      registrations: components["schemas"]["VoiceRegistration"][];
+    };
+    /** @description One character's revisions (or all of them when the query omits character). */
+    VoiceList: {
+      voices: components["schemas"]["VoiceRevision"][];
+    };
+    /** @description Starts one design attempt: a draft revision plus a job that generates the audition clips. */
+    VoiceAuditionsCreateRequest: {
+      character: string;
+      /** @description The voice brief fed to VoiceDesign. */
+      brief: string;
+      /** @description How many synthetic lines to audition; defaults to 3. */
+      count?: number;
+    };
+    /** @description The draft revision exists at 202; the clips arrive when the job finishes. Poll the job or GET the revision. */
+    VoiceAuditionsCreateResponse: {
+      job_id: string;
+      voice_id: string;
+      character: string;
+      revision: number;
+      state: string;
+    };
+    /** @description Freezes one audition as the canonical reference. consent is required and must be meaningful (docs/spec/14); an empty consent is a 400 CONSENT_REQUIRED. */
+    VoiceApproveRequest: {
+      audition_id: string;
+      consent: string;
+    };
+    VoicePreviewRequest: {
+      /** @description The line to synthesise in the approved voice. */
+      text: string;
+    };
   };
   responses: {
     /** @description RFC 9457 problem+json. code is the stable member of docs/spec/08's error contract; X-Request-Id correlates it with the server log and the event stream. */
@@ -1728,6 +1975,10 @@ export interface components {
     TraceId: string;
     /** @description Lowercase hex sha256 of a stored dev-trace sample, as referenced by frame_asset or crop_asset on text.observed. */
     AssetSha256: string;
+    /** @description Voice revision ULID. A malformed id answers 404, the same as an unknown one. */
+    VoiceId: string;
+    /** @description Audition clip ULID on the named revision. */
+    AuditionId: string;
   };
   requestBodies: never;
   headers: never;
@@ -3253,6 +3504,246 @@ export interface operations {
       };
       404: components["responses"]["Problem"];
       503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  listVoices: {
+    parameters: {
+      query?: {
+        /** @description Restrict to one character slug. */
+        character?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The revisions. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["VoiceList"];
+        };
+      };
+      403: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  createVoiceAuditions: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["VoiceAuditionsCreateRequest"];
+      };
+    };
+    responses: {
+      /** @description Queued. */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["VoiceAuditionsCreateResponse"];
+        };
+      };
+      400: components["responses"]["Problem"];
+      /** @description The job queue is not available in this process. */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      default: components["responses"]["Problem"];
+    };
+  };
+  getVoice: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Voice revision ULID. A malformed id answers 404, the same as an unknown one. */
+        id: components["parameters"]["VoiceId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The revision. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["VoiceDetail"];
+        };
+      };
+      404: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  getVoiceAuditionAudio: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Voice revision ULID. A malformed id answers 404, the same as an unknown one. */
+        id: components["parameters"]["VoiceId"];
+        /** @description Audition clip ULID on the named revision. */
+        aid: components["parameters"]["AuditionId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description A voice audio (WAV, PCM16). */
+      200: {
+        headers: {
+          /** @description The audio's SHA-256 content identity. */
+          ETag?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "audio/wav": string;
+        };
+      };
+      404: components["responses"]["Problem"];
+      /** @description The row outlived its bytes: the clip's audio is no longer in the asset store. */
+      410: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      default: components["responses"]["Problem"];
+    };
+  };
+  approveVoice: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Voice revision ULID. A malformed id answers 404, the same as an unknown one. */
+        id: components["parameters"]["VoiceId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["VoiceApproveRequest"];
+      };
+    };
+    responses: {
+      /** @description Approved. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["VoiceRevision"];
+        };
+      };
+      400: components["responses"]["Problem"];
+      404: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  registerVoice: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Voice revision ULID. A malformed id answers 404, the same as an unknown one. */
+        id: components["parameters"]["VoiceId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The resulting registration state. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["VoiceRegistration"];
+        };
+      };
+      404: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  previewVoice: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Voice revision ULID. A malformed id answers 404, the same as an unknown one. */
+        id: components["parameters"]["VoiceId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["VoicePreviewRequest"];
+      };
+    };
+    responses: {
+      /** @description The preview audio (WAV, PCM16). X-Cache is the speech-cache decision for this exact (revision fingerprint, line, model): HIT means the bytes came from the cache with no TTS request (docs/spec/07 step 7). */
+      200: {
+        headers: {
+          /** @description Cache decision for this request. */
+          "X-Cache"?: "HIT" | "MISS";
+          /** @description The audio's SHA-256 content identity. */
+          ETag?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "audio/wav": string;
+        };
+      };
+      400: components["responses"]["Problem"];
+      404: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  listVoiceRegistrations: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Voice revision ULID. A malformed id answers 404, the same as an unknown one. */
+        id: components["parameters"]["VoiceId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The registrations. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["VoiceRegistrations"];
+        };
+      };
+      404: components["responses"]["Problem"];
       default: components["responses"]["Problem"];
     };
   };

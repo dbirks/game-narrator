@@ -66,6 +66,10 @@
   {
    "name": "onboarding",
    "description": "The onboarding agent: runs, chat, review and publication approval."
+  },
+  {
+   "name": "voices",
+   "description": "Voice setup: auditioning, consent-gated approval, provider registration and preview (docs/spec/07, docs/spec/14)."
   }
  ],
  "paths": {
@@ -2825,6 +2829,371 @@
     }
    }
   },
+  "/api/v1/voices": {
+   "get": {
+    "operationId": "listVoices",
+    "tags": [
+     "voices"
+    ],
+    "summary": "Voice revisions, all of them or one character's.",
+    "x-required-role": "viewer",
+    "parameters": [
+     {
+      "name": "character",
+      "in": "query",
+      "required": false,
+      "description": "Restrict to one character slug.",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "The revisions.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/VoiceList"
+        }
+       }
+      }
+     },
+     "403": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   }
+  },
+  "/api/v1/voices/auditions": {
+   "post": {
+    "operationId": "createVoiceAuditions",
+    "tags": [
+     "voices"
+    ],
+    "summary": "Start one design attempt: draft revision plus a job generating the audition clips.",
+    "description": "The draft revision exists at 202 (state draft); the VoiceDesign calls run as the voice.auditions job the job_id names. A 503 SUBSYSTEM_UNAVAILABLE means the job queue is not wired in this process.",
+    "x-required-role": "curator",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/VoiceAuditionsCreateRequest"
+       }
+      }
+     }
+    },
+    "responses": {
+     "202": {
+      "description": "Queued.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/VoiceAuditionsCreateResponse"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "503": {
+      "description": "The job queue is not available in this process.",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   }
+  },
+  "/api/v1/voices/{id}": {
+   "get": {
+    "operationId": "getVoice",
+    "tags": [
+     "voices"
+    ],
+    "summary": "One voice revision with its auditions and registrations.",
+    "x-required-role": "viewer",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/VoiceId"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "The revision.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/VoiceDetail"
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   }
+  },
+  "/api/v1/voices/{id}/auditions/{aid}": {
+   "get": {
+    "operationId": "getVoiceAuditionAudio",
+    "tags": [
+     "voices"
+    ],
+    "summary": "One audition clip as audio/wav.",
+    "x-required-role": "curator",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/VoiceId"
+     },
+     {
+      "$ref": "#/components/parameters/AuditionId"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "A voice audio (WAV, PCM16).",
+      "headers": {
+       "ETag": {
+        "schema": {
+         "type": "string"
+        },
+        "description": "The audio's SHA-256 content identity."
+       }
+      },
+      "content": {
+       "audio/wav": {
+        "schema": {
+         "type": "string",
+         "format": "binary"
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "410": {
+      "description": "The row outlived its bytes: the clip's audio is no longer in the asset store.",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   }
+  },
+  "/api/v1/voices/{id}/approve": {
+   "post": {
+    "operationId": "approveVoice",
+    "tags": [
+     "voices"
+    ],
+    "summary": "Freeze one audition as the canonical reference (consent-gated).",
+    "description": "The revision must be auditioning; the consent record is recorded on the frozen row and an empty consent is refused (400 CONSENT_REQUIRED, docs/spec/14). Approving is the one-way door: the state machine does not move back.",
+    "x-required-role": "curator",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/VoiceId"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/VoiceApproveRequest"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Approved.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/VoiceRevision"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "404": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "409": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   }
+  },
+  "/api/v1/voices/{id}/register": {
+   "post": {
+    "operationId": "registerVoice",
+    "tags": [
+     "voices"
+    ],
+    "summary": "Run one reconciliation pass for this revision on this instance.",
+    "description": "Idempotent: a voice already present is reported present and nothing is re-uploaded. A conflicting name is reported invalid with the reason, not overwritten (docs/spec/06).",
+    "x-required-role": "operator",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/VoiceId"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "The resulting registration state.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/VoiceRegistration"
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "409": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   }
+  },
+  "/api/v1/voices/{id}/preview": {
+   "post": {
+    "operationId": "previewVoice",
+    "tags": [
+     "voices"
+    ],
+    "summary": "Synthesise one line in the approved voice.",
+    "description": "The cache key carries the revision fingerprint, so the second identical preview is an X-Cache: HIT with no TTS request (docs/spec/07 step 7); a re-approval is a disjoint key space.",
+    "x-required-role": "curator",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/VoiceId"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/VoicePreviewRequest"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "The preview audio (WAV, PCM16). X-Cache is the speech-cache decision for this exact (revision fingerprint, line, model): HIT means the bytes came from the cache with no TTS request (docs/spec/07 step 7).",
+      "headers": {
+       "X-Cache": {
+        "schema": {
+         "type": "string",
+         "enum": [
+          "HIT",
+          "MISS"
+         ]
+        },
+        "description": "Cache decision for this request."
+       },
+       "ETag": {
+        "schema": {
+         "type": "string"
+        },
+        "description": "The audio's SHA-256 content identity."
+       }
+      },
+      "content": {
+       "audio/wav": {
+        "schema": {
+         "type": "string",
+         "format": "binary"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "404": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "409": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   }
+  },
+  "/api/v1/voices/{id}/registrations": {
+   "get": {
+    "operationId": "listVoiceRegistrations",
+    "tags": [
+     "voices"
+    ],
+    "summary": "The per-instance registration rows for one revision.",
+    "x-required-role": "curator",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/VoiceId"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "The registrations.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/VoiceRegistrations"
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   }
+  },
   "/api/v1/openapi.json": {
    "get": {
     "operationId": "getOpenAPIDocument",
@@ -3419,6 +3788,24 @@
      "type": "string",
      "minLength": 64,
      "maxLength": 64
+    }
+   },
+   "VoiceId": {
+    "name": "id",
+    "in": "path",
+    "required": true,
+    "description": "Voice revision ULID. A malformed id answers 404, the same as an unknown one.",
+    "schema": {
+     "type": "string"
+    }
+   },
+   "AuditionId": {
+    "name": "aid",
+    "in": "path",
+    "required": true,
+    "description": "Audition clip ULID on the named revision.",
+    "schema": {
+     "type": "string"
     }
    }
   },
@@ -5666,6 +6053,319 @@
      },
      "detail": {
       "type": "string"
+     }
+    }
+   },
+   "VoiceRevision": {
+    "type": "object",
+    "description": "One voice revision. A revision is immutable once approved: the reference bytes, transcript, design model and consent record are frozen (docs/spec/07, ADR-0005). States move forward only: draft → auditioning → approved → retired.",
+    "required": [
+     "id",
+     "character",
+     "revision",
+     "state",
+     "design_instruction",
+     "audition_ids",
+     "created_at",
+     "updated_at"
+    ],
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "character": {
+      "type": "string",
+      "description": "The character slug this voice belongs to."
+     },
+     "revision": {
+      "type": "integer",
+      "description": "Monotonic per character; approving never mutates an earlier revision."
+     },
+     "state": {
+      "type": "string",
+      "enum": [
+       "draft",
+       "auditioning",
+       "approved",
+       "retired"
+      ]
+     },
+     "design_instruction": {
+      "type": "string",
+      "description": "The editable voice brief fed to VoiceDesign."
+     },
+     "language": {
+      "type": "string"
+     },
+     "ref_transcript": {
+      "type": "string",
+      "description": "Present once approved: the exact text the reference speaks."
+     },
+     "reference_sha256": {
+      "type": "string",
+      "description": "Present once approved: the content identity of the canonical reference."
+     },
+     "fingerprint": {
+      "type": "string",
+      "description": "Present once approved: the voice-revision fingerprint that keys the TTS cache (docs/spec/07)."
+     },
+     "consent_provenance": {
+      "type": "string",
+      "description": "Present once approved: the consent record that gated the freeze (docs/spec/14)."
+     },
+     "approved_by": {
+      "type": "string"
+     },
+     "approved_at": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "audition_ids": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "updated_at": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "registrations": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/VoiceRegistration"
+      },
+      "description": "Present on the detail view: the per-instance registration state."
+     }
+    }
+   },
+   "VoiceAudition": {
+    "type": "object",
+    "description": "One audition clip: a VoiceDesign candidate on a fixed synthetic line (never game text, docs/spec/03).",
+    "required": [
+     "id",
+     "index",
+     "transcript",
+     "model_id",
+     "sha256",
+     "duration_ms",
+     "created_at"
+    ],
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "index": {
+      "type": "integer"
+     },
+     "transcript": {
+      "type": "string",
+      "description": "The synthetic line the clip speaks."
+     },
+     "model_id": {
+      "type": "string",
+      "description": "The VoiceDesign checkpoint that produced it."
+     },
+     "sha256": {
+      "type": "string",
+      "description": "Content identity of the clip; the address the approval freezes."
+     },
+     "duration_ms": {
+      "type": "integer"
+     },
+     "latency_ms": {
+      "type": "integer"
+     },
+     "origin": {
+      "type": "string",
+      "description": "The provider origin recorded on the audio."
+     },
+     "request_id": {
+      "type": "string"
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time"
+     }
+    }
+   },
+   "VoiceDetail": {
+    "type": "object",
+    "description": "The full state of one revision: the revision, its audition rows and its registrations.",
+    "required": [
+     "auditions"
+    ],
+    "allOf": [
+     {
+      "$ref": "#/components/schemas/VoiceRevision"
+     },
+     {
+      "type": "object",
+      "properties": {
+       "auditions": {
+        "type": "array",
+        "items": {
+         "$ref": "#/components/schemas/VoiceAudition"
+        }
+       }
+      }
+     }
+    ]
+   },
+   "VoiceRegistration": {
+    "type": "object",
+    "description": "One per-instance registration row (docs/spec/06 VoiceRegistryManager). ready means the instance lists the voice; invalid carries the reason.",
+    "required": [
+     "instance_id",
+     "registered_name",
+     "state"
+    ],
+    "properties": {
+     "instance_id": {
+      "type": "string"
+     },
+     "registered_name": {
+      "type": "string",
+      "description": "The namespaced name: gn_<voice8>_<character>_v<revision>_<digest8> (or a gn_test_ name in tests)."
+     },
+     "remote_digest": {
+      "type": "string"
+     },
+     "state": {
+      "type": "string",
+      "enum": [
+       "pending",
+       "ready",
+       "invalid"
+      ]
+     },
+     "err": {
+      "type": "string",
+      "description": "Present when state is invalid: why the registration is not usable."
+     },
+     "last_verified_at": {
+      "type": "string",
+      "format": "date-time"
+     }
+    }
+   },
+   "VoiceRegistrations": {
+    "type": "object",
+    "required": [
+     "voice_id",
+     "registrations"
+    ],
+    "properties": {
+     "voice_id": {
+      "type": "string"
+     },
+     "registrations": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/VoiceRegistration"
+      }
+     }
+    }
+   },
+   "VoiceList": {
+    "type": "object",
+    "description": "One character's revisions (or all of them when the query omits character).",
+    "required": [
+     "voices"
+    ],
+    "properties": {
+     "voices": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/VoiceRevision"
+      }
+     }
+    }
+   },
+   "VoiceAuditionsCreateRequest": {
+    "type": "object",
+    "description": "Starts one design attempt: a draft revision plus a job that generates the audition clips.",
+    "required": [
+     "character",
+     "brief"
+    ],
+    "properties": {
+     "character": {
+      "type": "string",
+      "maxLength": 80
+     },
+     "brief": {
+      "type": "string",
+      "maxLength": 4000,
+      "description": "The voice brief fed to VoiceDesign."
+     },
+     "count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 3,
+      "description": "How many synthetic lines to audition; defaults to 3."
+     }
+    }
+   },
+   "VoiceAuditionsCreateResponse": {
+    "type": "object",
+    "description": "The draft revision exists at 202; the clips arrive when the job finishes. Poll the job or GET the revision.",
+    "required": [
+     "job_id",
+     "voice_id",
+     "character",
+     "revision",
+     "state"
+    ],
+    "properties": {
+     "job_id": {
+      "type": "string"
+     },
+     "voice_id": {
+      "type": "string"
+     },
+     "character": {
+      "type": "string"
+     },
+     "revision": {
+      "type": "integer"
+     },
+     "state": {
+      "type": "string"
+     }
+    }
+   },
+   "VoiceApproveRequest": {
+    "type": "object",
+    "description": "Freezes one audition as the canonical reference. consent is required and must be meaningful (docs/spec/14); an empty consent is a 400 CONSENT_REQUIRED.",
+    "required": [
+     "audition_id",
+     "consent"
+    ],
+    "properties": {
+     "audition_id": {
+      "type": "string"
+     },
+     "consent": {
+      "type": "string",
+      "maxLength": 4000
+     }
+    }
+   },
+   "VoicePreviewRequest": {
+    "type": "object",
+    "required": [
+     "text"
+    ],
+    "properties": {
+     "text": {
+      "type": "string",
+      "maxLength": 4000,
+      "description": "The line to synthesise in the approved voice."
      }
     }
    }
