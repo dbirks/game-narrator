@@ -18,6 +18,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dbirks/game-narrator/internal/agent"
 	"github.com/dbirks/game-narrator/internal/auth"
 	"github.com/dbirks/game-narrator/internal/games"
 	"github.com/dbirks/game-narrator/internal/profileio"
@@ -61,6 +62,14 @@ var literalEnums = map[string][]string{
 	"FrameSourceKind": {runtime.SourceKindReplay, runtime.SourceKindTestPattern, runtime.SourceKindV4L2, runtime.SourceKindDolphin},
 	"SessionState":    {runtime.StateStarting, runtime.StateRunning, runtime.StateStopping, runtime.StateStopped, runtime.StateFailed},
 	"SessionMode":     {runtime.ModeConservative, runtime.ModePredictive},
+	// The onboarding surface (ADR-0028): the run-state vocabulary the agent
+	// core writes on the run row, the tool-result statuses the executor
+	// wraps (plus the store's pending row state), and the two review-item
+	// vocabularies internal/api/onboarding_state.go computes.
+	"OnboardingRunState.properties.state":      {string(agent.StateQueued), string(agent.StateRunning), string(agent.StateBlocked), string(agent.StateReview), string(agent.StateFailed), string(agent.StateSucceeded), string(agent.StateCancelled)},
+	"OnboardingToolCallView.properties.status": {"pending", string(agent.StatusSucceeded), string(agent.StatusFailed), string(agent.StatusRefused), string(agent.StatusTimeout), string(agent.StatusCancelled)},
+	"OnboardingReviewItem.properties.kind":     {"publish", "tool"},
+	"OnboardingReviewItem.properties.state":    {"pending", "resolved"},
 }
 
 func TestOpenAPIEnumVocabulariesMatchTheDomainEnums(t *testing.T) {

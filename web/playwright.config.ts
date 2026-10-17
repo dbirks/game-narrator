@@ -26,6 +26,7 @@ const webUrl = `http://127.0.0.1:${ports.web}`;
 const embeddedUrl = `http://127.0.0.1:${ports.embedded}`;
 const catalogUrl = `http://127.0.0.1:${ports.catalog}`;
 const developerUrl = `http://127.0.0.1:${ports.developer}`;
+const onboardingUrl = `http://127.0.0.1:${ports.onboarding}`;
 const embeddedBinary = resolve(import.meta.dirname, "..", "bin", "game-narrator");
 // The replay allowlist for the inspector's server: the repo's testdata, named
 // explicitly (ADR-0024 "replay allowlist") rather than relying on the
@@ -74,7 +75,7 @@ export default defineConfig({
     {
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
-      testIgnore: /embedded\.spec\.ts|catalog\.spec\.ts/,
+      testIgnore: /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts/,
     },
     {
       name: "embedded",
@@ -97,6 +98,15 @@ export default defineConfig({
       // the synthetic clip admitted to the replay allowlist (GAME_NARRATOR_REPLAY_ROOTS).
       testMatch: /developer\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: developerUrl },
+    },
+    {
+      name: "onboarding",
+      // The onboarding agent (ADR-0028): the packaged binary with the
+      // agent_reasoning role pointed at the scripted model gateway, and the
+      // dev private-endpoint allowlist admitting the gateway's fixture page
+      // (test-only; a production appliance admits none).
+      testMatch: /onboarding\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: onboardingUrl },
     },
   ],
   webServer: [
@@ -144,6 +154,38 @@ export default defineConfig({
       cwd: "..",
       url: `${developerUrl}/api/v1/health/live`,
       env: { GAME_NARRATOR_REPLAY_ROOTS: replayRoots },
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The scripted model gateway (web/e2e/fake-model.mjs) and its malicious
+      // fixture page. Started before the onboarding server so the role URL it
+      // is given is already listening when the first attempt runs.
+      command: `node web/e2e/fake-model.mjs ${ports.fakeModel}`,
+      cwd: "..",
+      url: `http://127.0.0.1:${ports.fakeModel}/healthz`,
+      reuseExistingServer: false,
+      timeout: 30_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The onboarding agent on the packaged binary: the agent_reasoning role
+      // is the scripted gateway, and the private-endpoint allowlist admits
+      // exactly that one fixture host:port (the dev-mode opt-out of
+      // docs/spec/14, used here so the fetch_page tool can reach the test's
+      // malicious page; the allowlist is the test-only deviation, per ADR-0028).
+      command: `node web/e2e/serve.mjs onboarding 127.0.0.1:${ports.onboarding} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${onboardingUrl}/api/v1/health/live`,
+      env: {
+        GAME_NARRATOR_ROLE_AGENT_REASONING_MODEL: "fake/onboarding",
+        GAME_NARRATOR_ROLE_AGENT_REASONING_URL: `http://127.0.0.1:${ports.fakeModel}/v1`,
+        GAME_NARRATOR_WEB_ALLOW_PRIVATE: "1",
+        GAME_NARRATOR_WEB_PRIVATE_ALLOW: `127.0.0.1:${ports.fakeModel}`,
+      },
       reuseExistingServer: false,
       timeout: 60_000,
       stdout: "ignore",

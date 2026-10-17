@@ -283,8 +283,11 @@ func (p Policy) portAllowed(port string) bool {
 // effectivePort returns the explicit port, or the scheme default.
 func (p Policy) effectivePort(u *url.URL) int {
 	if port := u.Port(); port != "" {
-		n, _ := fmt.Sscanf(port, "%d", new(int))
-		return n
+		var n int
+		if _, err := fmt.Sscanf(port, "%d", &n); err == nil {
+			return n
+		}
+		return 0
 	}
 	if u.Scheme == "https" {
 		return 443

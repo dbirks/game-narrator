@@ -75,9 +75,9 @@ func TestTestSourceDeliversAnimatedFramesAtRate(t *testing.T) {
 	seen := map[capture.PixFmt]bool{}
 	hashes := map[string]bool{}
 	var (
-		prevTS   int64
-		prevSeq  int64
-		stamped  int64 // sum of the delivered frames' Dropped stamps
+		prevTS  int64
+		prevSeq int64
+		stamped int64 // sum of the delivered frames' Dropped stamps
 	)
 	for i, f := range frames {
 		if err := f.Validate(); err != nil {

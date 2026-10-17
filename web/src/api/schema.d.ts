@@ -846,6 +846,166 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/onboarding/runs": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Start an onboarding run (executes as a durable agent.run job).
+     * @description Creates the catalogue half (game, edition, draft profile) when profile_id is absent, freezes the run plan on the run row, and queues the first attempt. The run streams agent.step / tool.started / tool.completed / review.required on GET /api/v1/events; this endpoint is the snapshot the UI rebuilds from. Publication is reachable only through the approve endpoint (docs/spec/03).
+     */
+    post: operations["createOnboardingRun"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/onboarding/runs/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * The run's state, tool timeline, sources, quality reports, draft and review items.
+     * @description The REST snapshot: state, stop reason, steps, every tool call with status, source ids and duration, the draft profile's sources (web sources marked untrusted), the source-quality reports, the pending review items and the conversation (approval tokens redacted).
+     */
+    get: operations["getOnboardingRun"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/onboarding/runs/{id}/messages": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Append a user turn and resume the run to read it.
+     * @description The text is persisted to the durable conversation (the run log is the authority) and a fresh attempt is queued; the attempt picks the conversation up exactly where it stopped (ADR-0025). 409 while an attempt is in flight or the run failed.
+     */
+    post: operations["sendOnboardingMessage"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/onboarding/runs/{id}/pause": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Stop the current attempt (the run lands in a resumable state).
+     * @description The queue cancels the in-flight job; the loop records the cancellation and the run becomes resumable. With no attempt in flight this is a no-op that reports the run's real state.
+     */
+    post: operations["pauseOnboardingRun"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/onboarding/runs/{id}/resume": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Queue a fresh attempt for a waiting run.
+     * @description For runs blocked on a provider fault, in review, cancelled, or finished but unpublished. The attempt is idempotent: the durable run log is the authority on what is re-executed (ADR-0025). 409 for a failed run or while an attempt is in flight.
+     */
+    post: operations["resumeOnboardingRun"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/onboarding/runs/{id}/cancel": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Cancel the current attempt.
+     * @description Same mechanics as pause; the run lands in a resumable cancelled state, which the UI may treat as either.
+     */
+    post: operations["cancelOnboardingRun"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/onboarding/runs/{id}/approve": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Approve a review item; for publish, issue the human approval token and resume.
+     * @description The only path on this surface that can lead to publication (docs/spec/03). review_item_id "publish" issues the single-use approval token (migration 0008), moves a draft revision to review, records the token in the conversation and queues the attempt that calls publish_profile; the token is never returned on the wire. A tool-call id approves that tool's review boundary instead.
+     */
+    post: operations["approveOnboardingReview"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/onboarding/uploads": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Stage a script for an onboarding run (raw bytes or multipart file).
+     * @description The staging half of the import path (ADR-0014): the bytes are hashed into the asset store synchronously and the SHA-256 is what POST /api/v1/onboarding/runs names. No parse runs here; the agent's import_user_asset tool parses (and the run's tool timeline shows it).
+     */
+    post: operations["uploadOnboardingAsset"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1384,6 +1544,153 @@ export interface components {
       next_seq: number;
       /** @description true when the page holds exactly the limit (or more matches existed for a trace). */
       truncated: boolean;
+    };
+    /** @description Start an onboarding run: the agent onboards this title into a draft profile, as a durable agent.run job. */
+    OnboardingRunRequest: {
+      /** @description The game title to onboard. */
+      title: string;
+      /** @description Platform hint (e.g. GameCube). */
+      platform?: string;
+      /**
+       * @description Allow the agent to research on the web (untrusted sources). Default true.
+       * @default true
+       */
+      use_web: boolean;
+      /** @description SHA-256 of a script already staged via POST /api/v1/onboarding/uploads. */
+      staged_asset_sha256?: string;
+      /** @description An existing draft profile to onboard; when absent the run creates its own game, edition and draft profile. */
+      profile_id?: string;
+      /** @description The staged file's name, for provenance. */
+      file_name?: string;
+    };
+    /** @description 202: the run is accepted and executing as a durable agent.run job; watch it at GET /api/v1/onboarding/runs/{id} and on the event stream. */
+    OnboardingRunCreated: {
+      run_id: string;
+      job_id: string;
+      profile_id: string;
+      game_id?: string;
+      edition_id?: string;
+      title: string;
+      platform?: string;
+      use_web: boolean;
+    };
+    OnboardingMessageRequest: {
+      /** @description One user turn; the run resumes to read it. */
+      text: string;
+    };
+    /** @description A lifecycle answer (message, pause, resume, cancel, approve). */
+    OnboardingAttemptResult: {
+      run_id: string;
+      job_id?: string;
+      profile_id?: string;
+      /** @description Present on approve: the human approval grant (the raw token is never on the wire). */
+      approval_id?: string;
+      review_item_id?: string;
+      tool?: string;
+      state?: string;
+      seq?: number;
+      note?: string;
+    };
+    OnboardingReviewItem: {
+      /** @description "publish" for the publish boundary, otherwise the tool call id. */
+      id: string;
+      /** @enum {unknown} */
+      kind: "publish" | "tool";
+      tool?: string;
+      profile_id?: string;
+      description: string;
+      /** @enum {unknown} */
+      state: "pending" | "resolved";
+    };
+    /** @description One tool invocation of the run (the UI's tool timeline). */
+    OnboardingToolCallView: {
+      id: string;
+      name: string;
+      /** @enum {unknown} */
+      status: "pending" | "succeeded" | "failed" | "refused" | "timeout" | "cancelled";
+      source_ids: string[];
+      error?: string;
+      /** Format: date-time */
+      started_at: string;
+      /** Format: date-time */
+      finished_at?: string;
+      duration_ms?: number;
+      review_required?: boolean;
+    };
+    /** @description One content source on the draft profile; web sources are marked untrusted (docs/spec/14). */
+    OnboardingSourceView: {
+      id: string;
+      type: string;
+      uri?: string;
+      rights: string;
+      trust: number;
+      parser?: string;
+      coverage_notes?: string;
+      untrusted: boolean;
+    };
+    OnboardingMessageView: {
+      seq: number;
+      role: string;
+      /** @description Conversation text; approval tokens are redacted. */
+      text: string;
+      /** Format: date-time */
+      created_at?: string;
+    };
+    OnboardingDraftView: {
+      profile_id: string;
+      status: components["schemas"]["ProfileStatus"];
+      revision_num: number;
+      row_version: number;
+      message_count?: number;
+      character_count?: number;
+    };
+    /** @description The frozen intent of the run, written on the run row at creation. */
+    OnboardingPlan: {
+      title: string;
+      platform?: string;
+      use_web: boolean;
+      game_id?: string;
+      edition_id?: string;
+      profile_id: string;
+      staged_asset_sha256?: string;
+      file_name?: string;
+      /** Format: date-time */
+      created_at?: string;
+    };
+    /** @description The REST snapshot of a run: state, steps, the tool timeline, sources, quality reports, draft preview and pending review items. */
+    OnboardingRunState: {
+      run_id: string;
+      /** @enum {unknown} */
+      state: "queued" | "running" | "blocked" | "review" | "failed" | "succeeded" | "cancelled";
+      stop_reason?: string;
+      model?: string;
+      profile_id?: string;
+      plan: components["schemas"]["OnboardingPlan"];
+      steps: number;
+      /** Format: date-time */
+      created_at: string;
+      /** Format: date-time */
+      updated_at: string;
+      job?: components["schemas"]["Job"];
+      tool_calls: components["schemas"]["OnboardingToolCallView"][];
+      sources: components["schemas"]["OnboardingSourceView"][];
+      /** @description The structured source_quality results (docs/spec/03 Dialogue source quality). */
+      quality_reports: Record<string, never>[];
+      draft?: components["schemas"]["OnboardingDraftView"];
+      review_items: components["schemas"]["OnboardingReviewItem"][];
+      messages: components["schemas"]["OnboardingMessageView"][];
+    };
+    OnboardingApproveRequest: {
+      /** @description "publish" for the publish boundary, or the tool call id of a review-required tool. */
+      review_item_id: string;
+    };
+    /** @description 201: the bytes are in the asset store under their SHA-256; name it in POST /api/v1/onboarding/runs. */
+    OnboardingUploadAccepted: {
+      sha256: string;
+      bytes: number;
+      file_name: string;
+      media_type?: string;
+      detail?: string;
     };
   };
   responses: {
@@ -2968,6 +3275,242 @@ export interface operations {
         };
       };
       500: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  createOnboardingRun: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["OnboardingRunRequest"];
+      };
+    };
+    responses: {
+      /** @description Accepted; the attempt is queued. */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["OnboardingRunCreated"];
+        };
+      };
+      401: components["responses"]["Problem"];
+      403: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
+      422: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  getOnboardingRun: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The run ULID. */
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The run snapshot. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["OnboardingRunState"];
+        };
+      };
+      401: components["responses"]["Problem"];
+      403: components["responses"]["Problem"];
+      404: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  sendOnboardingMessage: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The run ULID. */
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["OnboardingMessageRequest"];
+      };
+    };
+    responses: {
+      /** @description The turn is stored and the attempt queued. */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["OnboardingAttemptResult"];
+        };
+      };
+      401: components["responses"]["Problem"];
+      403: components["responses"]["Problem"];
+      404: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
+      422: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  pauseOnboardingRun: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The run ULID. */
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The pause decision. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["OnboardingAttemptResult"];
+        };
+      };
+      401: components["responses"]["Problem"];
+      403: components["responses"]["Problem"];
+      404: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  resumeOnboardingRun: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The run ULID. */
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The attempt is queued. */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["OnboardingAttemptResult"];
+        };
+      };
+      401: components["responses"]["Problem"];
+      403: components["responses"]["Problem"];
+      404: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  cancelOnboardingRun: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The run ULID. */
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The cancellation. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["OnboardingAttemptResult"];
+        };
+      };
+      401: components["responses"]["Problem"];
+      403: components["responses"]["Problem"];
+      404: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  approveOnboardingReview: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The run ULID. */
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["OnboardingApproveRequest"];
+      };
+    };
+    responses: {
+      /** @description Approved; the resuming attempt is queued. */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["OnboardingAttemptResult"];
+        };
+      };
+      401: components["responses"]["Problem"];
+      403: components["responses"]["Problem"];
+      404: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
+      422: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  uploadOnboardingAsset: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Staged. */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["OnboardingUploadAccepted"];
+        };
+      };
+      401: components["responses"]["Problem"];
+      403: components["responses"]["Problem"];
+      413: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
       default: components["responses"]["Problem"];
     };
   };

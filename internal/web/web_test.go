@@ -400,7 +400,7 @@ func TestPromptInjectionQuoting(t *testing.T) {
 func TestAllowPrivateDevEndpoints(t *testing.T) {
 	p := Policy{
 		AllowPrivate: true,
-		PrivateAllow: []string{"192.168.77.0/24", "devbox:8080", "10.9.8.7"},
+		PrivateAllow: []string{"192.168.77.0/24", "devbox:8080", "10.9.8.7", "127.0.0.1:18099"},
 	}
 	cases := []struct {
 		ip, host string
@@ -412,6 +412,7 @@ func TestAllowPrivateDevEndpoints(t *testing.T) {
 		{"192.168.77.9", "devbox", 8080, true},            // hostname entry, private IP
 		{"8.8.8.8", "devbox", 8080, false},                // hostname entry, public IP
 		{"10.9.8.7", "10.9.8.7", 443, true},               // exact IP
+		{"127.0.0.1", "127.0.0.1", 18099, true},           // IP literal + host:port entry
 		{"169.254.169.254", "169.254.169.254", 80, false}, // metadata never implicitly allowed
 	}
 	for _, c := range cases {
@@ -423,6 +424,15 @@ func TestAllowPrivateDevEndpoints(t *testing.T) {
 	// With AllowPrivate, allowlisted names pass URL validation; others do not.
 	if err := p.ValidURL("http://devbox:8080/x"); err != nil {
 		t.Errorf("ValidURL(devbox:8080) = %v, want nil", err)
+	}
+	// The URL-level check must use the explicit port: an IP-literal URL whose
+	// host:port is allowlisted is admitted, a wrong port is not (this is how
+	// the e2e harness admits its fixture page).
+	if err := p.ValidURL("http://127.0.0.1:18099/x"); err != nil {
+		t.Errorf("ValidURL(127.0.0.1:18099) = %v, want nil", err)
+	}
+	if err := p.ValidURL("http://127.0.0.1:18098/x"); err == nil {
+		t.Errorf("ValidURL(127.0.0.1:18098) = nil, want refused (port not allowlisted)")
 	}
 	if err := p.ValidURL("http://evil.internal/"); !errors.Is(err, ErrBlockedName) {
 		t.Errorf("ValidURL(evil.internal) = %v, want blocked_name", err)

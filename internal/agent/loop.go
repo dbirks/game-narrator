@@ -29,6 +29,7 @@ import (
 
 	"github.com/dbirks/game-narrator/internal/auth"
 	"github.com/dbirks/game-narrator/internal/events"
+	"github.com/dbirks/game-narrator/internal/providers"
 	"github.com/dbirks/game-narrator/internal/providers/openai"
 	"github.com/dbirks/game-narrator/internal/store"
 )
@@ -221,6 +222,22 @@ func (l *loop) run(ctx context.Context) (Outcome, error) {
 			ToolChoice: openai.ToolChoiceAuto,
 		})
 		if err != nil {
+			if ctx.Err() != nil {
+				// The caller stopped the run mid-call: cancellation, not a
+				// model fault (the loop top checks ctx between round-trips,
+				// but a slow call can outlive the cancellation).
+				return l.finishCancelled(&out)
+			}
+			if IsProviderUnavailable(err) {
+				// Degraded mode (docs/spec/03 checkpoint, ADR-0028): the
+				// endpoint is down, not the run. blocked is resumable, so
+				// the human (or the operator's resume call) retries the
+				// exact same round-trip once the provider is back; the
+				// assistant message for this step was never persisted,
+				// so nothing is lost or duplicated.
+				l.emitEvent(events.AgentStep, map[string]any{"run_id": l.opts.RunID, "step": steps + 1, "error": clipErr(err.Error())})
+				return l.finish(&out, StateBlocked, StopReasonProviderUnavailable)
+			}
 			l.emitEvent(events.AgentStep, map[string]any{"run_id": l.opts.RunID, "step": steps + 1, "error": clipErr(err.Error())})
 			return l.finish(&out, StateFailed, StopReasonModelError)
 		}
@@ -306,6 +323,38 @@ func (l *loop) run(ctx context.Context) (Outcome, error) {
 	return l.finish(&out, StateBlocked, StopReasonMaxSteps)
 }
 
+// IsProviderUnavailable reports whether a model boundary error is the
+// endpoint being unreachable or rate-limited (docs/spec/06 failure
+// taxonomy: timeout, unavailable, rate_limited, replica_mismatch,
+// voice_missing) rather than a permanent refusal (auth, bad_schema, ...).
+// That split is what turns a gateway outage into a resumable blocked run
+// instead of a dead one (ADR-0028, docs/spec/13 "degraded modes").
+//
+// The router's "role not configured" refusal is included: an unconfigured
+// agent_reasoning role is the operator telling the appliance "no model here
+// yet", and the honest outcome for the run is blocked (with that as its
+// reason), resumable once the role exists — not a dead run. A 404 from a
+// configured gateway stays a permanent capability gap (the openai adapter's
+// kindForStatus), because a gateway that is serving but does not serve the
+// model is not an outage a retry outlives.
+func IsProviderUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pe *providers.Error
+	if errors.As(err, &pe) {
+		if pe.Kind.RetryableByDefault() {
+			return true
+		}
+		return pe.Kind == providers.KindUnsupportedCapability && pe.Status == 0
+	}
+	// An unclassified error from the wire is treated as permanent: an
+	// unknown fault that the taxonomy cannot name is not the outage this
+	// degraded path exists for, and retrying the unknown is not the
+	// bounded behaviour docs/spec/06 requires.
+	return false
+}
+
 // loadConversation rebuilds the conversation from the durable log. It
 // returns (true, nil) when the run already has messages (a resume), and
 // (false, nil) for a fresh run.
@@ -323,7 +372,13 @@ func (l *loop) loadConversation() (bool, error) {
 		return false, err
 	}
 	switch run.State {
-	case string(StateSucceeded), string(StateFailed):
+	case string(StateFailed):
+		// failed is the only terminal state a resume must refuse: the run
+		// stopped on a permanent fault (or a store error), and re-driving
+		// it would repeat the fault. succeeded is deliberately *not*
+		// terminal here (ADR-0028): a finished onboarding conversation
+		// continues when the human approves a publish or sends a follow-up
+		// message — the durable log is the total record either way.
 		return false, fmt.Errorf("agent: run %s is already %s", run.ID, run.State)
 	}
 	// queued / running / blocked / review / cancelled are all resumable:

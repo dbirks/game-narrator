@@ -175,6 +175,12 @@ const (
 	StopReasonCancelled  = "cancelled"
 	StopReasonModelError = "model_error"
 	StopReasonToolError  = "tool_error"
+	// StopReasonProviderUnavailable is the degraded-mode stop (ADR-0028):
+	// the agent_reasoning endpoint was unavailable (breaker open, 404/503)
+	// and the run is *waiting for the provider*, not broken. blocked is a
+	// resumable state, so POST .../resume retries the same model round-trip
+	// once the endpoint is back; a permanent error still lands in failed.
+	StopReasonProviderUnavailable = "provider_unavailable"
 )
 
 // BudgetConfig freezes the run's ceilings at start (migration 0007

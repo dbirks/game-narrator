@@ -158,6 +158,8 @@ export function serverNameForProject(project: string): string {
       return "catalog";
     case "developer":
       return "developer";
+    case "onboarding":
+      return "onboarding";
     default:
       throw new Error(`playwright project "${project}" has no webServer in playwright.config.ts`);
   }

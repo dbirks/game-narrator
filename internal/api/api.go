@@ -135,6 +135,11 @@ type Server struct {
 	// nil answers 503 on /api/v1/dev/events and /api/v1/dev/traces.
 	devEvents events.Store
 
+	// onb wires the onboarding agent routes (onboarding.go): the durable
+	// queue the runs execute as, the run log and the human approval tokens.
+	// nil answers 503 under /api/v1/onboarding (ADR-0028).
+	onb *onbDeps
+
 	// idempotency remembers the responses of keyed creates so a retried POST
 	// cannot create two games (docs/spec/08 "Conventions"). It is per-process by
 	// construction and ADR-0017 says so out loud; the durable queue owns the
@@ -371,6 +376,20 @@ func (s *Server) Handler() http.Handler {
 	routes.register(mux, http.MethodGet, "/api/v1/dev/events", s.handleDevEvents)
 	routes.register(mux, http.MethodGet, "/api/v1/dev/traces/{trace_id}", s.handleDevTraces)
 	routes.register(mux, http.MethodGet, "/api/v1/dev/assets/{sha256}", s.handleDevAsset)
+
+	// Onboarding agent (docs/spec/08 "APIs", ADR-0028): the run lives as a
+	// durable agent.run job; this surface starts, chats with, watches and
+	// approves it. The scope table grants the whole /api/v1/onboarding prefix
+	// to curator and above (ADR-0028), so publication — reachable only
+	// through .../approve — is a deliberate, role-gated act.
+	routes.register(mux, http.MethodPost, "/api/v1/onboarding/runs", s.handleOnboardingCreate)
+	routes.register(mux, http.MethodGet, "/api/v1/onboarding/runs/{id}", s.handleOnboardingState)
+	routes.register(mux, http.MethodPost, "/api/v1/onboarding/runs/{id}/messages", s.handleOnboardingMessage)
+	routes.register(mux, http.MethodPost, "/api/v1/onboarding/runs/{id}/pause", s.handleOnboardingPause)
+	routes.register(mux, http.MethodPost, "/api/v1/onboarding/runs/{id}/resume", s.handleOnboardingResume)
+	routes.register(mux, http.MethodPost, "/api/v1/onboarding/runs/{id}/cancel", s.handleOnboardingCancel)
+	routes.register(mux, http.MethodPost, "/api/v1/onboarding/runs/{id}/approve", s.handleOnboardingApprove)
+	routes.register(mux, http.MethodPost, "/api/v1/onboarding/uploads", s.handleOnboardingUpload)
 
 	// Catalog, profile lifecycle and portability (docs/spec/08 "APIs": games,
 	// editions, profiles, messages, characters, regions, import, export,

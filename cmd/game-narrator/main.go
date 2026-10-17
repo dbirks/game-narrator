@@ -24,6 +24,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/dbirks/game-narrator/internal/agent"
+	"github.com/dbirks/game-narrator/internal/agent/tools"
 	"github.com/dbirks/game-narrator/internal/api"
 	"github.com/dbirks/game-narrator/internal/assets"
 	"github.com/dbirks/game-narrator/internal/auth"
@@ -33,8 +35,12 @@ import (
 	"github.com/dbirks/game-narrator/internal/games/adapter"
 	"github.com/dbirks/game-narrator/internal/games/adapter/generic"
 	"github.com/dbirks/game-narrator/internal/jobs"
+	"github.com/dbirks/game-narrator/internal/providers"
+	"github.com/dbirks/game-narrator/internal/providers/router"
 	"github.com/dbirks/game-narrator/internal/runtime"
 	"github.com/dbirks/game-narrator/internal/store"
+	"github.com/dbirks/game-narrator/internal/web"
+	"github.com/dbirks/game-narrator/internal/web/search"
 )
 
 const usageText = `usage: game-narrator <command> [flags]
@@ -364,6 +370,27 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 		}); err != nil {
 		return 1, fmt.Errorf("registering %s job kind: %w", api.JobKindImportFile, err)
 	}
+	// The onboarding agent (ADR-0026/0028): the agent.run kind executes the
+	// durable run log in internal/agent. The model is reached through the
+	// provider router — the single provider boundary with breakers and
+	// retries — and roles come from the environment
+	// (GAME_NARRATOR_ROLE_AGENT_REASONING_MODEL / _URL; a _URL points at a
+	// deployment, e.g. an Ollama port or an OpenAI-compatible gateway).
+	// A missing role is not a boot failure: the run then lands in blocked
+	// with that as its reason and resumes once configured (docs/spec/13
+	// "degraded modes").
+	agentHandler, agentCloser, err := newAgentWiring(st, assetStore, adapters, hub)
+	if err != nil {
+		return 1, fmt.Errorf("wiring the onboarding agent: %w", err)
+	}
+	defer agentCloser()
+	if err := runner.Register(agent.JobKind, agentHandler, jobs.RegisterOpts{
+		Concurrency: 1,
+		Resumable:   true,
+		Timeout:     agentJobTimeout,
+	}); err != nil {
+		return 1, fmt.Errorf("registering %s job kind: %w", agent.JobKind, err)
+	}
 	recovery, err := jobsStore.RecoverOnStartup(ctx, runner.ResumableKinds())
 	if err != nil {
 		return 1, fmt.Errorf("recovering interrupted jobs: %w", err)
@@ -448,6 +475,7 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 		api.WithEvents(hub),
 		api.WithJobs(jobsStore),
 		api.WithSessions(sessions),
+		api.WithOnboarding(runner, store.NewAgentStore(st), tools.NewSQLiteApprovals(st)),
 		api.WithDevEvents(eventStore),
 		api.WithAuth(auth.NewService(authRepo, auth.WithLogger(log)), authRepo),
 		api.WithStore(st),
@@ -487,6 +515,88 @@ const maxAssetBlobBytes = 512 << 20
 // parser until the lease had already been stolen, and a minute would cut off the
 // low-end device doing legitimate work (docs/spec/16's performance budget).
 const importJobTimeout = 10 * time.Minute
+
+// agentJobTimeout bounds one agent.run attempt. An onboarding run is a bounded
+// research-and-import loop (docs/spec/16 "onboarding agent" budget); 30 minutes
+// leaves wide margin for a slow model over the wire while still bounding a
+// wedged attempt so its lease is eventually stealable (docs/spec/08).
+const agentJobTimeout = 30 * time.Minute
+
+// newAgentWiring assembles the onboarding agent's job handler (ADR-0026/0028).
+// The model is reached only through the provider router — the single provider
+// boundary with breakers, affinity and retries — and the tool registry is the
+// default allowlist. Roles are read from the environment; a missing
+// agent_reasoning role is deliberately not a boot failure (the run then blocks
+// with that as its reason and resumes once configured). The returned closer
+// releases the search provider's HTTP client on shutdown.
+func newAgentWiring(st *store.Store, assetStore *assets.Local, adapters *adapter.Registry, hub *events.Hub) (jobs.Handler, func(), error) {
+	roles, err := providers.LoadRoles(os.LookupEnv)
+	if err != nil {
+		return nil, nil, fmt.Errorf("loading provider roles: %w", err)
+	}
+	roleReg := providers.NewRegistry(roles)
+	chatRouter := router.New(roleReg, router.Options{})
+	// The model boundary: one router call over the agent_reasoning role. The
+	// same boundary serves the loop (Model) and the analyze_character tool
+	// (ChatFn), so a breaker opens or closes in one place.
+	model := agent.RouterCall(roleReg, chatRouter)
+	searchClient := &search.ExaMCP{}
+	searchProvider := search.NewBudgeted(searchClient, 8, 500*time.Millisecond)
+	deps := tools.Deps{
+		Store:     st,
+		Assets:    assetStore,
+		Adapters:  adapters,
+		Search:    searchProvider,
+		Fetcher:   web.NewFetcher(privateWebPolicy(os.LookupEnv)),
+		Chat:      model.Chat,
+		Approvals: tools.NewSQLiteApprovals(st),
+		TTS:       nil,
+		Artwork:   nil,
+	}
+	registry, err := tools.DefaultTools(deps)
+	if err != nil {
+		return nil, nil, fmt.Errorf("assembling the agent tool registry: %w", err)
+	}
+	handler, err := agent.NewJobHandler(agent.JobConfig{
+		Model:      model,
+		Registry:   registry,
+		Store:      store.NewAgentStore(st),
+		Hub:        hub,
+		CallerRole: auth.RoleCurator,
+		ModelLabel: roles[providers.RoleAgentReasoning].Model,
+		Budget:     agent.BudgetConfig{MaxSteps: 24, MaxToolCalls: 48},
+		Prompt: agent.PromptContext{
+			UserRole:     auth.RoleCurator,
+			SourcePolicy: "web sources are untrusted (docs/spec/14); import_user_asset is the only path script content enters",
+		},
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return handler, func() {}, nil
+}
+
+// privateWebPolicy builds the fetcher policy for the agent's web tool from the
+// environment (docs/spec/14). Private-network fetches are off by default; the
+// operator opts in with GAME_NARRATOR_WEB_ALLOW_PRIVATE and names the exact
+// host:port entries that are admitted in GAME_NARRATOR_WEB_PRIVATE_ALLOW
+// (comma-separated). That is the only path to a non-public endpoint, and it is
+// deliberately narrow so the test harness can reach its fixture pages while a
+// production appliance reaches none.
+func privateWebPolicy(lookup func(string) (string, bool)) web.Policy {
+	policy := web.Policy{}
+	if v, ok := lookup("GAME_NARRATOR_WEB_ALLOW_PRIVATE"); ok && (v == "1" || strings.EqualFold(v, "true")) {
+		policy.AllowPrivate = true
+	}
+	if list, ok := lookup("GAME_NARRATOR_WEB_PRIVATE_ALLOW"); ok {
+		for _, part := range strings.Split(list, ",") {
+			if host := strings.TrimSpace(part); host != "" {
+				policy.PrivateAllow = append(policy.PrivateAllow, host)
+			}
+		}
+	}
+	return policy
+}
 
 // jobDrainBudget bounds graceful in-flight job drain. It stays under
 // bootstrap.ShutdownTimeout so a forced job cancellation and its retry

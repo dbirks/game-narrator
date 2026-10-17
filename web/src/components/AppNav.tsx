@@ -11,7 +11,7 @@ import { useAuth } from "../auth/auth-context";
  * answerable from the header before somebody wonders why a button is missing.
  */
 export function AppNav() {
-  const { state, user, role, logout } = useAuth();
+  const { state, user, role, logout, atLeast } = useAuth();
   const [signingOut, setSigningOut] = useState(false);
   const navigate = useNavigate();
 
@@ -28,6 +28,11 @@ export function AppNav() {
   return (
     <nav aria-label="Primary">
       <Link to="/library">Library</Link>
+      {atLeast("curator") ? (
+        <Link to="/games/new" data-testid="nav-new-game">
+          New game
+        </Link>
+      ) : null}
       <Link to="/diagnostics">Diagnostics</Link>
       <span className="nav-spacer" />
       {state === "authenticated" && user ? (

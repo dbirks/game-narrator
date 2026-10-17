@@ -13,4 +13,8 @@ export const ports = {
   catalog: 18096,
   /** the packaged binary the developer inspector drives a replay on (developer.spec.ts). */
   developer: 18097,
+  /** the packaged binary the onboarding agent runs against (onboarding.spec.ts). */
+  onboarding: 18098,
+  /** the scripted model gateway + malicious fixture page (web/e2e/fake-model.mjs). */
+  fakeModel: 18099,
 } as const;

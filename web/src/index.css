@@ -661,3 +661,255 @@ pre.muted {
   padding: var(--space-2);
   font-size: 0.8rem;
 }
+
+/*
+ * Onboarding agent (ADR-0028): the /games/new two-column layout — the
+ * conversation on the left, the evidence (tools, sources, quality, draft,
+ * review) on the right.
+ */
+.onboarding-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+  align-items: start;
+}
+
+@media (max-width: 48rem) {
+  .onboarding-columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+.onboarding .panel {
+  border-top: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.onboarding-controls {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.onboarding-banner {
+  display: flex;
+  gap: var(--space-3);
+  align-items: baseline;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-4);
+  background: var(--fill);
+}
+
+.banner-queued,
+.banner-running {
+  border-color: var(--accent);
+}
+
+.banner-blocked,
+.banner-failed {
+  border-color: var(--danger);
+}
+
+.banner-review {
+  border-color: var(--warn);
+}
+
+.banner-succeeded {
+  border-color: var(--ok);
+}
+
+.onboarding-conversation {
+  display: grid;
+  gap: var(--space-2);
+  max-height: 28rem;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+  background: var(--bg);
+}
+
+.turn {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.turn-role {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.turn-user {
+  background: var(--fill);
+  border-radius: var(--radius);
+  padding: var(--space-2);
+}
+
+.turn-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.92rem;
+}
+
+.onboarding-chat {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.onboarding-chat input {
+  flex: 1;
+}
+
+.tool-timeline,
+.source-cards,
+.review-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.tool-call {
+  display: grid;
+  gap: var(--space-1);
+  border-left: 3px solid var(--line);
+  padding: var(--space-1) var(--space-2);
+}
+
+.tool-call p {
+  margin: 0;
+}
+
+.tool-succeeded {
+  border-left-color: var(--ok);
+}
+
+.tool-failed,
+.tool-refused,
+.tool-timeout {
+  border-left-color: var(--danger);
+}
+
+.tool-pending {
+  border-left-color: var(--warn);
+}
+
+.tool-name {
+  font-weight: 600;
+}
+
+.tool-duration {
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.tool-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.tool-sources code {
+  background: var(--fill);
+  border-radius: var(--radius);
+  padding: 0 var(--space-1);
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
+.source-card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--space-2);
+  display: grid;
+  gap: var(--space-1);
+}
+
+.source-card p {
+  margin: 0;
+}
+
+.source-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.source-uri {
+  overflow-wrap: anywhere;
+  font-size: 0.85rem;
+}
+
+.badge-untrusted {
+  color: var(--danger);
+  border-color: var(--danger);
+  font-weight: 600;
+}
+
+.badge-pending {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.badge-succeeded {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.badge-failed,
+.badge-refused,
+.badge-timeout,
+.badge-cancelled {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.badge-queued,
+.badge-running {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.badge-blocked {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.quality-report {
+  max-height: 16rem;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--space-2);
+  font-size: 0.78rem;
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.review-item {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--space-2);
+  display: grid;
+  gap: var(--space-2);
+}
+
+.review-item p {
+  margin: 0;
+}
+
+.review-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}

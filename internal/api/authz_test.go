@@ -229,6 +229,14 @@ func TestEveryRegisteredRouteIsCoveredByTheScopeTable(t *testing.T) {
 		// readable only by admin, users readable by viewer) cannot land as a
 		// "passing" test elsewhere.
 		switch {
+		case strings.HasPrefix(rt.path, "/api/v1/onboarding/"):
+			// The onboarding surface is curator-end-to-end (ADR-0028): its
+			// pause/resume/cancel act on one run's own attempt, never on the
+			// queue at large, so they are run curation, not job control. The
+			// queue itself stays operator-gated at /api/v1/jobs.
+			if acc.Min != auth.RoleCurator {
+				t.Errorf("%s %s granted to %s, want curator (the onboarding surface is curator-end-to-end)", rt.method, rt.path, acc.Min)
+			}
 		case rt.path == "/api/v1/jobs" || rt.path == "/api/v1/jobs/{id}" || rt.path == "/api/v1/events":
 			if acc.Min != auth.RoleViewer {
 				t.Errorf("%s %s granted to %s, want viewer", rt.method, rt.path, acc.Min)

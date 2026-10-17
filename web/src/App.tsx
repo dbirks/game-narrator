@@ -8,6 +8,7 @@ import { DeveloperPage } from "./pages/developer/DeveloperPage";
 import { GameOverviewPage } from "./pages/GameOverview";
 import { LibraryPage } from "./pages/Library";
 import { LoginPage } from "./pages/Login";
+import { NewGamePage } from "./pages/NewGame";
 import { NotFoundPage } from "./pages/NotFound";
 import { SetupPage } from "./pages/Setup";
 
@@ -43,6 +44,14 @@ export function App() {
           element={
             <RequireAuth>
               <LibraryPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/games/new"
+          element={
+            <RequireAuth>
+              <NewGamePage />
             </RequireAuth>
           }
         />
