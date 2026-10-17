@@ -29,15 +29,35 @@
 
 import { createHash, randomBytes } from "node:crypto";
 
-/** The synthetic profile seed format (internal/scenario/profile.go). */
+/** The synthetic profile seed format (internal/scenario/profile.go), extended
+ *  for the m5-part1 walk with a roster and per-line speaker/attribution facts:
+ *  the extension fields are optional, so the original seed files keep working. */
+export interface SeedCharacter {
+  id: string;
+  name: string;
+  aliases?: string[];
+  role?: string;
+  summary?: string;
+  status?: string;
+  verified_source_refs?: string[];
+}
+
 export interface SeedProfile {
   id: string;
   origin: string;
   description: string;
   text_kind: string;
-  messages: { id: string; original_text: string; scene_id?: string }[];
+  messages: {
+    id: string;
+    original_text: string;
+    scene_id?: string;
+    /** A seed character id; names the line's assigned speaker. */
+    speaker?: string;
+    attribution?: { status: string; confidence: number };
+  }[];
   edges: { from: string; to: string; type: string; confidence: number }[];
   regions: { id: string; type: string; x: number; y: number; w: number; h: number }[];
+  characters?: SeedCharacter[];
 }
 
 /** One message row of the manifest, in the exporter's full spelling. */
@@ -50,7 +70,7 @@ interface ManifestMessage {
   original_text: string | null;
   normalized_text: string | null;
   speech_text: string | null;
-  speaker_id: null;
+  speaker_id: string | null;
   scene_id: null;
   attribution: { status: string; confidence: number };
   markup: unknown[];
@@ -58,6 +78,21 @@ interface ManifestMessage {
   flags: Record<string, unknown>;
   redacted_reason: null;
   pages: unknown[];
+}
+
+/** One roster row of the manifest, in the exporter's full spelling
+ *  (internal/profileio `CharacterInfo`). */
+interface ManifestCharacter {
+  id: string;
+  name: string;
+  aliases: string[];
+  role: string;
+  summary: string;
+  visual: unknown[];
+  status: string;
+  verified_source_refs: string[];
+  portrait: null;
+  voice_profile_id: null;
 }
 
 /** The full manifest document: every field present, as the Go struct renders
@@ -146,6 +181,20 @@ export function buildManifest(
   for (const region of seed.regions) regionIds[region.id] = newUlid();
   const messageIds: Record<string, string> = {};
   for (const message of seed.messages) messageIds[message.id] = newUlid();
+  const characterIds: Record<string, string> = {};
+  for (const character of seed.characters ?? []) characterIds[character.id] = newUlid();
+  const characters: ManifestCharacter[] = (seed.characters ?? []).map((character) => ({
+    id: characterIds[character.id],
+    name: character.name,
+    aliases: character.aliases ?? [],
+    role: character.role ?? "",
+    summary: character.summary ?? "",
+    visual: [],
+    status: character.status ?? "",
+    verified_source_refs: character.verified_source_refs ?? [],
+    portrait: null,
+    voice_profile_id: null,
+  }));
   const messages: ManifestMessage[] = seed.messages.map((message) => ({
     id: messageIds[message.id],
     source: null,
@@ -155,9 +204,11 @@ export function buildManifest(
     original_text: message.original_text,
     normalized_text: message.original_text.toLowerCase(),
     speech_text: message.original_text,
-    speaker_id: null,
+    // A speaker names a character row of this same document; the importer
+    // remaps the reference to its freshly minted row id (internal/profileio).
+    speaker_id: message.speaker ? characterIds[message.speaker] : null,
     scene_id: null,
-    attribution: { status: "unknown", confidence: 0 },
+    attribution: message.attribution ?? { status: "unknown", confidence: 0 },
     markup: [],
     evidence: [],
     flags: {},
@@ -216,7 +267,7 @@ export function buildManifest(
       store_digest: "",
     },
     sources: [],
-    characters: [],
+    characters,
     scenes: [],
     regions,
     messages,

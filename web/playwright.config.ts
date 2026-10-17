@@ -28,6 +28,7 @@ const catalogUrl = `http://127.0.0.1:${ports.catalog}`;
 const developerUrl = `http://127.0.0.1:${ports.developer}`;
 const onboardingUrl = `http://127.0.0.1:${ports.onboarding}`;
 const voicesUrl = `http://127.0.0.1:${ports.voices}`;
+const playUrl = `http://127.0.0.1:${ports.play}`;
 const embeddedBinary = resolve(import.meta.dirname, "..", "bin", "game-narrator");
 // The replay allowlist for the inspector's server: the repo's testdata, named
 // explicitly (ADR-0024 "replay allowlist") rather than relying on the
@@ -76,7 +77,8 @@ export default defineConfig({
     {
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
-      testIgnore: /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts/,
+      testIgnore:
+        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|m5-part1\.spec\.ts/,
     },
     {
       name: "embedded",
@@ -117,6 +119,14 @@ export default defineConfig({
       // preview cache-hit are driven through the real binary with no model.
       testMatch: /voices\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: voicesUrl },
+    },
+    {
+      name: "play",
+      // The milestone 5 player walk (docs/spec/16 M5): the packaged binary with
+      // the repo's testdata admitted to the replay allowlist (GAME_NARRATOR_REPLAY_ROOTS,
+      // ADR-0024), so /play can start a real replay session on the synthetic clip.
+      testMatch: /m5-part1\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: playUrl },
     },
   ],
   webServer: [
@@ -228,6 +238,19 @@ export default defineConfig({
         GAME_NARRATOR_ROLE_VOICE_CLONE_MODEL: "fake-base",
         GAME_NARRATOR_TTS_BASE_DIRECT_URL: `http://127.0.0.1:${ports.fakeTTS}/v1`,
       },
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The m5-part1 player walk on the packaged binary: the replay allowlist
+      // admits the repo's testdata, exactly as the developer project does, so
+      // /play can run the synthetic clip through the real pipeline.
+      command: `node web/e2e/serve.mjs play 127.0.0.1:${ports.play} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${playUrl}/api/v1/health/live`,
+      env: { GAME_NARRATOR_REPLAY_ROOTS: replayRoots },
       reuseExistingServer: false,
       timeout: 60_000,
       stdout: "ignore",

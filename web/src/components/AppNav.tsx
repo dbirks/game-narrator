@@ -33,6 +33,15 @@ export function AppNav() {
           New game
         </Link>
       ) : null}
+      {/* /play starts and stops sessions, which the scope table reserves for
+          operator and up (docs/spec/08); the page itself degrades to a read-only
+          watch for lower roles, but the nav hides the link rather than offering
+          a form whose button would 403. */}
+      {atLeast("operator") ? (
+        <Link to="/play" data-testid="nav-play">
+          Play
+        </Link>
+      ) : null}
       <Link to="/diagnostics">Diagnostics</Link>
       <span className="nav-spacer" />
       {state === "authenticated" && user ? (

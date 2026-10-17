@@ -22,4 +22,7 @@ export const ports = {
   fakeTTS: 18100,
   /** the packaged binary the voice workflow drives (voices.spec.ts). */
   voices: 18101,
+  /** the packaged binary the m5-part1 walk (play / characters / publish / diagnostics)
+   *  drives, with the repo's testdata admitted to the replay allowlist. */
+  play: 18102,
 } as const;

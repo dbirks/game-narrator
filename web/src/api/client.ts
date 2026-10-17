@@ -570,6 +570,7 @@ export type User = Schemas["User"];
 export type Role = Schemas["Role"];
 export type Game = Schemas["Game"];
 export type Edition = Schemas["Edition"];
+export type Character = Schemas["Character"];
 export type Profile = Schemas["Profile"];
 export type ProfileStatus = Schemas["ProfileStatus"];
 export type Message = Schemas["Message"];
@@ -698,6 +699,17 @@ export const catalogApi = {
   },
   listProfiles(editionId: string, signal?: AbortSignal) {
     return api.get("/api/v1/editions/{id}/profiles", { params: { id: editionId }, signal });
+  },
+  /** The edition's published revision; a 404 (code `not-published`) means none. */
+  getPublished(editionId: string, signal?: AbortSignal) {
+    return api.get("/api/v1/editions/{id}/published", { params: { id: editionId }, signal });
+  },
+  /** The roster of one revision (always an array; empty, never null). */
+  getCharacters(profileId: string, signal?: AbortSignal) {
+    return api.get("/api/v1/profiles/{id}/characters", {
+      params: { id: profileId },
+      signal,
+    }) as Promise<{ characters: Character[] }>;
   },
   createDraft(editionId: string) {
     return api.post("/api/v1/editions/{id}/profiles", { params: { id: editionId } });

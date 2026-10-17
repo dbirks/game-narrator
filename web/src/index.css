@@ -913,3 +913,153 @@ pre.muted {
   align-items: center;
   gap: var(--space-2);
 }
+
+/* ── /play (the operator's session view) ─────────────────────────────────── */
+
+.play-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.play-line h2,
+.play-lines h2,
+.play-audio h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.current-line-text {
+  font-size: 1.05rem;
+  margin: 0 0 var(--space-1);
+}
+
+.recent-lines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.recent-line {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--space-2);
+  display: grid;
+  gap: 0.2rem;
+}
+
+.recent-line-text {
+  font-size: 0.95rem;
+}
+
+.play-audio .audio-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.play-audio input:disabled {
+  opacity: 0.5;
+}
+
+/* ── /games/:id/characters ───────────────────────────────────────────────── */
+
+.roster,
+.rights,
+.voice-gate,
+.checks,
+.jobs,
+.diff-changes {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.roster th,
+.roster td,
+.rights th,
+.rights td,
+.voice-gate th,
+.voice-gate td,
+.checks th,
+.checks td,
+.jobs th,
+.jobs td,
+.diff-changes th,
+.diff-changes td {
+  border-bottom: 1px solid var(--line);
+  padding: var(--space-2);
+  text-align: left;
+  vertical-align: top;
+}
+
+.badge-verified {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.badge-inferred {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.badge-unprobed {
+  opacity: 0.7;
+}
+
+/* ── /games/:id/publish ──────────────────────────────────────────────────── */
+
+.publish-actions {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.rollback {
+  display: grid;
+  gap: var(--space-1);
+  max-width: 46rem;
+}
+
+.diff-changes td {
+  white-space: pre-wrap;
+}
+
+.rights-blocked {
+  background: var(--fill);
+}
+
+.voice-approved {
+  background: var(--fill);
+}
+
+.publish-history-list {
+  margin: 0;
+  padding-left: 1.2rem;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.publish-action .problems {
+  margin: var(--space-1) 0 0;
+}
+
+.publish-action-rejected {
+  border-left: 3px solid var(--bad, #b00020);
+  padding-left: var(--space-2);
+}
+
+/* ── /diagnostics (checks and queue detail) ──────────────────────────────── */
+
+.check-ok td:nth-child(2) {
+  color: var(--ok);
+}
+
+.check-fail td:nth-child(2) {
+  color: var(--bad, #b00020);
+}

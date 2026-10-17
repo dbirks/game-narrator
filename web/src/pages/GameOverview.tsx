@@ -317,10 +317,22 @@ function RevisionRow({
           Dialogue
         </Link>
         <Link
+          to={`/games/${gameId}/characters?profile=${encodeURIComponent(profile.id)}`}
+          data-testid={`characters-${profile.revision_num}`}
+        >
+          Characters
+        </Link>
+        <Link
           to={`/games/${gameId}/voices?profile=${encodeURIComponent(profile.id)}`}
           data-testid={`voices-${profile.revision_num}`}
         >
           Voices
+        </Link>
+        <Link
+          to={`/games/${gameId}/publish?profile=${encodeURIComponent(profile.id)}`}
+          data-testid={`publish-${profile.revision_num}`}
+        >
+          Publish review
         </Link>
         <a
           href={portabilityApi.exportUrl(profile.id)}

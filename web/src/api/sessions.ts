@@ -97,15 +97,19 @@ const RETRY_DELAY_MS = 500;
  * Read the SSE event stream with fetch. `lastEventId` is tracked across
  * (re)connects and sent as `Last-Event-ID`, so a dropped wire resumes the
  * durable stream instead of replaying it; the hub answers a gap with
- * `events.resync_required` rather than silently skipping history.
+ * `events.resync_required` rather than silently skipping history. A page that
+ * reopens a session it already watched (the browser refresh case) passes the
+ * session's own `event_cursor` as the starting cursor so the replay begins at
+ * the session's first event, not at whatever the hub's window still holds.
  */
 export function openEventStream(
   url: string,
   handlers: EventStreamHandlers,
   signal?: AbortSignal,
+  initialLastEventId = "0",
 ): () => void {
   let closed = false;
-  let lastEventId = "0";
+  let lastEventId = initialLastEventId;
   let retries = 0;
 
   const connect = async () => {

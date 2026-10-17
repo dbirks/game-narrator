@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router";
 
 import { AuthProvider, RequireAuth } from "./auth/auth-context";
 import { AppNav } from "./components/AppNav";
+import { CharactersPage } from "./pages/Characters";
 import { DialoguePage } from "./pages/Dialogue";
 import { DiagnosticsPage } from "./pages/Diagnostics";
 import { DeveloperPage } from "./pages/developer/DeveloperPage";
@@ -10,13 +11,19 @@ import { LibraryPage } from "./pages/Library";
 import { LoginPage } from "./pages/Login";
 import { NewGamePage } from "./pages/NewGame";
 import { NotFoundPage } from "./pages/NotFound";
+import { PlayPage } from "./pages/Play";
+import { PublishPage } from "./pages/Publish";
 import { SetupPage } from "./pages/Setup";
 import { VoicesPage } from "./pages/Voices";
 
 /**
- * Routes (docs/spec/09 "Routes and page requirements"). Milestone 1 builds the
- * first-run, sign-in and catalogue slice; M5 adds the session, developer, voice
- * and region pages, which is why the nav shows two links and not thirteen.
+ * Routes (docs/spec/09 "Routes and page requirements"). The milestone 1 slice
+ * built the first-run, sign-in and catalogue pages; the milestones since added
+ * the session runtime, developer inspector, voice, onboarding, character and
+ * publication-review pages. The nav shows only the global destinations;
+ * per-game pages (overview, dialogue, characters, voices, publish) are reached
+ * from the revision rows of the overview, which is how their `?profile=` target
+ * gets named.
  *
  * `/diagnostics` stays outside the guard on purpose: readiness and build info are
  * public routes in the scope table (ADR-0016 §3) because `doctor` and a stalled
@@ -77,6 +84,30 @@ export function App() {
           element={
             <RequireAuth>
               <VoicesPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/games/:id/characters"
+          element={
+            <RequireAuth>
+              <CharactersPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/games/:id/publish"
+          element={
+            <RequireAuth>
+              <PublishPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/play"
+          element={
+            <RequireAuth>
+              <PlayPage />
             </RequireAuth>
           }
         />
