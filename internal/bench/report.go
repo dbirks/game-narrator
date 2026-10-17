@@ -119,14 +119,15 @@ func RunBench(ctx context.Context, setDir, split, outDir string) (*Report, error
 		Samples:       len(outcomes),
 		Metrics:       metrics,
 		Diagnostics: Diagnostics{
-			GoVersion:    runtime.Version(),
-			Tesseract:    tesseractVersion(),
-			OS:           runtime.GOOS,
-			SeedBase:     ts.SeedBase,
-			SampleIDs:    sampleIDs(outcomes),
-			CPUTimeSecs:  procCPUTime() - cpuBefore,
-			PeakRSSMB:    procPeakRSSMB(),
-			DurationSecs: duration.Seconds(),
+			GoVersion:          runtime.Version(),
+			Tesseract:          tesseractVersion(),
+			OS:                 runtime.GOOS,
+			SeedBase:           ts.SeedBase,
+			SampleIDs:          sampleIDs(outcomes),
+			CPUTimeSecs:        procCPUTime() - cpuBefore,
+			PeakRSSMB:          procPeakRSSMB(),
+			DurationSecs:       duration.Seconds(),
+			MatcherCalibration: matcherCalibrationDigest(),
 		},
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 	}
@@ -167,15 +168,16 @@ func tesseractVersion() string {
 // tesseract version, OS, seed and set hash the metrics were produced with.
 func manifestOf(rep *Report) map[string]any {
 	return map[string]any{
-		"git_sha":    gitSHA(),
-		"go_version": rep.Diagnostics.GoVersion,
-		"tesseract":  rep.Diagnostics.Tesseract,
-		"os":         rep.Diagnostics.OS,
-		"seed":       rep.Diagnostics.SeedBase,
-		"set_hash":   rep.Diagnostics.SetHash,
-		"set":        rep.Set,
-		"split":      rep.Split,
-		"origin":     rep.Origin,
+		"git_sha":             gitSHA(),
+		"go_version":          rep.Diagnostics.GoVersion,
+		"tesseract":           rep.Diagnostics.Tesseract,
+		"os":                  rep.Diagnostics.OS,
+		"seed":                rep.Diagnostics.SeedBase,
+		"set_hash":            rep.Diagnostics.SetHash,
+		"set":                 rep.Set,
+		"split":               rep.Split,
+		"origin":              rep.Origin,
+		"matcher_calibration": rep.Diagnostics.MatcherCalibration,
 	}
 }
 
@@ -264,7 +266,15 @@ func formatValue(m Metric) string {
 	switch {
 	case m.N == 0:
 		return "n/a"
+	case m.Kind == "info":
+		// Info rows carry no number: the statement is the value.
+		return m.Detail
 	case m.Kind == "ms":
+		if m.ResolutionLimited {
+			// The value is a frame-grid offset, not a measured duration: show the
+			// honest bound with it (ADR-0038 latency resolution note).
+			return fmt.Sprintf("%.0f ms (≤ %.0f ms)", m.Value, m.Bound)
+		}
 		return fmt.Sprintf("%.0f ms", m.Value)
 	case m.Kind == "seconds":
 		return fmt.Sprintf("%.1f s", m.Value)

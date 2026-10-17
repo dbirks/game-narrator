@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/dbirks/game-narrator/internal/matcher"
 	"github.com/dbirks/game-narrator/internal/vision/metrics"
 )
 
@@ -37,6 +38,7 @@ func RunMetrics(outcomes []sampleOutcomes) []Metric {
 		dupOcc, dupExtras             int
 		staleN, staleHit              int
 		lat                           []float64
+		latStepNS                     int64
 	)
 	probs, labels := make([]float64, 0, 64), make([]bool, 0, 64)
 
@@ -108,6 +110,9 @@ func RunMetrics(outcomes []sampleOutcomes) []Metric {
 		}
 		if len(o.commitTSNS) > 0 && s.firstTextNS > 0 {
 			lat = append(lat, float64(o.commitTSNS[0]-s.firstTextNS)/1e6)
+			if s.frameStepNS > latStepNS {
+				latStepNS = s.frameStepNS
+			}
 		}
 		// Stale speech: a start whose generation is older than a commit that
 		// already happened. The sidecar answers synchronously, so a nonzero
@@ -145,6 +150,7 @@ func RunMetrics(outcomes []sampleOutcomes) []Metric {
 			"in-script samples with no confident in-script commit (abstain or no commit)"),
 		naBrier("calibration_brier", probs, labels, ""),
 		naECE("calibration_ece_10bin", probs, labels, ""),
+		calibrationFitRow(top1N, top1N-top1Hit),
 		ratioMetric("named_speaker_accuracy", float64(speakerHit)/float64(speakerN), speakerN, "ratio", objSpeaker,
 			"pipeline commits with a named script speaker, attributed by the scripted decision"),
 		ratioMetric("positive_speech_precision", float64(speechHit)/float64(speechN), speechN, "ratio", objSpeechPrec,
@@ -156,9 +162,24 @@ func RunMetrics(outcomes []sampleOutcomes) []Metric {
 		countMetric("stale_speech_after_advance", staleHit, staleN, "count", objNoStale,
 			fmt.Sprintf("%d speech.started older than an already-applied commit (of %d starts)", staleHit, staleN)),
 	}
-	m = append(m, percentileMetric("commit_latency_p50_ms", lat, 0.50, "ms", "", "capture clock: first text frame → commit transition"))
-	m = append(m, percentileMetric("commit_latency_p95_ms", lat, 0.95, "ms", "", "capture clock: first text frame → commit transition"))
-	return m
+	// The commit latency is quantized to the capture grid: both the start
+	// (first text frame) and the end (the commit transition's capture
+	// timestamp) are frame stamps on the replay clock, so the value is a
+	// multiple of the frame interval and the sub-frame processing component
+	// is unmeasured. A true latency is at most one frame gap above the value,
+	// and the row says so instead of pretending to a decimal (ADR-0038).
+	stepMS := float64(latStepNS) / 1e6
+	latDetail := fmt.Sprintf("capture clock quantized to the frame grid (interval %.0f ms): the commit transition carries the capture ts of the frame that drove it, so the value is a frame-grid offset and the sub-frame processing component is unmeasured; true latency ≤ value + %.0f ms (one frame gap)", stepMS, stepMS)
+	latP50 := percentileMetric("commit_latency_p50_ms", lat, 0.50, "ms", "", latDetail)
+	latP95 := percentileMetric("commit_latency_p95_ms", lat, 0.95, "ms", "", latDetail)
+	if len(lat) > 0 {
+		for _, m := range []*Metric{&latP50, &latP95} {
+			m.ResolutionLimited = true
+			m.Bound = m.Value + stepMS
+			m.Met = "resolution-limited"
+		}
+	}
+	return append(m, latP50, latP95)
 }
 
 func ocrNOr(n float64) float64 {
@@ -270,6 +291,38 @@ func naECE(name string, probs []float64, labels []bool, objective string) Metric
 	}
 	m.Value = ece
 	m.Met = "informational"
+	return m
+}
+
+// calibrationFitRow is the report's calibration row: whether the matcher's
+// temperature could be fitted on this run's data. The fit's raw material is
+// the run's incorrect top-1 examples (the truth message is not the top
+// candidate): data that does not meet the fit's sufficiency guards (matcher.
+// DefaultFitOptions — at least MinIncorrect incorrect top-1 examples and
+// MinSamples samples) cannot calibrate a temperature, so the matcher runs the
+// default T (T = 1, calibration revision 1): the calibration_brier and
+// calibration_ece_10bin rows above are that default's numbers, not a fit's.
+// A 100%-correct top-1 is exactly the shape that cannot calibrate — the NLL
+// would run to the fit range's floor and ship a near-certain matcher
+// (ADR-0035 "Calibration"); a real fit needs the Dolphin fixture-factory
+// frames (M6) with labelled errors.
+func calibrationFitRow(top1N, incorrect int) Metric {
+	g := matcher.DefaultFitOptions()
+	m := Metric{Name: "calibration", N: top1N, Kind: "info"}
+	if top1N == 0 {
+		m.Met = "n/a"
+		m.Detail = "no ranked in-script sample: the fit's data sufficiency cannot be judged from this run"
+		return m
+	}
+	if incorrect < g.MinIncorrect || top1N < g.MinSamples {
+		m.Met = "not_fitted"
+		m.Detail = fmt.Sprintf("not fitted (%d of %d ranked samples had an incorrect top-1; a fit requires ≥%d incorrect top-1 examples and ≥%d samples) — a 100%%-correct top-1 cannot calibrate the model; a real fit needs the Dolphin fixture-factory frames (M6) with labelled errors",
+			incorrect, top1N, g.MinIncorrect, g.MinSamples)
+		return m
+	}
+	m.Met = "informational"
+	m.Detail = fmt.Sprintf("fittable (%d of %d ranked samples had an incorrect top-1; a fit requires ≥%d incorrect top-1 examples and ≥%d samples) — this run still uses the default T = 1 (revision 1); adopting a fit is a separate reviewed step (`bench calibrate`, new calibration revision, ADR numbers)",
+		incorrect, top1N, g.MinIncorrect, g.MinSamples)
 	return m
 }
 

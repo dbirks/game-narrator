@@ -42,7 +42,7 @@ One set per directory: `testdata/bench/<set>/{profile.json, truth.json}`. `truth
 
 The runner replays each sample's frames through the **real pipeline** (`pipeline.Config{Mode: ModeReplay, OCR: ocr.Tesseract{}, Index: <matcher index of the set's script>, Tracker: VoteWindow 3 / StableWindow 100ms}`) and grades:
 
-- recognition precision/recall, CER/WER, top-1 exact accuracy, abstention, Brier/ECE and commit latency from the pipeline's own events and trace (real OCR, real matcher probability, capture-clock timestamps);
+- recognition precision/recall, CER/WER, top-1 exact accuracy, abstention, Brier/ECE and commit latency from the pipeline's own events and trace (real OCR, real matcher probability, capture-clock timestamps; the latency rows are resolution-limited — see "Commit latency resolution" below);
 - named-speaker accuracy from the pipeline's committed message answered by the **scripted decision provider** (the synthetic stand-in for Clef: the script's speaker attribution — in-script messages are eligible, unattributed lines never receive a forced speaker).
 
 Speech-scheduling metrics come from the **M2 speech sidecar**: a fresh session, same tracker and matcher, fed the sample's *truth* frames (real timing), real matcher rankings, scripted decision and immediate TTS-ready. It measures the speech layer — exactly once per occurrence, right message, no stale generations — not OCR quality, which the pipeline rows already measure. TTS readiness is scripted; no audio is produced, and the report says so.
@@ -53,6 +53,19 @@ Samples run on a bounded 4-worker pool (independent sessions); the run's duratio
 
 The report prints docs/spec/12's provisional objectives verbatim and judges each `met` / `not_met` / `n-a` only (counts: met at 0 with samples; ratios: against the `≥X%` threshold). The objectives are labelled *provisional* in every row and the ADR-0038 limitation below applies: on synthetic content a `met` verdict is evidence the pipeline *works*, not evidence the product *meets* its quality bar.
 
+### Commit latency resolution (amendment)
+
+The `commit_latency_*` rows measure first text frame → commit transition on the capture (replay) clock. Both endpoints are frame stamps on the capture grid (100 ms at the set's 10 Hz cadence): the commit transition carries the capture timestamp of the frame that drove the transition, and the replay source (Speed 0) does not map the capture clock to wall time. The value is therefore a multiple of the frame interval, and the sub-frame component (OCR + tracker + matcher processing inside a frame period) is **unmeasured on that clock** — the original report printed `200 ms` for p50 and p95 alike, which read as an exact measurement when it was the grid offset (exactly the symptom that motivated this amendment: the value equalling one frame interval on every sample).
+
+The replay pipeline genuinely cannot resolve below one frame on the capture clock at Speed 0, so the metric is reported as resolution-limited rather than as a fake exact number:
+
+- the value stays the measured grid offset;
+- `resolution_limited: true` is set on the row and its verdict reads `resolution-limited` (the report's `met` vocabulary gains this marker for informational metrics);
+- `bound = value + one frame gap` (the widest consecutive gap of the sample's capture grid) is the honest upper bound on the true latency: the frame is processed after its capture and the commit is decided before the next frame's gap elapses;
+- the detail states the frame interval, and the value column prints the bound with the value (`200 ms (≤ 300 ms)`).
+
+Sub-frame commit latency becomes measurable where a clock mapping exists: a Speed 1.0 replay (real-time pacing makes wall clock ≈ capture clock + constant offset, so the session's wall-clock event time minus the first text frame's capture time is the latency) or a live capture. The bench runs at Speed 0 for the test-full budget, so it reports the bound instead of inventing precision.
+
 ## Tradeoffs
 
 - **Synthetic-only scope.** The set proves the pipeline reads conventional rendered text and that the fences hold; it does not prove the product on Wind Waker. That is the price of AGENTS.md rule 5, and the report's manifest and header say the set is `generated_synthetic`. Real game frames must come from the Dolphin fixture factory with provenance (docs/spec/11) before any objective is re-validated on them.
@@ -62,8 +75,9 @@ The report prints docs/spec/12's provisional objectives verbatim and judges each
 
 ## Validation
 
-- `go test -race ./internal/bench/` — loader validation (15 mutation cases), split determinism, every metric on known values (empty input → `n/a`, CER/WER, Brier 0.64 known case, ECE 0.5 and 0 known cases, nearest-rank percentile, verdict thresholds, speech/stale/dup counting), generator determinism, committed-set round-trip (144 samples, 14 messages).
-- `go test -race -run TestBenchEndToEnd` — ten generated samples through the real pipeline + Tesseract: report well-formed (all 15 rows, n=0 ⇔ n/a, files on disk, manifest fields), recall > 0 (measured 9/9, CER 0.2%, p50 200ms).
+- `go test -race ./internal/bench/` — loader validation (15 mutation cases), split determinism, every metric on known values (empty input → `n/a`, CER/WER, Brier 0.64 known case, ECE 0.5 and 0 known cases, nearest-rank percentile, verdict thresholds, speech/stale/dup counting, **latency resolution on a known frame grid: 300 ms offset on a 100 ms grid → value 300, bound 400, marked resolution-limited; empty → `n/a` without marker**), tuning-samples filter never leaks a holdout id (`TestTuningSamplesNeverReadsHoldout`), generator determinism, committed-set round-trip (144 samples, 14 messages).
+- `go test -race -run TestBenchEndToEnd` — ten generated samples through the real pipeline + Tesseract: report well-formed (all 16 rows, including the `calibration` fit-status row, n=0 ⇔ n/a, files on disk, manifest fields), recall > 0 (measured 9/9, CER 0.2%, p50 200 ms), latency rows marked resolution-limited with bound ≥ value.
+- `go test -race -run TestCalibrateTuningOnly` — `Calibrate` on eight tuning samples through the real pipeline: the fit is refused on the all-correct synthetic set — typed `*matcher.ErrInsufficientCalibrationData` (0 incorrect top-1 examples; the synthetic pipeline reads every line correctly) with the default thresholds (≥10 incorrect, ≥50 samples), and no `calibration.json` written. A successful e2e fit needs real frames with labelled errors (Dolphin fixture factory, M6; ADR-0035 "Calibration").
 - `make bench` — holdout of the committed set: 49 samples, measured 2m46s; report.md table with met/not met/n-a per provisional objective; artifacts in gitignored `artifacts/bench/`.
 
 ## Consequences

@@ -29,14 +29,24 @@ type Report struct {
 // Metric is one report row: value, sample count, kind, the provisional
 // objective it is compared against, and the verdict. N==0 means the metric
 // had no samples and Value is 0 with Met "n/a" — never a 0 or 100% reading.
+// ResolutionLimited marks a value quantized to a coarser grid than the unit
+// suggests (the commit latency is on the capture frame grid): Bound is the
+// upper bound on the true value and Met reads "resolution-limited". Kind
+// "info" rows carry no numeric value (Value stays 0; Detail is the
+// statement): the calibration row reports the temperature fit's status —
+// Met "not_fitted" when this run's data cannot calibrate a temperature (the
+// ECE/Brier rows are the default T = 1 numbers), "informational" when it
+// could.
 type Metric struct {
-	Name      string  `json:"name"`
-	Value     float64 `json:"value"`
-	N         int     `json:"n"`
-	Kind      string  `json:"kind"` // ratio | percent | ms | count | seconds
-	Objective string  `json:"objective"`
-	Met       string  `json:"met"` // met | not_met | n/a | informational
-	Detail    string  `json:"detail,omitempty"`
+	Name              string  `json:"name"`
+	Value             float64 `json:"value"`
+	N                 int     `json:"n"`
+	Kind              string  `json:"kind"` // ratio | percent | ms | count | seconds | info
+	Objective         string  `json:"objective"`
+	Met               string  `json:"met"` // met | not_met | n/a | informational | resolution-limited | not_fitted
+	Detail            string  `json:"detail,omitempty"`
+	ResolutionLimited bool    `json:"resolution_limited,omitempty"`
+	Bound             float64 `json:"bound,omitempty"` // upper bound on the true value, Value's units (ResolutionLimited rows)
 }
 
 // Diagnostics carries the run's environment, so a number can be traced to the
@@ -51,4 +61,9 @@ type Diagnostics struct {
 	CPUTimeSecs  float64  `json:"cpu_time_secs"`
 	PeakRSSMB    float64  `json:"peak_rss_mb"`
 	DurationSecs float64  `json:"duration_secs"`
+	// MatcherCalibration identifies the matcher settings the probabilities in
+	// this run were produced under (temperature + calibration revision, ADR
+	// 0035 "Calibration"): the identity any fixture or cache key that embeds
+	// matcher settings must carry.
+	MatcherCalibration string `json:"matcher_calibration,omitempty"`
 }

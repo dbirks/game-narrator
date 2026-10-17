@@ -69,6 +69,7 @@ type sampleOutcomes struct {
 	commitMsgIDs []string // message.committed payload message_id, in order
 	commitTSNS   []int64  // capture ts of each transition into committed
 	commitRaw    []string // the committed reading (payload raw_text)
+	commitText   string   // last ranking trace row's accepted (tracker-stable) text
 	topID        string   // top candidate of the last ranking trace row
 	topProb      float64  // its probability
 	ocrText      string   // last non-empty OCR reading of the run
@@ -91,6 +92,7 @@ type truthSample struct {
 	textKind    string
 	variant     Variant
 	firstTextNS int64 // capture ts of the first text frame
+	frameStepNS int64 // max consecutive-frame gap of the capture grid (replay clock)
 }
 
 // runSample replays one sample's frames through the real pipeline (ModeReplay,
@@ -160,6 +162,9 @@ func runSample(ctx context.Context, framesDir string, s Sample, idx *matcher.Ind
 	for i := range trace { // last ranking row wins: it stands behind the commit
 		if trace[i].TopCandidate != "" {
 			out.topID, out.topProb = trace[i].TopCandidate, trace[i].TopScore
+		}
+		if trace[i].AcceptedText != "" {
+			out.commitText = trace[i].AcceptedText
 		}
 		if trace[i].OCRText != "" {
 			out.ocrText = trace[i].OCRText
@@ -391,6 +396,21 @@ func truthSampleFrom(s Sample) truthSample {
 	return truthSample{
 		id: s.ID, text: s.SourceText, msgID: s.MessageInScript(),
 		speaker: s.Speaker, intended: s.IntendedSpeech, textKind: s.TextKind,
-		variant: s.Variant, firstTextNS: first,
+		variant: s.Variant, firstTextNS: first, frameStepNS: frameStepOf(s.Frames),
 	}
+}
+
+// frameStepOf is the largest positive consecutive-frame gap of the sample's
+// capture grid (the replay clock's frame interval; on a uniform schedule every
+// gap equals it). It bounds how late a commit decided by one frame can be:
+// the frame is processed after its capture, before the next gap elapses
+// (ADR-0038, latency resolution note).
+func frameStepOf(frames []Frame) int64 {
+	var max int64
+	for i := 1; i < len(frames); i++ {
+		if d := frames[i].TsNS - frames[i-1].TsNS; d > max {
+			max = d
+		}
+	}
+	return max
 }

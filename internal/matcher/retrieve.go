@@ -56,9 +56,11 @@ type Candidate struct {
 	// where only differences matter; it is kept because a trace with only the
 	// probability cannot be recalibrated later.
 	Score float64
-	// Probability is Score softmax-normalized across the returned candidate set,
-	// so the list sums to 1 and the thresholds in RankOptions are comparable
-	// across corpus sizes.
+	// Probability is Score/T softmax-normalized across the returned candidate
+	// set (T is the calibration temperature, calibrate.go), so the list sums to
+	// 1 and the thresholds in RankOptions are comparable across corpus sizes.
+	// Re-deriving the distribution from a trace requires the temperature that
+	// produced it (RankOptions.Temperature; see CalibrationRevision).
 	Probability float64
 	// Components holds one entry per key in ComponentOrder, each in [0,1].
 	Components map[string]float64
@@ -133,7 +135,8 @@ type candidate struct {
 	graph     bool
 	fallback  bool
 	raw       float64
-	prob      float64
+	prob      float64 // calibrated temperature (RankOptions.Temperature)
+	gateProb  float64 // revision-1 (T = 1) softmax; the acceptance-gate scale
 	comps     [componentCount]float64
 }
 

@@ -243,6 +243,46 @@ func TestMetricsCalibration(t *testing.T) {
 	}
 }
 
+func TestMetricsCalibrationFitRow(t *testing.T) {
+	// The synthetic set's shape: every ranked sample's top-1 is correct, so
+	// the run's data cannot calibrate a temperature — the row must say
+	// "not fitted" with the guard's requirement, not a 0.0% ECE.
+	out := make([]sampleOutcomes, 0, 60)
+	for i := 0; i < 60; i++ {
+		o := oneDialogueSample("m1", "abcd", "m1", 0.9)
+		o.sample.id = fmt.Sprintf("bn%04d", i+1)
+		out = append(out, o)
+	}
+	row := findMetric(t, RunMetrics(out), "calibration")
+	if row.N != 60 {
+		t.Errorf("calibration n = %d, want 60 (every ranked in-script sample)", row.N)
+	}
+	if row.Met != "not_fitted" {
+		t.Errorf("calibration met = %q, want not_fitted (0 incorrect top-1, 60 samples)", row.Met)
+	}
+	if !strings.Contains(row.Detail, "not fitted") || !strings.Contains(row.Detail, "requires ≥10") {
+		t.Errorf("calibration detail %q does not state the refusal with the ≥10 requirement", row.Detail)
+	}
+	// A wrong top-1 is the fit's raw material: ten of them in ≥50 samples
+	// makes the data fittable (the row then says so, and stays informational
+	// — the run still uses the default T).
+	for i := 0; i < 10; i++ {
+		out[i].topID = "m2" // wrong top-1, still ranked
+	}
+	row = findMetric(t, RunMetrics(out), "calibration")
+	if row.Met != "informational" {
+		t.Errorf("calibration met = %q, want informational (10 incorrect top-1 of 60 passes the guard)", row.Met)
+	}
+	if !strings.Contains(row.Detail, "10 of 60") {
+		t.Errorf("calibration detail %q does not carry the incorrect-top-1 count", row.Detail)
+	}
+	// Empty input: the row is n/a like every other row.
+	empty := findMetric(t, RunMetrics(nil), "calibration")
+	if empty.N != 0 || empty.Met != "n/a" || empty.Value != 0 {
+		t.Errorf("empty calibration row = %+v, want n/a with n=0 value 0", empty)
+	}
+}
+
 func TestMetricsPercentile(t *testing.T) {
 	vals := []float64{10, 20, 30, 40, 50}
 	if got := percentileMetric("p50", vals, 0.50, "ms", "", "").Value; got != 30 {

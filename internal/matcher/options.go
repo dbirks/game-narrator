@@ -183,6 +183,16 @@ type RankOptions struct {
 	// evaluate an observation with no graph context at all, set
 	// Weights.EdgePrior = 0, which is the supported way to switch the axis off.
 	MaxRecent int
+
+	// Temperature is the calibration scalar T applied to the raw log-linear
+	// scores before the softmax (calibrate.go). It rescales the probabilities
+	// without touching the ordering: a top-1 that is correct stays top-1 for
+	// every T, and only the reported confidence moves. Zero means unset (= the
+	// default, DefaultTemperature, calibration revision
+	// CalibrationRevision); a per-profile override — for instance a T fitted on
+	// a set with labelled errors (FitTemperature) — is sanitised into
+	// [minTemperature, maxTemperature].
+	Temperature float64
 }
 
 // DefaultRankOptions returns the conservative defaults described above.
@@ -200,6 +210,7 @@ func DefaultRankOptions() RankOptions {
 		MaxPostingWork:       40000,
 		MaxPrefixScan:        256,
 		MaxRecent:            10,
+		Temperature:          DefaultTemperature,
 	}
 }
 
@@ -224,6 +235,7 @@ func (o RankOptions) sanitize() RankOptions {
 	o.MinProbability = pickFloat(o.MinProbability, d.MinProbability, 0, 1)
 	o.MinMargin = pickFloat(o.MinMargin, d.MinMargin, 0, 1)
 	o.GraphEvidenceFloor = pickFloat(o.GraphEvidenceFloor, d.GraphEvidenceFloor, 0, 1)
+	o.Temperature = pickFloat(o.Temperature, d.Temperature, minTemperature, maxTemperature)
 	o.Weights = o.Weights.sanitize()
 	return o
 }

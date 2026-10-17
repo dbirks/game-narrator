@@ -127,6 +127,16 @@ func TestBenchEndToEnd(t *testing.T) {
 	if got := byName["recognition_recall"]; got.N < 9 || got.Value <= 0 {
 		t.Fatalf("recognition_recall = %v (n=%d): the pipeline produced no correct reading (want > 0)", got.Value, got.N)
 	}
+	// The commit latency row must be marked resolution-limited (capture-clock
+	// grid quantization, ADR-0038): never a fake-exact number.
+	if lat := byName["commit_latency_p50_ms"]; lat.N > 0 {
+		if !lat.ResolutionLimited || lat.Met != "resolution-limited" {
+			t.Errorf("commit_latency_p50_ms not marked resolution-limited: %+v", lat)
+		}
+		if lat.Bound < lat.Value {
+			t.Errorf("latency bound %v below its value %v", lat.Bound, lat.Value)
+		}
+	}
 	t.Logf("report: %s %s — recall %.1f%% (%d/%d), top1 %.1f%%, cer %.1f%%, p50 commit latency %v ms",
 		rep.Set, rep.Split, byName["recognition_recall"].Value*100,
 		countTrue(rep, "recognition_recall"), byName["recognition_recall"].N,

@@ -222,9 +222,13 @@ func (r *ranker) decide() Ranking {
 	}
 
 	top := list[0]
-	margin := top.prob
+	// The margin is reported on the revision-1 (T = 1) probability scale — the
+	// scale the acceptance thresholds and the session's MinPredictiveMargin
+	// were calibrated on (ADR-0035 "Calibration") — so a calibration change
+	// moves the reported probabilities without moving this gate.
+	margin := top.gateProb
 	if len(list) > 1 {
-		margin = top.prob - list[1].prob
+		margin = top.gateProb - list[1].gateProb
 	}
 	margin = unit(margin)
 
@@ -237,7 +241,22 @@ func (r *ranker) decide() Ranking {
 	}
 }
 
-// softmax converts log-linear scores into probabilities over the returned set.
+// softmax converts log-linear scores into probabilities over the returned set,
+// in two passes (calibrate.go):
+//
+//   - c.prob is the calibrated temperature (RankOptions.Temperature, revision
+//     CalibrationRevision): p(i) ∝ exp(raw(i)/T). This is what the commit
+//     policy, the Clef escalation thresholds and the developer UI consume
+//     (Candidate.Probability). The division is a common factor across the set,
+//     so the ordering is unchanged for every T — only the spread moves.
+//   - c.gateProb is the same softmax at T = 1 (revision 1): the scale on which
+//     the acceptance thresholds (MinProbability, MinMargin) and the session's
+//     MinPredictiveMargin were calibrated. The acceptance gate keeps operating
+//     on that scale until the thresholds are re-tuned on labeled data
+//     (docs/spec/17; ADR-0035 "Calibration"), so adopting a new calibration
+//     revision can never silently move an accept/abstain decision — the
+//     calibrated probabilities change what the decision layer sees, not what
+//     the local policy commits on.
 //
 // The set is deliberately the *returned* candidates rather than everything that
 // was retrieved: docs/spec/12's property test asserts the probabilities sum to 1,
@@ -247,6 +266,17 @@ func (r *ranker) decide() Ranking {
 // DefaultRankOptions.TopK is the only honest companion to DefaultRankOptions'
 // MinProbability.
 func (r *ranker) softmax(list []*candidate) {
+	r.softmaxT(list, r.opts.Temperature, func(c *candidate) *float64 { return &c.prob })
+	r.softmaxT(list, 1.0, func(c *candidate) *float64 { return &c.gateProb })
+}
+
+// softmaxT is one softmax pass at temperature t into the destination field.
+func (r *ranker) softmaxT(list []*candidate, t float64, dst func(*candidate) *float64) {
+	if t <= 0 || math.IsNaN(t) || math.IsInf(t, 0) {
+		// sanitize() guarantees a valid T; this is defense in depth for a future
+		// caller that builds a ranker directly (docs/spec/12's NaN fuzz target).
+		t = DefaultTemperature
+	}
 	maxRaw := math.Inf(-1)
 	for _, c := range list {
 		if c.raw > maxRaw {
@@ -258,21 +288,22 @@ func (r *ranker) softmax(list []*candidate) {
 	}
 	sum := 0.0
 	for _, c := range list {
-		c.prob = math.Exp(c.raw - maxRaw)
-		if math.IsNaN(c.prob) {
-			c.prob = 0
+		p := math.Exp(c.raw/t - maxRaw/t)
+		if math.IsNaN(p) {
+			p = 0
 		}
-		sum += c.prob
+		*dst(c) = p
+		sum += p
 	}
 	if sum <= 0 || math.IsInf(sum, 1) || math.IsNaN(sum) {
 		even := 1 / float64(len(list))
 		for _, c := range list {
-			c.prob = even
+			*dst(c) = even
 		}
 		return
 	}
 	for _, c := range list {
-		c.prob = unit(c.prob / sum)
+		*dst(c) = unit(*dst(c) / sum)
 	}
 }
 
@@ -294,12 +325,16 @@ func (r *ranker) policy(top *candidate, rest []*candidate) (string, bool) {
 		top.comps[compIndex(ComponentText)] < fallbackTextFloor {
 		return ReasonAbstained, true
 	}
-	if top.prob < r.opts.MinProbability {
+	// The acceptance gate runs on the revision-1 (T = 1) probability scale —
+	// the same gateProb the reported Margin is computed from (ADR-0035
+	// "Calibration") — so adopting a calibration revision moves the reported
+	// probabilities without moving the accept/abstain decision.
+	if top.gateProb < r.opts.MinProbability {
 		return ReasonAbstained, true
 	}
-	margin := top.prob
+	margin := top.gateProb
 	if len(rest) > 0 {
-		margin = top.prob - rest[0].prob
+		margin = top.gateProb - rest[0].gateProb
 	}
 	if margin < r.opts.MinMargin {
 		return ReasonAbstained, true
