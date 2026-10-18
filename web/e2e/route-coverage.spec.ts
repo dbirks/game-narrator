@@ -11,9 +11,13 @@ import { expectDefaultDataDirUntouched, serverRun } from "./support/servers";
  *   1. `/` on an unclaimed appliance: the guard routes the root to /setup;
  *   2. the claim mints no session (ADR-0016 §7): the wizard lands on /login;
  *   3. sign-in returns to the remembered target: `/` redirects to /library;
- *   4. /setup on a claimed appliance: the page routes to /login itself;
- *   5. unauthenticated again: a privileged route answers /login?next=… and
- *      the remembered target survives the round trip;
+ *   4. signed out, /setup on a claimed appliance routes to /login itself:
+ *      the page's own redirect settles on the login form. (With a live
+ *      session the same hop continues /login → /library, so /login would be
+ *      only a transient hop there — the matrix asserts it signed out, where
+ *      /login is the stable terminal state);
+ *   5. still anonymous: a privileged route answers /login?next=… and the
+ *      remembered target survives the round trip;
  *   6. the public routes (/diagnostics, the not-found page) stay reachable
  *      with no account at all.
  */
@@ -49,12 +53,20 @@ test("the route matrix across the first-run, authenticated and anonymous phases"
   await expect(page.getByTestId("empty-state")).toContainText("No games yet");
 
   // ── 4. /setup on a claimed appliance routes to /login, by the page ────────
+  // The SetupPage's own redirect, not the guard's. It is asserted signed out
+  // on purpose: with a live session the page's redirect chain is
+  // /setup → /login → /library (the login page hands an authenticated
+  // visitor straight to the library), so /login is only a transient hop and
+  // a URL wait on it races the two client-side navigations. Signed out, the
+  // login form is the terminal state the page settles on, and the wait is
+  // on a stable URL plus the visible form.
+  await page.getByTestId("nav-logout").click();
+  await expect(page).toHaveURL(/\/login/, { timeout: 20_000 });
   await page.goto("/setup");
   await expect(page).toHaveURL(/\/login$/, { timeout: 20_000 });
+  await expect(page.getByTestId("login-username")).toBeVisible();
 
-  // ── 5. anonymous again: the guard refuses and remembers the target ────────
-  await page.getByTestId("nav-logout").click();
-  await expect(page).toHaveURL(/\/login/);
+  // ── 5. still anonymous: the guard refuses and remembers the target ───────
   await page.goto("/games/new");
   await expect(page).toHaveURL(/\/login\?next=%2Fgames%2Fnew$/, { timeout: 20_000 });
   await expect(page.getByTestId("login-username")).toBeVisible();
