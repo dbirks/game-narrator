@@ -6,7 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"image"
+	_ "image/png"
 	"net/http"
 	"os"
 	"os/exec"
@@ -21,30 +24,45 @@ import (
 	"github.com/dbirks/game-narrator/internal/providers"
 	"github.com/dbirks/game-narrator/internal/providers/openai"
 	"github.com/dbirks/game-narrator/internal/runtime"
+	"github.com/dbirks/game-narrator/internal/vision"
 	"github.com/dbirks/game-narrator/internal/vision/ocr"
 )
 
 // Live proof of the VLM OCR fallback at the session level (docs/spec/16 live
-// category, ADR-0040): a replay session whose textbox band carries the
-// hard-font crop rendered with the same magick recipe the ocr package's VLM
-// live test uses (same font pick, same noise and blur), real Tesseract as
-// the primary, the real vision_ocr_fallback model behind the session's
-// secondary. The assertions:
+// category, ADR-0040): a replay session whose textbox band carries a
+// hard-font crop, real Tesseract as the primary, the real
+// vision_ocr_fallback model behind the session's secondary. The assertions:
 //
+//   - the primary is *confirmed defeated before the session*: the pre-check
+//     runs the session's own primary path (same region rect, same
+//     preprocessing recipe, the same zero-value Tesseract the session builds)
+//     on the rendered crop and measures its CER against the known text. The
+//     test walks a small ordered set of deterministic renderings (the
+//     reference recipe, then a decorative serif face if one is present,
+//     letter-spaced monospace, low contrast, heavier blur, extra seeded
+//     noise) and uses the first one whose primary CER reaches the fallback
+//     trigger threshold read from the pipeline's OCRFallback policy. If the
+//     host's Tesseract reads every rendering well enough (CER below the
+//     threshold), the test is NOT RUN with the measured CERs — never FAILED:
+//     on such a host the value case (a font the local engine cannot read)
+//     cannot be demonstrated, and guessing would be a false pass.
 //   - the fallback genuinely engaged on real frames: the session's stats
-//     count the secondary's calls and its event stream carries the trace;
-//   - the ocr.fallback trace field appears in the session's terminal event
-//     with the chosen reading (chosen=secondary when the primary garbles
-//     the hard font, the documented value case);
-//   - the VLM's own reading of the crop (taken from the session's trace
-//     rows, not a second gateway call) is within the documented CER.
+//     count at least one secondary call and its event stream carries the
+//     ocr.fallback trace with the chosen reading (chosen=secondary when the
+//     primary garbles the hard font, the documented value case);
+//   - the VLM's own reading of the crop (taken from the session's trace rows,
+//     not a second gateway call) is within the documented CER bound
+//     (ADR-0040: normalised CER < 10% against the known text);
+//   - each captured gateway call is logged with the crop's SHA-256, the
+//     gateway's request id and its latency, so a failure names the exact
+//     request.
 //
 // NOT RUN (skipped, with setup instructions, never failed) when the gateway
-// is not configured, the gateway refuses image input, or magick/tesseract is
-// missing — the provider live-test convention (docs/spec/16).
+// is not configured, magick/tesseract is missing, or no rendering defeats the
+// local primary — the provider live-test convention (docs/spec/16).
 func TestLiveOCRFallbackSession(t *testing.T) {
-	const known = "The harbour bell rang twice."
-	const frames = 40
+	const known = liveFallbackKnown
+	const frames = liveFallbackFrames
 
 	// --- gates. ---
 	if _, err := exec.LookPath("magick"); err != nil {
@@ -90,41 +108,78 @@ func TestLiveOCRFallbackSession(t *testing.T) {
 	cloned.Timeout = 2 * time.Minute
 	client.HTTP = &cloned
 
-	// The capture wrapper records the exact PNG bytes the engine sends (the
-	// prepared crop) so a failure can be compared against the bytes a
-	// standalone VLM call sends for the same pixels: if the hashes match, the
-	// read differs by model sampling, not by wiring.
-	capture := &liveCapture{inner: ocr.OpenAIClient{Client: client}}
-
-	// --- render the crop: the ocr live test's recipe verbatim — hard serif
-	// face, dim on a dark box, downscaled, heavy Gaussian noise, soft blur.
-	// Tuned so the local engine comes back garbled while the VLM resolves
-	// the line: the fallback's value case.
-	clipDir := t.TempDir()
-	crop := filepath.Join(clipDir, "crop.png")
-	font := liveHardFont(t)
-	args := []string{
-		"-size", "1280x240", "xc:#0b1018",
-		"-font", font, "-pointsize", "48", "-fill", "#c8d4de",
-		"-gravity", "center", "-annotate", "+0+0", known,
-		"-resize", "640x120",
-		"-seed", "42", "-attenuate", "0.50", "+noise", "Gaussian",
-		"-blur", "0x2.6",
-		crop,
+	// --- the session's fallback config, once: the same policy the
+	// pre-check reads the trigger threshold from and the session runs under
+	// (a drift between the two would let the pre-check promise what the
+	// session's trigger never asks for).
+	fbPolicy := ocr.FallbackPolicy{RatePerSecond: 10, RateBurst: 30, ConfidenceThreshold: 0.6}
+	// The trigger threshold, read from the pipeline's OCRFallback policy
+	// above: the fallback engages when the primary read is unresolved, i.e.
+	// below the policy's ConfidenceThreshold (the documented 0.6 default,
+	// the same bar docs/spec/05's stability discussion uses for trusting a
+	// local read). The guards mirror the engine's normalization of a zero
+	// or out-of-range field (FallbackEngine.normalizedPolicy is unexported),
+	// so a later config edit cannot let the pre-check promise what the
+	// session's trigger never asks for.
+	trigger := fbPolicy.ConfidenceThreshold
+	if trigger <= 0 {
+		trigger = 0.6
 	}
-	if outBytes, err := exec.Command("magick", args...).CombinedOutput(); err != nil {
-		t.Fatalf("magick render: %v: %s", err, bytes.TrimSpace(outBytes))
+	if trigger > 1 {
+		trigger = 1
 	}
 
-	// --- the clip: a dark screen, the crop in the top band. The seeded
-	// profile's own textbox/subtitle regions point at the bottom band,
-	// which stays empty, so they read nothing and commit nothing.
+	// --- confirm the primary defeated, before the session. The pre-check
+	// is the session's own primary path: the same region rect, the same
+	// vision.DefaultSteps preprocessing, and the zero-value Tesseract the
+	// session builds (session.go: engine = ocr.Tesseract{} when no engine
+	// is injected). The deadline is scaled 5x under a race build — the
+	// ocr package's own live-test convention: a read killed by runner load
+	// must not be logged as a 1.0 CER it never earned (a timeout is
+	// inconclusive, not a defeat).
+	primary := ocr.Tesseract{Timeout: ocr.DefaultTimeout * time.Duration(liveOCRTimeoutScale)}
+	region := hardBandRect
+	ladder := hardFontLadder(t)
+	var measured []string
+	var winner string
+	var winnerCrop string
+	for _, v := range ladder {
+		dir := t.TempDir()
+		crop := v.render(t, dir)
+		frame := filepath.Join(dir, "frame.png")
+		magick(t, "-size", "640x480", "xc:#05070a", crop, "-geometry", "+0+48", "-composite", frame)
+		cerV, read, err := primaryCER(t, context.Background(), primary, frame, region, known)
+		if err != nil {
+			// A timed-out measurement is inconclusive (the deadline fired,
+			// not the font): note it and keep walking the ladder.
+			t.Logf("pre-check: %s inconclusive (%v)", v.name, err)
+			measured = append(measured, fmt.Sprintf("%s: inconclusive", v.name))
+			continue
+		}
+		t.Logf("pre-check: %s CER=%.3f conf-threshold=%.2f read=%q", v.name, cerV, trigger, read)
+		measured = append(measured, fmt.Sprintf("%s: CER %.3f (read %q)", v.name, cerV, read))
+		if cerV >= trigger {
+			winner, winnerCrop = v.name, crop
+			break
+		}
+	}
+	if winner == "" {
+		t.Skipf("NOT RUN: the host's primary Tesseract resolves every hard rendering below the "+
+			"fallback trigger threshold (CER < %.2f): %s — the fallback's value case needs a font "+
+			"the local engine cannot read; no render could confirm it on this host",
+			trigger, strings.Join(measured, "; "))
+	}
+	t.Logf("pre-check: primary confirmed defeated by %s (measured: %s)", winner, strings.Join(measured, "; "))
+
+	// --- the clip: a dark screen, the winning crop in the top band. The
+	// seeded profile's own textbox/subtitle regions point at the bottom
+	// band, which stays empty, so they read nothing and commit nothing.
 	clip := t.TempDir()
 	entries := make([]map[string]any, 0, frames)
 	for i := 1; i <= frames; i++ {
 		name := fmt.Sprintf("frame-%03d.png", i)
 		if out, err := exec.Command("magick",
-			"-size", "640x480", "xc:#05070a", crop, "-geometry", "+0+48", "-composite",
+			"-size", "640x480", "xc:#05070a", winnerCrop, "-geometry", "+0+48", "-composite",
 			filepath.Join(clip, name),
 		).CombinedOutput(); err != nil {
 			t.Fatalf("magick frame %d: %v: %s", i, err, bytes.TrimSpace(out))
@@ -140,12 +195,13 @@ func TestLiveOCRFallbackSession(t *testing.T) {
 	}
 
 	// --- the session: real Tesseract primary, the role's real VLM secondary.
+	capture := &liveCapture{client: client}
 	e := newEnv(t, withOCRFallback(&pipeline.OCRFallback{
 		Secondary: ocr.NewVLMEngine(capture),
 		// The generous budget is about the session wiring, not the limiter:
 		// the replay clip fits a handful of distinct crops, and the rate
 		// limit's own behaviour is pinned by the ocr package's clock tests.
-		Policy: ocr.FallbackPolicy{RatePerSecond: 10, RateBurst: 30},
+		Policy: fbPolicy,
 	}), withReplayRoot(clip))
 
 	profileID, _ := seedSyntheticProfile(t, e.st, false)
@@ -161,7 +217,7 @@ func TestLiveOCRFallbackSession(t *testing.T) {
 		ProfileID:    profileID,
 		RegionType:   games.RegionTextbox,
 		DetectMethod: games.DetectManual,
-		RectX:        0.02, RectY: 0.10, RectW: 0.96, RectH: 0.25,
+		RectX:        region.X, RectY: region.Y, RectW: region.W, RectH: region.H,
 		OCRSettings: json.RawMessage(`{"difficult_font": true}`),
 		Revision:    1,
 		UpdatedAt:   now,
@@ -199,6 +255,9 @@ func TestLiveOCRFallbackSession(t *testing.T) {
 	if final.State == runtime.StateStopped && final.Stats.FramesDelivered != frames {
 		t.Fatalf("frames_delivered = %d, want %d (the whole clip)", final.Stats.FramesDelivered, frames)
 	}
+	// The session must have used the fallback on real frames: the pre-check
+	// confirmed the primary defeated, so at least one secondary call is the
+	// documented behaviour of this wiring.
 	if got := final.Stats.OCRFallbackSecondaryCalls; got == 0 {
 		t.Fatal("the session's secondary was never called: the live fallback did not engage")
 	}
@@ -229,18 +288,23 @@ func TestLiveOCRFallbackSession(t *testing.T) {
 		t.Fatal("no trace row carries the ocr.fallback field: the session's trace lost the comparison record")
 	}
 	if secondary == 0 {
-		t.Fatalf("no chosen=secondary row over %d annotated rows: the primary resolved the hard font on this host "+
-			"(the value case is the hard profile; rerun once the font profile is confirmed defeated)", annotated)
+		t.Fatalf("no chosen=secondary row over %d annotated rows although the pre-check confirmed the primary "+
+			"defeated (%s): the session's primary path diverged from the pre-check path (a wiring drift, not a font)",
+			annotated, strings.Join(measured, "; "))
 	}
-	if bestCER >= 0.10 {
-		t.Errorf("the secondary's reading has CER %.3f, want < 0.10 against %q (read %q)",
-			bestCER, known, bestRow.OCRFallback.SecondaryText)
+	// The committed text (the fallback's chosen reading) stays within the
+	// documented bound: ADR-0040's acceptance for the live hard-font run is
+	// a normalised CER < 10% against the known text.
+	if bestCER >= liveFallbackMaxCER {
+		t.Errorf("the committed (chosen=secondary) reading has CER %.3f, want < %.2f against %q (read %q)",
+			bestCER, liveFallbackMaxCER, known, bestRow.OCRFallback.SecondaryText)
 	}
 	if !strings.Contains(raw, `"ocr_fallback"`) {
 		t.Fatal("the ocr.fallback field is missing from the session's terminal event")
 	}
-	for i, h := range capture.shotList() {
-		t.Logf("vlm.sent: call=%d sha256=%s", i+1, h)
+	for i, call := range capture.calls() {
+		t.Logf("vlm.sent: call=%d sha256=%s request_id=%s latency=%s err=%v",
+			i+1, call.sha256, orDash(call.requestID), call.latency.Round(time.Millisecond), call.err)
 	}
 	// Dump every sent crop so a failure is inspectable (the session sends one
 	// crop per region per frame: the profile's own empty regions and the hard
@@ -273,35 +337,282 @@ func TestLiveOCRFallbackSession(t *testing.T) {
 		model, final.Stats.OCRFallbackSecondaryCalls, annotated, secondary, bestCER)
 }
 
-// liveCapture is a test-local VLMClient wrapper that records the hash of
-// each prepared crop the engine sends — the exact bytes that leave the
-// appliance — without changing the request. A failure can then be compared
-// against a standalone VLM call's bytes for the same pixels: matching hashes
-// mean the wiring sends the right crop and any bad reading is the model's,
-// not the pipe's.
+// liveFallbackKnown is the line the hard-font crop renders; the pre-check's
+// CER and the session's committed-text CER are both measured against it.
+const liveFallbackKnown = "The harbour bell rang twice."
+
+// liveFallbackFrames is the replay clip's length: 4 s of the clip's own
+// 10 Hz cadence, one stable textbox page (docs/spec/12's page dwell).
+const liveFallbackFrames = 40
+
+// liveFallbackMaxCER is the documented bound for the VLM's reading of the
+// hard-font crop: ADR-0040's acceptance — "assert its normalised CER < 10%
+// against the known text" — the same bound the ocr package's live test pins.
+const liveFallbackMaxCER = 0.10
+
+// hardBandRect is the textbox region the session publishes and the pre-check
+// measures: one value, so the two can never drift apart (the pre-check's
+// promise is only as good as its agreement with the session's crop).
+var hardBandRect = vision.Rect{X: 0.02, Y: 0.10, W: 0.96, H: 0.25}
+
+// hardVariant is one rung of the defeat ladder: a deterministic rendering of
+// the hard band, harder on the local engine than the one before it.
+type hardVariant struct {
+	name string
+	// render writes the variant's crop into dir and returns its path. Every
+	// render is a pure function of (font present on the host, fixed seeds):
+	// the same host renders the same bytes on every run, so the ladder's
+	// outcome is reproducible.
+	render func(t *testing.T, dir string) string
+}
+
+// hardFontLadder is the ordered set of renderings the pre-check walks, from
+// the reference recipe (the ocr package's live-test recipe verbatim — hard
+// serif face, dim on a dark box, downscaled, heavy seeded Gaussian noise,
+// soft blur) up through progressively harder faces and treatments: a
+// decorative serif face when one is present, letter-spaced monospace (this
+// magick build renders text options literally, so spacing is per-character
+// annotate, not a text option), low contrast, heavier blur, extra seeded
+// noise. The pre-check takes the first rung that defeats the primary, which
+// is the mildest defeat — the crop the VLM still has the best chance on.
+func hardFontLadder(t *testing.T) []hardVariant {
+	t.Helper()
+	base := liveHardFont(t)
+	ladder := []hardVariant{
+		{
+			name:   "baseline",
+			render: renderHardCrop(t, hardRender{font: base}),
+		},
+	}
+	if dec := firstExistingFont(t,
+		"/usr/share/fonts/TTF/DejaVuSerif-BoldItalic.ttf",
+		"/usr/share/fonts/liberation/LiberationSerif-BoldItalic.ttf",
+		"/usr/share/fonts/TTF/DejaVuSerif.ttf",
+	); dec != "" && dec != base {
+		ladder = append(ladder, hardVariant{
+			name:   "decorative font",
+			render: renderHardCrop(t, hardRender{font: dec}),
+		})
+	}
+	if mono := firstExistingFont(t,
+		"/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+		"/usr/share/fonts/liberation/LiberationMono-Regular.ttf",
+		"/usr/share/fonts/Adwaita/AdwaitaMono-Regular.ttf",
+	); mono != "" {
+		ladder = append(ladder, hardVariant{
+			name:   "letter-spacing",
+			render: renderHardCrop(t, hardRender{font: mono, perChar: true}),
+		})
+	}
+	ladder = append(ladder,
+		hardVariant{name: "low contrast", render: renderHardCrop(t, hardRender{font: base, fill: "#46525e"})},
+		hardVariant{name: "blur", render: renderHardCrop(t, hardRender{font: base, blur: "0x4.0"})},
+		hardVariant{name: "noise", render: renderHardCrop(t, hardRender{font: base, extraNoise: true})},
+	)
+	return ladder
+}
+
+// hardRender is one deterministic recipe: the reference recipe's canvas,
+// text, downscale, seeded noise and blur, with the named hardening applied.
+type hardRender struct {
+	font       string // face; empty means magick's default
+	fill       string // empty means the reference #c8d4de
+	blur       string // empty means the reference 0x2.6
+	perChar    bool   // letter-spacing: per-character annotate, 10 px gap
+	extraNoise bool   // a second seeded noise pass
+}
+
+// renderHardCrop renders r into dir/crop.png and returns the path. The
+// recipe is the ocr live test's verbatim (1280x240 canvas, pointsize 48,
+// centred, downscaled 640x120, Gaussian noise seed 42 attenuate 0.50,
+// Gaussian blur) plus the variant's hardening — the same fixed seeds and
+// parameters on every run.
+func renderHardCrop(t *testing.T, r hardRender) func(t *testing.T, dir string) string {
+	return func(t *testing.T, dir string) string {
+		t.Helper()
+		out := filepath.Join(dir, "crop.png")
+		fill, blur := r.fill, r.blur
+		if fill == "" {
+			fill = "#c8d4de"
+		}
+		if blur == "" {
+			blur = "0x2.6"
+		}
+		args := []string{"-size", "1280x240", "xc:#0b1018",
+			"-font", r.font, "-pointsize", "48", "-fill", fill,
+			"-gravity", "center"}
+		if r.perChar {
+			// Letter-spacing this magick build cannot express as a text
+			// option (it renders the option string literally): each rune is
+			// annotated at its own offset, pitch = measured mono advance +
+			// 10 px, so the spacing is deterministic and visible.
+			unit := monoCharUnit(t, r.font)
+			runes := []rune(liveFallbackKnown)
+			pitch := unit + 10
+			start := -((len(runes) - 1) * pitch) / 2
+			for i, ch := range runes {
+				args = append(args, "-annotate", fmt.Sprintf("+%d+0", start+i*pitch), string(ch))
+			}
+		} else {
+			args = append(args, "-annotate", "+0+0", liveFallbackKnown)
+		}
+		args = append(args,
+			"-resize", "640x120",
+			"-seed", "42", "-attenuate", "0.50", "+noise", "Gaussian",
+			"-blur", blur)
+		if r.extraNoise {
+			args = append(args, "-seed", "7", "-attenuate", "0.30", "+noise", "Gaussian")
+		}
+		args = append(args, out)
+		magick(t, args...)
+		return out
+	}
+}
+
+// magick runs ImageMagick and fails the test with the child's output on
+// error (a render the host's magick cannot do is a broken test, not a
+// flaky one).
+func magick(t *testing.T, args ...string) {
+	t.Helper()
+	if out, err := exec.Command("magick", args...).CombinedOutput(); err != nil {
+		t.Fatalf("magick %v: %v: %s", args, err, bytes.TrimSpace(out))
+	}
+}
+
+// firstExistingFont returns the first font present on the host, or "" when
+// none is: "if present" ladders skip their rung rather than assume a face.
+func firstExistingFont(t *testing.T, paths ...string) string {
+	t.Helper()
+	for _, p := range paths {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+// monoCharUnit measures one monospace character's advance at the recipe's
+// pointsize: the width of four "M"s over four. It is a host/font property,
+// so the per-character offsets stay deterministic on a given host.
+func monoCharUnit(t *testing.T, font string) int {
+	t.Helper()
+	raw, err := exec.Command("magick", "-font", font, "-pointsize", "48",
+		"label:MMMM", "-format", "%w", "info:").Output()
+	if err != nil {
+		t.Fatalf("magick measure mono: %v: %s", err, bytes.TrimSpace(raw))
+	}
+	var w int
+	fmt.Sscanf(string(bytes.TrimSpace(raw)), "%d", &w)
+	if w < 8 {
+		t.Fatalf("mono advance %d px implausible for pointsize 48", w)
+	}
+	return w / 4
+}
+
+// primaryCER measures how well the session's primary path reads the rendered
+// band: exactly what the session does to one frame of this region —
+// CropNormalized over the rect, vision.DefaultSteps preprocessing (the
+// session's Preprocess), the engine's own Recognize. It returns the normalised
+// CER against known, the raw read, and an error only when the measurement
+// itself is inconclusive (a timed-out read: the deadline fired, not the
+// font). An errored read that is not a timeout counts as a defeated primary:
+// the primary produced nothing, CER 1.0 — the fallback's primary_errored
+// case, which the session's trigger treats as unresolved.
+func primaryCER(t *testing.T, ctx context.Context, primary ocr.Tesseract, framePath string, region vision.Rect, known string) (float64, string, error) {
+	t.Helper()
+	f, err := os.Open(framePath)
+	if err != nil {
+		return 0, "", fmt.Errorf("open frame: %w", err)
+	}
+	defer f.Close()
+	img, _, err := image.Decode(f)
+	if err != nil {
+		return 0, "", fmt.Errorf("decode frame: %w", err)
+	}
+	crop := vision.CropNormalized(img, region, vision.CropOptions{})
+	if crop == nil || crop.Bounds().Empty() {
+		return 0, "", fmt.Errorf("empty crop for region %v", region)
+	}
+	pre := vision.Preprocess(crop, vision.DefaultSteps())
+	res, err := primary.Recognize(ctx, pre)
+	if err != nil {
+		var fail *ocr.Failure
+		if errors.As(err, &fail) && (errors.Is(fail.Kind, ocr.ErrTimeout) || errors.Is(fail.Kind, ocr.ErrCancelled)) {
+			return 0, "", err
+		}
+		return 1, "", nil
+	}
+	return cer(ocr.NormaliseForCompare(res.Text), ocr.NormaliseForCompare(known)), res.Text, nil
+}
+
+// liveCapture is a test-local VLMClient wrapper that records, for every call,
+// the SHA-256 of the exact prepared crop the engine sends (the bytes that
+// leave the appliance), the gateway's request id and the wall latency —
+// without changing the request. A failure can then be compared against a
+// standalone VLM call's bytes for the same pixels: matching hashes mean the
+// wiring sends the right crop and any bad reading is the model's, not the
+// pipe's. The request id and latency come from the role client's own
+// ChatResponse (the ocr.VLMClient seam returns plain text), so the capture
+// builds the gateway request the way the production adapter does —
+// ocr.OpenAIClient's shape verbatim: one user message, the terse fixed
+// instruction, the one prepared crop PNG, the engine's MaxTokens bound.
 type liveCapture struct {
-	inner ocr.VLMClient
-	mu    sync.Mutex
-	shots []string
-	bytes [][]byte
+	client *openai.Client
+
+	mu        sync.Mutex
+	shots     []string
+	bytes     [][]byte
+	requestID []string
+	latency   []time.Duration
+	errs      []error
+}
+
+// captureCall is one recorded gateway call.
+type captureCall struct {
+	sha256    string
+	requestID string
+	latency   time.Duration
+	err       error
 }
 
 func (c *liveCapture) Chat(ctx context.Context, req ocr.VLMRequest) (string, error) {
+	start := time.Now()
+	resp, err := c.client.Chat(ctx, openai.ChatRequest{
+		Messages: []openai.Message{{
+			Role:   "user",
+			Text:   req.Instruction,
+			Images: [][]byte{req.PNG},
+		}},
+		MaxTokens: req.MaxTokens,
+	})
 	c.mu.Lock()
 	sum := sha256.Sum256(req.PNG)
 	c.shots = append(c.shots, hex.EncodeToString(sum[:]))
 	cp := make([]byte, len(req.PNG))
 	copy(cp, req.PNG)
 	c.bytes = append(c.bytes, cp)
+	id := ""
+	if err == nil {
+		id = resp.RequestID
+	}
+	c.requestID = append(c.requestID, id)
+	c.latency = append(c.latency, time.Since(start))
+	c.errs = append(c.errs, err)
 	c.mu.Unlock()
-	return c.inner.Chat(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	return resp.Text, nil
 }
 
-func (c *liveCapture) shotList() []string {
+// calls returns the recorded calls in send order.
+func (c *liveCapture) calls() []captureCall {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	out := make([]string, len(c.shots))
-	copy(out, c.shots)
+	out := make([]captureCall, len(c.shots))
+	for i := range c.shots {
+		out[i] = captureCall{sha256: c.shots[i], requestID: c.requestID[i], latency: c.latency[i], err: c.errs[i]}
+	}
 	return out
 }
 
@@ -316,18 +627,28 @@ func (c *liveCapture) firstBytes() []byte {
 	return out
 }
 
+// Pin the seam satisfaction: the session's engine is built over this
+// wrapper, and a drifted VLMClient signature must fail here, at compile time.
+var _ ocr.VLMClient = (*liveCapture)(nil)
+
+// orDash renders an empty id for a log line as "-" rather than a blank.
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
 // liveHardFont picks a serif face that Tesseract's default language model
 // recognises less cleanly than its sans default (the ocr live test's pick,
 // duplicated here because it is test-local there).
 func liveHardFont(t *testing.T) string {
 	t.Helper()
-	for _, f := range []string{
+	if f := firstExistingFont(t,
 		"/usr/share/fonts/liberation/LiberationSerif-Italic.ttf",
 		"/usr/share/fonts/TTF/DejaVuSerifCondensed.ttf",
-	} {
-		if _, err := os.Stat(f); err == nil {
-			return f
-		}
+	); f != "" {
+		return f
 	}
 	t.Log("no preferred hard font found; using magick's default")
 	return ""
