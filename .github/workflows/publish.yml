@@ -145,10 +145,14 @@ jobs:
         run: |
           set -euo pipefail
           REPO="ghcr.io/dbirks/game-narrator"
-          DIGEST="$(docker buildx imagetools inspect --format '{{json .Manifest}}' "${REPO}:edge" \
-            | python3 -c 'import json,sys; print(json.load(sys.stdin)["Digest"])')"
+          # For a manifest list, `{{json .Manifest}}` emits the index's full
+          # JSON with lowercase keys (digest/mediaType/size), so the digest
+          # must come from the template field (verified live against
+          # ghcr.io/dbirks/game-narrator:edge with buildx 0.38.0, 2026-10-18).
+          DIGEST="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "${REPO}:edge")"
           case "${DIGEST}" in sha256:*) : ;; *) echo "manifest digest not found for ${REPO}:edge" >&2; exit 1 ;; esac
-          SBOM="$(ls dist/game-narrator_*_amd64.sbom.spdx.json | head -n1)"
+          SBOM="$(find dist -maxdepth 1 -name 'game-narrator_*_amd64.sbom.spdx.json' -print -quit)"
+          [ -n "${SBOM}" ] || { echo "no SBOM found in dist/ (expected game-narrator_*_amd64.sbom.spdx.json)" >&2; exit 1; }
           echo "attaching SBOM: ${SBOM}"
           cosign sign --yes "${REPO}@${DIGEST}"
           cosign attest --yes --type spdxjson --predicate "${SBOM}" "${REPO}@${DIGEST}"

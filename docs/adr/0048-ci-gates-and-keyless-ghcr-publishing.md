@@ -63,7 +63,8 @@ self-verify), `goreleaser check`, `actionlint`, `make release-snapshot`
      on local-only per-arch images fails, which is why the pre-push local
      manifest step was removed; run 39087325043, commit f3da74f) →
      `cosign sign --yes ghcr.io/...@<digest>` (digest resolved via
-     `docker buildx imagetools inspect --format '{{json .Manifest}}'`) +
+     `docker buildx imagetools inspect --format '{{.Manifest.Digest}}'`;
+     see amendment 2026-10-18) +
      `cosign attest --type spdxjson` (predicate: the goreleaser/syft SBOM of
      the amd64 archive) → `cosign verify` self-check against the publish.yml
      certificate identity.
@@ -149,3 +150,40 @@ self-verify), `goreleaser check`, `actionlint`, `make release-snapshot`
   (reviewed change) to stop all publishing; delete `publish.yml` to stop
   edge; delete `ci.yml` to stop CI. No data or schema is involved; the
   `snapshot.version_template` rename is cosmetic (artifacts, not state).
+
+## Amendment 2026-10-18: digest extraction for the edge sign step
+
+The first publish run (4b2c074) pushed the per-arch images and the
+`edge`/`sha-<short>` index, then aborted in the sign step: the digest was
+resolved with `docker buildx imagetools inspect --format
+'{{json .Manifest}}' | python3 …["Digest"]`, but for a manifest list
+`{{json .Manifest}}` emits the index's full JSON with **lowercase** keys
+(`digest`, `mediaType`, `size`) — verified live against
+`ghcr.io/dbirks/game-narrator:edge` with buildx 0.38.0 (2026-10-18) — so
+the python lookup raised `KeyError` and `set -euo pipefail` exited before
+`cosign sign` ran (no `.sig` tag in the registry).
+
+Fix (smallest, in `publish.yml` only):
+`DIGEST="$(docker buildx imagetools inspect --format
+'{{.Manifest.Digest}}' "${REPO}:edge")"` — the template field prints exactly
+`sha256:ba530a63…` (the index digest), no python needed. The existing
+`sha256:` prefix check is kept; it also fails loudly if a buildx version
+ever ignores non-`json` templates (docker/buildx#1175, pre-2023 behaviour).
+
+Audit of the rest of the never-exercised sign/verify steps (same run
+scope): the SBOM glob `dist/game-narrator_*_amd64.sbom.spdx.json` matches
+`.goreleaser.yaml` `sboms.documents` for the snapshot version
+(`game-narrator_0.0.0-snapshot-<sha7>_amd64.sbom.spdx.json`, ~16 KiB — no
+predicate size concern); `cosign attest --type spdxjson` is a **built-in**
+predicate type in the pinned cosign v3.0.6 (source, v3.0.6 tag: the file is
+JSON-decoded and embedded as an in-toto `Statement` predicate with
+`predicateType` from the spdxjson→SPDX mapping; invalid JSON errors
+loudly), and `cosign verify-attestation --type spdxjson` resolves the same
+mapping, so attest and verify agree. The verify step's
+`--certificate-identity-regexp 'https://github.com/dbirks/game-narrator/.github/workflows/publish.yml@.*'`
+matches the GitHub Actions OIDC identity documented by Sigstore
+(`https://github.com/OWNER/REPO/.github/workflows/FILE@<ref>` with issuer
+`https://token.actions.githubusercontent.com`): the `workflow_run` edge flow
+issues `@refs/heads/main`, tag releases `@refs/tags/v*` — both match `@.*`.
+No change to action/version pins, `docs/release.md` (it documents the
+command-free flow and stays accurate), or the tag-release job.
