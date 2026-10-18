@@ -173,6 +173,7 @@ function EditionPanel({
     onSuccess: onChanged,
     onError: setError,
   });
+  const manifest = useManifestImport(edition.id, canWrite, onChanged);
 
   if (profiles.isPending) return <Loading label="Loading revisions…" />;
   if (profiles.isError) return <ErrorState error={profiles.error} action="Cannot load revisions" />;
@@ -219,6 +220,8 @@ function EditionPanel({
         <ErrorState error={createDraft.error} action="Cannot create the draft" />
       ) : null}
 
+      <ManifestImport {...manifest} />
+
       {profiles.data.profiles.length === 0 ? (
         <EmptyState title="No revisions yet">
           <p>Revisions hold the dialogue. Start a draft, then import a script into it.</p>
@@ -237,6 +240,112 @@ function EditionPanel({
         </ul>
       )}
     </section>
+  );
+}
+
+/**
+ * The manifest re-import (docs/spec/02 "Profile portability", docs/spec/00
+ * "exports/reimports profile manifest"): a `.gnprofile.json` export lands here
+ * as a brand-new draft of the edition — never an overwrite of an existing
+ * revision (ADR-0015), which is why the control sits on the edition, beside
+ * "New draft", rather than on a revision row.
+ *
+ * The file crosses the wire byte-for-byte (the server re-verifies the
+ * manifest's own digest against the bytes it received, and a re-encoded
+ * document would 422), so the upload is a raw fetch with the File as body —
+ * the honest alternative is a second transport the contract does not have.
+ */
+function useManifestImport(editionId: string, canWrite: boolean, onChanged: () => void) {
+  const [file, setFile] = useState<File | null>(null);
+  const [error, setError] = useState<unknown>(null);
+  const [result, setResult] = useState<import("../api/client").ManifestImportResult | null>(null);
+  const importManifest = useMutation({
+    mutationFn: (f: File) => catalogApi.importManifest(editionId, f),
+    onSuccess: (res) => {
+      setFile(null);
+      setResult(res);
+      onChanged();
+    },
+    onError: setError,
+  });
+  const onFile = (event: ChangeEvent<HTMLInputElement>) => {
+    setError(null);
+    setResult(null);
+    setFile(event.target.files?.[0] ?? null);
+  };
+  const onSubmit = (event: FormEvent) => {
+    event.preventDefault();
+    if (file) void importManifest.mutate(file);
+  };
+  return { canWrite, file, onFile, onSubmit, error, result, pending: importManifest.isPending };
+}
+
+function ManifestImport({
+  canWrite,
+  file,
+  onFile,
+  onSubmit,
+  error,
+  result,
+  pending,
+}: {
+  canWrite: boolean;
+  file: File | null;
+  onFile: (event: ChangeEvent<HTMLInputElement>) => void;
+  onSubmit: (event: FormEvent) => void;
+  error: unknown;
+  result: import("../api/client").ManifestImportResult | null;
+  pending: boolean;
+}) {
+  if (!canWrite) return null;
+  return (
+    <div className="stack" data-testid="manifest-import">
+      <form onSubmit={onSubmit} className="import-form">
+        <label>
+          Profile manifest (a `.gnprofile.json` export)
+          <input
+            type="file"
+            accept=".json,application/json"
+            data-testid="manifest-file"
+            onChange={onFile}
+          />
+        </label>
+        <p className="muted">
+          Re-imports the export as a new draft of this edition. The manifest's own digest is
+          re-verified against the uploaded bytes, so a file edited after export is refused.
+        </p>
+        <button type="submit" disabled={pending || file === null} data-testid="manifest-submit">
+          {pending ? "Importing…" : "Import manifest"}
+        </button>
+      </form>
+      {error ? <ErrorState error={error} action="The manifest was not imported" /> : null}
+      {result ? (
+        <dl className="facts import-report" data-testid="manifest-report">
+          <div>
+            <dt>Imported revision</dt>
+            <dd data-testid="manifest-revision">r{result.profile.revision_num}</dd>
+          </div>
+          <div>
+            <dt>Messages written</dt>
+            <dd data-testid="manifest-messages">{result.report.messages_written}</dd>
+          </div>
+          <div>
+            <dt>Manifest digest</dt>
+            <dd data-testid="manifest-digest">
+              <code>{result.report.digest}</code>
+            </dd>
+          </div>
+          {result.report.missing_blobs.length > 0 ? (
+            <div>
+              <dt>Source bytes missing</dt>
+              <dd data-testid="manifest-missing">
+                {result.report.missing_blobs.length} (re-attach before re-parsing)
+              </dd>
+            </div>
+          ) : null}
+        </dl>
+      ) : null}
+    </div>
   );
 }
 

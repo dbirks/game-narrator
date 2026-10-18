@@ -33,4 +33,19 @@ export const ports = {
    *  (corrections-fixtures.spec.ts): the editor's save records the label, and
    *  the developer's fixture view reads the same rows (ADR-0052). */
   corrections: 18104,
+  /** the packaged binary the SSE reconnect walk drives (sse-reconnect.spec.ts):
+   *  the replay allowlist admits the repo's testdata so /play can run the
+   *  synthetic clip, and the speech roles point at the scripted TTS instance
+   *  the way the play walk does (ADR-0039). */
+  sse: 18105,
+  /** the packaged binary the full-curation and voice-preview walks drive
+   *  (curation-walk.spec.ts, voice-preview-audio.spec.ts): the replay
+   *  allowlist admits the repo's testdata (the region preview's fixture) and
+   *  the speech roles point at the scripted TTS instance (fake-tts.mjs), so
+   *  one server hosts both walks. */
+  curation: 18106,
+  /** the packaged binary the route-coverage walk drives
+   *  (route-coverage.spec.ts): a fresh appliance for the first-run →
+   *  claimed → unauthenticated guard matrix. */
+  routes: 18107,
 } as const;

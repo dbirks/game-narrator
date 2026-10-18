@@ -31,6 +31,9 @@ const voicesUrl = `http://127.0.0.1:${ports.voices}`;
 const playUrl = `http://127.0.0.1:${ports.play}`;
 const graphRegionsUrl = `http://127.0.0.1:${ports.graphRegions}`;
 const correctionsUrl = `http://127.0.0.1:${ports.corrections}`;
+const sseUrl = `http://127.0.0.1:${ports.sse}`;
+const curationUrl = `http://127.0.0.1:${ports.curation}`;
+const routesUrl = `http://127.0.0.1:${ports.routes}`;
 const embeddedBinary = resolve(import.meta.dirname, "..", "bin", "game-narrator");
 // The replay allowlist for the inspector's server: the repo's testdata, named
 // explicitly (ADR-0024 "replay allowlist") rather than relying on the
@@ -147,6 +150,44 @@ export default defineConfig({
       // the walk is the curation surface, so no replay allowlist is needed.
       testMatch: /corrections-fixtures\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: correctionsUrl },
+    },
+    {
+      // The SSE reconnect walk (docs/spec/16 M5: "SSE reconnect reflects
+      // accurate state"): the packaged binary with the repo's testdata on the
+      // replay allowlist and the scripted TTS roles, exactly as the play walk
+      // runs, so /play can drive the synthetic clip while the spec tears the
+      // event stream down and checks the resume.
+      name: "sse",
+      testMatch: /sse-reconnect\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: sseUrl },
+    },
+    {
+      // The full curation walk (docs/spec/16 M5: "curate a full synthetic
+      // game with no CLI"), UI only end to end: create, import, edit,
+      // characters, voice, regions, publish, export, then re-import the
+      // export. The speech roles are the scripted TTS instance and the replay
+      // allowlist admits the repo's testdata (the region preview's fixture).
+      name: "curation",
+      testMatch: /curation-walk\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: curationUrl },
+    },
+    {
+      // The voice preview audio (docs/spec/16 M5: "voice preview works"):
+      // the same curation server (its speech roles and registry are the
+      // scripted instance). In a full-suite run the curation walk claims the
+      // appliance first and this spec signs in; standalone it claims it
+      // itself. The games are disjoint either way.
+      name: "voice-preview",
+      testMatch: /voice-preview-audio\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: curationUrl },
+    },
+    {
+      // The route × first-run matrix (docs/spec/09 "Routes and page
+      // requirements"): a fresh appliance of the packaged binary, so the
+      // claim → login → guard redirects can be asserted in their real order.
+      name: "routes",
+      testMatch: /route-coverage\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: routesUrl },
     },
   ],
   webServer: [
@@ -308,6 +349,58 @@ export default defineConfig({
       command: `node web/e2e/serve.mjs corrections 127.0.0.1:${ports.corrections} ${embeddedBinary} serve`,
       cwd: "..",
       url: `${correctionsUrl}/api/v1/health/live`,
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The SSE reconnect walk on the packaged binary: the same wiring as the
+      // play server (testdata replay + scripted TTS roles) — /play needs a
+      // session to run, and the audio pipeline keeps the page honest.
+      command: `node web/e2e/serve.mjs sse 127.0.0.1:${ports.sse} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${sseUrl}/api/v1/health/live`,
+      env: {
+        GAME_NARRATOR_REPLAY_ROOTS: replayRoots,
+        GAME_NARRATOR_GATEWAY_URL: `http://127.0.0.1:${ports.fakeTTS}/v1`,
+        GAME_NARRATOR_GATEWAY_TOKEN: "fake-e2e-token",
+        GAME_NARRATOR_ROLE_VOICE_DESIGN_MODEL: "fake-voicedesign",
+        GAME_NARRATOR_ROLE_VOICE_CLONE_MODEL: "fake-base",
+        GAME_NARRATOR_TTS_BASE_DIRECT_URL: `http://127.0.0.1:${ports.fakeTTS}/v1`,
+      },
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The curation + voice-preview walks on one packaged binary: the
+      // scripted TTS roles and registry (the voice half) plus the testdata
+      // replay allowlist (the region preview's fixture). Two specs, one data
+      // directory, disjoint games — the second signs in, it cannot re-claim.
+      command: `node web/e2e/serve.mjs curation 127.0.0.1:${ports.curation} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${curationUrl}/api/v1/health/live`,
+      env: {
+        GAME_NARRATOR_REPLAY_ROOTS: replayRoots,
+        GAME_NARRATOR_GATEWAY_URL: `http://127.0.0.1:${ports.fakeTTS}/v1`,
+        GAME_NARRATOR_GATEWAY_TOKEN: "fake-e2e-token",
+        GAME_NARRATOR_ROLE_VOICE_DESIGN_MODEL: "fake-voicedesign",
+        GAME_NARRATOR_ROLE_VOICE_CLONE_MODEL: "fake-base",
+        GAME_NARRATOR_TTS_BASE_DIRECT_URL: `http://127.0.0.1:${ports.fakeTTS}/v1`,
+      },
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The route-coverage walk on the packaged binary: a fresh appliance,
+      // nothing else pointed at it.
+      command: `node web/e2e/serve.mjs routes 127.0.0.1:${ports.routes} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${routesUrl}/api/v1/health/live`,
       reuseExistingServer: false,
       timeout: 60_000,
       stdout: "ignore",

@@ -168,6 +168,13 @@ export function serverNameForProject(project: string): string {
       return "graph-regions";
     case "corrections":
       return "corrections";
+    case "sse":
+      return "sse";
+    case "curation":
+    case "voice-preview":
+      return "curation";
+    case "routes":
+      return "routes";
     default:
       throw new Error(`playwright project "${project}" has no webServer in playwright.config.ts`);
   }

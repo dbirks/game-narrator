@@ -600,6 +600,31 @@ export type RightsStatus = Schemas["RightsStatus"];
 export type ProfileManifest = Schemas["ProfileManifest"];
 export type SystemInfo = Schemas["SystemInfo"];
 
+/**
+ * The 201 body of POST /api/v1/editions/{id}/profiles/import-manifest.
+ * `sources_needing_bytes` names the source bytes not on this appliance — the
+ * documented difference between "imported" and "imported and re-parseable"
+ * (docs/spec/02), and the report echoes the manifest's own digest so the
+ * screen can say what it imported.
+ */
+export interface ManifestImportResult {
+  profile: Profile;
+  sources_needing_bytes: string[];
+  report: {
+    profile_id: string;
+    edition_id: string;
+    game_id: string;
+    created_catalog: boolean;
+    messages_written: number;
+    messages_withheld: number;
+    sources_registered: number;
+    missing_blobs: string[];
+    present_blobs: string[];
+    digest: string;
+    preferred_voice_id?: string;
+  };
+}
+
 /** The contract's HealthStatus, with `checks` spelled out: it is a free-form
  *  dependency map (`additionalProperties: {type: object}`) rather than a schema. */
 export interface Readiness {
@@ -725,6 +750,41 @@ export const catalogApi = {
   },
   createDraft(editionId: string) {
     return api.post("/api/v1/editions/{id}/profiles", { params: { id: editionId } });
+  },
+  /**
+   * Re-import a `.gnprofile.json` export (docs/spec/02 "Profile portability",
+   * docs/spec/00 "exports/reimports profile manifest"): the server validates
+   * the schema, re-verifies the manifest's own digest against the document's
+   * bytes, and writes a brand-new draft — never an overwrite (ADR-0015).
+   *
+   * The file's bytes must cross the wire unchanged, which is why this bypasses
+   * the JSON (re)serialisation the generic client applies: a re-encoded
+   * document no longer hashes to its own manifest_digest and the import
+   * answers 422. The File goes straight into the fetch body.
+   */
+  async importManifest(
+    editionId: string,
+    file: File,
+    signal?: AbortSignal,
+  ): Promise<ManifestImportResult> {
+    const url = api.buildUrl("/api/v1/editions/{id}/profiles/import-manifest", {
+      params: { id: editionId },
+    });
+    const headers: Record<string, string> = {
+      accept: "application/json",
+      "content-type": "application/json",
+    };
+    const token = api.csrfTokenValue();
+    if (token) headers["x-csrf-token"] = token;
+    const response = await fetch(url, {
+      method: "POST",
+      credentials: "same-origin",
+      headers,
+      body: file,
+      signal,
+    });
+    if (!response.ok) throw await apiErrorFrom(response);
+    return (await response.json()) as ManifestImportResult;
   },
   getProfile(id: string, signal?: AbortSignal) {
     return api.get("/api/v1/profiles/{id}", { params: { id }, signal });
