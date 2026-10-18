@@ -8,7 +8,7 @@ import {
   type KeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { useParams, useSearchParams } from "react-router";
+import { Link, useParams, useSearchParams } from "react-router";
 
 import { api, catalogApi, refreshProfileEtag } from "../api/client";
 import { useAuth } from "../auth/auth-context";
@@ -347,6 +347,11 @@ export function RegionsPage() {
     <div className="regions-page" data-testid="regions-page" onKeyDown={onKey} tabIndex={0}>
       <header className="regions-header">
         <h1>OCR regions</h1>
+        <p className="muted">
+          <Link to={`/games/${gameId}/overview`} data-testid="regions-back-link">
+            Overview
+          </Link>
+        </p>
         <div className="regions-frame-src" data-testid="regions-frame-src">
           <label>
             Fixture

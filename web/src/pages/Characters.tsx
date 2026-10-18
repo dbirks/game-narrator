@@ -90,7 +90,9 @@ export function CharactersPage() {
     <main>
       <h1 data-testid="characters-title">{`Characters · ${gameQuery.data?.title ?? id}`}</h1>
       <p className="muted">
-        <Link to={`/games/${id}/overview`}>Overview</Link>
+        <Link to={`/games/${id}/overview`} data-testid="characters-back-link">
+          Overview
+        </Link>
         {profile ? (
           <>
             {" · revision "}

@@ -9,7 +9,9 @@ Servers: `chromium` = Vite dev server + `go run` API (port 18090); every other
 project runs the **packaged binary** (`make build`) on its own throwaway data
 directory (`web/e2e/serve.mjs`), with the scripted TTS/model instances
 (`fake-tts.mjs`, `fake-model.mjs`) where a spec's comment says so — synthetic
-stubs at the model boundary only (AGENTS.md rule 3).
+stubs at the model boundary only (AGENTS.md rule 3). `a11y` (port 18108) is
+covered by the Accessibility section below: axe over every route of this
+matrix, in the states those specs establish.
 
 ## Route matrix
 
@@ -46,9 +48,72 @@ stubs at the model boundary only (AGENTS.md rule 3).
 
 ## Accessibility (axe)
 
-`@axe-core/playwright` is **not** a dev dependency of `web/package.json`, so per
-the milestone's rule axe was skipped and is recorded here as **not run** — no
-violation counts exist yet. Adding it is a one-line dev dependency plus a
-per-route loop over the matrix's first column; the pages already render text
-equivalents beside the audio controls (docs/spec/09 "UX robustness"), which
-the matrix's assertions exercise.
+`@axe-core/playwright@4.13.0` (exact; published 2026-08-11, well over two weeks
+old — 4.14.0 was too new when this was added). License: MPL-2.0 (OSI-approved,
+file-scoped copyleft; devDependency only — it is not bundled into the shipped
+binary, and the product's users never load it). `web/e2e/a11y.spec.ts` runs on
+its own Playwright project (the packaged binary, a fresh appliance that the
+spec claims and seeds through the UI, port 18108), visits every route of the
+matrix in the state the other specs establish (first-run/anonymous phases,
+then the seeded synthetic game as the signed-in admin, then signed-out), scans
+each with axe's WCAG 2.1 A/AA tags (`wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa`),
+attaches the per-route JSON to the report (`a11y-results`), and fails on any
+`serious`/`critical` violation. Run: `pnpm exec playwright test a11y` (needs
+`make build` first).
+
+Per-route violating-node counts (the only rule in play; moderate/minor were
+absent in both runs):
+
+| Route | color-contrast before | color-contrast after |
+|---|---|---|
+| `/setup` (first run) | 0 | 0 |
+| `/diagnostics` (anonymous) | 0 | 0 |
+| `*` not-found (anonymous) | 0 | 0 |
+| `/` → `/library` | 1 | 0 |
+| `/games/new` | 0 | 0 |
+| `/games/:id/overview` | 1 | 0 |
+| `/games/:id/dialogue` | 2 | 0 |
+| `/games/:id/voices` | 6 | 0 |
+| `/games/:id/characters` | 3 | 0 |
+| `/games/:id/graph` | 4–7 | 0 |
+| `/games/:id/regions` | 0 | 0 |
+| `/games/:id/publish` | 0 | 0 |
+| `/play` | 0 | 0 |
+| `/settings` | 0 | 0 |
+| `/tests` | 0 | 0 |
+| `/developer` | 0 | 0 |
+| `/diagnostics` (signed in) | 0 | 0 |
+| `/login` (signed out) | 0 | 0 |
+| `/setup` (claimed → `/login`) | 0 | 0 |
+| **total serious/critical** | **18** | **0** |
+
+(The graph count varies 4–7 between runs: the node list is paginated and the
+speaker filter changes which `verified` badges page one carries.)
+
+What the before-run's 18 nodes were, and the fixes in `web/src`:
+
+- 11× links/badges rendering at `--accent`×0.7 (`#6d9af1`, 2.78:1) or `--ok`×0.7
+  (`#60a37e`, 2.98:1): `.muted { opacity: 0.7 }` faded the accent links and the
+  `badge-published` badges that sit inside `.muted` paragraphs (library card
+  slug, the overview/dialogue/characters page headers, the voices back link).
+  Fix: `.muted` now uses a real color token `--muted: light-dark(#4b5058,
+  #aab1bc)` (≥8:1 on `--bg` in both themes) instead of opacity — the links and
+  badges inside keep their own colors.
+- 5× `.badge-draft` at `--warn` `#a2740b` (4.16:1 on white): the voices page's
+  per-character status badges. Fix: `--warn: light-dark(#806000, #d9a514)`
+  (5.8:1 light / 8.1:1 dark). `--ok` and `--danger` got the same treatment
+  (`light-dark(#1c7c46, #4ade80)`, `light-dark(#c0392b, #f87171)`) because they
+  double as badge text and fail 4.5:1 on the dark `--bg`.
+- 4–7× graph attribution badges at hard-coded `#059669` (3.36–3.76:1): now
+  `var(--ok)`; `.attr-badge.inferred` and the graph speaker/selected-row colors
+  were de-hardcoded the same way (`light-dark(#5b6470, #9ca3af)` — the light
+  value must also hold 4.5:1 on the selected row's `#eef2ff`, `var(--muted)`,
+  selected row `light-dark(#eef2ff, #1e2430)`).
+- Latent (not in the walk's states, fixed the same pass): the regions canvas
+  placeholder `#9ca3af` (2.54:1 on its hard-coded `#111` canvas) → `#aab1bc`
+  (8.7:1, both themes — the canvas is dark in both).
+
+The two pages whose back links had no testid (noted here, added this pass):
+`/games/:id/characters` carries `characters-back-link` on its Overview link,
+and `/games/:id/regions` gained a back link with `regions-back-link` (the page
+previously had none — the curation walk used the browser history).

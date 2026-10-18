@@ -14,12 +14,20 @@
   color-scheme: light dark;
   --bg: light-dark(#fff, #14161a);
   --fg: light-dark(#15171b, #e8eaee);
+  /* Secondary text: a real color, not an opacity — opacity would also fade the
+     accent/ok links and badges that sit inside `.muted` paragraphs, and
+     #2f6feb/#1c7c46 at 0.7 alpha are 2.78:1/2.98:1 on white (AGENTS.md rule 9,
+     WCAG 1.4.3). ≥4.5:1 against --bg in both themes. */
+  --muted: light-dark(#4b5058, #aab1bc);
   --line: color-mix(in srgb, currentColor 20%, transparent);
   --fill: color-mix(in srgb, currentColor 6%, transparent);
   --accent: #2f6feb;
-  --danger: #c0392b;
-  --warn: #a2740b;
-  --ok: #1c7c46;
+  /* Warn/ok/danger double as text (badges), so each theme gets a value that is
+     ≥4.5:1 against --bg at 0.7–0.9rem normal weight: light values are the
+     darker side, dark values the lighter side. */
+  --danger: light-dark(#c0392b, #f87171);
+  --warn: light-dark(#806000, #d9a514);
+  --ok: light-dark(#1c7c46, #4ade80);
   --space-1: 0.25rem;
   --space-2: 0.5rem;
   --space-3: 0.75rem;
@@ -182,7 +190,7 @@ dd {
 }
 
 .muted {
-  opacity: 0.7;
+  color: var(--muted);
 }
 
 .error {
@@ -1101,7 +1109,9 @@ pre.muted {
   overflow: hidden;
 }
 .graph-row-selected {
-  background: #eef2ff;
+  /* light-dark: the selected row must keep the row text and the attribution
+     badge ≥4.5:1 in both themes. */
+  background: light-dark(#eef2ff, #1e2430);
 }
 .graph-row-text {
   flex: 1;
@@ -1110,7 +1120,7 @@ pre.muted {
   white-space: nowrap;
 }
 .graph-row-speaker {
-  color: #555;
+  color: var(--muted);
 }
 .kind-badge,
 .attr-badge {
@@ -1120,12 +1130,15 @@ pre.muted {
   border: 1px solid #ccc;
 }
 .attr-badge.verified {
-  border-color: #059669;
-  color: #059669;
+  border-color: var(--ok);
+  color: var(--ok);
 }
 .attr-badge.inferred {
-  border-color: #6b7280;
-  color: #6b7280;
+  /* The badge text must hold 4.5:1 on both the page background and the
+     selected row (#eef2ff), so the light value is darker than a plain
+     mid-gray; the dark theme keeps the lighter side. */
+  border-color: light-dark(#5b6470, #9ca3af);
+  color: light-dark(#5b6470, #9ca3af);
 }
 
 /* ── OCR regions (m5) ────────────────────────────────────────────────── */
@@ -1162,7 +1175,9 @@ pre.muted {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #9ca3af;
+  /* The placeholder sits on the canvas's hardcoded #111 in both themes, so it
+     takes the light side of the muted pair, not the theme-following token. */
+  color: #aab1bc;
   font-family: monospace;
   pointer-events: none;
 }

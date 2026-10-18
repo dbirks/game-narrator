@@ -48,4 +48,8 @@ export const ports = {
    *  (route-coverage.spec.ts): a fresh appliance for the first-run →
    *  claimed → unauthenticated guard matrix. */
   routes: 18107,
+  /** the packaged binary the accessibility (axe) walk drives (a11y.spec.ts):
+   *  a fresh appliance, claimed and seeded with the synthetic game so every
+   *  route is visited in the state the other specs establish. */
+  a11y: 18108,
 } as const;

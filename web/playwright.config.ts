@@ -34,6 +34,7 @@ const correctionsUrl = `http://127.0.0.1:${ports.corrections}`;
 const sseUrl = `http://127.0.0.1:${ports.sse}`;
 const curationUrl = `http://127.0.0.1:${ports.curation}`;
 const routesUrl = `http://127.0.0.1:${ports.routes}`;
+const a11yUrl = `http://127.0.0.1:${ports.a11y}`;
 const embeddedBinary = resolve(import.meta.dirname, "..", "bin", "game-narrator");
 // The replay allowlist for the inspector's server: the repo's testdata, named
 // explicitly (ADR-0024 "replay allowlist") rather than relying on the
@@ -188,6 +189,16 @@ export default defineConfig({
       name: "routes",
       testMatch: /route-coverage\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: routesUrl },
+    },
+    {
+      // The accessibility walk (AGENTS.md rule 9: "capture traces/screenshots
+      // and accessibility results"): axe-core over every route in
+      // docs/status/ui-coverage.md, on a fresh packaged binary that the spec
+      // claims and seeds with the synthetic game (no model is needed — no
+      // session, audition or preview runs in this walk).
+      name: "a11y",
+      testMatch: /a11y\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: a11yUrl },
     },
   ],
   webServer: [
@@ -401,6 +412,18 @@ export default defineConfig({
       command: `node web/e2e/serve.mjs routes 127.0.0.1:${ports.routes} ${embeddedBinary} serve`,
       cwd: "..",
       url: `${routesUrl}/api/v1/health/live`,
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The accessibility walk on the packaged binary: a fresh appliance the
+      // spec claims and seeds through the UI; no env is needed because the
+      // walk never runs a session, an audition or a preview.
+      command: `node web/e2e/serve.mjs a11y 127.0.0.1:${ports.a11y} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${a11yUrl}/api/v1/health/live`,
       reuseExistingServer: false,
       timeout: 60_000,
       stdout: "ignore",
