@@ -50,6 +50,7 @@ const (
 const maxDropRate = 0.10
 
 func TestHWCaptureDevice(t *testing.T) {
+	hwGate(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*grabWindow+30*time.Second)
 	defer cancel()
 

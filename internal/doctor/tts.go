@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -138,27 +139,43 @@ func (r *runner) checkVoiceClone(ctx context.Context, role providers.Role, cfg p
 	registryURL, usedFallback := r.registryURL()
 	var voice string
 	var listed int
+	// noRegisteredVoice marks the probe as having no registered voice to
+	// try: with a registry URL the instance listed zero voices, without one
+	// the probe speaks the built-in "default" which a Base checkpoint only
+	// resolves when the runtime has pushed a voice to the instance.
+	noRegisteredVoice := false
 	if registryURL != "" {
 		names, err := probe.ListVoices(ctx, cfg, registryURL)
 		if err != nil {
 			return roleFailure(role, cfg, "voice registry listing", err)
 		}
 		if len(names) == 0 {
-			return Check{
-				Status:  StatusFail,
-				Summary: fmt.Sprintf("%s: the registry reports no voices for role %s", providers.KindVoiceMissing, role),
-				Detail:  "the Base checkpoint cannot speak; nothing to probe",
-				Remedy:  "register an approved voice revision or load built-in voices on the instance",
-			}
+			// Fresh install: the instance holds no voice yet. The Base
+			// checkpoint cannot speak without one, so this is the expected
+			// "nothing is configured for this component — not a fault"
+			// state (docs/spec/13), not a broken voice.
+			return noRegisteredVoiceCheck(role, cfg, "the voice registry lists no voices yet")
 		}
 		listed = len(names)
 		voice = pickProbeVoice(names)
 	} else {
 		voice = defaultProbeVoice
+		noRegisteredVoice = true
 	}
 
 	a, err := probe.Generate(ctx, cfg, tts.GenerateRequest{Text: voiceCloneProbeText, Voice: voice})
 	if err != nil {
+		// The Base checkpoint reports an unknown voice as voice_missing —
+		// the "requires 'ref_audio' or 'speaker_embedding'" 400 when the
+		// instance holds no embedding for the name. With no registered voice
+		// to try, that is the fresh-install state the first device run hit:
+		// NOT CONFIGURED, not a FAIL. Any other kind, or a voice_missing on
+		// a voice the registry actually listed (a real synthesis failure
+		// for an existing registered voice), stays FAIL.
+		var pe *providers.Error
+		if errors.As(err, &pe) && pe.Kind == providers.KindVoiceMissing && noRegisteredVoice {
+			return noRegisteredVoiceCheck(role, cfg, safeText(err.Error(), cfg.Token()))
+		}
 		c := roleFailure(role, cfg, "voice synthesis probe", err)
 		if registryURL == "" {
 			c.Remedy = c.Remedy + "; built-in voices may be absent on a Base checkpoint — set " +
@@ -190,6 +207,23 @@ func (r *runner) checkVoiceClone(ctx context.Context, role providers.Role, cfg p
 		detail += "; inline ref_audio not probed"
 	}
 	return Check{Status: StatusOK, Summary: summary, Detail: detail}
+}
+
+// noRegisteredVoiceCheck renders the expected fresh-install state of the
+// voice_clone role: the Base checkpoint has no voice to speak with yet.
+// evidence, when non-empty, is the probe's own failure line (the gateway's
+// 400 saying the name resolves to no stored embedding), already redacted.
+func noRegisteredVoiceCheck(role providers.Role, cfg providers.RoleConfig, evidence string) Check {
+	detail := "model " + cfg.Model + ": the Base checkpoint cannot speak without a registered voice; a fresh install is expected to report this"
+	if evidence != "" {
+		detail += "; probe evidence: " + evidence
+	}
+	return Check{
+		Status:  StatusNotConfigured,
+		Summary: "no registered voice yet; register one from the Voices page",
+		Detail:  detail,
+		Remedy:  "register a voice from the Voices page (or load built-in voices on the instance), then re-run doctor",
+	}
 }
 
 // pickProbeVoice orders the listing for the probe: names from our own

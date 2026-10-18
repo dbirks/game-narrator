@@ -161,7 +161,9 @@ func TestDecisionRoleFailsWithBadSchema(t *testing.T) {
 }
 
 // TestDecisionRoleTimeoutBoundsTheProbe: a slow gateway must not hold the
-// report past the check budget; the row says timeout.
+// report past the check budget; the row says timeout. The role's production
+// timeout is pinned small too, because the role probe budget is the larger of
+// ModelTimeout and the production allowance (roleProbeBudget).
 func TestDecisionRoleTimeoutBoundsTheProbe(t *testing.T) {
 	stub := newSystemOneStub(t, http.StatusOK, validDecisionBody)
 	stub.delay = 400 * time.Millisecond
@@ -170,6 +172,7 @@ func TestDecisionRoleTimeoutBoundsTheProbe(t *testing.T) {
 	h.withEnv("GAME_NARRATOR_GATEWAY_URL", stub.url())
 	h.withEnv("GAME_NARRATOR_GATEWAY_TOKEN", "t")
 	h.withEnv("GAME_NARRATOR_ROLE_DECISION_MODEL", decisionModel)
+	h.withEnv("GAME_NARRATOR_ROLE_DECISION_TIMEOUT", "50ms")
 
 	c := h.check(h.run(), "providers.decision")
 	mustStatus(t, c, StatusFail)

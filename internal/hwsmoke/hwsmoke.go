@@ -17,9 +17,12 @@
 //     (internal/vision/ocr) over the controlled textbox image and bound the
 //     character error rate.
 //   - TestHWResourceBudget — RAM/CPU/temperature/storage preflight plus a
-//     60 s run of the built serve binary; on the UNO Q profile
-//     (arm64, < 5 GB RAM) the serve RSS is asserted against the documented
-//     budget in docs/manuals/13-uno-q-hardware-smoke.md.
+//     60 s run of the serve binary: the installed binary when one is
+//     available (GAME_NARRATOR_BINARY, else game-narrator on PATH — the
+//     appliance's .deb install), a build from the module root otherwise
+//     (dev host); on the UNO Q profile (arm64, < 5 GB RAM) the serve RSS is
+//     asserted against the documented budget in
+//     docs/manuals/13-uno-q-hardware-smoke.md.
 //   - TestHWPlatform — kernel/distro/arch report; the "is this the UNO Q
 //     target" verdict is NOT RUN-explained on any other profile.
 //
@@ -36,7 +39,17 @@
 // packages — it adds no app behaviour. It runs on whatever host
 // `make test-hardware` is invoked on (the Arch dev host, the single-node
 // box, or the UNO Q itself): docs/spec/10 preflight is a discovery
-// procedure, not a test that only makes sense on one machine.
+// procedure, not a test that only makes sense on one machine. On the UNO Q
+// the gate is run by scripts/hw/run-on-device.sh, which cross-compiles this
+// package's test binary, copies it to the appliance's /tmp and runs it
+// there with the service environment loaded (docs/manuals/13).
+//
+// CI rule: TestHW* never runs inside a `go test ./...` sweep. Every test
+// calls hwGate first and skips as NOT RUN unless GAME_NARRATOR_HW_SMOKE=1
+// is set; the two sanctioned runners (the Makefile test-hardware target and
+// scripts/hw/run-on-device.sh) both set it. The un-gated unit tests in this
+// package (the thermal-conversion and serve-binary-resolution tables) keep
+// running in the sweep: they are host-agnostic and cheap.
 package hwsmoke
 
 import (
@@ -68,6 +81,19 @@ const (
 	// EnvAudioDevice is the app's named PipeWire sink for playback. Unset
 	// means the first sink the host enumerates.
 	EnvAudioDevice = "GAME_NARRATOR_AUDIO_DEVICE"
+	// EnvBinary names the serve binary the resource-budget session runs.
+	// Unset: the game-narrator binary on PATH (the appliance's .deb
+	// install), else a build from the module root (dev host).
+	EnvBinary = "GAME_NARRATOR_BINARY"
+	// EnvSmokeGate must be exactly "1" for any TestHW* to run at all.
+	// Absent or any other value: every hardware smoke test skips as
+	// "NOT RUN: hardware smoke runs via make test-hardware /
+	// scripts/hw/run-on-device.sh" so `go test ./...` (and CI's
+	// go test -race ./...) never drives real capture hardware, real
+	// Tesseract or a 60 s serve session. The Makefile test-hardware
+	// target and scripts/hw/run-on-device.sh are the two sanctioned
+	// runners and both set it.
+	EnvSmokeGate = "GAME_NARRATOR_HW_SMOKE"
 )
 
 // serveRSSBudgetMiB is the documented serve-process RSS budget the UNO Q

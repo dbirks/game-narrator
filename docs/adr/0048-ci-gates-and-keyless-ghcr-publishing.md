@@ -56,8 +56,14 @@ self-verify), `goreleaser check`, `actionlint`, `make release-snapshot`
      `GN_DOCKER_REPO=ghcr.io/dbirks/game-narrator` (per-arch images built
      locally; snapshot never pushes) → `scripts/release/scan-artifacts.sh`
      over dist **and both per-arch image layers** (a failure pushes nothing)
-     → push per-arch images + multi-arch manifests tagged `edge` and
-     `sha-<short>` → `cosign sign --yes ghcr.io/...@<digest>` +
+     → push the per-arch images → create the multi-arch manifest tags
+     `edge` and `sha-<short>` registry-side with
+     `docker buildx imagetools create` (a manifest list can only reference
+     images already present in a registry — `docker manifest create`/`push`
+     on local-only per-arch images fails, which is why the pre-push local
+     manifest step was removed; run 39087325043, commit f3da74f) →
+     `cosign sign --yes ghcr.io/...@<digest>` (digest resolved via
+     `docker buildx imagetools inspect --format '{{json .Manifest}}'`) +
      `cosign attest --type spdxjson` (predicate: the goreleaser/syft SBOM of
      the amd64 archive) → `cosign verify` self-check against the publish.yml
      certificate identity.

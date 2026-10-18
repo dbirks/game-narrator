@@ -284,6 +284,14 @@ func normalizeText(b []byte) string {
 // (docs/spec/10 "Hardware discovery and preflight"), and asks v4l2-ctl for the
 // names it reports. An absent capture card is a normal state for a dev host, so
 // it is NOT CONFIGURED, not a failure.
+//
+// The enumeration is capability-filtered: the kernel exposes memory-to-memory
+// codec nodes as /dev/video* too (the UNO Q's Qualcomm venus decoder owns
+// video0/video1), and counting those as capture nodes reports a capture card
+// the appliance does not have. Only a node whose VIDIOC_QUERYCAP capabilities
+// include VIDEO_CAPTURE and exclude every memory-to-memory flag counts
+// (parseV4L2Capabilities); the rest are listed as ignored with their driver
+// name so the operator sees why a node is present but not usable.
 func (r *runner) checkCaptureDevices(ctx context.Context) Check {
 	devices, err := r.opts.Glob("/dev/video*")
 	if err != nil {
@@ -308,7 +316,6 @@ func (r *runner) checkCaptureDevices(ctx context.Context) Check {
 			}
 		}
 	}
-	summary := fmt.Sprintf("%d capture node(s): %s", len(devices), strings.Join(names, ", "))
 
 	if len(denied) == len(devices) {
 		return Check{
@@ -319,28 +326,82 @@ func (r *runner) checkCaptureDevices(ctx context.Context) Check {
 		}
 	}
 	if _, lookErr := r.opts.LookPath("v4l2-ctl"); lookErr != nil {
+		summary := fmt.Sprintf("%d video node(s): %s", len(devices), strings.Join(names, ", "))
 		return Check{
 			Status:  StatusDegraded,
-			Summary: summary + " — formats not enumerated because v4l2-ctl is not installed",
+			Summary: summary + " — capabilities not enumerated because v4l2-ctl is not installed",
 			Detail:  lookErr.Error(),
 			Remedy:  bootstrapRemedy + " (pacman -S v4l-utils)",
 		}
 	}
 
-	res := r.opts.Exec(ctx, "v4l2-ctl", "--list-devices")
-	if res.Err != nil {
+	// Per-node capability query (VIDIOC_QUERYCAP through v4l2-ctl --info):
+	// a node that cannot be read is kept in the count — it cannot be proven
+	// non-capture — and the failure is recorded in the detail.
+	var (
+		capable []string
+		ignored []string
+		unread  []string
+	)
+	for _, d := range devices {
+		base := filepath.Base(d)
+		res := r.opts.Exec(ctx, "v4l2-ctl", "-d", d, "--info")
+		if res.Err != nil {
+			capable = append(capable, base)
+			unread = append(unread, base)
+			continue
+		}
+		capture, m2m, driver := parseV4L2Capabilities(res.Stdout)
+		if capture && !m2m {
+			capable = append(capable, base)
+			continue
+		}
+		why := "memory-to-memory codec node"
+		if capture {
+			why = "video capture but also memory-to-memory"
+		}
+		ignored = append(ignored, fmt.Sprintf("%s (%s; %s)", base, orDriver(driver), why))
+	}
+
+	if len(capable) == 0 {
 		return Check{
-			Status:  StatusDegraded,
-			Summary: summary + " — v4l2-ctl could not enumerate devices",
-			Detail:  oneLine(fmt.Sprintf("%v: %s", res.Err, res.Stderr), 300),
-			Remedy:  "check udev permissions for the video group",
+			Status:  StatusNotConfigured,
+			Summary: "no UVC capture device attached",
+			Detail:  fmt.Sprintf("%d node(s) present but ignored, not capture-capable: %s", len(ignored), strings.Join(ignored, ", ")) + deniedNote(denied),
+			Remedy:  "attach the USB capture card (a UVC HDMI capture dongle, docs/spec/10 physical connection), then re-run doctor; the listed nodes are codec (memory-to-memory) nodes, not capture cards",
 		}
 	}
-	detail := oneLine(string(res.Stdout), 400)
+
+	summary := fmt.Sprintf("%d capture node(s): %s", len(capable), strings.Join(capable, ", "))
+	detail := "v4l2-ctl --info capabilities: " + strings.Join(capable, ", ") + " capture-capable"
+	if len(ignored) > 0 {
+		detail += "; ignored as not capture-capable: " + strings.Join(ignored, ", ")
+	}
+	if len(unread) > 0 {
+		detail += "; capabilities unreadable: " + strings.Join(unread, ", ")
+	}
 	if len(denied) > 0 {
 		detail = "not openable by this user: " + strings.Join(denied, ", ") + "; " + detail
 	}
-	return Check{Status: StatusOK, Summary: summary, Detail: "v4l2-ctl --list-devices: " + detail}
+	return Check{Status: StatusOK, Summary: summary, Detail: oneLine(detail, 400)}
+}
+
+// deniedNote appends the not-openable note to a detail line when present.
+func deniedNote(denied []string) string {
+	if len(denied) == 0 {
+		return ""
+	}
+	return "; not openable by this user: " + strings.Join(denied, ", ")
+}
+
+// orDriver renders the driver identity for the ignored-node list: the name
+// v4l2-ctl reported, or "unknown driver" when the --info output carried no
+// identity line (older v4l-utils versions print the section differently).
+func orDriver(driver string) string {
+	if strings.TrimSpace(driver) == "" {
+		return "unknown driver"
+	}
+	return driver
 }
 
 // --- audio -----------------------------------------------------------------

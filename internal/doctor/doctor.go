@@ -156,7 +156,12 @@ type Options struct {
 	// meaning on a production UNO Q install.
 	Dev bool
 
-	// Timeout and ModelTimeout bound individual checks.
+	// Timeout and ModelTimeout bound individual checks. ModelTimeout is the
+	// default bound for the model-role checks; a role whose production
+	// per-request timeout implies a longer total probe time gets that larger
+	// budget instead, capped at maxRoleProbeBudget (roleProbeBudget in
+	// providers.go) — so a slow-but-healthy reasoning role over Wi-Fi is not
+	// killed by a budget smaller than the role's own production allowance.
 	Timeout      time.Duration
 	ModelTimeout time.Duration
 

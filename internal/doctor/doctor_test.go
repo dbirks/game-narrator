@@ -620,6 +620,17 @@ func TestControlledImageIsReadableByRealTesseract(t *testing.T) {
 
 // --- capture ---------------------------------------------------------------
 
+// v4l2Info reads one of the recorded v4l2-ctl --info fixtures (the venus
+// file is the verbatim appliance output, v4l-utils 1.30.1).
+func v4l2Info(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatalf("fixture %s: %v", name, err)
+	}
+	return string(b)
+}
+
 func TestCaptureWithoutDevicesIsNotConfigured(t *testing.T) {
 	h := newFakeHost(t)
 	c := h.check(h.run(), "capture.devices")
@@ -632,13 +643,78 @@ func TestCaptureWithoutDevicesIsNotConfigured(t *testing.T) {
 func TestCaptureWithDevicesAndV4L2IsOK(t *testing.T) {
 	h := newFakeHost(t)
 	h.withDevices("/dev/video0", "/dev/video1")
+	h.exec("v4l2-ctl -d /dev/video0 --info", v4l2Info(t, "v4l2-uvc-info.txt"))
+	h.exec("v4l2-ctl -d /dev/video1 --info", v4l2Info(t, "v4l2-uvc-info.txt"))
 	c := h.check(h.run(), "capture.devices")
 	mustStatus(t, c, StatusOK)
 	if !strings.Contains(c.Summary, "2 capture node(s)") {
 		t.Fatalf("summary = %q", c.Summary)
 	}
-	if !h.calledWith("v4l2-ctl --list-devices") {
-		t.Fatalf("v4l2-ctl --list-devices was never run: %v", h.invoked())
+	if !h.calledWith("v4l2-ctl -d /dev/video0 --info") || !h.calledWith("v4l2-ctl -d /dev/video1 --info") {
+		t.Fatalf("per-node --info was never run: %v", h.invoked())
+	}
+}
+
+// TestCaptureIgnoresTheVenusCodecNodesIs the first-device-run bug: the UNO Q
+// exposes the Qualcomm venus decoder as /dev/video0 and /dev/video1, and the
+// old check counted them as "2 capture node(s)". They are memory-to-memory
+// nodes (VIDIOC_QUERYCAP has no VIDEO_CAPTURE), so the check must report no
+// capture device and name the driver of the ignored nodes.
+func TestCaptureIgnoresTheVenusCodecNodes(t *testing.T) {
+	h := newFakeHost(t)
+	h.withDevices("/dev/video0", "/dev/video1")
+	venus := v4l2Info(t, "v4l2-venus-info.txt")
+	h.exec("v4l2-ctl -d /dev/video0 --info", venus)
+	h.exec("v4l2-ctl -d /dev/video1 --info", venus)
+	c := h.check(h.run(), "capture.devices")
+	mustStatus(t, c, StatusNotConfigured)
+	if c.Summary != "no UVC capture device attached" {
+		t.Fatalf("summary = %q, want the no-capture-device wording", c.Summary)
+	}
+	for _, node := range []string{"video0", "video1"} {
+		if !strings.Contains(c.Detail, node) || !strings.Contains(c.Detail, "Qualcomm Venus video decoder") {
+			t.Fatalf("detail = %q, want %s listed as ignored with its driver name", c.Detail, node)
+		}
+	}
+	if !strings.Contains(c.Remedy, "capture card") {
+		t.Fatalf("remedy = %q, want the attach instruction", c.Remedy)
+	}
+}
+
+// TestCaptureMentionsIgnoredNodesAlongsideCapableOnes: a real UVC card and
+// a venus codec node side by side — the card is the one node counted, and
+// the codec node is recorded as ignored with its driver so the operator can
+// see why /dev/video1 is not the capture card.
+func TestCaptureMentionsIgnoredNodesAlongsideCapableOnes(t *testing.T) {
+	h := newFakeHost(t)
+	h.withDevices("/dev/video0", "/dev/video1")
+	h.exec("v4l2-ctl -d /dev/video0 --info", v4l2Info(t, "v4l2-uvc-info.txt"))
+	h.exec("v4l2-ctl -d /dev/video1 --info", v4l2Info(t, "v4l2-venus-info.txt"))
+	c := h.check(h.run(), "capture.devices")
+	mustStatus(t, c, StatusOK)
+	if c.Summary != "1 capture node(s): video0" {
+		t.Fatalf("summary = %q, want only the capture-capable node counted", c.Summary)
+	}
+	if !strings.Contains(c.Detail, "video1") || !strings.Contains(c.Detail, "Qualcomm Venus video decoder") {
+		t.Fatalf("detail = %q, want the ignored node with its driver", c.Detail)
+	}
+}
+
+// TestCaptureKeepsAnUnreadableNodeInCount: a node whose --info query fails
+// (permission, a wedged node) cannot be proven non-capture, so it stays in
+// the count and the failure is recorded — hiding a real capture card behind
+// a read error is worse than an extra node in the list.
+func TestCaptureKeepsAnUnreadableNodeInCount(t *testing.T) {
+	h := newFakeHost(t)
+	h.withDevices("/dev/video0")
+	h.execFail("v4l2-ctl -d /dev/video0 --info", "unable to open device: Permission denied")
+	c := h.check(h.run(), "capture.devices")
+	mustStatus(t, c, StatusOK)
+	if !strings.Contains(c.Summary, "1 capture node(s): video0") {
+		t.Fatalf("summary = %q, want the unreadable node kept in the count", c.Summary)
+	}
+	if !strings.Contains(c.Detail, "unreadable") {
+		t.Fatalf("detail = %q, want the read failure recorded", c.Detail)
 	}
 }
 
@@ -661,6 +737,45 @@ func TestCaptureDeviceDeniedToThisUserIsDegraded(t *testing.T) {
 	mustStatus(t, c, StatusDegraded)
 	if !strings.Contains(c.Remedy, "video group") {
 		t.Fatalf("remedy = %q, want the group-membership fix", c.Remedy)
+	}
+}
+
+// TestParseV4L2Capabilities pins the flag parsing against the recorded
+// fixtures: the venus node is M2M-only, the UVC card is plain capture, and
+// the identity lines resolve to the card name.
+func TestParseV4L2Capabilities(t *testing.T) {
+	cases := []struct {
+		name           string
+		fixture        string
+		wantCapture    bool
+		wantM2M        bool
+		wantDriverPart string
+	}{
+		{"venus codec node (device recording)", "v4l2-venus-info.txt", false, true, "Qualcomm Venus video decoder"},
+		{"uvc capture card", "v4l2-uvc-info.txt", true, false, "HD Webcam"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			capture, m2m, driver := parseV4L2Capabilities([]byte(v4l2Info(t, tc.fixture)))
+			if capture != tc.wantCapture || m2m != tc.wantM2M {
+				t.Fatalf("capture=%v m2m=%v, want %v/%v", capture, m2m, tc.wantCapture, tc.wantM2M)
+			}
+			if !strings.Contains(driver, tc.wantDriverPart) {
+				t.Fatalf("driver = %q, want the card identity %q", driver, tc.wantDriverPart)
+			}
+		})
+	}
+
+	// A node advertising both a plain capture flag and an M2M flag is not a
+	// clean capture source (the finding: VIDEO_CAPTURE and not M2M).
+	hybrid := "Capabilities     : 0x84204001\n\tVideo Capture\n\tVideo Memory-to-Memory Multiplanar\n\tStreaming\n"
+	if capture, m2m, _ := parseV4L2Capabilities([]byte(hybrid)); !capture || !m2m {
+		t.Fatalf("hybrid node: capture=%v m2m=%v, want both flags seen", capture, m2m)
+	}
+	// No capability list at all: nothing is provable, the caller keeps the
+	// node and records the failure.
+	if capture, m2m, driver := parseV4L2Capabilities([]byte("")); capture || m2m || driver != "" {
+		t.Fatalf("empty output parsed as %v/%v/%q, want all empty", capture, m2m, driver)
 	}
 }
 

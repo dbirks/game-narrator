@@ -48,7 +48,12 @@ const controlledText = "NARRATOR 42"
 const maxCER = 0.05
 
 func TestHWOCRControlledImage(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	hwGate(t)
+	// The budgets scale with ocrTimeoutScale under -race (race_on_test.go):
+	// on a 2-core race runner the same controlled read needs several times
+	// the uninstrumented wall clock, and CI run 39090252213 measured the
+	// cost of not scaling ("engine timed out").
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second*ocrTimeoutScale)
 	defer cancel()
 
 	img, err := decodeControlledImage()
@@ -57,10 +62,12 @@ func TestHWOCRControlledImage(t *testing.T) {
 	}
 	t.Logf("controlled image: %dx%d, text %q", img.Bounds().Dx(), img.Bounds().Dy(), controlledText)
 
-	// The real path: the zero-value Tesseract config is the docs/spec/05
-	// recommendation (eng, PSM 6, LSTM default) — the same defaults the
-	// pipeline runs in production.
-	engine := ocr.Tesseract{Lang: "eng"}
+	// The real path: the Tesseract config is the docs/spec/05 recommendation
+	// (eng, PSM 6, LSTM default) — the same defaults the pipeline runs in
+	// production — with the engine's own per-call deadline scaled by
+	// ocrTimeoutScale under -race (the context above is the outer bound; the
+	// engine's Timeout is the hard kill that CI run 39090252213 hit).
+	engine := ocr.Tesseract{Lang: "eng", Timeout: ocr.DefaultTimeout * ocrTimeoutScale}
 	res, err := engine.Recognize(ctx, img)
 	if err != nil {
 		if errors.Is(err, ocr.ErrEngineUnavailable) {

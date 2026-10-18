@@ -45,7 +45,7 @@ func (r *runner) checkRoles(ctx context.Context) {
 
 	for _, role := range providers.AllRoles {
 		role, cfg := role, roles[role]
-		budget := r.opts.ModelTimeout
+		budget := roleProbeBudget(r.opts.ModelTimeout, cfg)
 		if role == providers.RoleDecision && decisionProbeTimeout < budget {
 			// The System One probe gets its own (shorter) budget: a cold gateway
 			// can take ~13 s (ADR-0021), but a wedged one must not hold the
@@ -56,6 +56,58 @@ func (r *runner) checkRoles(ctx context.Context) {
 			return r.checkRole(ctx, role, cfg)
 		})
 	}
+}
+
+// maxRoleProbeBudget caps the role probe budget. The budget derives from the
+// role's production per-request timeout (roleProbeBudget), but a role
+// configured with a pathological timeout must not hang a diagnostic the user
+// runs deliberately: five minutes for one role row is the ceiling, and a
+// probe that needs more has a network or model problem the operator should
+// see, not wait out.
+const maxRoleProbeBudget = 5 * time.Minute
+
+// roleProbeRequests counts the model requests the role probe sends for one
+// check, by protocol: the chat roles send the pong completion plus the two
+// capability probe completions (JSON mode, tool_choice=required), and the
+// vision protocol adds the image probe; System One is the single decision
+// probe; the voice roles send at most two TTS calls (voice_clone: synthesis
+// plus the reference negotiation; voice_design: one design call). The
+// /models and voice-registry listings are single fast GETs the base budget
+// already covers.
+func roleProbeRequests(cfg providers.RoleConfig) int {
+	switch cfg.Protocol {
+	case providers.ProtocolOpenAIChatVision:
+		return 4
+	case providers.ProtocolSystemOne:
+		return 1
+	case providers.ProtocolVLLMOmniSpeech:
+		return 2
+	default: // openai_chat and any future chat-like protocol
+		return 3
+	}
+}
+
+// roleProbeBudget is the context deadline of one role probe. The probe sends
+// several model requests (roleProbeRequests) and each may legitimately take
+// as long as the role's production per-request timeout — over Wi-Fi, at the
+// role's configured reasoning effort, a low-effort completion is exactly
+// what the production loop is allowed to wait for. A shared budget of
+// ModelTimeout alone therefore killed a healthy-but-slow agent_reasoning
+// probe while fast_reasoning (effort none, no thinking tokens) answered in
+// 5 s: the first device run reported "providers.agent_reasoning: timeout"
+// on a working gateway. The budget is the larger of ModelTimeout and the
+// probe's total production allowance (requests × per-request timeout),
+// capped at maxRoleProbeBudget. This bounds the diagnostic only: the
+// production role timeouts are untouched.
+func roleProbeBudget(modelTimeout time.Duration, cfg providers.RoleConfig) time.Duration {
+	b := modelTimeout
+	if allowance := time.Duration(roleProbeRequests(cfg)) * cfg.Timeout; allowance > b {
+		b = allowance
+	}
+	if b > maxRoleProbeBudget {
+		b = maxRoleProbeBudget
+	}
+	return b
 }
 
 func (r *runner) checkRole(ctx context.Context, role providers.Role, cfg providers.RoleConfig) Check {

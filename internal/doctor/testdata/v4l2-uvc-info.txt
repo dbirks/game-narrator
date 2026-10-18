@@ -1,0 +1,17 @@
+Driver Info:
+	Driver name      : uvcvideo
+	Card type        : HD Webcam
+	Bus info         : usb-0000:02:00.0-4
+	Driver version   : 6.12.27
+	Media controller:
+		/dev/media0
+	Capabilities     : 0x84200001
+		Video Capture
+		Streaming
+		Extended Pix Format
+		Device Capabilities
+		Read/Write
+	Device Caps      : 0x04200001
+		Video Capture
+		Streaming
+		Extended Pix Format

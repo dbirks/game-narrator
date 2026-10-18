@@ -21,6 +21,7 @@ import (
 )
 
 func TestHWPlatform(t *testing.T) {
+	hwGate(t)
 	kernel := kernelRelease()
 	osrel := parseOSRelease()
 	arch := runtime.GOARCH + "/" + runtime.GOOS

@@ -176,8 +176,12 @@ test-models:
 ## Audible playback requires GAME_NARRATOR_HW_AUDIO_CONSENT=1; the capture
 ## node and audio sink are chosen by GAME_NARRATOR_CAPTURE_DEVICE /
 ## GAME_NARRATOR_AUDIO_DEVICE when set. See docs/manuals/13-uno-q-hardware-smoke.md.
+## GAME_NARRATOR_HW_SMOKE=1 is the gate that lets the TestHW* tests run at
+## all: `go test ./...` (and CI's go test -race ./...) must NOT drive the
+## hardware smoke, so this target — and scripts/hw/run-on-device.sh — are
+## the only two places that set it.
 test-hardware:
-	@scripts/gates/run-go-gate.sh test-hardware -count=1 -timeout 15m ./internal/hwsmoke/... ; \
+	@GAME_NARRATOR_HW_SMOKE=1 scripts/gates/run-go-gate.sh test-hardware -count=1 -timeout 15m ./internal/hwsmoke/... ; \
 	rc=$$?; echo $$rc > artifacts/gates/test-hardware.rc ; exit $$rc
 
 ## release-snapshot: local snapshot pipeline (docs/spec/15, ADR 0033).

@@ -5,13 +5,16 @@ package hwsmoke
 // writability" and of the "Resource budgets" section ("UNO Q 4 GB must
 // remain stable …").
 //
-// Every host: the RAM/CPU/temperature/storage preflight runs, and the
-// built serve binary runs for a 60 s replay session (temp data dir, replay
-// roots pointed at the repository fixtures) while its RSS is sampled.
-// Only on the UNO Q profile — arm64 with < 5 GB RAM — is the measured RSS
-// asserted against the documented serve budget; on every other host the
-// budget assertion is NOT RUN-explained ("not the UNO Q profile") and the
-// numbers are the logged evidence.
+// Every host: the RAM/CPU/temperature/storage preflight runs, and the serve
+// binary runs for a 60 s replay session (temp data dir, replay roots at the
+// repository fixtures when the binary was built from the repo) while its
+// RSS is sampled. The binary is the installed one when available
+// (GAME_NARRATOR_BINARY, else game-narrator on PATH — the appliance's .deb
+// install) and a build from the module root on the dev host; with neither
+// the session is NOT RUN-explained. Only on the UNO Q profile — arm64 with
+// < 5 GB RAM — is the measured RSS asserted against the documented serve
+// budget; on every other host the budget assertion is NOT RUN-explained
+// ("not the UNO Q profile") and the numbers are the logged evidence.
 
 import (
 	"bytes"
@@ -41,6 +44,7 @@ const minFreeMiB = 512
 const sampleInterval = 2 * time.Second
 
 func TestHWResourceBudget(t *testing.T) {
+	hwGate(t)
 	memTotalKiB := memTotalKiBFromProc()
 	ncpu := runtime.NumCPU()
 	loads := loadAverage()
@@ -111,27 +115,19 @@ type serveSession struct {
 	bin       string
 }
 
-// runServeSession builds the binary if needed, boots it with a temp data
-// dir, samples /proc RSS for sessionDuration and stops it gracefully.
-// A process that dies before the window ends is a failure with its output
-// tail — a serve that cannot stay up cannot be budgeted.
+// runServeSession resolves the serve binary (installed, else built), boots
+// it with a temp data dir, samples /proc RSS for sessionDuration and stops
+// it gracefully. A process that dies before the window ends is a failure
+// with its output tail — a serve that cannot stay up cannot be budgeted.
 func runServeSession(t *testing.T) serveSession {
 	t.Helper()
-	root, err := moduleRoot()
-	if err != nil {
-		t.Fatalf("cannot resolve the module root: %v", err)
+	bin, replayRoot, missing := serveBinary(t)
+	if missing != "" {
+		notRun(t, missing,
+			"install the game-narrator .deb (game-narrator on PATH) or set "+EnvBinary+
+				" to the installed binary, or run this gate on a dev host with the module checkout")
 	}
-	bin := filepath.Join(t.TempDir(), "game-narrator")
-	build := exec.Command("go", "build", "-o", bin, "./cmd/game-narrator")
-	build.Dir = root
-	var buildOut bytes.Buffer
-	build.Stdout = &buildOut
-	build.Stderr = &buildOut
-	if err := build.Run(); err != nil {
-		t.Fatalf("cannot build the serve binary for the budget session: %v\n%s",
-			err, tail(buildOut.Bytes(), 2000))
-	}
-	t.Logf("budget session: binary built at %s", bin)
+	t.Logf("budget session: serve binary %s", bin)
 
 	// A free port the session listens on: nothing else may be able to hit
 	// it, and the session must not collide with a running dev server.
@@ -143,9 +139,13 @@ func runServeSession(t *testing.T) serveSession {
 	_ = ln.Close()
 
 	dataDir := t.TempDir()
-	env := append(os.Environ(),
-		"GAME_NARRATOR_REPLAY_ROOTS="+filepath.Join(root, "testdata"),
-	)
+	env := os.Environ()
+	// Replay roots only where the repo's fixtures exist with the binary
+	// (the dev-host build); the installed binary keeps the production
+	// default (none) — see serveBinary.
+	if replayRoot != "" {
+		env = append(env, "GAME_NARRATOR_REPLAY_ROOTS="+replayRoot)
+	}
 	cmd := exec.Command(bin, "serve", "--listen", addr, "--data-dir", dataDir)
 	cmd.Env = env
 	var out bytes.Buffer

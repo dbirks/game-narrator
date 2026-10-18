@@ -283,6 +283,12 @@ func TestModelTimeoutBoundsASlowGateway(t *testing.T) {
 	h.withEnv("GAME_NARRATOR_GATEWAY_URL", gw.url())
 	h.withEnv("GAME_NARRATOR_GATEWAY_TOKEN", "t")
 	h.withEnv("GAME_NARRATOR_ROLE_AGENT_REASONING_MODEL", "slow-model")
+	// The role probe budget is the larger of ModelTimeout and the role's
+	// production allowance (requests × per-request timeout, capped), so the
+	// role's production timeout is pinned small too: the deadline this test
+	// exercises is max(80ms, 3×100ms) = 300ms, and the 400 ms gateway must
+	// lose to it.
+	h.withEnv("GAME_NARRATOR_ROLE_AGENT_REASONING_TIMEOUT", "100ms")
 
 	c := h.check(h.run(), "providers.agent_reasoning")
 	mustStatus(t, c, StatusFail)
@@ -327,6 +333,151 @@ func TestRoleProbeWithoutGatewayURLIsFail(t *testing.T) {
 	mustStatus(t, c, StatusFail)
 	if !strings.Contains(c.Summary, string(providers.KindUnsupportedCapability)) {
 		t.Fatalf("summary = %q", c.Summary)
+	}
+}
+
+// TestRoleProbeBudgetCoversEveryProbeRequest pins the agent_reasoning timeout
+// fix from the first device run: the check budget must be at least the role's
+// total production allowance (probe requests × per-request timeout), so a
+// slow-but-healthy low-effort role over Wi-Fi is not killed by a shared
+// ModelTimeout that only covers one request. ModelTimeout stays the floor,
+// and the pathological case is capped.
+func TestRoleProbeBudgetCoversEveryProbeRequest(t *testing.T) {
+	mk := func(protocol providers.Protocol, reqTimeout time.Duration) providers.RoleConfig {
+		return providers.RoleConfig{Protocol: protocol, Timeout: reqTimeout}
+	}
+	cases := []struct {
+		name  string
+		model time.Duration
+		cfg   providers.RoleConfig
+		want  time.Duration
+	}{
+		{
+			name:  "agent_reasoning: the device finding (30 s per request, low effort)",
+			model: 60 * time.Second,
+			cfg:   mk(providers.ProtocolOpenAIChat, 30*time.Second),
+			want:  90 * time.Second, // 3 requests × 30 s beats the 60 s default
+		},
+		{
+			name:  "fast_reasoning: the model timeout stays the binding bound",
+			model: 60 * time.Second,
+			cfg:   mk(providers.ProtocolOpenAIChat, 10*time.Second),
+			want:  60 * time.Second, // 3 × 10 s < 60 s: unchanged
+		},
+		{
+			name:  "vision: four requests",
+			model: 60 * time.Second,
+			cfg:   mk(providers.ProtocolOpenAIChatVision, 30*time.Second),
+			want:  120 * time.Second,
+		},
+		{
+			name:  "systemone: one request, the model timeout binds",
+			model: 60 * time.Second,
+			cfg:   mk(providers.ProtocolSystemOne, 1500*time.Millisecond),
+			want:  60 * time.Second,
+		},
+		{
+			name:  "voice: two TTS requests, capped under the ceiling",
+			model: 60 * time.Second,
+			cfg:   mk(providers.ProtocolVLLMOmniSpeech, 120*time.Second),
+			want:  240 * time.Second,
+		},
+		{
+			name:  "pathological role timeout is capped at the ceiling",
+			model: 60 * time.Second,
+			cfg:   mk(providers.ProtocolOpenAIChat, 5*time.Minute),
+			want:  maxRoleProbeBudget,
+		},
+		{
+			name:  "zero role timeout falls back to the model timeout",
+			model: 60 * time.Second,
+			cfg:   mk(providers.ProtocolOpenAIChat, 0),
+			want:  60 * time.Second,
+		},
+		{
+			name:  "a long explicit model timeout stays the floor",
+			model: 2 * time.Minute,
+			cfg:   mk(providers.ProtocolOpenAIChat, 30*time.Second),
+			want:  2 * time.Minute,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := roleProbeBudget(tc.model, tc.cfg); got != tc.want {
+				t.Fatalf("roleProbeBudget(%s, %s timeout, %s protocol) = %s, want %s",
+					tc.model, tc.cfg.Timeout, tc.cfg.Protocol, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestProbeSendsTheRolesReasoningEffortAndShortPrompt proves the other half of
+// the agent_reasoning timeout finding: the probe sends the role's configured
+// reasoning effort (agent_reasoning's runtime default is low — not the
+// model's, which on reasoning deployments burns the output budget thinking)
+// and it does so with the short fixed pong prompt, on every probe request.
+func TestProbeSendsTheRolesReasoningEffortAndShortPrompt(t *testing.T) {
+	if len(chatPrompt) > 50 {
+		t.Fatalf("the chat probe prompt is not short: %q", chatPrompt)
+	}
+	gw := newGateway(t, gatewayStub{
+		models: []string{"recorded-chat-model"},
+		answer: func(string) string { return "pong" },
+	})
+	h := newFakeHost(t)
+	h.withEnv("GAME_NARRATOR_GATEWAY_URL", gw.url())
+	h.withEnv("GAME_NARRATOR_GATEWAY_TOKEN", "probe-token")
+	h.withEnv("GAME_NARRATOR_ROLE_AGENT_REASONING_MODEL", "recorded-chat-model")
+
+	c := h.check(h.run(), "providers.agent_reasoning")
+	mustStatus(t, c, StatusOK)
+
+	bodies := gw.chatBodies()
+	if len(bodies) == 0 {
+		t.Fatal("no chat request reached the gateway — nothing to prove")
+	}
+	for i, b := range bodies {
+		if !strings.Contains(b, `"reasoning_effort":"low"`) {
+			t.Fatalf("chat request %d did not send the role's configured low effort: %s", i, b)
+		}
+	}
+	// The first completion is the pong probe; the later ones are the
+	// capability probes with their own fixed prompts.
+	if !strings.Contains(bodies[0], chatPrompt) {
+		t.Fatalf("the pong probe did not send the short probe prompt: %s", bodies[0])
+	}
+}
+
+// TestProbeSendsNoEffortForRolesWithoutOne proves the flip side: a role with
+// an empty configured effort sends no reasoning_effort field at all (the
+// model's default applies), which is the documented meaning of the empty
+// value — the probe must not invent an effort the role did not configure.
+func TestProbeSendsNoEffortForRolesWithoutOne(t *testing.T) {
+	gw := newGateway(t, gatewayStub{
+		models: []string{"recorded-chat-model"},
+		answer: func(string) string { return "pong" },
+	})
+	h := newFakeHost(t)
+	h.withEnv("GAME_NARRATOR_GATEWAY_TOKEN", "probe-token")
+	// h.opts.Roles overrides LoadRoles: the role is configured with an
+	// explicitly omitted effort, so no env var is consulted.
+	h.opts.Roles = map[providers.Role]providers.RoleConfig{
+		providers.RoleAgentReasoning: {
+			Role:     providers.RoleAgentReasoning,
+			Protocol: providers.ProtocolOpenAIChat,
+			BaseURL:  gw.url(),
+			Model:    "recorded-chat-model",
+			Timeout:  10 * time.Second,
+			// ReasoningEffort left empty: "omit the field".
+		},
+	}
+
+	c := h.check(h.run(), "providers.agent_reasoning")
+	mustStatus(t, c, StatusOK)
+	for i, b := range gw.chatBodies() {
+		if strings.Contains(b, "reasoning_effort") {
+			t.Fatalf("chat request %d sent a reasoning_effort field although the role configured none: %s", i, b)
+		}
 	}
 }
 
@@ -435,6 +586,14 @@ func (g *recordedGateway) sawChat() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.chatSeen > 0
+}
+
+// bodies returns a copy of the recorded /chat/completions request bodies in
+// arrival order, for assertions on what the probe actually sent.
+func (g *recordedGateway) chatBodies() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]string(nil), g.bodies...)
 }
 
 func (g *recordedGateway) sawImage() bool {

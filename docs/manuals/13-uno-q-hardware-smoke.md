@@ -22,25 +22,61 @@ explicitly NOT VERIFIED"; AGENTS.md rule 12).
   FFmpeg, Tesseract + the English pack, PipeWire/Pulse tooling
   (`pactl`, `pw-play`, `aplay`). Missing tools are named by the NOT RUN
   lines, with the package to install.
-- The built binary is produced by the gate itself (it compiles
-  `./cmd/game-narrator` into a temp dir for the 60 s serve-session budget
-  run), so no prior `make build` is needed.
+- The serve binary the 60 s budget session runs is resolved in this order
+  (`internal/hwsmoke` `serveBinary`): `GAME_NARRATOR_BINARY` (an explicit
+  path), then `game-narrator` on `PATH` — on the appliance this is the
+  installed `.deb`'s `/usr/bin/game-narrator`, so the smoke budgets the
+  binary the appliance actually runs — then a fresh build of
+  `./cmd/game-narrator` from the module root (the dev host, where nothing
+  is installed). If none of the three is available the budget session is
+  NOT RUN with the exact reason.
+- The gate env var: `TestHW*` never runs inside a `go test ./...` sweep
+  (the CI `go test -race ./...` must not drive real capture hardware, real
+  Tesseract or a 60 s serve session). Every `TestHW*` skips as
+  "NOT RUN: hardware smoke runs via make test-hardware /
+  scripts/hw/run-on-device.sh" unless `GAME_NARRATOR_HW_SMOKE=1` is set;
+  the `test-hardware` Makefile target and `scripts/hw/run-on-device.sh` are
+  the only two places that set it. Under `-race` the real-Tesseract budgets
+  in `TestHWOCRControlledImage` are scaled ×5 (build-tagged constant), the
+  same way `internal/pipeline` does it.
 
 ## Running it
 
-On the UNO Q (Debian, arm64):
+From the dev host (the normal way for the appliance: the UNO Q has no repo
+checkout, and this is also what `make test-hardware` NOT RUN lines point to):
 
 ```sh
-sudo -u game-narrator make test-hardware   # as the service user, or any user with /dev access
+scripts/hw/run-on-device.sh arduino@10.0.0.139
 ```
 
-On any other host (dev box, single-node box) the same command runs the
-checks the host can run and NOT RUN-explains the rest — including the
-platform verdict, which only passes on Debian arm64. Exit codes: `0`
-everything ran and passed, `1` a check failed (read the FAIL line, fix,
-rerun), `2` nothing failed but at least one check was NOT RUN (the setup
-instructions are printed by the gate summariser). `artifacts/gates/
-test-hardware.{rc,xml,json}` keep the machine-readable result.
+The script cross-compiles the hwsmoke test binary for linux/arm64
+(`CGO_ENABLED=0` — it runs standalone, no module checkout needed on the
+device), copies it to the device's `/tmp` (the only place it writes), runs
+it there with `-test.v` and `GAME_NARRATOR_HW_SMOKE=1`, loads the service
+environment (`sudo -n sh -c 'set -a; . /etc/game-narrator/env; …'` when the
+file exists — the token never leaves the process environment and is never
+printed), pins the data dir to a fresh `/tmp` dir so the run never touches
+service state, and summarises the pulled-back output with the same junit
+summariser the local gate uses: `artifacts/gates/
+test-hardware-device.{xml,rc}` follow the 0/1/2 contract below. A run that
+produces no test events (dead connection, the binary could not start) is a
+failure (1), not a 0. It never touches the device's sshd, sshd_config,
+authorized_keys or network configuration, and never reinstalls the service.
+
+On a host that has the repository checked out (dev box, or a dev install on
+the appliance):
+
+```sh
+make test-hardware   # or: sudo -u game-narrator make test-hardware, any user with /dev access
+```
+
+The same command runs the checks the host can run and NOT RUN-explains the
+rest — including the platform verdict, which only passes on Debian arm64.
+Exit codes: `0` everything ran and passed, `1` a check failed (read the
+FAIL line, fix, rerun), `2` nothing failed but at least one check was NOT
+RUN (the setup instructions are printed by the gate summariser).
+`artifacts/gates/test-hardware.{rc,xml,json}` keep the machine-readable
+result.
 
 ## What each check proves
 
@@ -91,6 +127,23 @@ do not raise the bound to make the gate green.
 | `GAME_NARRATOR_CAPTURE_DEVICE` | Capture node to smoke: exact `/dev/video*` path, or the udev stable by-id/by-path symlink (by full path or base name). Unset: first capture-capable node. Set to a name the host does not have → NOT RUN with the found list. |
 | `GAME_NARRATOR_AUDIO_DEVICE` | The app's named PipeWire sink (same name the serve process uses in pipewire mode). Unset: first enumerated sink. Set to a missing sink → hard FAIL with the found list — a silent fall-through to a different speaker is worse than an error. |
 | `GAME_NARRATOR_HW_AUDIO_CONSENT` | `1` = consent the audible tone; anything else = NOT RUN. |
+| `GAME_NARRATOR_BINARY` | Explicit path to the serve binary the budget session runs. Unset: `game-narrator` on PATH (the appliance's installed binary), else a build from the module root (dev host). A set-but-missing path is NOT RUN, not a crash. |
+| `GAME_NARRATOR_HW_SMOKE` | Must be exactly `1` for any `TestHW*` to run at all; anything else (or unset) skips every hardware smoke test as NOT RUN. The `test-hardware` Makefile target and `scripts/hw/run-on-device.sh` set it; `go test ./...` does not. |
+
+## Thermal readings
+
+`TestHWResourceBudget` reads `/sys/class/thermal/thermal_zone*/temp` and
+converts with a plausibility check before it prints anything. The kernel ABI
+says millidegrees, but the UNO Q's Qualcomm SoC zones have been observed
+reporting 0.01 °C values instead (raw `3590` = 35.9 °C idle — the first
+device run logged it as `3590 mC` = 3.6 °C, which is how this bug was
+found). The conversion therefore reads a raw value as: °C when the value
+itself is 0–120, else millidegrees when that is plausible (≥ 5 °C), else
+0.01 °C when that is plausible (the observed platform unit), else it
+reports the unit as **unknown** rather than inventing a number. Anything
+outside the 0–120 °C plausibility band under every unit is a sensor or
+firmware problem, not a hot device — read the raw value out of the test
+output.
 
 ## What NOT to do
 
