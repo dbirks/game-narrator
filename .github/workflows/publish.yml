@@ -8,6 +8,9 @@
 #      side via `docker buildx imagetools create` (manifest lists can only
 #      reference images already in a registry, never local-only ones), then
 #      cosign keyless signature + SBOM attestation on the manifest digest.
+#      The per-arch image tag is the version GoReleaser itself reported
+#      (dist/metadata.json .version, exported as GN_SNAPSHOT_VERSION), never
+#      recomputed from the SHA (ADR 0060).
 #   2. release: a v* tag — GoReleaser release --clean: archives, .debs,
 #      SBOMs, GitHub Release (prerelease for v0.* tags) and the multi-arch
 #      image push + keyless cosign signing (docker_signs in .goreleaser.yaml).
@@ -107,29 +110,50 @@ jobs:
         env:
           GN_DOCKER_REPO: ghcr.io/dbirks/game-narrator
 
+      - name: Derive the snapshot image tag from GoReleaser's own output
+        run: |
+          set -euo pipefail
+          # GoReleaser wrote dist/metadata.json with the exact version string it
+          # rendered for every artifact name and for the dockers_v2 tags
+          # ({{ .Version }}). Reading .version here is the single source of
+          # truth: the scan/push/manifest steps must tag the images the build
+          # actually produced, and this stays correct for any future
+          # snapshot.version_template (ADR 0060) instead of recomputing an
+          # assumed 0.0.0-snapshot-<sha> shape.
+          VER="$(jq -r '.version' dist/metadata.json)"
+          case "${VER}" in
+            0.0.0-snapshot.[0-9]*.g[0-9a-f]*) ;;
+            *) echo "unexpected snapshot version '${VER}' in dist/metadata.json (want 0.0.0-snapshot.<ts>.g<sha>)" >&2; exit 1 ;;
+          esac
+          # Proof of consistency: both per-arch images must exist locally under
+          # exactly this tag (goreleaser --snapshot builds them with --load).
+          REPO="ghcr.io/dbirks/game-narrator"
+          docker image inspect "${REPO}:${VER}-amd64" >/dev/null
+          docker image inspect "${REPO}:${VER}-arm64" >/dev/null
+          echo "snapshot version (from dist/metadata.json): ${VER}"
+          echo "GN_SNAPSHOT_VERSION=${VER}" >> "$GITHUB_ENV"
+
       - name: Scan release artifacts (must pass before any push)
         run: |
           set -euo pipefail
-          SHORT="$(git rev-parse --short=7 HEAD)"
-          BASE="0.0.0-snapshot-${SHORT}"
+          BASE="$GN_SNAPSHOT_VERSION" # exported by the derivation step above
           GN_SCAN_IMAGE="ghcr.io/dbirks/game-narrator:${BASE}-amd64 ghcr.io/dbirks/game-narrator:${BASE}-arm64" \
             scripts/release/scan-artifacts.sh
 
       - name: Push per-arch images (scanned; manifest tags not created yet)
         run: |
           set -euo pipefail
-          SHORT="$(git rev-parse --short=7 HEAD)"
           REPO="ghcr.io/dbirks/game-narrator"
-          BASE="0.0.0-snapshot-${SHORT}"
+          BASE="$GN_SNAPSHOT_VERSION" # exported by the derivation step above
           docker push "${REPO}:${BASE}-amd64"
           docker push "${REPO}:${BASE}-arm64"
 
       - name: Create multi-arch manifest tags (edge, sha-<short>) via buildx imagetools
         run: |
           set -euo pipefail
-          SHORT="$(git rev-parse --short=7 HEAD)"
+          SHORT="$(git rev-parse --short=7 HEAD)" # still needed for the sha-<short> tag
           REPO="ghcr.io/dbirks/game-narrator"
-          BASE="0.0.0-snapshot-${SHORT}"
+          BASE="$GN_SNAPSHOT_VERSION" # exported by the derivation step above
           # A manifest list can only reference images that already exist in
           # a registry, so the per-arch images are pushed above first; this
           # assembles the multi-arch tags registry-side (no local manifest

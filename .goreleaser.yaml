@@ -6,13 +6,25 @@ version: 2
 
 project_name: game-narrator
 
-# Snapshot version naming. Lowercase "snapshot" on purpose: docker image tags
-# must match [a-z0-9._-] (the default template's "SNAPSHOT" would be an
-# invalid docker tag once dockers_v2 builds the local snapshot images; see
-# ADR 0048). smoke.sh recovers the version from the artifact names, so the
-# whole pipeline stays consistent with any template.
+# Snapshot version naming: 0.0.0-snapshot.<commit-unix-ts>.g<shortsha>
+#   - Monotonic: the commit's Unix timestamp (UTC, from .CommitTimestamp) is
+#     the leading, numerically compared component, so dpkg and vercmp order a
+#     later commit greater than an earlier one (a bare short SHA only orders
+#     lexicographically: f9a572e sorted ABOVE 0cbebce and the UNO Q apt
+#     upgrade refused the newer package; ADR 0060). The .g<shortsha> keeps
+#     the version traceable to its commit (and breaks same-second ties).
+#   - No tilde: the version string doubles as the docker tag (dockers_v2
+#     tags below are {{ .Version }}) and docker tags must match
+#     [a-z0-9._-]. The .deb's control Version still sorts below every tagged
+#     release: nfpm re-derives it as 0.0.0~snapshot.<ts>.g<sha> (the ~
+#     makes the prerelease sort before the empty one, verified with
+#     dpkg --compare-versions), and any real tag (v0.0.1+, i.e. >= 0.0.1)
+#     compares greater on the upstream part anyway.
+#   - Lowercase on purpose: invalid as a docker tag otherwise (ADR 0048).
+# smoke.sh recovers the version from the artifact names, so the whole
+# pipeline stays consistent with any template.
 snapshot:
-  version_template: "{{ .Version }}-snapshot-{{ .ShortCommit }}"
+  version_template: "{{ .Version }}-snapshot.{{ .CommitTimestamp }}.g{{ .ShortCommit }}"
 
 builds:
   - id: game-narrator
@@ -79,8 +91,8 @@ dockers_v2:
     # v2 semantics: images = repository names only; tags = tag templates; the
     # pipe renders <image>:<tag> per pair (and snapshot mode appends -amd64 /
     # -arm64 to each tag). .Version is the snapshot-aware version
-    # (0.0.0-SNAPSHOT-<sha> in snapshot mode, v1.2.3 on a tagged release);
-    # .Tag is the raw git tag.
+    # (0.0.0-snapshot.<commit-ts>.g<sha> in snapshot mode, v1.2.3 on a
+    # tagged release); .Tag is the raw git tag.
     disable: "{{ if not (isEnvSet \"GN_DOCKER_REPO\") }}true{{ end }}"
     dockerfile: packaging/Dockerfile
     images:
@@ -209,13 +221,19 @@ nfpms:
         # usrmerged Debian anyway. The .deb keeps /lib/systemd/system
         # (field-verified path, unchanged behaviour — ADR 0053).
         # Note: .PKGINFO pkgver is "0.0.0-1" for every snapshot build — the
-        # nfpm arch packager drops the version prerelease (the SHA) unless an
-        # epoch is set, and goreleaser 2.14 only reads epoch/release from the
-        # top-level nfpms entry (per-format overrides of them are ignored),
-        # which would change the .deb's version. Same-version `pacman -U`
+        # nfpm core splits the version (0.0.0 + prerelease
+        # snapshot.<ts>.g<sha>), the arch packager keeps only the upstream
+        # part in pkgver, and appends the prerelease only when an epoch is
+        # set. goreleaser 2.14 reads epoch/release/prerelease only from the
+        # top-level nfpms entry (per-format overrides of them are ignored) and
+        # does not template them, so any value set there would also change the
+        # tagged releases' versions (the .deb would gain an epoch/-release
+        # suffix) — which is off-limits (ADR 0060). Same-version `pacman -U`
         # reinstalls an explicit local file (verified 2026-10-18), so upgrades
         # between snapshot builds work; provenance is via checksums.txt /
-        # artifact names, not `pacman -Qi` (docs/release.md).
+        # artifact names, not `pacman -Qi` (docs/release.md). The version
+        # string itself is vercmp-monotonic (verified 2026-10-18 with
+        # pacman's vercmp 7.1.0), so the wart stays cosmetic.
         contents:
           - src: packaging/systemd/game-narrator.service
             dst: /usr/lib/systemd/system/game-narrator.service

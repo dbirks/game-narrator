@@ -85,8 +85,9 @@ ARM_DEB="$(find "$DIST_DIR" -maxdepth 1 -name '*_arm64.deb' | head -1)"
 
 VER="$(basename "$AMD_TARBALL" | sed -E 's/^game-narrator_(.*)_(linux).*/\1/')"
 # The dockers_v2 image tag base is exactly the version string (snapshot:
-# 0.0.0-SNAPSHOT-<sha>; tagged release: v1.2.3) — same string that names the
-# tarballs, so it is recovered from the artifact name, not recomputed.
+# 0.0.0-snapshot.<commit-ts>.g<sha>; tagged release: v1.2.3) — same string
+# that names the tarballs, so it is recovered from the artifact name, not
+# recomputed.
 TAG="$VER"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/gn-smoke.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT

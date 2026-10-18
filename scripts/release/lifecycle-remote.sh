@@ -222,8 +222,14 @@ else
 fi
 
 # ---------------------------------------------------------------- 2 install previous
+# Plain install, no --allow-downgrades: snapshot versions are monotonic in
+# the commit (ADR 0060), so replacing an older dirty build with prev is an
+# ordinary upgrade. Only the deliberate rollback (step 6) may move to an
+# older version and keeps the flag. If the device happens to run a build
+# NEWER than prev, apt's refusal is the correct outcome: the prev/cur pair
+# is invalid for this run.
 if [ "$ok_backup" = 1 ]; then
-  if DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --allow-downgrades "${LC}/prev.deb" \
+  if DEBIAN_FRONTEND=noninteractive sudo apt-get install -y "${LC}/prev.deb" \
        >"${LC}/install-prev.log" 2>&1 \
      && [ "$(installed_version)" = "$PREV_VER" ]; then
     pass "install previous: apt-get installed ${PREV_VER} (replacing the dirty build)"
@@ -298,7 +304,7 @@ if [ "$ok_up" = 1 ]; then
   if DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --allow-downgrades "${LC}/prev.deb" \
        >"${LC}/rollback-prev.log" 2>&1 \
      && [ "$(installed_version)" = "$PREV_VER" ]; then
-    note "rollback: reinstalling ${PREV_VER} with --allow-downgrades (docs/release.md §4)"
+    note "rollback: ${PREV_VER} is an older version (monotonic snapshot versioning, ADR 0060) — reinstalling with --allow-downgrades (docs/release.md §4); only this step may downgrade"
     if restart_service && wait_healthy 30; then
       note "rollback policy outcome: the previous binary starts on the newer data (schema compatible; no DB restore needed)"
       ok_rb=1

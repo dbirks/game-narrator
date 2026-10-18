@@ -86,7 +86,8 @@ Triggered by `workflow_run` when the `ci` workflow completes `success` for a
 push to `main`:
 
 1. GoReleaser **snapshot** with `GN_DOCKER_REPO=ghcr.io/dbirks/game-narrator`
-   — per-arch images built locally (`0.0.0-snapshot-<sha7>-amd64|arm64`);
+   — per-arch images built locally
+   (`0.0.0-snapshot.<commit-ts>.g<sha7>-amd64|arm64`, section 9);
    snapshot mode never pushes.
 2. `scripts/release/scan-artifacts.sh` over the dist artifacts **and the
    image layers of both per-arch images** (rule split in §2.5) — a failure
@@ -238,12 +239,13 @@ cosign, while the `edge` job scans the images directly (step 2).
    docs/spec/02 "Migration and backup acceptance") once exposed at the CLI.
    The data directory (catalogue + content-addressed assets) is one unit:
    restore both or neither.
-2. **Previous binary/package:** reinstall the previous `.deb` — for
-   snapshot builds the package versions order lexicographically by short
-   SHA, so a rollback can be a *downgrade* in dpkg's eyes; use
-   `apt-get install --allow-downgrades ./game-narrator_<old>...deb`
+2. **Previous binary/package:** reinstall the previous `.deb`. Snapshot
+   versions are monotonic in the commit (section 9), so rolling back from a
+   newer snapshot to an older one is a genuine version *downgrade* in dpkg's
+   eyes; use `apt-get install --allow-downgrades ./game-narrator_<old>...deb`
    (apt keeps history for one prior version) or the previously recorded
-   binary from the release evidence bundle.
+   binary from the release evidence bundle. Upgrades between snapshot builds
+   are ordinary version increases and need no special flags (section 3).
 3. **Previous image:** `docker pull <repo>@<previous-digest>` (digests are
    recorded in `artifacts/<run-id>/manifest`) and recreate the container.
 4. **Schema:** if the new version applied a migration and the old binary
@@ -284,16 +286,22 @@ git worktree add --detach /tmp/gn-deb-<sha-cur>  <cur-commit>
 (cd /tmp/gn-deb-<sha-cur>/dist  && sha256sum -c checksums.txt)
 
 scripts/release/lifecycle-on-device.sh <user>@<uno-q-host> \
-  /tmp/gn-deb-<sha-prev>/dist/game-narrator_*-snapshot-*_linux_arm64.deb \
-  /tmp/gn-deb-<sha-cur>/dist/game-narrator_*-snapshot-*_linux_arm64.deb
+  /tmp/gn-deb-<sha-prev>/dist/game-narrator_*-snapshot.*_linux_arm64.deb \
+  /tmp/gn-deb-<sha-cur>/dist/game-narrator_*-snapshot.*_linux_arm64.deb
 ```
+
+(With the monotonic snapshot versioning of section 9, `<sha-prev>` must be
+the older commit: the lifecycle upgrades prev → cur, and the plain installs
+assume prev ≤ cur by version.)
 
 The script (a) backs up the data directory to
 `/home/arduino/gn-data.bak-<ts>` and `/etc/game-narrator` to `/tmp/gn-lc`
 (the env file is verified by mode, owner and line count only — never
-printed or copied into logs), (b) installs the "previous" package, replacing
-whatever dirty or old build is installed (`--allow-downgrades` where the
-version string ordering requires it), (c) starts the unit and verifies the
+printed or copied into logs), (b) installs the "previous" package with a
+plain `apt-get install`, replacing whatever dirty or old build is installed
+(with monotonic versions, an older build is an ordinary upgrade — only the
+deliberate rollback in step (e) uses `--allow-downgrades`), (c) starts the
+unit and verifies the
 dpkg version, `/api/v1/health/ready`, `game-narrator doctor` and a test
 game that must survive a service restart, (d) upgrades to "current" (data
 and env preserved; the unit is stopped by `prerm` and started again per
@@ -348,13 +356,20 @@ the deb's unit and files, with these format-specific choices (ADR 0053):
   `/usr/lib/sysusers.d/game-narrator.conf` + `/usr/lib/tmpfiles.d/game-narrator.conf`
   (both formats ship these files; on the .deb they are inert without systemd
   and idempotent under systemd — deb behaviour is unchanged).
-- Every snapshot build has `pkgver 0.0.0-1` in `.PKGINFO`: the nfpm arch
-  packager embeds the version prerelease (the SHA) only when an epoch is set,
-  and goreleaser 2.14 reads epoch only from the top-level nfpms entry, which
-  would change the .deb's version. Pacman re-installs an explicit local file
-  at the same version ("up to date -- reinstalling", verified 2026-10-18), so
-  `pacman -U` upgrades work between any two snapshot builds; build provenance
-  is the artifact name + `checksums.txt`, not `pacman -Qi`.
+- Every snapshot build has `pkgver 0.0.0-1` in `.PKGINFO`: the nfpm core
+  splits the version into upstream `0.0.0` + prerelease
+  `snapshot.<commit-ts>.g<sha>`, and the arch packager keeps only the
+  upstream part in `pkgver` (the prerelease is appended only when an epoch is
+  set). goreleaser 2.14 reads `epoch`/`release`/`prerelease` only from the
+  top-level nfpms entry and does **not** template them, so setting them would
+  also change the tagged releases' versions (ADR 0060) — hence the wart is
+  kept. The version *string* itself is vercmp-monotonic (section 9, verified
+  with pacman's `vercmp` 7.1.0), so a future goreleaser with templated
+  `prerelease` could fix `pacman -Qi` without reordering anything. Pacman
+  re-installs an explicit local file at the same version ("up to date --
+  reinstalling", verified 2026-10-18), so `pacman -U` upgrades work between
+  any two snapshot builds; build provenance is the artifact name +
+  `checksums.txt`, not `pacman -Qi`.
 
 **Install:** `sudo pacman -U --noconfirm <pkg>` — pacman resolves the
 declared Arch dependencies (`ffmpeg`, `tesseract`, `tesseract-data-eng`,
@@ -389,3 +404,42 @@ A host-level defect was noted during testing: on that host
 `systemd-tmpfiles` could not resolve any non-root user name ("Unknown user";
 `root:root` resolves), so the hooks set directory ownership with
 `install`/`chown` (libc NSS) instead of `systemd-tmpfiles` — see ADR 0053.
+
+## 9. Snapshot version ordering (ADR 0060)
+
+Snapshot versions are `0.0.0-snapshot.<commit-ts>.g<shortsha>`, where
+`<commit-ts>` is the commit's Unix timestamp in UTC (GoReleaser's
+`snapshot.version_template`, rendered with `.CommitTimestamp`) and
+`<shortsha>` is the short commit hash. The format has three properties:
+
+- **Monotonic.** dpkg (and Arch's `vercmp`) compare the digit run
+  `<commit-ts>` numerically, so a later commit always sorts greater than an
+  earlier one. The previous format `0.0.0-snapshot-<sha>` compared the bare
+  short SHA *lexically* — `0cbebce` (newer) sorted below `f9a572e` (older),
+  so on the UNO Q (Debian 13) `apt-get install ./new.deb` refused the
+  upgrade as a downgrade, and the device lifecycle needed
+  `--allow-downgrades` on its upgrade steps. That wart is gone: upgrades
+  between snapshot builds are ordinary version increases.
+- **Below every real tag.** The `.deb`'s control `Version` is re-derived by
+  nfpm as `0.0.0~snapshot.<commit-ts>.g<shortsha>` (the `~` puts the
+  prerelease below the empty prerelease of the same upstream version), and
+  every real tag (`v0.0.1` and above) compares greater on the upstream part
+  anyway. Verified:
+  `dpkg --compare-versions 0.0.0~snapshot.1760745600.gf9a572e lt
+  0.0.0~snapshot.1761106800.g0cbebce` (later commit greater) and
+  `dpkg --compare-versions 0.0.0~snapshot.9999999999.gfffff99 lt 0.1.0`
+  (a tagged release beats every snapshot).
+- **Docker-tag safe.** The version string doubles as the `dockers_v2` image
+  tag, and docker tags must match `[a-z0-9._-]` — a `~` separator would be
+  an invalid tag, which is why the artifact-side format uses `-` and the
+  below-tag ordering comes from nfpm's `~` instead. The `.g<shortsha>`
+  suffix keeps the version traceable to its commit and breaks ties between
+  commits in the same second.
+
+The rollback step (section 4.2) is the *only* package transition that moves
+from a higher to a lower version, so it — and only it — uses
+`apt-get install --allow-downgrades`. The same strings compare correctly
+under Arch's `vercmp` (pacman 7.1.0, `-1` = first is older), but the Arch
+package's `pkgver` stays `0.0.0-1` (section 8): making it monotonic would
+require `epoch`/`prerelease`, which goreleaser 2.14 applies to *all* formats
+including the .deb of tagged releases.
