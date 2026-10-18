@@ -48,3 +48,58 @@ Related requirements/tests: docs/spec/15 (release policy, supply chain, release 
 
 - Roll back by removing the `dockers_v2`/`sboms`/`nfpms` blocks (or the whole file) and the `release-snapshot` Makefile target; artifacts revert to a plain `go build`. Packaging files under `packaging/` and `scripts/release/` are self-contained and can be deleted without touching Go sources.
 - To adopt `dockers` (v1) instead of `dockers_v2`, or `.rpm`, requires a new ADR and install-smoke evidence.
+
+## Amendment (2026-10-22): image-scan rule split, owned-file derivation, GHA annotations
+
+Supersedes the Option 5 / "image scanner scoped to the owned binary" scope
+only; everything else in this ADR stands.
+
+**Context.** The CI publish run's "Scan release artifacts" step failed on the
+image phase: the content (secret/topology) rule fired inside distribution
+files. Crane-based verification showed the pinned base
+(`debian@sha256:7c7b2c96…`, 3265 files) is 100% clean — the hits come from
+the **apt layer** the Dockerfile installs: four Debian files ship literal
+`/home/<name>/` strings (OpenAL/ALSA sample configs, xkb symbols). Those
+layers are not base-digest-excludable, so scoping by "owned binary only"
+(coarse) or by a Debian path allowlist (fragile) were both rejected.
+
+**Decision.** `scripts/release/scan-artifacts.sh` image phase now splits the
+rules:
+
+- **Whole-image rules** — `forbidden-name`, `game-data` (game-image
+  extensions + CISO/RARC/Yaz0/CD001 magic, so dumps hidden under innocent
+  names are caught), `big-binary` (non-text ≥ 256 MiB; largest legitimate
+  file in base + pinned apt closure is ~112 MiB libLLVM-15.so.1) — run over
+  every file in every layer. Verified 0 hits on the crane-exported base and
+  the 223-package apt closure.
+- **Content rules** (home paths, gateway hostname/token) — run only over the
+  files our Dockerfile adds: the `COPY` destination(s) (parsed from
+  `packaging/Dockerfile`, WORKDIR-aware) and the image config blob. Base
+  layers are additionally excluded by digest (pinned base ref parsed from
+  the Dockerfile; layer digests via `docker manifest inspect`, fallbacks:
+  local base layer count, then unknown). The owned set is derived from the
+  Dockerfile — **never** a hand-written Debian allowlist.
+- An image with no file at a `COPY` destination in a non-base layer **fails**
+  (`image-no-owned-files`) — a missing/broken binary must not silently pass.
+- Under `GITHUB_ACTIONS=true`, `scan-artifacts.sh` emits one
+  `::error file=…,title=artifact-scan::<rule> <artifact>:<path> [masked]`
+  per finding plus a final `::notice`/`::error` summary (escaping mirrors
+  `scripts/gates/annotate-go.sh`; the matched value is never printed). In
+  `scripts/gates/secret-scan.sh`, allowlisted items are `::notice` (or
+  omitted) and only real findings are `::error`, with a final summary
+  annotation — the green run previously showed ~20 "allowlisted" failure
+  annotations.
+
+**Validation.** Scanner self-test (4 cases: planted home path fails; redactor
+regex source passes; synthetic image split; apt-layer non-COPY Debian file
+must not flag while a planted app secret at the COPY destination fails);
+crane export of the pinned base (0 hits on all whole-image rules); fake-docker
+pipeline runs exercising `docker save` layout parsing, per-layer extraction,
+digest-based base classification and the rule split, including the four real
+apt files (clean image passes; planted app secret fails with exactly one
+finding). `GITHUB_ACTIONS=true scripts/gates/secret-scan.sh` emits 0
+`::error` lines on a green tree.
+
+**Reversal.** Revert `scripts/release/scan-artifacts.sh` (image phase) and
+the `scripts/gates/secret-scan.sh` annotation changes; no schema, protocol
+or packaging impact.

@@ -51,6 +51,7 @@ ALLOW_OVERRIDE=""
 ALLOW_FILE=""
 FINDINGS=0
 ALLOWED_NOTES=""
+IN_GHA=${GITHUB_ACTIONS:-false}
 
 # --- text rules (name<TAB>ERE) -------------------------------------------------
 # The patterns are metacharacter shapes (no sample secrets), so this file does
@@ -106,6 +107,36 @@ allowlist_match() {
 	' "$ALLOW_FILE" 2>/dev/null
 }
 
+# --- GitHub Actions annotations (mirror scripts/gates/annotate-go.sh) -----------
+# Under GITHUB_ACTIONS, allowlisted items are emitted as ::notice and real
+# findings as ::error with file=/title=; the matched value is NEVER printed
+# (masking is done by the caller, as in the plain-line report below).
+# Escaping mirrors annotate-go.sh: properties escape % : , ; data escapes % .
+# When FILE is empty the helper emits a plain ::notice::<message> (summary
+# lines). All args default so callers are set -u safe, and both return 0.
+esc_data() { printf '%s' "${1:-}" | sed -e 's/%/%25/g'; }
+esc_prop() { printf '%s' "${1:-}" | sed -e 's/%/%25/g' -e 's/:/%3A/g' -e 's/,/%2C/g'; }
+gha_error() { # $1=file $2=title $3=message
+	case "$IN_GHA" in
+		true|True|TRUE) printf '::error file=%s,title=%s::%s\n' \
+			"$(esc_prop "${1:-}")" "$(esc_prop "${2:-}")" "$(esc_data "${3:-}")" ;;
+	esac
+	return 0
+}
+gha_notice() { # $1=file $2=title $3=message (file may be empty)
+	case "$IN_GHA" in
+		true|True|TRUE)
+			if [ -n "${1:-}" ]; then
+				printf '::notice file=%s,title=%s::%s\n' \
+					"$(esc_prop "$1")" "$(esc_prop "${2:-}")" "$(esc_data "${3:-}")"
+			else
+				printf '::notice::%s\n' "$(esc_data "${3:-}")"
+			fi
+			;;
+	esac
+	return 0
+}
+
 # --- finding report ---------------------------------------------------------------
 # report MODE KIND REF PATH LINE RULE VALUE
 #   MODE: tree | hist (hist prefixes the commit sha to the location)
@@ -117,6 +148,8 @@ report() {
 	if [ -n "$detail" ]; then
 		ALLOWED_NOTES="${ALLOWED_NOTES}  - $path: $rule — allowlisted: $detail
 "
+		# allowlisted: ::notice under GHA (never ::error)
+		gha_notice "$path" "secret-scan allowlisted:$rule" "allowlisted: $detail"
 		return 0
 	fi
 	local where shown
@@ -132,6 +165,9 @@ report() {
 	fi
 	FINDINGS=$((FINDINGS + 1))
 	echo "secret-scan: $where: $rule $shown"
+	# real finding: ::error under GHA; file= the repo-relative path so the
+	# annotation attaches; the message never contains the matched value
+	gha_error "$path" "secret-scan::$rule $where" "$shown"
 }
 
 # entropy_ok VALUE: success when VALUE has >= 20 chars, >= 3 character
@@ -513,7 +549,11 @@ fi
 
 if [ "$FINDINGS" -gt 0 ]; then
 	echo "secret-scan: $FINDINGS finding(s) — do not commit; fix or allowlist with a reason" >&2
+	# per-finding ::error annotations were emitted above; the final summary
+	# is a ::notice with the totals (annotate-go.sh convention)
+	gha_notice "" "" "secret-scan: FAIL — $FINDINGS finding(s) — see the ::error annotations above"
 	exit 1
 fi
 echo "secret-scan: clean"
+gha_notice "" "" "secret-scan: PASS — 0 findings"
 exit 0

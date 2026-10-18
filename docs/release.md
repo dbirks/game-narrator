@@ -89,7 +89,8 @@ push to `main`:
    — per-arch images built locally (`0.0.0-snapshot-<sha7>-amd64|arm64`);
    snapshot mode never pushes.
 2. `scripts/release/scan-artifacts.sh` over the dist artifacts **and the
-   image layers of both per-arch images** — a failure pushes nothing.
+   image layers of both per-arch images** (rule split in §2.5) — a failure
+   pushes nothing, and every finding is annotated on the run.
 3. Push: the per-arch images, then the multi-arch manifests tagged `edge`
    and `sha-<short>` (immutable per-commit handle).
 4. `cosign sign` the manifest digest and attach the SBOM attestation
@@ -149,6 +150,52 @@ For a tagged release replace `:edge` with the tag (e.g. `:v1.2.3`);
 (`make test-hardware`) passes (AGENTS.md rule 12): publishing and signing do
 not change that — arm64 artifacts are cross-compiled and file-verified only,
 and the arm64 image layer builds under QEMU but was not executed on real ARM.
+
+### 2.5 Artifact scan: image phase and annotations (ADR 0033 amendment)
+
+The release image mixes product files with distribution content: the pinned
+`debian@sha256:…` base **plus** the apt layer that `packaging/Dockerfile`
+installs. The scanner applies two rule classes with different scope
+(`scripts/release/scan-artifacts.sh`):
+
+- **Whole-image rules** — `forbidden-name` (game/voice/private file names),
+  `game-data` (game-image extensions + CISO/RARC/Yaz0/CD001 magic, catches
+  dumps hidden under innocent names), `big-binary` (non-text ≥ 256 MiB;
+  the largest legitimate file in the pinned base + pinned apt closure is
+  libLLVM-15.so.1 at ~112 MiB) — run over **every file in every layer**.
+  Verified clean on the crane-exported pinned base (3265 files) and the
+  apt closure of the six pinned packages (223 packages).
+- **Content rules** (home paths, gateway hostname/token) — run **only over
+  the files our Dockerfile adds**: the binary at the `COPY` destination(s)
+  and the image config blob (labels/env/entrypoint). This restriction is
+  what stops the real false-positives: the pinned base is 100% clean, but
+  the apt layer ships four Debian files with literal `/home/<name>/`
+  strings (OpenAL/ALSA sample configs, xkb symbols), and those live in
+  "ours" layers. An apt file is never at a path the product `COPY`s, so it
+  is never content-scanned. The owned set is derived from the Dockerfile,
+  **not** a hand-written Debian allowlist: base layers are additionally
+  excluded by digest (pinned base ref parsed from `packaging/Dockerfile`,
+  layer digests via `docker manifest inspect`; fallbacks: local base layer
+  count, then "unknown" — where the `COPY`-destination restriction alone
+  decides), and an image with no file at a `COPY` destination in a
+  non-base layer **fails** (`image-no-owned-files`) instead of silently
+  passing.
+
+**Annotations.** Under `GITHUB_ACTIONS=true` both scanner gates emit
+workflow commands (escaping mirrors `scripts/gates/annotate-go.sh`):
+`scan-artifacts.sh` — one `::error file=<path>,title=artifact-scan::<rule>
+<artifact>:<path> [masked]` per finding plus a final summary (error on
+fail, `::notice` on pass); `secret-scan.sh` — `::error` for real findings
+(`title=secret-scan::<rule>`), `::notice` for allowlisted items, and a
+final `::notice`/`::error` summary. The matched value is never printed;
+job logs require auth, so the check-run annotations are the public
+surface.
+
+**NOT RUN semantics.** Without docker (or for a ref not built locally)
+the image scan prints `NOT RUN: image scan …` and never fails the run —
+the archive scan still runs; on the tagged-release job the image layers
+are covered by the pinned base digest, the image SBOM attestation and
+cosign, while the `edge` job scans the images directly (step 2).
 
 ## 3. Upgrade
 
