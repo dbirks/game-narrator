@@ -182,25 +182,18 @@ func TestSidecarPassPacingIsFlat(t *testing.T) {
 	_ = waitTimeout(waitGroupDone(&h.wg), 2*providerTimeout)
 	h.finishUtterances(context.Background())
 
-	h.passEventsMu.Lock()
-	slices := 0
-	committedSlices := 0
-	for _, evs := range h.passEvents {
-		slices++
-		for _, e := range evs {
-			if e.Name == events.MessageCommitted {
-				committedSlices++
-				break
-			}
-		}
-	}
-	h.passEventsMu.Unlock()
+	// The settle path grades (and drops) a pass slice when it settles, but the
+	// trailing passes are still inside their settle window at 12 s; the run-end
+	// drain (gradeRemaining, what collect runs in a real run) grades the
+	// residue. Run it here so the graded count is the sidecar's full output.
+	_, _ = h.gradeRemaining()
+	committedSlices := h.passCommitSlices
 	commits := h.sidecarCommits.Load()
 	h.close()
 
 	if committedSlices < 3 {
-		t.Fatalf("sidecar completed %d pass slice(s) with commits in 12 s (want >= 3: ~2.3 s per pass; the pre-fix pacing completes only 2): %d total commit slice(s)",
-			committedSlices, slices)
+		t.Fatalf("sidecar completed %d pass slice(s) with commits in 12 s (want >= 3: ~2.3 s per pass; the pre-fix pacing completes only 2)",
+			committedSlices)
 	}
 	if commits < 6 {
 		t.Fatalf("sidecar committed %d occurrence(s) in 12 s (want >= 6: 2 lines per pass x 3 passes)", commits)

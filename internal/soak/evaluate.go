@@ -104,72 +104,66 @@ func (h *harness) errKindCounts() map[string]int64 {
 	return out
 }
 
-// evaluatePasses slices the sidecar timeline by pass and grades each slice:
-// the scenario assertions (the scenario's evaluators, reused) plus the loop-
-// aware stale-speech check. Returns the number of slices graded and the
-// failing details (the report names them per pass).
+// evaluatePasses finishes the pass grading the settle path started
+// incrementally (settle.go): every slice settled during the run was already
+// graded and dropped, so what remains is the run-end residue — the last
+// passBound or so passes, whose utterances finishUtterances just closed.
+// The run-level stale-generation check runs here on the final pipeline
+// stats: it is a cumulative counter, so the old per-slice form (every slice
+// graded against the same global number) is replaced by the one check it
+// always meant. Returns the number of slices graded (across the whole run)
+// and the failing details.
 func (r *Result) evaluatePasses(h *harness) (int, []string) {
-	h.passEventsMu.Lock()
-	passes := make(map[passStamp][]events.Envelope, len(h.passEvents))
-	for k, v := range h.passEvents {
-		passes[k] = v
+	_, failures := h.gradeRemaining()
+	// The run-level stale-generation check (the scenario's evaluator, on the
+	// final stats): a message applied despite naming a stale generation is a
+	// fence failure the run must name, once, against the run — not once per
+	// slice.
+	sc := &scenario.Scenario{ID: "soak-run", Assertions: []scenario.Assertion{{Type: "no_stale_generation_applied"}}}
+	rep := sc.Evaluate(nil, r.Pipeline, nil)
+	for _, a := range rep.Results {
+		if !a.Passed {
+			failures = append(failures, a.Type+": "+a.Detail)
+		}
 	}
-	h.passEventsMu.Unlock()
-	if len(passes) == 0 {
-		return 0, nil
-	}
+	h.passFailuresMu.Lock()
+	failures = append(failures, h.passFailures...)
+	h.passFailuresMu.Unlock()
+	return h.passesGraded, failures
+}
+
+// gradeRemaining grades the pass slices still pending at run end (the residue
+// the settle path left) and releases them. Returns the slices graded and
+// their failures. The slices are graded as-is: a stuck utterance the residue
+// still carries is exactly the voice-contract failure it owes.
+func (h *harness) gradeRemaining() (int, []string) {
 	var failures []string
 	var stamps []passStamp
-	for s := range passes {
-		stamps = append(stamps, s)
-	}
-	sort.Slice(stamps, func(i, j int) bool {
-		if stamps[i].clip != stamps[j].clip {
-			return stamps[i].clip < stamps[j].clip
+	h.passMu.Lock()
+	for stamp, ps := range h.passStates {
+		if len(ps.events) > 0 {
+			stamps = append(stamps, stamp)
 		}
-		return stamps[i].pass < stamps[j].pass
-	})
+	}
+	h.passMu.Unlock()
+	sort.Slice(stamps, func(i, j int) bool { return stampLess(stamps[i], stamps[j]) })
 	n := 0
 	for _, stamp := range stamps {
-		evs := passes[stamp]
-		if len(evs) == 0 {
+		h.passMu.Lock()
+		ps := h.passStates[stamp]
+		h.passMu.Unlock()
+		if ps == nil || len(ps.events) == 0 {
 			continue
 		}
+		failures = append(failures, h.gradeSlice(stamp, ps.events)...)
+		h.passMu.Lock()
+		h.passesGraded++
+		if passHasCommit(ps.events) {
+			h.passCommitSlices++
+		}
+		h.releaseSliceLocked(ps)
+		h.passMu.Unlock()
 		n++
-		truth := h.clips[stamp.clip].truth
-		sc := &scenario.Scenario{
-			ID:         "soak-pass-" + itoa(stamp.clip) + "-" + itoa(stamp.pass),
-			Assertions: perPassAssertions(h.lineIDs, evs),
-		}
-		rep := sc.Evaluate(evs, r.Pipeline, truth)
-		for _, a := range rep.Results {
-			if !a.Passed {
-				failures = append(failures,
-					fmt.Sprintf("clip %d pass %d %s: %s", stamp.clip, stamp.pass, a.Type, a.Detail))
-			}
-		}
-		// The stale-speech check is moment-based (see staleSpeechOffenders):
-		// the scenario's own no_stale_speech assertion approximates the same
-		// property for single-clip runs, where the last line's audio completes
-		// last; on a looped pass that approximation is unsound, so the soak
-		// runs the general form over the same slice.
-		if off := staleSpeechOffenders(evs); len(off) > 0 {
-			failures = append(failures, fmt.Sprintf("clip %d pass %d no_stale_speech: %s",
-				stamp.clip, stamp.pass, join(off, 2)))
-		}
-		// The voice contract is loop-aware for the same reason (see
-		// voiceContractOffenders): the scenario's own no_voice_substitution
-		// requires a good speech.ended in the slice, which a looped pass does
-		// not owe — the clip's own box dismissal cancels the last line, and a
-		// fault-delayed decision can commit with no voice at all. Graded only
-		// when the pass carries speech events: a pass whose decisions all
-		// abstained speaks nothing and owes no terminal to silence.
-		if passHasSpeech(evs) {
-			if off := voiceContractOffenders(evs, h.cfg.Voice); len(off) > 0 {
-				failures = append(failures, fmt.Sprintf("clip %d pass %d no_voice_substitution: %s",
-					stamp.clip, stamp.pass, join(off, 2)))
-			}
-		}
 	}
 	return n, failures
 }
@@ -231,10 +225,12 @@ func voiceContractOffenders(evs []events.Envelope, voice string) []string {
 // not reused per pass: its terminal requirement (a good speech.ended must
 // exist in the slice) is unsound on a looped pass (see
 // voiceContractOffenders), and its substitution half is kept there instead.
+// no_stale_generation_applied is not reused per pass either: it reads the
+// cumulative pipeline counter, a run-level fact the run-level check in
+// evaluatePasses grades once.
 func perPassAssertions(lineIDs []string, evs []events.Envelope) []scenario.Assertion {
 	as := []scenario.Assertion{
 		{Type: "no_duplicate_commit"},
-		{Type: "no_stale_generation_applied"},
 		{Type: "committed_only", Names: lineIDs},
 	}
 	for _, id := range lineIDs {

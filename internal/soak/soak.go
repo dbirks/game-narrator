@@ -25,6 +25,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -154,6 +155,10 @@ type Result struct {
 	ReportDir       string           `json:"report_dir"`
 	ReportErr       string           `json:"report_err,omitempty"`
 	RunErr          string           `json:"run_err,omitempty"`
+	// HeapProfiles names the pprof files the opt-in capture
+	// (GAME_NARRATOR_SOAK_HEAPPROFILE) wrote, early then late: the leak diff
+	// is `-diff_base early.pb.gz late.pb.gz` in inuse_space.
+	HeapProfiles []string `json:"heap_profiles,omitempty"`
 }
 
 // Passed reports the run's overall verdict: every pass criterion held and the
@@ -185,6 +190,9 @@ func (r *Result) SummaryLine() string {
 		r.Baseline.FDs, r.Final.FDs,
 		r.Pipeline.Commits, r.FaultsTotal(), r.ProviderErrorsTotal(),
 		r.panicsTotal(), r.PassesEvaluated, r.ReportDir)
+	if len(r.HeapProfiles) > 0 {
+		line += " heap_profiles=" + strings.Join(r.HeapProfiles, ",")
+	}
 	if verdict == "FAIL" {
 		line += " first_fail=" + r.firstFailure()
 	}
@@ -207,6 +215,17 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	}
 	if err := h.build(); err != nil {
 		return res, fmt.Errorf("soak: wire harness: %v", err)
+	}
+
+	// The opt-in heap capture (see heapprofile.go): an early profile at the
+	// warm-up mark the rss_growth verdict starts from, a late one after
+	// teardown. Off unless the env var names a directory.
+	var hprof *heapProfiler
+	if dir := os.Getenv(heapProfileEnv); dir != "" {
+		hprof, err = newHeapProfiler(dir)
+		if err != nil {
+			return res, fmt.Errorf("soak: heap profile dir: %v", err)
+		}
 	}
 
 	// The baseline is the pre-run steady state: goroutines and FDs before any
@@ -247,6 +266,19 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		}
 	}()
 
+	if hprof != nil {
+		// The early profile fires on its own timer at the warm-up mark; the
+		// capture (a GC plus a heap walk) takes well under a sample period,
+		// and a short run cancelled before the mark simply has no early file.
+		go func() {
+			t := time.NewTimer(warmUpMark(cfg))
+			select {
+			case <-t.C:
+				hprof.write("early")
+			case <-ctx.Done():
+			}
+		}()
+	}
 	select {
 	case <-timer.C:
 	case <-ctx.Done():
@@ -272,6 +304,16 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	sampleCancel()
 	<-collectorDone
 	res.Final = resourceSample{T: time.Now(), RSSKB: rssKB(), Goroutines: numGoroutines(), FDs: fdCount()}
+	if hprof != nil {
+		// The late profile goes here: after teardown and the final sample, so
+		// it is the diff endpoint the rss_growth verdict uses, while every
+		// run-retained structure the run kept is still live and addressable.
+		hprof.write("late")
+		res.HeapProfiles = hprof.paths()
+		for _, e := range hprof.errors() {
+			res.ReportErr = appendErr(res.ReportErr, "heap profile: "+e)
+		}
+	}
 
 	if h.pipeErr != nil && res.RunErr == "" {
 		res.RunErr = h.pipeErr.Error()

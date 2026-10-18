@@ -96,24 +96,41 @@ type harness struct {
 	faultEventsMu  sync.Mutex
 	faultEvents    []faultEvent
 
-	// pass timeline: the sidecar's own commit and speech events, per pass —
-	// the slice the scenario assertions evaluate (the sidecar's commits are
-	// that layer's commitment of record; the pipeline's layer A counters are
-	// asserted globally from its Stats).
-	passEventsMu sync.Mutex
-	passEvents   map[passStamp][]events.Envelope
-	occPass      sync.Map // occurrence id -> passStamp
+	// pass timeline (bounded, see passstate.go): the unsettled pass slices —
+	// the sidecar's own commit and speech events the scenario assertions
+	// grade — plus the occurrence->pass routing a speech event needs to find
+	// its slice. A slice is graded and dropped the moment it is settled
+	// (every utterance that started in it has a terminal event), so the
+	// retained state is bounded by the unsettled horizon (passBound), not
+	// the run's pass count. (The 1-hour soak's RSS growth was this slice map
+	// kept for every pass: ADR-0045 amendment.)
+	passMu         sync.Mutex
+	passStates     map[passStamp]*passState
+	occPass        map[string]passStamp // occurrence id -> passStamp
+	passBound      int
+	passFailuresMu sync.Mutex
+	passFailures   []string
+	passesGraded   int
+	// passCommitSlices counts the graded slices that carried a commit:
+	// the evidence a sidecar pass actually committed (the report and the
+	// pacing test read it).
+	passCommitSlices int
 
 	// sidecar dedupe: one ranking per reading per pass (the scenario's
 	// lastKey, per pass).
 	rankedMu sync.Mutex
 	ranked   map[string]bool
 
+	// spoken dedupes a double speak per occurrence (the session's occurrence
+	// fence is the backstop; the map only catches what the fence cannot, in
+	// the window where a duplicated reply is still in flight). Bounded
+	// (spokenCap): on overflow the entries whose pass slice has settled (or
+	// already been graded away) are evicted first; a fully unsettled map
+	// falls back to clearing, which the fence's backstop makes safe.
 	spokenMu sync.Mutex
-	spoken   map[string]bool
-	started  map[string]int64 // occurrence -> generation
-	ended    map[string]bool  // occurrence whose terminal end was applied
-	degraded sync.Map         // role -> bool
+	spoken   map[string]passStamp
+
+	degraded sync.Map // role -> bool
 	seq      atomic.Int64
 }
 
@@ -140,12 +157,12 @@ func newHarness(cfg Config) (*harness, error) {
 		profile:    profile,
 		clips:      clips,
 		lineIDs:    ids,
-		spoken:     map[string]bool{},
-		started:    map[string]int64{},
-		ended:      map[string]bool{},
+		spoken:     map[string]passStamp{},
 		ranked:     map[string]bool{},
 		passCnt:    make([]int, len(clips)),
-		passEvents: make(map[passStamp][]events.Envelope),
+		passStates: make(map[passStamp]*passState),
+		occPass:    make(map[string]passStamp),
+		passBound:  pendingPassBound(minClipSpanS(clips)),
 		pipeDone:   make(chan struct{}),
 	}
 	return h, nil
@@ -290,6 +307,15 @@ func (h *harness) sidecar(ctx context.Context) error {
 				return err
 			}
 			h.passCnt[ci] = pass + 1
+			// Pass boundary: the pass stops being fed (its slice is now
+			// gradeable) — grade and drop every settled slice and hold the
+			// pending set to its bound (settlePasses). Every commit event of
+			// the pass was filed while it was being fed, so a settled slice is
+			// complete when it settles.
+			h.passMu.Lock()
+			h.closePassLocked(passStamp{clip: ci, pass: pass})
+			h.passMu.Unlock()
+			h.settlePasses()
 			h.rankedMu.Lock()
 			h.ranked = map[string]bool{}
 			h.rankedMu.Unlock()
@@ -384,7 +410,9 @@ func (h *harness) feedRow(ctx context.Context, c clip, tsNS int64, t scenario.Tr
 			continue
 		}
 		h.sidecarCommits.Add(1)
-		h.occPass.Store(info.occurrence, stamp)
+		h.passMu.Lock()
+		h.occPass[info.occurrence] = stamp
+		h.passMu.Unlock()
 		h.pub.addPassEvent(stamp, e)
 		h.wg.Add(1)
 		go h.handleCommit(ctx, info, stamp)

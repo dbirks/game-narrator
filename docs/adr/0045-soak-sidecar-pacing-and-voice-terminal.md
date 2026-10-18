@@ -155,3 +155,93 @@ oscillation around a flat level for the remaining 28 minutes — it
   the pacing target and put the scenario `no_voice_substitution` assertion
   back into `perPassAssertions` — and the two unit tests above are the
   revert guards. The ADR-0039 terminal contract in the runtime is untouched.
+
+## Amendment (2026-10-17, m7-leak): the 1-hour replay RSS growth was a harness leak — per-pass slices, now settled and dropped
+
+**The leak.** The orchestrator's 1-hour replay soak on a clean HEAD
+(`make soak`, run `20261017-235844-replay`) grew RSS monotonically:
++30.0 % / 0.32 MiB/min over the 54-minute post-warm-up window
+(61428 → 79880 KiB; 35391 commits ≈ 0.5 KiB per committed line), while
+goroutines (4→2) and FDs (8→6) sat flat — heap retention, not
+goroutine or FD growth. The "plateau" reading in the RSS section above
+was an artifact of window length: at 30 minutes the leak had only
+accumulated ~7 MiB, still inside the ±4 MiB GC band this ADR measured.
+
+**The cause (heap-profiled, not guessed).** An opt-in heap capture added
+for this amendment (`GAME_NARRATOR_SOAK_HEAPPROFILE=dir`: `runtime.GC()`
+then `pprof.WriteHeapProfile` at the 10 % warm-up mark and at teardown;
+the leak diff is `go tool pprof -top -inuse_space -diff_base early
+late`) ran on a 15-minute replay soak before the fix (run
+`20261018-011115-replay`, +11.8 % / 0.49 MiB/min). The diff named the
+harness's own sidecar timeline as the growth site:
+`(*sidecarPub).addPassEvent` +1.5 MB flat over the 13.5-minute window,
+with the envelope copies it retains (`events.Envelope.withDefaults`
+retention via `Hub.Publish`, `games.newID` occurrence ids held only by
+those slices). The harness kept every pass's event slice —
+`passEvents map[passStamp][]events.Envelope` — until end of run, so
+retention grew one slice per pass (~44 events per pass, ≈ 4 KiB unique
+per pass: slice and Envelope headers; the Data bytes share backing
+arrays with the ring copies) for the whole run: ≈ 1500 passes per hour.
+That is the 0.32 MiB/min. Every other suspect was profiled or audited
+and is already bounded: the hub ring (4096, docs/spec/01), the soak's
+`ringStore` (8192, a fixed-capacity ring), the session reducer
+(`committedKeys` ≤ `maxCommittedIdentities` with oldest-eviction,
+`rankings` ≤ 8 per region, `Recent` ≤ `RecentMessages`, stale notices ≤
+`maxStaleNotices`), the matcher index (static), and the replay-source
+frames (transient — the profile shows them freed at teardown, −9.3 MB).
+This is a harness-only leak: the runtime, session and hub behave as
+designed.
+
+**The bound (harness-only fix, no product change).** `internal/soak/`
+(`passstate.go`, `settle.go`, `speak.go`): a pass slice is *settled*
+when the pass stops being fed, the settle window
+(`2×providerTimeout + toneEndDelay` = 20.1 s) has closed since its last
+commit, and every utterance started in it has a terminal event. A
+settled slice is graded immediately (the same per-pass assertions as
+before) and dropped — the retained pending set is bounded at
+`passBound = max(9, ceil(settleHorizon/clipSpan)+2)` (≈ 9 for the 2.3 s
+clip), so retained state is the unsettled horizon, not the run's pass
+count. When the pending set exceeds the bound the oldest unsettled
+closed slice is force-graded (a stuck utterance fails its voice
+contract — the bound never hides a verdict). `occPass` routing entries
+are released with their slice, and the `spoken` double-speak map is
+bounded at `spokenCap = 4096` (dead-entry sweep; the clear fallback is
+safe because the session's occurrence fence is the backstop).
+`TestPassTimelineBounded` (100 passes ≫ bound; the bound holds at every
+step; every pass graded; residue drains to zero) and `TestSpokenBounded`
+(4×spokenCap live occurrences; size never above spokenCap) pin the
+bounds.
+
+**Validation.**
+
+- 15-minute replay with heap capture, pre-fix
+  (`20261018-011115-replay`): +11.8 % / 0.49 MiB/min; diff top
+  (inuse_space, early→late):
+  `+4096 kB events.Envelope.withDefaults` (retention through
+  `Hub.Publish`), `+1538 kB (*sidecarPub).addPassEvent` (the growth
+  site), `+512 kB games.newID`, the rest ±512 kB GC noise and the
+  teardown frame release (`image.NewRGBA` −9292 kB).
+- 15-minute replay with heap capture, post-fix
+  (`20261018-025946-replay`): **PASS** (+7.5 % / 0.13 MiB/min); diff
+  top no longer names a soak growth site — `addPassEvent` is gone and
+  `games.newID` flipped to −1024 kB (occurrence ids released with their
+  slices). What remains is the one-time, saturating fill of the bounded
+  ring (4096) + ringStore (8192): ≈ +2 MB of `withDefaults` envelope
+  retention between the 1.5-minute early capture (rings not yet full)
+  and the late capture (rings full), flat once the rings are full — a
+  documented, bounded step, not a leak.
+- 30-minute replay soak, post-fix (run `20261018-025948-replay`):
+  **PASS** — `soak: PASS run=20261018-025948-replay mode=replay
+  wall=30m0s rss_growth=+7.8% slope=0.08MiB/min goroutines 4->2
+  fds 8->6 commits=17124 faults=0 provider_errors=0 panics=0
+  passes_evaluated=782`. The growth level is the same one as the
+  15-minute run's (+7.5 % over 13.5 min → +7.8 % over 27 min): the
+  ring-fill step plus GC noise, reached once and held — the signature
+  of a bounded fill, where a linear leak would have doubled the level
+  and held its slope.
+- `go test -race -count=1 ./internal/soak/` (TestSoakShort + the two
+  new bound tests + the pacing contract): PASS.
+
+Consequence for the orchestrator re-run: the 1-hour `make soak`
+rss_growth verdict is expected to land at the ring-fill step plus GC
+noise (single-digit percent), not the previous +30 %.

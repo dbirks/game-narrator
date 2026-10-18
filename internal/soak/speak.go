@@ -156,20 +156,13 @@ func (h *harness) handleCommit(ctx context.Context, c commitInfo, stamp passStam
 
 // speak requests the voice for one committed occurrence, at most once per
 // occurrence: a duplicated provider reply must not produce a second
-// utterance, and the session's occurrence fence is the backstop.
+// utterance. The dedupe map is bounded (spokenCap): dead entries are
+// reclaimed by the prune sweep, and the session's occurrence fence is the
+// backstop for whatever the bounded map cannot hold.
 func (h *harness) speak(ctx context.Context, c commitInfo, stamp passStamp) {
-	h.spokenMu.Lock()
-	if h.spoken[c.occurrence] {
-		h.spokenMu.Unlock()
+	if h.noteSpoken(c.occurrence, stamp) {
 		return
 	}
-	h.spoken[c.occurrence] = true
-	if len(h.spoken) > 4096 {
-		// Bounded: the backstop for this map is the session's occurrence
-		// fence, so clearing settled entries cannot re-open a double speak.
-		h.spoken = map[string]bool{}
-	}
-	h.spokenMu.Unlock()
 
 	pctx, cancel := context.WithTimeout(ctx, providerTimeout)
 	defer cancel()
@@ -207,15 +200,14 @@ func (h *harness) speak(ctx context.Context, c commitInfo, stamp passStamp) {
 	if _, err := h.sess.Apply(ctx, m); err != nil {
 		return
 	}
-	h.spokenMu.Lock()
-	h.started[c.occurrence] = c.generation
-	h.spokenMu.Unlock()
+	// The ready/started events were filed into the pass slice by the
+	// publisher (trackPass), which is also what marks the utterance started
+	// for the settlement test — no manual bookkeeping here.
 
 	// The utterance's end: the fake tone plays for toneEndDelay, then the
-	// lifecycle closes. One end per occurrence: endOnce gates on the session's
-	// fence and the harness's ended set, so the run-end cleanup cannot
-	// double-end an occurrence the timer already closed (a double end would
-	// trip the no_duplicate_speech assertion the run owes).
+	// lifecycle closes. endOnce is idempotent through the session's fence:
+	// a second end (the run-end cleanup racing the timer) names a closed
+	// phase and is refused, so no double end reaches the timeline.
 	h.wg.Add(1)
 	go func() {
 		defer h.wg.Done()
@@ -229,14 +221,11 @@ func (h *harness) speak(ctx context.Context, c commitInfo, stamp passStamp) {
 }
 
 // endOnce applies the terminal end for one occurrence at most once: the
-// ended set is the gate, the session's phase fence the backstop (a cancelled
-// phase cannot be ended, and a second end for a closed phase is refused).
+// session's phase fence is the gate (a cancelled or ended phase cannot be
+// ended, and a second end for a closed phase is refused); the harness needs
+// no set of its own, because the ended event itself is what the pass slice
+// records as the terminal (trackPass).
 func (h *harness) endOnce(ctx context.Context, gen int64, region, occ string) {
-	h.spokenMu.Lock()
-	if h.ended[occ] {
-		h.spokenMu.Unlock()
-		return
-	}
 	m := session.SpeechMsg{
 		Header:       h.header(gen),
 		RegionID:     region,
@@ -244,11 +233,7 @@ func (h *harness) endOnce(ctx context.Context, gen int64, region, occ string) {
 		Kind:         session.SpeechEnded,
 		VoiceID:      soakVoiceID,
 	}
-	_, err := h.sess.Apply(ctx, m)
-	if err == nil {
-		h.ended[occ] = true
-	}
-	h.spokenMu.Unlock()
+	_, _ = h.sess.Apply(ctx, m)
 }
 
 // applySpeech pushes one lifecycle step through the session's speech fence.
@@ -273,17 +258,24 @@ func (h *harness) applySpeech(ctx context.Context, c commitInfo, kind session.Sp
 // the last line's speech ends cleanly; a cancelled one is refused by the
 // session's phase fence, which is exactly "no stale audio starts".
 func (h *harness) finishUtterances(ctx context.Context) {
-	h.spokenMu.Lock()
-	live := make(map[string]int64, len(h.started))
-	for occ, gen := range h.started {
-		if h.ended[occ] {
-			continue // the tone's end timer already closed this one
-		}
-		live[occ] = gen
+	h.passMu.Lock()
+	var live []struct {
+		gen int64
+		occ string
 	}
-	h.spokenMu.Unlock()
-	for occ, gen := range live {
-		h.endOnce(ctx, gen, h.profile.Regions[0].ID, occ)
+	for _, ps := range h.passStates {
+		for occ, gen := range ps.started {
+			if !ps.terminal[occ] {
+				live = append(live, struct {
+					gen int64
+					occ string
+				}{gen, occ})
+			}
+		}
+	}
+	h.passMu.Unlock()
+	for _, l := range live {
+		h.endOnce(ctx, l.gen, h.profile.Regions[0].ID, l.occ)
 	}
 }
 
@@ -357,7 +349,11 @@ func (p *sidecarPub) Publish(ctx context.Context, e events.Envelope) (events.Env
 }
 
 // trackPass files one speech event under the pass its occurrence committed
-// in: the pass slice the scenario assertions evaluate at the end.
+// in: the pass slice the scenario assertions evaluate. The event is routed
+// through the occurrence's pass while the slice is still pending; a slice
+// that has already been graded owes no further events (its utterances all
+// reached a terminal), so a late event for it is dropped from the assertion
+// view — the merged timeline (the hub) still carries it.
 func (p *sidecarPub) trackPass(e events.Envelope) {
 	var payload struct {
 		Occurrence string `json:"dialogue_occurrence_id"`
@@ -365,17 +361,69 @@ func (p *sidecarPub) trackPass(e events.Envelope) {
 	if err := json.Unmarshal(e.Data, &payload); err != nil || payload.Occurrence == "" {
 		return
 	}
-	if v, ok := p.h.occPass.Load(payload.Occurrence); ok {
-		stamp := v.(passStamp)
-		p.h.passEventsMu.Lock()
-		p.h.passEvents[stamp] = append(p.h.passEvents[stamp], e)
-		p.h.passEventsMu.Unlock()
+	p.h.passMu.Lock()
+	stamp, ok := p.h.occPass[payload.Occurrence]
+	if ok {
+		p.h.filePassEvent(stamp, e)
 	}
+	p.h.passMu.Unlock()
 }
 
-// addPassEvent files the sidecar's own commit event under its pass.
+// addPassEvent files the sidecar's own commit event under its pass. The
+// commit events of a pass are all filed while the pass is being fed (the
+// ranking is applied synchronously in feedRow), so a pass is never graded
+// with a commit still on the way.
 func (p *sidecarPub) addPassEvent(stamp passStamp, e events.Envelope) {
-	p.h.passEventsMu.Lock()
-	p.h.passEvents[stamp] = append(p.h.passEvents[stamp], e)
-	p.h.passEventsMu.Unlock()
+	p.h.passMu.Lock()
+	p.h.filePassEvent(stamp, e)
+	p.h.passMu.Unlock()
+}
+
+// spokenCap bounds the spoken-dedupe map. Entries are reclaimed by the
+// prune sweep (settled or unrouted occurrences); the final clear is the
+// pathological fallback — every entry's utterance still open — and the
+// session's occurrence fence is the backstop that makes clearing safe.
+const spokenCap = 4096
+
+// noteSpoken records the occurrence as spoken and reports whether it was
+// already spoken (the double-speak guard). It keeps the dedupe map at its
+// bound: a new entry is admitted only after the prune sweep has made room,
+// and the sweep's clear fallback (a fully unsettled map) is safe because the
+// session's occurrence fence is the backstop. The unit test drives this
+// method directly with N ≫ spokenCap occurrences.
+func (h *harness) noteSpoken(occ string, stamp passStamp) bool {
+	h.spokenMu.Lock()
+	defer h.spokenMu.Unlock()
+	if _, ok := h.spoken[occ]; ok {
+		return true
+	}
+	h.spoken[occ] = stamp
+	if len(h.spoken) > spokenCap {
+		h.pruneSpokenLocked()
+	}
+	return false
+}
+
+// pruneSpokenLocked evicts the spoken entries that are dead: the occurrence
+// reached a terminal in a settled slice, or its occurrence routing is gone
+// (the slice was graded, or the occurrence never routed a speech event). If
+// the sweep still leaves the map at its bound — every utterance it covers
+// still open, a stall the provider budget should not produce — it clears
+// the map: the session's occurrence fence is the backstop, so a cleared
+// entry cannot re-open a double speak it has not already passed.
+// Called with h.spokenMu held.
+func (h *harness) pruneSpokenLocked() {
+	for occ, stamp := range h.spoken {
+		h.passMu.Lock()
+		ps := h.passStates[stamp]
+		_, routed := h.occPass[occ]
+		done := !routed || (ps != nil && ps.settled(time.Now()))
+		h.passMu.Unlock()
+		if done {
+			delete(h.spoken, occ)
+		}
+	}
+	if len(h.spoken) >= spokenCap {
+		h.spoken = map[string]passStamp{}
+	}
 }
