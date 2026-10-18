@@ -111,8 +111,21 @@ const (
 	// faultRecoveryBound is how long after a fault a commit must land. The
 	// local chain commits a line per ~1.2 s of pass; the bound is 25x that
 	// plus the provider timeout margin, so a single slow decision (10 s)
-	// cannot hold the count flat across the window.
+	// cannot hold the count flat across the window. A fault whose window
+	// runs past the run's end is reported, not graded (faultRecoveryVerdict,
+	// ADR-0051): the run's own stop freezes the commit counter.
 	faultRecoveryBound = 30 * time.Second
+	// slopeMinWindow is the shortest post-warm-up span over which the leak
+	// slope is graded (rssSlopeVerdict). The 100 s CI soak's ~70 s
+	// post-warm-up window is at the measurement's noise floor — a one-time
+	// Go-arena step or a GC sawtooth of tens of MiB reads as 30+ MiB/min
+	// over it, at or past the 1 GiB/window bound — and its tail still carries
+	// warm-up under a loaded machine (the passing short run that printed
+	// 6.3 MiB/min was ratcheting, not leaking). The documented gates
+	// (1h replay, 2h chaos) post warm-up 54/105 min, where the same fit
+	// resolves a leak from ratchet. The fit is always computed and
+	// reported; short windows are simply not graded on it.
+	slopeMinWindow = 5 * time.Minute
 )
 
 // Verdict is one pass criterion's outcome.

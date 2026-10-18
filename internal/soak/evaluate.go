@@ -376,6 +376,19 @@ func rssSlopeVerdict(r *Result) Verdict {
 	if len(pts) < 3 {
 		return Verdict{Name: "rss_slope", Passed: true, Detail: detail + " (fit not run: too few samples)"}
 	}
+	if lastSampleGap(pts) < slopeMinWindow {
+		// The fit is reported (summary line, report) but not graded: over a
+		// span this short a one-time Go-arena step or a GC sawtooth of tens of
+		// MiB reads as 30+ MiB/min — at or past the bound — while a real leak
+		// at the bound rate has moved only a few tens of MiB. The post-warm-up
+		// tail of a 100 s run also still carries warm-up under a loaded
+		// machine. The rss_growth level bound (20% / 1 GiB over the same
+		// window) still grades this run; the slope detector grades the windows
+		// it can resolve (the 1h/2h gates: 54/105 min post-warm-up).
+		return Verdict{Name: "rss_slope", Passed: true, Detail: detail + fmt.Sprintf(
+			" (fit not graded: post-warm-up window %s < %s minimum — at this resolution a one-time arena step or GC sawtooth is indistinguishable from a leak; the rss_growth level bound still applies)",
+			lastSampleGap(pts).Round(time.Second), slopeMinWindow)}
+	}
 	ok := slope < bound
 	if !ok {
 		return Verdict{Name: "rss_slope", Passed: false, Detail: detail}
@@ -419,22 +432,43 @@ func fdReturnVerdict(r *Result) Verdict {
 	}
 }
 
-// faultRecoveryVerdict: every injected fault is followed by recovery — a
-// commit lands after it within the bound. The bound is measured on the
-// pipeline's commit counter (the local chain's commitment), which the
-// provider faults are not allowed to stop.
+// faultRecoveryVerdict: every injected fault whose recovery window closed
+// inside the run is followed by recovery — a commit lands after it within
+// the bound. The bound is measured on the pipeline's commit counter (the
+// local chain's commitment), which the provider faults are not allowed to
+// stop.
+//
+// Resolution-aware: a fault fired within faultRecoveryBound of the run's end
+// has an OPEN window. The harness stops the pipeline at run end — the run's
+// timer, not the fault — and the commit counter freezes with it, so "no
+// commit in the remainder" is the run's stop, not evidence of a missing
+// recovery; under CPU contention the pipeline's commit rate is also slower,
+// so the tail window is even less informative. The old form clamped the
+// window to the run's end and graded the tail anyway, which failed the
+// 100 s CI soak on faults the run itself outran. Those faults are reported
+// (Judged=false; the fault table says "open window") and excluded from the
+// verdict; every fault whose window closed inside the run is graded exactly
+// as before — same bound, same evidence.
 func faultRecoveryVerdict(r *Result) Verdict {
 	if len(r.FaultEvents) == 0 {
 		return Verdict{Name: "fault_recovery", Passed: true, Detail: "no faults injected"}
 	}
 	var bad []string
+	var judged, open int
 	for i := range r.FaultEvents {
 		ev := &r.FaultEvents[i]
-		target := ev.Wall.Add(faultRecoveryBound)
-		if target.After(r.Final.T) {
-			target = r.Final.T
+		windowClose := ev.Wall.Add(faultRecoveryBound)
+		if windowClose.After(r.Final.T) {
+			// Open window: the run ended inside the recovery bound. The
+			// pipeline was stopped by the run, not the fault.
+			ev.Judged = false
+			ev.Recovered = false
+			open++
+			continue
 		}
-		c := commitsAtOrAfter(r, target)
+		ev.Judged = true
+		judged++
+		c := commitsAtOrAfter(r, windowClose)
 		ev.Recovered = c > ev.CommitsAtFire
 		ev.WaitMS = waitForCommits(r, ev, c)
 		if !ev.Recovered {
@@ -442,12 +476,15 @@ func faultRecoveryVerdict(r *Result) Verdict {
 				ev.Kind, ev.Wall.Format("15:04:05"), ev.CommitsAtFire, c, faultRecoveryBound.Seconds()))
 		}
 	}
-	if len(bad) > 0 {
-		return Verdict{Name: "fault_recovery", Passed: false, Detail: fmt.Sprintf("%d/%d faults without recovery: %s",
-			len(bad), len(r.FaultEvents), join(bad, 4))}
+	detail := fmt.Sprintf("%d fault(s) graded (window closed inside the run), every one followed by a commit within %s", judged, faultRecoveryBound)
+	if open > 0 {
+		detail += fmt.Sprintf("; %d fault(s) not graded: recovery window open at run end (the run's stop freezes the commit counter; see the fault table)", open)
 	}
-	return Verdict{Name: "fault_recovery", Passed: true,
-		Detail: fmt.Sprintf("%d fault(s), every one followed by a commit within %s", len(r.FaultEvents), faultRecoveryBound)}
+	if len(bad) > 0 {
+		return Verdict{Name: "fault_recovery", Passed: false, Detail: fmt.Sprintf("%d/%d graded faults without recovery: %s",
+			len(bad), judged, join(bad, 4))}
+	}
+	return Verdict{Name: "fault_recovery", Passed: true, Detail: detail}
 }
 
 // commitsAtOrAfter is the pipeline's commit count at the first sample at or

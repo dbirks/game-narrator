@@ -38,8 +38,12 @@ type faultEvent struct {
 	Detail        string    `json:"detail"`
 	CommitsAtFire uint64    `json:"commits_at_fire"`
 	// Recovered and WaitMS are filled at evaluation: a commit landed after
-	// the fault within the bound.
+	// the fault within the bound. Judged is false when the bound's window ran
+	// past the run's end (the harness stopped the pipeline at run end, not
+	// the fault): the fault is reported, not graded (faultRecoveryVerdict,
+	// ADR-0051).
 	Recovered bool  `json:"recovered"`
+	Judged    bool  `json:"judged"`
 	WaitMS    int64 `json:"wait_ms,omitempty"`
 	Clip      int   `json:"clip,omitempty"`
 	Pass      int   `json:"pass,omitempty"`

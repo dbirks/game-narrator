@@ -99,9 +99,15 @@ func writeMarkdown(dir string, r *Result) error {
 		b.WriteString("| t (s) | kind | role | detail | commits at fault | recovered | recovery (ms) |\n")
 		b.WriteString("| --- | --- | --- | --- | --- | --- | --- |\n")
 		for _, ev := range r.FaultEvents {
+			recovered := yesno(ev.Recovered)
+			if !ev.Judged {
+				// Open window at run end: the run's stop froze the commit
+				// counter, so the fault is reported, not graded.
+				recovered = "open window"
+			}
 			fmt.Fprintf(&b, "| %.1f | %s | %s | %s | %d | %s | %d |\n",
 				ev.Wall.Sub(t0).Seconds(), ev.Kind, ev.Role, ev.Detail, ev.CommitsAtFire,
-				yesno(ev.Recovered), ev.WaitMS)
+				recovered, ev.WaitMS)
 		}
 	}
 

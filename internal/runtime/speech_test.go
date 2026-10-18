@@ -764,66 +764,218 @@ func TestSpeechAudioControls(t *testing.T) {
 
 // TestSpeechSessionEndTerminatesPending is the terminal-event contract
 // (docs/spec/13 "did it speak, and why not"): every requested utterance
-// reaches a terminal event with a reason — including when the session ends
-// while the utterance is still in the TTS call or the operator's delay. The
-// clip is fast and the delay at its maximum, so the source end lands while
-// the committed line(s) are still waiting; none of them starts, and each one
-// ends speech.ended{result:"failed", reason:"session_ended"}.
+// reaches a terminal event with a reason, and it lands before the session's
+// own terminal event — including when the session ends while the utterance
+// is still in the TTS call or the operator's delay.
+//
+// Deterministic by construction — docs/spec/12's "deterministic
+// delay-injection suite": the session runs on the explicitly-driven manual
+// frame source (Options.ManualSource), and the test pushes frames at its own
+// pace, waiting on the specific events between pushes:
+//
+//  1. apply the maximum delay (2000 ms, the API's documented maximum,
+//     speechDelayMaxMS) before pushing any frame: with the manual source no
+//     commit can exist before the first push, so "the delay is live before
+//     the first requested utterance" is a protocol fact, not a wall-clock
+//     hope;
+//  2. push line a's frames → wait for line a's commit and its
+//     speech.requested; push line b's frames → wait for the same on line b;
+//  3. close the source: EOF ends the session while the requested utterances
+//     are still pending (each in the TTS call or the operator's delay), and
+//     every one of them reaches its terminal before session.stopped.
+//
+// The replay-driven form of this test raced two wall-clock margins the test
+// does not own: SetAudio against the pipeline's own commit pace (the
+// ~100 ms assumption), and the pipeline's commit pace against the 2000 ms
+// delay itself. Under CPU contention the second margin inverts: line a's
+// delay expires before line b's commit lands, line a submits to the scheduler
+// and is fenced stale by the advance (speech.cancelled new_commit +
+// speech.ended stale_generation — the correct product terminal for a stale
+// utterance), and only line b ends session_ended. The contract the test owns
+// is the terminal one, which no wall-clock margin can reorder: every
+// requested occurrence is terminated, with a reason, before session.stopped.
 func TestSpeechSessionEndTerminatesPending(t *testing.T) {
 	sink := dummy.New(0, 0)
-	e := newVoiceEnv(t, 10*time.Millisecond, 100*time.Millisecond, true, sink, "", nil)
-	sid := e.startReplay()
-	// The delay must be applied before the first commit's worker reaches its
-	// wait: the session starts, the commits land ~100 ms later. 2000 ms is
-	// the API's documented maximum (speechDelayMaxMS on the runtime side).
-	waitRunning(t, e.mgr, sid)
+	src := newManualSource(64)
+	e := newVoiceEnv(t, 10*time.Millisecond, 100*time.Millisecond, true, sink, "",
+		func() (capture.Source, error) { return src, nil })
+
+	info, err := e.mgr.Start(e.ctx, runtime.StartRequest{
+		ProfileID:   e.profileID,
+		FrameSource: runtime.FrameSource{Kind: runtime.SourceKindManual},
+		Mode:        runtime.ModeConservative,
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	sid := info.ID
+	defer waitState(t, e.mgr, sid, 30*time.Second)
+	// The source's EOF ends the session; defer it (LIFO: it runs before the
+	// waitState above) so a mid-test failure still lets the session reach a
+	// terminal state instead of outliving the 30 s wait.
+	defer func() { _ = src.Close() }()
+
+	// The maximum delay is applied before any frame is pushed: nothing
+	// commits before the first push, so the delay is live before the first
+	// requested utterance, by construction.
 	if _, err := e.mgr.SetAudio(sid, runtime.AudioSettings{SpeechDelayMS: ptrInt(2000)}); err != nil {
 		t.Fatalf("set delay: %v", err)
 	}
-	waitState(t, e.mgr, sid, 30*time.Second) // the fast source ends on its own
 
+	// Line a: the clip's frames 4..18 (box appearing, typewriter reveal, then
+	// stable) on the clip's own 10 fps source clock.
+	for n := 4; n <= 18; n++ {
+		src.push(t, manualClipFrame(t, n))
+	}
+	evs1 := e.waitEvents(t, sid, "line a committed and requested", 60*time.Second, func(evs []events.Envelope) bool {
+		var committed, requested bool
+		for _, ev := range evs {
+			switch ev.Name {
+			case events.MessageCommitted:
+				committed = true
+			case events.SpeechRequested:
+				requested = true
+			}
+		}
+		return committed && requested
+	})
+	g1 := mustCommitGen(t, evs1, 1)
+	if g1 == 0 {
+		t.Fatal("line a committed with no generation")
+	}
+
+	// Line b: frames 19..22 carry the second line on the same source clock.
+	for n := 19; n <= 22; n++ {
+		src.push(t, manualClipFrame(t, n))
+	}
+	evs2 := e.waitEvents(t, sid, "line b committed and requested", 60*time.Second, func(evs []events.Envelope) bool {
+		var commits, requested int
+		for _, ev := range evs {
+			switch ev.Name {
+			case events.MessageCommitted:
+				commits++
+			case events.SpeechRequested:
+				requested++
+			}
+		}
+		return commits >= 2 && requested >= 2
+	})
+	g2 := mustCommitGen(t, evs2, 2)
+	if g2 == g1 {
+		t.Fatalf("the two commits share generation %d; the clip should advance", g1)
+	}
+
+	// The source ends now: EOF finalises the session while both requested
+	// utterances are still pending — each in the TTS call or the operator's
+	// delay, none terminated yet (the waits above observed the requested
+	// events and no terminal). Close is idempotent; the deferred form covers
+	// a mid-test failure.
+	if err := src.Close(); err != nil {
+		t.Fatalf("close source: %v", err)
+	}
+	waitState(t, e.mgr, sid, 30*time.Second) // the source's EOF ends the run
 	evs := e.sessionEvents(sid)
-	var requested, terminated, started int
+
+	// The terminal contract (docs/spec/13): every requested occurrence is
+	// terminated, with a reason, before session.stopped. The terminal sets
+	// the product owes are per generation:
+	//
+	//   g1 (stale — fenced by the advance): speech.cancelled(new_commit),
+	//     the fence's own event at the advance, whether g1 is still in the
+	//     delay, already submitted or playing; and, when g1 had submitted,
+	//     the scheduler's speech.ended(failed, stale_generation) drop.
+	//   g2 (current): a terminal before session.stopped —
+	//     speech.ended(failed, session_ended) when it was still in the TTS
+	//     call or the operator's delay when the source ended (the shape this
+	//     test sets up: the maximum delay, the source closed milliseconds
+	//     after the last commit), or the scheduler's terminal for its
+	//     playback when, on a starved machine, the delay expired first.
+	//
+	// Which wall-clock branch wins is not a contract — the 2000 ms delay and
+	// the test's own progress race the machine's speed, exactly the race the
+	// replay-driven form lost. That every requested generation is terminated
+	// at all, with a reason, before the session's terminal event, is.
+	var stoppedSeq int64
+	requestedGens := map[int64]bool{}
+	terminals := map[int64]bool{}
+	var sessionEnded int
 	for _, ev := range evs {
 		switch ev.Name {
 		case events.SpeechRequested:
-			requested++
-		case events.SpeechStarted:
-			started++
-		case events.SpeechEnded:
-			p := payload(t, ev)
-			if p["result"] == "failed" && p["reason"] == "session_ended" {
-				terminated++
+			requestedGens[genOf(t, ev)] = true
+		case events.SpeechEnded, events.SpeechCancelled:
+			// The log is in seq order: a terminal after session.stopped would
+			// mean the audio did not settle before the session's terminal
+			// event, which the wiring's drain exists to prevent.
+			if stoppedSeq > 0 && ev.Seq > stoppedSeq {
+				t.Fatalf("%s (seq %d) lands after session.stopped (seq %d)", ev.Name, ev.Seq, stoppedSeq)
 			}
-		}
-	}
-	if requested < 1 {
-		t.Fatalf("the clip committed no line the pipeline requested: %d requested events", requested)
-	}
-	if started > 0 {
-		t.Fatalf("the maximum delay outruns the clip, but %d playback(s) started", started)
-	}
-	if sink.Starts() > 0 {
-		t.Fatalf("the sink reports %d start(s); the waiting utterance never submits", sink.Starts())
-	}
-	if terminated != requested {
-		t.Fatalf("%d requested utterance(s), only %d reached their terminal session_ended event", requested, terminated)
-	}
-	// The terminal event lands before the session's own terminal event: the
-	// audio settles before session.stopped goes out.
-	var endedSeq, stoppedSeq int64
-	for _, ev := range evs {
-		switch ev.Name {
-		case events.SpeechEnded:
-			if p := payload(t, ev); p["result"] == "failed" && p["reason"] == "session_ended" && ev.Seq > endedSeq {
-				endedSeq = ev.Seq
+			terminals[genOf(t, ev)] = true
+			if ev.Name == events.SpeechEnded {
+				if p := payload(t, ev); p["result"] == "failed" && p["reason"] == "session_ended" {
+					sessionEnded++
+				}
 			}
 		case events.SessionStopped:
 			stoppedSeq = ev.Seq
 		}
 	}
-	if endedSeq >= stoppedSeq {
-		t.Fatalf("the terminal speech event (seq %d) does not precede session.stopped (seq %d)", endedSeq, stoppedSeq)
+	if len(requestedGens) != 2 {
+		t.Fatalf("the clip's two lines requested %d utterance(s), want 2: %v", len(requestedGens), requestedGens)
+	}
+	if stoppedSeq == 0 {
+		t.Fatal("the session never published session.stopped")
+	}
+	for g := range requestedGens {
+		if !terminals[g] {
+			t.Fatalf("generation %d was requested but reached no terminal event (speech.ended or speech.cancelled)", g)
+		}
+	}
+	// The source ended while the requested utterances were still pending —
+	// in the TTS call or the operator's delay, whose maximum is live on all
+	// of them: at least one owes the session_ended terminal. (On a fast
+	// machine both do; on a starved one the advance fences g1 stale and g2
+	// carries the session_ended.)
+	if sessionEnded < 1 {
+		t.Fatalf("no utterance ended failed/session_ended although the source ended while the requested utterances were pending")
+	}
+	// Zero stale audio starts (docs/spec/12): no generation starts at or
+	// after its own cancellation, nothing starts after session.stopped, and
+	// the current generation (g2) never starts at all — its 2000 ms delay
+	// outlasts the source end by construction (the source closes
+	// milliseconds after g2's requested event), so its terminal is the
+	// session_ended counted above. A g2 start would mean the delay expired
+	// before the source closed on a starved machine — the degenerate shape
+	// the setup does not owe a terminal for (a playback still active at the
+	// scheduler's Stop gets no terminal event), named here so a future
+	// reader sees it.
+	firstCancel := map[int64]int64{}
+	for _, ev := range evs {
+		if ev.Name == events.SpeechCancelled && firstCancel[genOf(t, ev)] == 0 {
+			firstCancel[genOf(t, ev)] = ev.Seq
+		}
+	}
+	startedEvents := 0
+	for _, ev := range evs {
+		if ev.Name != events.SpeechStarted {
+			continue
+		}
+		startedEvents++
+		g := genOf(t, ev)
+		if g == g2 {
+			t.Fatalf("the current generation %d started playback; its delay outlasts the source end by construction, so it never submits (sink: %d start(s))", g2, sink.Starts())
+		}
+		if c, ok := firstCancel[g]; ok && ev.Seq >= c {
+			t.Fatalf("generation %d started (seq %d) at/after its cancellation (seq %d) — a stale start", g, ev.Seq, c)
+		}
+		if ev.Seq > stoppedSeq {
+			t.Fatalf("speech.started (seq %d) landed after session.stopped (seq %d)", ev.Seq, stoppedSeq)
+		}
+	}
+	// The sink agrees with the log: a start the events do not name is a
+	// stale playback the fence let through.
+	if n := sink.Starts(); n > startedEvents {
+		t.Fatalf("the sink reports %d start(s) but the log carries %d speech.started event(s)", n, startedEvents)
 	}
 }
 
