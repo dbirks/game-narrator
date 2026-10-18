@@ -503,11 +503,13 @@ Finish with a short summary: the character names staged and the source ids attac
 		t.Fatalf("clone client: %v", err)
 	}
 	var registry voices.RegistryClient
+	var baseReg *tts.Registry
 	if directURL != "" {
-		registry, err = tts.NewRegistry(directURL, cloneCfg.Token())
+		baseReg, err = tts.NewRegistry(directURL, cloneCfg.Token())
 		if err != nil {
 			t.Fatalf("registry: %v", err)
 		}
+		registry = baseReg
 	}
 	voiceSvc := &voices.Service{
 		Store: st, Assets: as, Design: designClient, Base: cloneClient,
@@ -580,24 +582,20 @@ Finish with a short summary: the character names staged and the source ids attac
 	t.Logf("e2e: auditions done: %d clips total, wall=%s",
 		len(auditionEvidence), time.Since(auditionStart).Round(time.Second))
 
-	// Provider request-id presence must be uniform across the run: the
-	// vLLM-Omni deployment issues no request-id response header on
-	// /audio/speech (verified live 2026-10-18 — both 200 and 400 carry only
-	// x-vllm-omni-* token counts and x-llm-collective-model), so the rows
-	// record an empty id there and attribution rests on model + origin +
-	// sha. A deployment that DOES issue ids must put one on every row;
-	// mixed presence is the regression the assertion catches.
-	baselineHasID := false
-	for i, e := range auditionEvidence {
+	// Provider request proof: every clip must carry a non-empty request id
+	// (ADR-0050 follow-up). The vLLM-Omni deployment issues no request-id
+	// response header on /audio/speech (verified live 2026-10-18 — both 200
+	// and 400 carry only x-vllm-omni-* token counts and
+	// x-llm-collective-model), so the client now mints a ULID per request,
+	// sends it as X-Request-Id, and records it when the provider returns none
+	// (RequestIDSource: client). Either way the recorded id is the key the
+	// provider-side logs can be searched by; an empty id is the regression
+	// this assertion catches.
+	for _, e := range auditionEvidence {
 		rid, _ := e["request_id"].(string)
-		has := rid != ""
-		if i > 0 && has != baselineHasID {
-			t.Fatalf("audition %v clip %v: inconsistent provider request-id presence (%q vs baseline %v)", e["character"], e["index"], rid, baselineHasID)
+		if strings.TrimSpace(rid) == "" {
+			t.Fatalf("audition %v clip %v: empty request id; every clip must carry provider request proof", e["character"], e["index"])
 		}
-		baselineHasID = has
-	}
-	if !baselineHasID {
-		t.Logf("e2e: deployment emits no provider request-id on /audio/speech (verified live 2026-10-18); clips attributed by model + origin + sha")
 	}
 
 	// 7. Optional tail (the user's "(and, optionally, …)"): approve one
@@ -624,6 +622,32 @@ Finish with a short summary: the character names staged and the source ids attac
 		}
 		t.Logf("e2e: voice approved + registered: %s name=%s state=%s",
 			rev.ID, regRow.RegisteredName, regRow.State)
+		// The run registered a voice on the SHARED Base registry: cleanup
+		// must remove the exact name this run created through the product's
+		// own removal path (the registry Remove the voice workflow uses) and
+		// assert the registry no longer lists it. t.Cleanup runs on failure
+		// too, so a failed assertion never leaves a test voice behind on the
+		// shared instance (the 2026-10-18 leak that had to be deleted by
+		// hand is the regression this pins).
+		registeredName := regRow.RegisteredName
+		t.Cleanup(func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := baseReg.Remove(cleanupCtx, registeredName); err != nil {
+				t.Logf("e2e: cleanup Remove(%s): %v", registeredName, err)
+			}
+			listed, err := baseReg.List(cleanupCtx)
+			if err != nil {
+				t.Errorf("e2e: cleanup List: %v", err)
+				return
+			}
+			for _, n := range listed.Voices {
+				if n == registeredName {
+					t.Errorf("e2e: registry still lists %s after cleanup; the run must not leak registered voices", registeredName)
+				}
+			}
+			t.Logf("e2e: cleanup verified: %s no longer listed on the shared Base registry", registeredName)
+		})
 		previewLine := "The road ahead was long, and the sea was calm."
 		p, err := voiceSvc.Preview(ctx, rev.ID, previewLine)
 		if err != nil {

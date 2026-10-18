@@ -14,12 +14,18 @@ import (
 // transportError classifies a transport-level failure, mirroring the OpenAI
 // adapter (internal/providers/openai): caller cancellation vs deadline vs
 // unreachable endpoint, with the context error preserved for errors.Is.
-func (c *Client) transportError(err error, status int) *providers.Error {
+// reqID is the correlation id sent on the request (the client-minted
+// X-Request-Id, or the provider's when the response headers carried one);
+// empty when the request could not even be built.
+func (c *Client) transportError(err error, status int, reqID string) *providers.Error {
 	var classified *providers.Error
 	if errors.As(err, &classified) {
 		out := *classified
 		if out.Model == "" {
 			out.Model = c.Model
+		}
+		if out.RequestID == "" {
+			out.RequestID = reqID
 		}
 		return &out
 	}
@@ -46,6 +52,7 @@ func (c *Client) transportError(err error, status int) *providers.Error {
 		e.Err = err
 	}
 	e.Model = c.Model
+	e.RequestID = reqID
 	e.Retryable = e.Kind.RetryableByDefault()
 	return e
 }

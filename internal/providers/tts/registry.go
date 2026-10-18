@@ -306,35 +306,41 @@ func (r *Registry) Ensure(ctx context.Context, required []Voice) (EnsureReport, 
 }
 
 // rawDo issues one registry request. GET and DELETE take a JSON response;
-// POST sends the pre-encoded multipart body. contentType is "" for the
+// POST sends the pre-encoded multipart body. Like every TTS request it
+// carries a client-minted X-Request-Id so a registry call can be correlated
+// in provider-side logs even on deployments that answer with no request-id
+// header. contentType is "" for the
 // JSON methods. Error classification reuses the Client's mapping so the
 // gateway's 404 "unsupported path" and the taxonomy stay consistent.
 func (r *Registry) rawDo(ctx context.Context, method, path string, body io.Reader, contentType string, out any) error {
 	client := &Client{BaseURL: r.BaseURL, Token: r.Token, HTTP: r.HTTP}
+	clientID := newRequestID()
 	req, err := http.NewRequestWithContext(ctx, method, r.BaseURL+path, body)
 	if err != nil {
-		return client.transportError(err, 0)
+		return client.transportError(err, 0, clientID)
 	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", DefaultUserAgent)
+	req.Header.Set("X-Request-Id", clientID)
 	if r.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+r.Token)
 	}
 	httpc := client.httpClient()
 	resp, err := httpc.Do(req)
 	if err != nil {
-		return client.transportError(err, 0)
+		return client.transportError(err, 0, clientID)
 	}
 	defer func() { io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16)) }()
 	respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if readErr != nil {
-		return client.transportError(readErr, resp.StatusCode)
+		return client.transportError(readErr, resp.StatusCode, clientID)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return client.httpError(resp.StatusCode, respBody, requestID(resp.Header))
+		effectiveID, _ := RecordRequestID(requestID(resp.Header), clientID)
+		return client.httpError(resp.StatusCode, respBody, effectiveID)
 	}
 	if out != nil {
 		if err := json.Unmarshal(respBody, out); err != nil {

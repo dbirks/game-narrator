@@ -42,6 +42,14 @@ const (
 	taskTypeBase        = "Base"
 )
 
+// RequestIDSourceProvider and RequestIDSourceClient name the two origins a
+// result's RequestID can have (RecordRequestID): the deployment's own
+// request-id header, or the X-Request-Id the client minted and sent.
+const (
+	RequestIDSourceProvider = "provider"
+	RequestIDSourceClient   = "client"
+)
+
 // Audio is one validated utterance plus its provenance. WAV is the raw file
 // bytes as returned by the server (already validated by ValidateAudio).
 // Model, Latency and RequestID carry the provider evidence the cache and the
@@ -58,7 +66,13 @@ type Audio struct {
 	Model         string
 	Latency       time.Duration
 	RequestID     string
-	Origin        string
+	// RequestIDSource records which side issued RequestID ("provider" when
+	// the deployment returned a request-id header, "client" when the id the
+	// client minted and sent as X-Request-Id is all that exists — the
+	// vLLM-Omni deployment, ADR-0050). Empty on values that never went
+	// through the client's request path.
+	RequestIDSource string
+	Origin          string
 	// Seed is the seed actually sent; it is nil when the caller set none or
 	// when the server rejected it and the request was retried without it.
 	// Seed is metadata, never speaker identity (ADR-0005).
@@ -223,37 +237,47 @@ func (c *Client) endpoint(path string) string {
 // body for 2xx. Every failure mode is classified as *providers.Error; the
 // raw body of error responses is discarded after the message is extracted
 // (it can echo the request, including the token).
-func (c *Client) do(ctx context.Context, body map[string]any) ([]byte, time.Duration, string, error) {
+// do issues one JSON request to /audio/speech and returns the raw response
+// body for 2xx, with the effective request id and its source. Every request
+// carries a client-minted ULID as X-Request-Id: deployments that return no
+// request-id header (the vLLM-Omni one, ADR-0050) must still be correlatable
+// from provider-side logs by the id we sent. Every failure mode is
+// classified as *providers.Error and carries the same effective id; the raw
+// body of error responses is discarded after the message is extracted (it
+// can echo the request, including the token).
+func (c *Client) do(ctx context.Context, body map[string]any) ([]byte, time.Duration, string, string, error) {
 	buf, err := json.Marshal(body)
 	if err != nil {
-		return nil, 0, "", &providers.Error{Kind: providers.KindBadSchema, Msg: "tts: cannot encode request", Err: err, Model: c.Model}
+		return nil, 0, "", "", &providers.Error{Kind: providers.KindBadSchema, Msg: "tts: cannot encode request", Err: err, Model: c.Model}
 	}
+	clientID := newRequestID()
 	start := time.Now()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint("/audio/speech"), bytes.NewReader(buf))
 	if err != nil {
-		return nil, time.Since(start), "", c.transportError(err, 0)
+		return nil, time.Since(start), "", "", c.transportError(err, 0, clientID)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "audio/wav, application/json")
 	req.Header.Set("User-Agent", DefaultUserAgent)
+	req.Header.Set("X-Request-Id", clientID)
 	if c.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
-		return nil, time.Since(start), "", c.transportError(err, 0)
+		return nil, time.Since(start), "", "", c.transportError(err, 0, clientID)
 	}
 	defer func() { io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16)) }()
 	respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	latency := time.Since(start)
-	reqID := requestID(resp.Header)
+	reqID, reqIDSource := RecordRequestID(requestID(resp.Header), clientID)
 	if readErr != nil {
-		return nil, latency, reqID, c.transportError(readErr, resp.StatusCode)
+		return nil, latency, reqID, reqIDSource, c.transportError(readErr, resp.StatusCode, reqID)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, latency, reqID, c.httpError(resp.StatusCode, respBody, reqID)
+		return nil, latency, reqID, reqIDSource, c.httpError(resp.StatusCode, respBody, reqID)
 	}
-	return respBody, latency, reqID, nil
+	return respBody, latency, reqID, reqIDSource, nil
 }
 
 // requestID reads the provider request id from the response headers so the

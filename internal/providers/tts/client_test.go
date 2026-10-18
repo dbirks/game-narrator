@@ -66,6 +66,9 @@ func TestDesignSendsTheVoiceDesignTaskType(t *testing.T) {
 	if got := f.last().Header.Get("Authorization"); got != "Bearer test-token-12345" {
 		t.Errorf("Authorization = %q", got)
 	}
+	if got := f.last().Header.Get("X-Request-Id"); !validRequestID(got) {
+		t.Errorf("X-Request-Id = %q, want a 26-char Crockford ULID", got)
+	}
 	if f.last().Path != "/audio/speech" {
 		t.Errorf("path = %q", f.last().Path)
 	}
@@ -78,6 +81,10 @@ func TestDesignSendsTheVoiceDesignTaskType(t *testing.T) {
 	}
 	if a.Latency <= 0 || a.RequestID == "" {
 		t.Errorf("provenance missing: latency=%s request_id=%q", a.Latency, a.RequestID)
+	}
+	if a.RequestID != "req-1" || a.RequestIDSource != RequestIDSourceProvider {
+		t.Errorf("provenance = %q/%q, want the provider's id (req-1) with source %q",
+			a.RequestID, a.RequestIDSource, RequestIDSourceProvider)
 	}
 	if !strings.Contains(a.Origin, "voice_design") || !strings.Contains(a.Origin, "task_type=VoiceDesign") {
 		t.Errorf("origin = %q", a.Origin)

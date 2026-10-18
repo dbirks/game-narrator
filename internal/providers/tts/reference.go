@@ -69,7 +69,7 @@ func (c *Client) GenerateWithReference(ctx context.Context, req GenerateRequest,
 	if refText = strings.TrimSpace(refText); refText != "" {
 		payload["ref_text"] = refText
 	}
-	body, latency, reqID, err := c.do(ctx, payload)
+	body, latency, reqID, reqIDSource, err := c.do(ctx, payload)
 	if err != nil {
 		if pe := asProvidersError(err); pe != nil && pe.Status == 400 {
 			msg := strings.ToLower(pe.Msg)
@@ -88,7 +88,7 @@ func (c *Client) GenerateWithReference(ctx context.Context, req GenerateRequest,
 		}
 		return Audio{}, err
 	}
-	return c.finishAudio(body, latency, reqID,
+	return c.finishAudio(body, latency, reqID, reqIDSource,
 		fmt.Sprintf("voice_clone model=%s voice=%s inline_ref_audio=true", c.Model, req.Voice), nil, false)
 }
 
@@ -117,7 +117,7 @@ func (c *Client) ProbeReferenceSupport(ctx context.Context) ReferenceProbe {
 		"ref_audio":       dataURI("audio/wav", tone),
 		"ref_text":        "A neutral synthetic reference tone.",
 	}
-	_, _, _, err := c.do(ctx, payload)
+	_, _, _, _, err := c.do(ctx, payload)
 	probe.Probed = true
 	if err == nil {
 		probe.Supported = true

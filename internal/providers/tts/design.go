@@ -44,7 +44,7 @@ func (c *Client) Design(ctx context.Context, req DesignRequest) (Audio, error) {
 			seedSent = true
 		}
 	}
-	body, latency, reqID, err := c.do(ctx, payload)
+	body, latency, reqID, reqIDSource, err := c.do(ctx, payload)
 	if err != nil {
 		// Seed is metadata (ADR-0005): a deployment that rejects the field
 		// must not lose the call, so retry exactly once without it and
@@ -52,12 +52,14 @@ func (c *Client) Design(ctx context.Context, req DesignRequest) (Audio, error) {
 		if req.Seed != nil && isSeedRejection(err) {
 			c.markSeedUnsupported()
 			delete(payload, "seed")
-			body, latency2, reqID2, err2 := c.do(ctx, payload)
-			if err2 != nil {
-				return Audio{}, err2
+			var retryLatency time.Duration
+			var retryID, retrySource string
+			body, retryLatency, retryID, retrySource, err = c.do(ctx, payload)
+			if err != nil {
+				return Audio{}, err
 			}
-			latency, reqID = latency2, reqID2
-			return c.finishAudio(body, latency, reqID,
+			latency, reqID, reqIDSource = retryLatency, retryID, retrySource
+			return c.finishAudio(body, latency, reqID, reqIDSource,
 				fmt.Sprintf("voice_design model=%s task_type=%s seed_unsupported=true", c.Model, taskTypeVoiceDesign),
 				nil, true)
 		}
@@ -72,7 +74,7 @@ func (c *Client) Design(ctx context.Context, req DesignRequest) (Audio, error) {
 	if seedDropped {
 		origin += " seed_unsupported=true"
 	}
-	return c.finishAudio(body, latency, reqID, origin, sentSeed, seedDropped)
+	return c.finishAudio(body, latency, reqID, reqIDSource, origin, sentSeed, seedDropped)
 }
 
 // Generate calls the Base checkpoint to speak Text in Voice. The default
@@ -89,11 +91,11 @@ func (c *Client) Generate(ctx context.Context, req GenerateRequest) (Audio, erro
 	}
 	withTaskType := c.baseTaskTypeCached()
 	payload := c.synthesisPayload(req, withTaskType)
-	body, latency, reqID, err := c.do(ctx, payload)
+	body, latency, reqID, reqIDSource, err := c.do(ctx, payload)
 	if err != nil {
 		if !withTaskType && isBaseTaskTypeDemand(err) {
 			c.markBaseTaskType()
-			body, latency, reqID, err = c.do(ctx, c.synthesisPayload(req, true))
+			body, latency, reqID, reqIDSource, err = c.do(ctx, c.synthesisPayload(req, true))
 		}
 		if err != nil {
 			return Audio{}, c.classifyGenerateError(req, err)
@@ -103,7 +105,7 @@ func (c *Client) Generate(ctx context.Context, req GenerateRequest) (Audio, erro
 	if withTaskType || c.baseTaskTypeCached() {
 		origin += " task_type=" + taskTypeBase
 	}
-	return c.finishAudio(body, latency, reqID, origin, nil, false)
+	return c.finishAudio(body, latency, reqID, reqIDSource, origin, nil, false)
 }
 
 // synthesisPayload builds the Base synthesis body. withTaskType forces
@@ -131,7 +133,7 @@ func (c *Client) synthesisPayload(req GenerateRequest, withTaskType bool) map[st
 // finishAudio validates the raw WAV and assembles the provenance record. A
 // server that returned 200 with a malformed file fails as audio_invalid —
 // that is the docs/spec/07 "malformed/noisy audio → quarantine" rule.
-func (c *Client) finishAudio(body []byte, latency time.Duration, reqID, origin string, seed *int, seedUnsupported bool) (Audio, error) {
+func (c *Client) finishAudio(body []byte, latency time.Duration, reqID, reqIDSource, origin string, seed *int, seedUnsupported bool) (Audio, error) {
 	info, err := ValidateAudio(body)
 	if err != nil {
 		return Audio{}, err
@@ -145,6 +147,7 @@ func (c *Client) finishAudio(body []byte, latency time.Duration, reqID, origin s
 		Model:           c.Model,
 		Latency:         latency,
 		RequestID:       reqID,
+		RequestIDSource: reqIDSource,
 		Origin:          origin,
 		Seed:            seed,
 		SeedUnsupported: seedUnsupported,
