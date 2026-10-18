@@ -12,6 +12,8 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -28,14 +30,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dbirks/game-narrator/internal/assets"
 	"github.com/dbirks/game-narrator/internal/auth"
 	"github.com/dbirks/game-narrator/internal/events"
 	"github.com/dbirks/game-narrator/internal/games"
 	"github.com/dbirks/game-narrator/internal/runtime"
 	"github.com/dbirks/game-narrator/internal/scenario"
+	"github.com/dbirks/game-narrator/internal/speech"
+	"github.com/dbirks/game-narrator/internal/speech/dummy"
 	"github.com/dbirks/game-narrator/internal/store"
 	"github.com/dbirks/game-narrator/internal/vision"
 	"github.com/dbirks/game-narrator/internal/vision/ocr"
+	"github.com/dbirks/game-narrator/internal/voices"
 )
 
 // Fixture locations, relative to the repository root (tests run from
@@ -49,16 +55,28 @@ type sessionEnv struct {
 	t         *testing.T
 	a         *testAuth
 	st        *store.Store
+	mem       *events.MemStore
 	mgr       *runtime.Manager
 	h         http.Handler
 	profileID string
+	voiceID   string      // the narrator's approved voice, when the speech workflow is wired
+	tts       *apiFakeTTS // the fake Base checkpoint, when wired
+	sink      *dummy.Sink // the programmable sink, when wired
 }
 
 // newSessionEnv wires the full session surface: real store, hub, runtime and
 // the API server with every session option set. The synthetic profile is
 // imported and published through the store's write path, as the runtime tests
 // do; its id is on the env for the tests that start sessions against it.
+// wireSpeech additionally wires the voice workflow: the narrator gets one
+// approved, registered voice and the session speaks through the fake Base
+// checkpoint onto the programmable dummy sink.
 func newSessionEnv(t *testing.T) *sessionEnv {
+	t.Helper()
+	return newSessionEnvWired(t, false)
+}
+
+func newSessionEnvWired(t *testing.T, wireSpeech bool) *sessionEnv {
 	t.Helper()
 	a := newTestAuth(t)
 	e := &sessionEnv{t: t, a: a, st: a.st}
@@ -66,15 +84,41 @@ func newSessionEnv(t *testing.T) *sessionEnv {
 	clipDir, _ := filepath.Abs(sessSyntheticDir)
 
 	mem := events.NewMemStore()
+	e.mem = mem
 	hub := events.New(events.WithStore(mem))
-	mgr, err := runtime.New(runtime.Options{
+	opts := runtime.Options{
 		Store:       a.st,
 		Hub:         hub,
 		AssetsRoot:  t.TempDir(),
 		ReplayRoots: []string{clipDir},
 		OCR:         newTruthOCR(t),
 		Log:         slog.New(slog.DiscardHandler),
-	})
+	}
+	if wireSpeech {
+		va, err := assets.NewLocal(t.TempDir())
+		if err != nil {
+			t.Fatalf("assets: %v", err)
+		}
+		cache := speech.New(va, speech.NewMemIndex(), 4)
+		fake := &apiFakeTTS{}
+		svc := &voices.Service{
+			Store: a.st, Assets: va,
+			Design: fake, Base: fake, Registry: newAPIFakeRegistry(),
+			Speech: cache, InstanceID: "primary",
+			BaseModelID:   "fake-base",
+			BackendDigest: "test-backend-v1",
+		}
+		if err := voices.New(svc); err != nil {
+			t.Fatalf("voices.New: %v", err)
+		}
+		e.voiceID = seedNarratorVoiceForAPI(t, a.st, va)
+		e.tts = fake
+		sink := dummy.New(0, 0)
+		e.sink = sink
+		opts.Speech = &runtime.SpeechOptions{Voices: svc, Assets: va,
+			SinkFactory: func() (speech.AudioSink, error) { return sink, nil }}
+	}
+	mgr, err := runtime.New(opts)
 	if err != nil {
 		t.Fatalf("runtime.New: %v", err)
 	}
@@ -267,7 +311,95 @@ func (f *truthOCR) Recognize(ctx context.Context, img image.Image) (ocr.Result, 
 	if !ok {
 		return ocr.Result{}, nil
 	}
-	return ocr.Result{Text: text}, nil
+	// The scripted truth is the harness's own ground truth: it answers with
+	// the confidence the pipeline harness's scripted engine reports, so the
+	// tracker's MinConfidence gate (the recognition package's documented
+	// default) sees what a real confident pass would show.
+	return ocr.Result{Text: text, MeanConf: 0.95, Engine: "truth"}, nil
+}
+
+// ── the voice workflow's test seams (ADR-0030) ──────────────────────────────
+//
+// The TTS and registry fakes are the package's shared ones (voices_test.go):
+// apiFakeTTS answers Design and Base with deterministic, valid WAVs, and
+// newAPIFakeRegistry records the names it is asked to keep present.
+
+// seedNarratorVoiceForAPI gives the narrator character one approved, ready
+// revision on the env's store: a committed tone reference and the "ready on
+// this instance" registration the approval flow leaves behind.
+func seedNarratorVoiceForAPI(t *testing.T, st *store.Store, a *assets.Local) string {
+	t.Helper()
+	ctx := context.Background()
+	ref := speech.MakeToneWAV(220, 1.0, 16000)
+	sum := sha256.Sum256(ref)
+	refSHA := hex.EncodeToString(sum[:])
+	id, _, err := a.PutStaged(ctx, bytes.NewReader(ref), refSHA)
+	if err != nil {
+		t.Fatalf("staging reference: %v", err)
+	}
+	if _, err := a.Commit(ctx, id); err != nil {
+		t.Fatalf("committing reference: %v", err)
+	}
+	profID := games.NewID()
+	now := time.Now().UTC()
+	if err := st.CreateVoiceRevision(ctx, store.VoiceProfile{
+		ID:                profID,
+		Character:         "narrator",
+		Revision:          1,
+		State:             store.VoiceStateApproved,
+		DesignInstruction: "a calm test voice",
+		ReferenceAssetID:  refSHA,
+		RefTranscript:     voices.SyntheticAuditionLines[0],
+		ModelID:           "fake-base",
+		Language:          "en",
+		ConsentProvenance: "original_synthetic_design (game-narrator automated test)",
+		ApprovedBy:        "test",
+		Fingerprint:       voices.Fingerprint(refSHA, voices.SyntheticAuditionLines[0], "fake-base"),
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}); err != nil {
+		t.Fatalf("creating approved revision: %v", err)
+	}
+	verified := time.Now().UTC()
+	if err := st.UpsertVoiceRegistration(ctx, store.VoiceRegistration{
+		VoiceProfileID: profID,
+		InstanceID:     "primary",
+		RegisteredName: "gn_test_narrator_v1",
+		LastVerifiedAt: &verified,
+		State:          store.VoiceRegReady,
+	}); err != nil {
+		t.Fatalf("recording registration: %v", err)
+	}
+	return profID
+}
+
+// sessionEvents reads the session's event log, newest last.
+func (e *sessionEnv) sessionEvents(sessionID string) []events.Envelope {
+	e.t.Helper()
+	evs, err := e.mem.After(context.Background(), 0, events.Filter{SessionID: sessionID}, 4096)
+	if err != nil {
+		e.t.Fatalf("read events: %v", err)
+	}
+	return evs
+}
+
+// waitSpeechEvent polls the event log until a speech event with the name
+// appears (or the deadline passes): the speech workers run beside the
+// pipeline, so the session state alone does not prove the audio moved.
+func (e *sessionEnv) waitSpeechEvent(sessionID, name string, deadline time.Duration) {
+	e.t.Helper()
+	by := time.Now().Add(deadline)
+	for {
+		for _, ev := range e.sessionEvents(sessionID) {
+			if ev.Name == name {
+				return
+			}
+		}
+		if time.Now().After(by) {
+			e.t.Fatalf("no %s event within %s (have %d events)", name, deadline, len(e.sessionEvents(sessionID)))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // ── tests ───────────────────────────────────────────────────────────────────
@@ -396,6 +528,145 @@ func TestSessionLifecycleAndViewerRead(t *testing.T) {
 	assertSessionProblem(t, rec, http.StatusNotFound, "session-not-found")
 }
 
+// audioBlock pulls the audio half of a session snapshot out of one body.
+func audioBlock(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	body := decodeJSON(t, rec)
+	b, ok := body["audio"].(map[string]any)
+	if !ok {
+		t.Fatalf("session body has no audio block: %v", body)
+	}
+	return b
+}
+
+// TestSessionAudioControls exercises the live audio control route against a
+// session that really resolves the narrator's approved voice and plays
+// (fake) samples on the sink: the partial body applies one control at a time
+// and the snapshot carries the applied state, out-of-range values answer the
+// stable 400, a session without a pipeline answers the stable 503, and the
+// terminal snapshot still holds the counters (docs/spec/07, docs/spec/13).
+// Every 200 body is validated against the OpenAPI schema by send (clause c).
+func TestSessionAudioControls(t *testing.T) {
+	e := newSessionEnvWired(t, true)
+	clipDir, _ := filepath.Abs(sessSyntheticDir)
+
+	rec := e.send(auth.RoleOperator, http.MethodPost, "/api/v1/sessions",
+		startPayload(e.profileID, "replay", clipDir, "conservative", false))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("start = %d, want 201 (body %s)", rec.Code, rec.Body.String())
+	}
+	id := decodeJSON(t, rec)["session_id"].(string)
+
+	// The committed line of the clip is resolved and played: the controls
+	// act on a live voice pipeline, not on an empty session. The sink
+	// counts only finished playbacks, so give the (interrupted at session
+	// end) tone a bounded moment to settle into its record.
+	e.waitSpeechEvent(id, events.SpeechStarted, 30*time.Second)
+	by := time.Now().Add(10 * time.Second)
+	for e.sink.Starts() < 1 {
+		if time.Now().After(by) {
+			t.Fatalf("the sink started no playback within %s (records %d)", 10*time.Second, len(e.sink.Records()))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Volume applies; the other controls keep their values (partial body).
+	rec = e.send(auth.RoleOperator, http.MethodPost, "/api/v1/sessions/"+id+"/audio", `{"volume":0.25}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set volume = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	audio := audioBlock(t, rec)
+	if v := audio["volume"].(float64); v != 0.25 {
+		t.Fatalf("applied volume = %v, want 0.25", v)
+	}
+	if m := audio["muted"].(bool); m {
+		t.Fatalf("a volume-only body muted the session: %v", m)
+	}
+	if sink := audio["sink"].(string); sink != "dummy" {
+		t.Fatalf("sink = %q, want the test's dummy sink", sink)
+	}
+
+	// Mute and the speech delay in one body; volume survives.
+	rec = e.send(auth.RoleOperator, http.MethodPost, "/api/v1/sessions/"+id+"/audio",
+		`{"muted":true,"speech_delay_ms":500}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set mute+delay = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	audio = audioBlock(t, rec)
+	if !audio["muted"].(bool) {
+		t.Fatalf("muted = %v, want true", audio["muted"])
+	}
+	if d := audio["speech_delay_ms"].(float64); d != 500 {
+		t.Fatalf("speech_delay_ms = %v, want 500", d)
+	}
+	if v := audio["volume"].(float64); v != 0.25 {
+		t.Fatalf("volume = %v, want the earlier 0.25 to survive", v)
+	}
+
+	// Out-of-range controls are refused with the stable code; the settings
+	// are unchanged by the refusal.
+	rec = e.send(auth.RoleOperator, http.MethodPost, "/api/v1/sessions/"+id+"/audio", `{"volume":1.5}`)
+	assertSessionProblem(t, rec, http.StatusBadRequest, "invalid-audio-settings")
+	rec = e.send(auth.RoleOperator, http.MethodPost, "/api/v1/sessions/"+id+"/audio", `{"speech_delay_ms":-1}`)
+	assertSessionProblem(t, rec, http.StatusBadRequest, "invalid-audio-settings")
+	rec = e.send(auth.RoleOperator, http.MethodPost, "/api/v1/sessions/"+id+"/audio", `{"speech_delay_ms":2001}`)
+	assertSessionProblem(t, rec, http.StatusBadRequest, "invalid-audio-settings")
+
+	// The viewer reads the audio state (the snapshot is not gameplay text);
+	// the control itself stays operator-only.
+	rec = e.send(auth.RoleViewer, http.MethodGet, "/api/v1/sessions/"+id, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("viewer read = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if v := audioBlock(t, rec)["volume"].(float64); v != 0.25 {
+		t.Fatalf("viewer sees volume %v, want the applied 0.25", v)
+	}
+	rec = e.send(auth.RoleViewer, http.MethodPost, "/api/v1/sessions/"+id+"/audio", `{"volume":0.1}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("viewer set audio = %d, want 403 (body %s)", rec.Code, rec.Body.String())
+	}
+
+	// The terminal snapshot keeps the audio half: the counters answer
+	// "did it speak, and why not" after the run is over.
+	fin := e.waitTerminal(id)
+	audio = fin["audio"].(map[string]any)
+	sp, ok := audio["speech"].(map[string]any)
+	if !ok {
+		t.Fatalf("terminal snapshot has no speech counters: %v", audio)
+	}
+	if req, _ := sp["requested"].(float64); req < 1 {
+		t.Fatalf("speech.requested = %v, want >= 1: the committed line never reached the pipeline", req)
+	}
+	if cu, ok := audio["current_utterance"].(map[string]any); !ok || cu["phase"] == nil {
+		t.Fatalf("terminal snapshot has no current_utterance: %v", audio)
+	}
+}
+
+// TestSessionAudioUnwiredIsA503 is the degraded answer: a process without a
+// voice workflow runs silent sessions, and the control route says so with
+// the stable 503 instead of pretending a setting was applied (docs/spec/13).
+func TestSessionAudioUnwiredIsA503(t *testing.T) {
+	e := newSessionEnv(t) // no voice workflow
+	clipDir, _ := filepath.Abs(sessSyntheticDir)
+
+	rec := e.send(auth.RoleOperator, http.MethodPost, "/api/v1/sessions",
+		startPayload(e.profileID, "replay", clipDir, "conservative", false))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("start = %d, want 201 (body %s)", rec.Code, rec.Body.String())
+	}
+	id := decodeJSON(t, rec)["session_id"].(string)
+
+	fin := e.waitTerminal(id)
+	if fin["state"] != runtime.StateStopped {
+		t.Fatalf("silent session state = %v, want stopped", fin["state"])
+	}
+	if _, hasAudio := fin["audio"]; hasAudio {
+		t.Fatalf("a silent session carries the audio block: %v", fin)
+	}
+	rec = e.send(auth.RoleOperator, http.MethodPost, "/api/v1/sessions/"+id+"/audio", `{"volume":0.5}`)
+	assertSessionProblem(t, rec, http.StatusServiceUnavailable, "audio-unavailable")
+}
+
 func TestDevInspectionRoutes(t *testing.T) {
 	e := newSessionEnv(t)
 	clipDir, _ := filepath.Abs(sessSyntheticDir)
@@ -504,6 +775,9 @@ func TestSessionsUnwiredIsA503(t *testing.T) {
 	}
 	if rec := r(auth.RoleOperator, http.MethodPost, "/api/v1/sessions"); rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("unwired POST /sessions = %d, want 503 (body %s)", rec.Code, rec.Body.String())
+	}
+	if rec := r(auth.RoleOperator, http.MethodPost, "/api/v1/sessions/01HAAAAAAAAAAAAAAAAAAAAAAA/audio"); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unwired POST /sessions/{id}/audio = %d, want 503 (body %s)", rec.Code, rec.Body.String())
 	}
 	if rec := r(auth.RoleDeveloper, http.MethodGet, "/api/v1/dev/events"); rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("unwired dev/events = %d, want 503 (body %s)", rec.Code, rec.Body.String())

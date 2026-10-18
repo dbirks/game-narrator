@@ -596,6 +596,50 @@ export interface paths {
     };
     /** A revision's OCR regions. */
     get: operations["listRegions"];
+    /**
+     * Replace a draft revision's whole region set.
+     * @description If-Match carries the profile revision's row version, the same token the message edit sends back (ADR-0015): 428 when absent, 412 when stale, 409 when the revision is published or archived. The body is exhaustive — a region set is one calibration, not a bag of boxes — and the store advances the set's revision exactly once, so cached detections keyed on it invalidate precisely (docs/spec/09 "edits yield new region-set revision"). Geometry is normalised [0,1] frame fractions; a box running past the frame is a 422 with the finding naming the box.
+     */
+    put: operations["replaceRegions"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/profiles/{id}/regions/preview": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * OCR one frame against the boxes on the canvas.
+     * @description A what-if read, never a write: the editor sends a frame — an uploaded capture (multipart, image part ≤ 4 MB) or a fixture path under the configured replay roots (application/json, fixture) — plus the boxes to read, and gets back per box four OCR variants (PSM 6/7 crossed with preprocess on/off, the settings a profile stores in regions.ocr_settings), the textbox-presence classification the runtime's panel detector applies (docs/spec/04), and the timings the page renders. Boxes default to the revision's stored regions when the request names none. The image is held in memory for the request only; it is persisted exactly when dev_trace is set and an event hub is wired, as a regions.preview event carrying the frame.
+     */
+    post: operations["previewRegions"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/profiles/{id}/graph": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * One page of a revision's dialogue graph.
+     * @description The virtualized graph's page contract (docs/spec/09): nodes carry the short normalized text (≤ 80 runes) the list row renders, plus the attribution a verified-vs-inferred label needs; edges are returned only when both endpoints are on the page, so a filtered or partial page is a connected subgraph rather than half-edges at its boundary. Filters are exact, server-side matches on speaker, message kind and scene.
+     */
+    get: operations["listGraph"];
     put?: never;
     post?: never;
     delete?: never;
@@ -760,6 +804,26 @@ export interface paths {
     put?: never;
     /** Stop a session (idempotent). */
     post: operations["stopSession"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/sessions/{id}/audio": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Apply the live audio controls (mute, volume, speech delay) to one session.
+     * @description The operator's audio controls of docs/spec/07 (“Apply volume, short fade, optional delay calibration”): mute skips playback but the events still flow (result “muted”), volume scales the samples in the sink path and speech_delay_ms waits before start, still fenced by newer commits. The body is partial: a field left out keeps its current value. The 200 body is the session snapshot with the applied state (Session.audio), not an acknowledgement. A session without a voice pipeline answers 503 audio_unavailable; an out-of-range control (volume outside 0..1, delay outside 0..2000) answers 400 invalid_audio_settings.
+     */
+    post: operations["setSessionAudio"];
     delete?: never;
     options?: never;
     head?: never;
@@ -1681,6 +1745,153 @@ export interface components {
     RegionList: {
       regions: components["schemas"]["Region"][];
     };
+    /** @description The region set a draft editor saves: every box on the canvas, exhaustive, in normalized [0,1] frame fractions. Omitted ids are minted by the service; omitted constraints stay unconstrained. */
+    RegionSetInput: {
+      regions: components["schemas"]["RegionInput"][];
+    };
+    /** @description One box as the editor sends it. x+w and y+h must stay ≤ 1: the same box-inside-the-frame rule the regions table's CHECK enforces. */
+    RegionInput: {
+      /** @description A region id from a previous GET, or omitted for a new box (the service mints one). */
+      id?: string;
+      label?: string;
+      /** @enum {string} */
+      region_type:
+        | "textbox"
+        | "speaker_label"
+        | "subtitle"
+        | "sign"
+        | "item"
+        | "menu"
+        | "tutorial"
+        | "hud"
+        | "other";
+      /**
+       * @description Defaults to manual when omitted.
+       * @enum {string}
+       */
+      detect_method?: "manual" | "auto_discovered" | "imported" | "inferred";
+      /** @description The scene this box is calibrated against; empty for a set-wide box. */
+      scene_id?: string;
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+      /** @description The capture constraints the preset picker fills in: the region only reads inside this aspect band and at or above these source pixels. Null when omitted. */
+      min_aspect?: number;
+      max_aspect?: number;
+      min_width_px?: number;
+      min_height_px?: number;
+      /** @description The OCR engine settings for this crop (scale, threshold, PSM, whitelist) the adapter interprets. Defaults to {}. */
+      ocr_settings?: Record<string, never>;
+      /** @description Asset hashes holding occlusion/crop masks. Defaults to []. */
+      mask_asset_ids?: unknown[];
+      /** @description Measured reliability on [0,1]; null until a fixture run measures it. */
+      reliability?: number;
+    };
+    /** @description The stored set a replace wrote: the rows with server-assigned timestamps and the set revision the edit advanced. */
+    RegionSet: {
+      regions: components["schemas"]["Region"][];
+      /** @description The region-set revision this save stamped (0002's regions.revision, one number per set). */
+      revision: number;
+    };
+    /** @description One page of a revision's dialogue graph (docs/spec/09 "/games/:id/graph"): the nodes the virtualized list renders plus every edge whose two endpoints both land on the page. */
+    GraphList: {
+      nodes: components["schemas"]["GraphNode"][];
+      edges: components["schemas"]["GraphEdge"][];
+      next_cursor?: string;
+      /** @description The filtered node count, for the page's "n of m" line. */
+      total: number;
+    };
+    /** @description One list row of the graph. text is the normalized text cut to the row's 80-rune label; speaker and scene are null for the unattributed and un-scene lines, which the page renders by name absence. */
+    GraphNode: {
+      id: string;
+      kind: components["schemas"]["TextKind"];
+      text: string;
+      /**
+       * @description The verified-vs-inferred label the page renders (docs/spec/09 "UX robustness").
+       * @enum {string}
+       */
+      attribution_status: "unknown" | "proposed" | "confirmed" | "rejected";
+      attribution_confidence: number;
+      speaker: {
+        id: string;
+        name: string;
+      } | null;
+      scene: {
+        id: string;
+        name: string;
+      } | null;
+    };
+    /** @description One dialogue transition with its provenance: the kind the legend colours, the confidence that ranks it, the source row that established it and how many observations back it (docs/spec/04 "Dialogue graph"). */
+    GraphEdge: {
+      from: string;
+      to: string;
+      /** @enum {string} */
+      kind: "next" | "branch" | "repeat" | "contextual" | "inferred";
+      confidence: number;
+      /** @description The source row that established the transition, null when the graph builder inferred it. */
+      source: string | null;
+      /** @description The backing observations' count, derived from the stored evidence array. */
+      evidence: number;
+      /** @description The data-only condition expression (0002's condition_expr); absent for edges without one. */
+      condition?: string;
+    };
+    /** @description One canvas box: normalized [0,1] geometry plus the stored region's id when the box edits a saved row. */
+    PreviewBox: {
+      id?: string;
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+    };
+    /** @description The OCR preview: per-box variants (PSM 6/7 crossed with preprocess on/off), the textbox-presence classification, and timings. The image itself never appears outside the dev-trace event the caller opts into. */
+    PreviewResult: {
+      /** @enum {string} */
+      source: "upload" | "fixture";
+      /** @description The fixture path as admitted, for the dev-trace line; absent on uploads. */
+      fixture_path?: string;
+      width: number;
+      height: number;
+      /** @description The engine that produced the variants (tesseract). */
+      engine: string;
+      /** @description Wall-clock of the whole preview, every box and variant. */
+      duration_ms: number;
+      regions: components["schemas"]["PreviewRegion"][];
+      /**
+       * @description The classification the page headlines: present when any box's panel detector fired.
+       * @enum {string}
+       */
+      textbox_verdict: "present" | "absent";
+      /** @description Set when the regions.preview event was stored with this preview. */
+      dev_trace?: boolean;
+    };
+    /** @description One box's preview result. A variant's error is carried in the variant, not thrown: the page's job is to show which setting reads the box and which does not. */
+    PreviewRegion: {
+      id?: string;
+      box: components["schemas"]["PreviewBox"];
+      /** @description The box covered nothing at this resolution: a different fact from a box that is there and blank. */
+      empty?: boolean;
+      textbox: components["schemas"]["PreviewPresence"];
+      variants: components["schemas"]["PreviewVariant"][];
+    };
+    /** @description The textbox-presence classification: the runtime's panel detector (a crop is a panel when the share of its pixels below the dark-luma threshold reaches the minimum), measured on the raw crop the runtime measures on. */
+    PreviewPresence: {
+      present: boolean;
+      dark_share: number;
+    };
+    /** @description One (PSM, preprocess) cell of the preview matrix: what that setting reads, how confident it is, how long it took, or why it failed. */
+    PreviewVariant: {
+      /** @description 6 (uniform text block) or 7 (single line): the two PSMs the preview matrix runs (docs/spec/05). */
+      psm: number;
+      /** @description Whether the crop went through the pipeline's preprocess steps (scale, threshold, auto-invert) before the engine saw it. */
+      preprocess: boolean;
+      /** @description The engine's reading, raw: normalization is the caller's step, as the pipeline keeps it (docs/spec/05). */
+      text: string;
+      mean_confidence: number;
+      duration_ms: number;
+      /** @description Set when this cell failed (engine missing, timeout, failed read): the other cells still answer. */
+      error?: string;
+    };
     /** @description An edition's publication history, newest first: what shipped, what it retired, what was refused and which findings refused it (docs/spec/16 answers those from the database). */
     PublishActionList: {
       publish_actions: components["schemas"]["PublishAction"][];
@@ -1771,6 +1982,67 @@ export interface components {
       /** @description The session.started seq; later session events resume from here. */
       event_cursor: number;
       stats: components["schemas"]["PipelineStats"];
+      /** @description Present when the process has a voice workflow wired and this session's sink built; absent on a silent session, where the audio route answers 503 audio_unavailable. */
+      audio?: components["schemas"]["SessionAudio"];
+    };
+    /** @description The live audio controls of POST /api/v1/sessions/{id}/audio. Every field is optional and applied when present; a field left out keeps its current value. */
+    SessionAudioSettings: {
+      /** @description Skip playback. The voice still resolves and the audio still synthesises (the cache is filled); the utterance ends with result “muted” instead of starting. */
+      muted?: boolean;
+      /** @description Scale the samples in the sink path (1.0 = unity). Outside 0..1 is a 400 invalid_audio_settings. */
+      volume?: number;
+      /** @description Wait this long before starting playback; the wait is fenced, a newer commit during the delay still cancels the waiting utterance. */
+      speech_delay_ms?: number;
+    };
+    /** @description The session's audio half: the sink in use, the live controls, the speech counters and the current utterance (docs/spec/07, docs/spec/13 “did it speak, and why not”). */
+    SessionAudio: {
+      /**
+       * @description The audio sink the utterances play on.
+       * @enum {string}
+       */
+      sink: "dummy" | "filesink" | "pipewire";
+      muted: boolean;
+      volume: number;
+      speech_delay_ms: number;
+      speech: components["schemas"]["SpeechCounters"];
+      /** @description The session's current audio position; absent until the first speech event. */
+      current_utterance?: components["schemas"]["UtteranceState"];
+    };
+    /** @description One session's speech decision counters (docs/spec/13): the counts that make “did it speak, and why not” answerable. */
+    SpeechCounters: {
+      /** @description Commits the speech pipeline was asked to speak. */
+      requested: number;
+      /** @description Utterances for which audio was resolved (cache or TTS). */
+      ready: number;
+      /** @description Playbacks the scheduler started on a sink. */
+      started: number;
+      /** @description Cancellations announced (new commit, stale generation, session end). */
+      cancelled: number;
+      /** @description Utterances that reached a terminal state — natural end, failure, skip or mute. */
+      ended: number;
+      /** @description Resolutions served from the TTS cache. */
+      cache_hits: number;
+    };
+    /** @description The last speech lifecycle step any utterance of the session went through. */
+    UtteranceState: {
+      /** @enum {string} */
+      phase:
+        | "requested"
+        | "ready"
+        | "playing"
+        | "ended"
+        | "cancelled"
+        | "skipped"
+        | "muted"
+        | "failed";
+      /** @description The terminal payload result when the phase is terminal (ended, muted, skipped, failed). */
+      result?: string;
+      /** @description The committing generation of the utterance. */
+      generation: number;
+      /** @description The dialogue occurrence the audio belongs to. */
+      utterance_id?: string;
+      /** Format: date-time */
+      at: string;
     };
     /** @description The documented event wire shape (docs/spec/08 event stream). */
     EventEnvelope: {
@@ -2134,6 +2406,8 @@ export interface components {
     Limit: number;
     /** @description Search hits carry whole message rows, so the ceiling is tighter than a list's. */
     SearchLimit: number;
+    /** @description The graph page virtualizes, so its ceiling is the 2 000 nodes docs/spec/09 bounds the view at, and an omitted limit is one list-pane pageful, not the whole revision. */
+    GraphLimit: number;
     /** @description At most 200 characters. Same key + same body replays the stored response; same key + different body is a 422. Held in the process's memory only: a restart forgets it, and a retried POST then lands on the store's own uniqueness rules instead (ADR-0017). */
     IdempotencyKey: string;
     /** @description The session id returned by POST /api/v1/sessions (a ULID). */
@@ -3288,12 +3562,130 @@ export interface operations {
       /** @description The regions. */
       200: {
         headers: {
+          ETag?: string;
           [name: string]: unknown;
         };
         content: {
           "application/json": components["schemas"]["RegionList"];
         };
       };
+      404: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  replaceRegions: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: components["parameters"]["ProfileId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["RegionSetInput"];
+      };
+    };
+    responses: {
+      /** @description Saved. ETag is the revision's new token. */
+      200: {
+        headers: {
+          ETag?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["RegionSet"];
+        };
+      };
+      400: components["responses"]["Problem"];
+      404: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
+      412: components["responses"]["Problem"];
+      422: components["responses"]["Problem"];
+      428: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  previewRegions: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: components["parameters"]["ProfileId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": {
+          /** @description A clean relative frame path under the replay roots, e.g. synthetic/textbox/plain-dejavu-01.png. Traversal and absolute paths are refused. */
+          fixture: string;
+          regions?: components["schemas"]["PreviewBox"][];
+          dev_trace?: boolean;
+        };
+        "multipart/form-data": {
+          /**
+           * Format: binary
+           * @description The capture frame, at most 4 MB.
+           */
+          image: string;
+          /** @description A JSON array of PreviewBox, optional: the revision's stored regions answer when it is absent. */
+          regions?: string;
+          /** @description true/1 for the dev-trace event; optional. */
+          dev_trace?: string;
+        };
+      };
+    };
+    responses: {
+      /** @description The preview. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PreviewResult"];
+        };
+      };
+      400: components["responses"]["Problem"];
+      404: components["responses"]["Problem"];
+      413: components["responses"]["Problem"];
+      415: components["responses"]["Problem"];
+      502: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  listGraph: {
+    parameters: {
+      query?: {
+        speaker?: string;
+        kind?: components["schemas"]["TextKind"];
+        scene?: string;
+        /** @description An opaque next_cursor issued by this service for the same list. Anything else is a 400, not an empty page. */
+        cursor?: components["parameters"]["Cursor"];
+        /** @description The graph page virtualizes, so its ceiling is the 2 000 nodes docs/spec/09 bounds the view at, and an omitted limit is one list-pane pageful, not the whole revision. */
+        limit?: components["parameters"]["GraphLimit"];
+      };
+      header?: never;
+      path: {
+        id: components["parameters"]["ProfileId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description One page of nodes and the edges between them. */
+      200: {
+        headers: {
+          ETag?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["GraphList"];
+        };
+      };
+      400: components["responses"]["Problem"];
       404: components["responses"]["Problem"];
       default: components["responses"]["Problem"];
     };
@@ -3583,6 +3975,37 @@ export interface operations {
           "application/json": components["schemas"]["Session"];
         };
       };
+      404: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  setSessionAudio: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The session id returned by POST /api/v1/sessions (a ULID). */
+        id: components["parameters"]["SessionId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["SessionAudioSettings"];
+      };
+    };
+    responses: {
+      /** @description The session snapshot with the applied settings (see Session.audio). */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Session"];
+        };
+      };
+      400: components["responses"]["Problem"];
       404: components["responses"]["Problem"];
       503: components["responses"]["Problem"];
       default: components["responses"]["Problem"];

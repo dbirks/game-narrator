@@ -7,12 +7,14 @@ import { DialoguePage } from "./pages/Dialogue";
 import { DiagnosticsPage } from "./pages/Diagnostics";
 import { DeveloperPage } from "./pages/developer/DeveloperPage";
 import { GameOverviewPage } from "./pages/GameOverview";
+import { GraphPage } from "./pages/Graph";
 import { LibraryPage } from "./pages/Library";
 import { LoginPage } from "./pages/Login";
 import { NewGamePage } from "./pages/NewGame";
 import { NotFoundPage } from "./pages/NotFound";
 import { PlayPage } from "./pages/Play";
 import { PublishPage } from "./pages/Publish";
+import { RegionsPage } from "./pages/Regions";
 import { SetupPage } from "./pages/Setup";
 import { VoicesPage } from "./pages/Voices";
 
@@ -92,6 +94,22 @@ export function App() {
           element={
             <RequireAuth>
               <CharactersPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/games/:id/graph"
+          element={
+            <RequireAuth>
+              <GraphPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/games/:id/regions"
+          element={
+            <RequireAuth>
+              <RegionsPage />
             </RequireAuth>
           }
         />

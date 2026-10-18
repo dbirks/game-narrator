@@ -25,4 +25,8 @@ export const ports = {
   /** the packaged binary the m5-part1 walk (play / characters / publish / diagnostics)
    *  drives, with the repo's testdata admitted to the replay allowlist. */
   play: 18102,
+  /** the packaged binary the m5 graph/regions walk drives: the replay allowlist
+   *  admits the repo's testdata (the preview's fixture), so OCR runs against
+   *  the synthetic textbox frame. */
+  graphRegions: 18103,
 } as const;

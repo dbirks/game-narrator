@@ -35,3 +35,4 @@ verify-*.png
 *.sqlite-wal
 *.sqlite-shm
 /tmp/
+/game-narrator

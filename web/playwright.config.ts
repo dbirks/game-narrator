@@ -29,6 +29,7 @@ const developerUrl = `http://127.0.0.1:${ports.developer}`;
 const onboardingUrl = `http://127.0.0.1:${ports.onboarding}`;
 const voicesUrl = `http://127.0.0.1:${ports.voices}`;
 const playUrl = `http://127.0.0.1:${ports.play}`;
+const graphRegionsUrl = `http://127.0.0.1:${ports.graphRegions}`;
 const embeddedBinary = resolve(import.meta.dirname, "..", "bin", "game-narrator");
 // The replay allowlist for the inspector's server: the repo's testdata, named
 // explicitly (ADR-0024 "replay allowlist") rather than relying on the
@@ -78,7 +79,7 @@ export default defineConfig({
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
       testIgnore:
-        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|m5-part1\.spec\.ts/,
+        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|m5-part1\.spec\.ts|m5-graph-regions\.spec\.ts/,
     },
     {
       name: "embedded",
@@ -127,6 +128,15 @@ export default defineConfig({
       // ADR-0024), so /play can start a real replay session on the synthetic clip.
       testMatch: /m5-part1\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: playUrl },
+    },
+    {
+      name: "graph-regions",
+      // The milestone 5 graph/regions walk (docs/spec/09 "/games/:id/graph" and
+      // "/games/:id/regions"): the packaged binary with the repo's testdata on the
+      // replay allowlist, so the region preview can run the real OCR engine over
+      // the synthetic textbox frame (test-on-fixture, ADR-0024).
+      testMatch: /m5-graph-regions\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: graphRegionsUrl },
     },
   ],
   webServer: [
@@ -246,10 +256,35 @@ export default defineConfig({
     {
       // The m5-part1 player walk on the packaged binary: the replay allowlist
       // admits the repo's testdata, exactly as the developer project does, so
-      // /play can run the synthetic clip through the real pipeline.
+      // /play can run the synthetic clip through the real pipeline. The speech
+      // roles point at the same scripted TTS instance the voices walk uses, so
+      // the session's audio pipeline is wired and /play's audio controls are
+      // real (ADR-0039); the seeded walk has no approved voice, so the
+      // committed lines end skipped with the reason — the counters show it.
       command: `node web/e2e/serve.mjs play 127.0.0.1:${ports.play} ${embeddedBinary} serve`,
       cwd: "..",
       url: `${playUrl}/api/v1/health/live`,
+      env: {
+        GAME_NARRATOR_REPLAY_ROOTS: replayRoots,
+        GAME_NARRATOR_GATEWAY_URL: `http://127.0.0.1:${ports.fakeTTS}/v1`,
+        GAME_NARRATOR_GATEWAY_TOKEN: "fake-e2e-token",
+        GAME_NARRATOR_ROLE_VOICE_DESIGN_MODEL: "fake-voicedesign",
+        GAME_NARRATOR_ROLE_VOICE_CLONE_MODEL: "fake-base",
+        GAME_NARRATOR_TTS_BASE_DIRECT_URL: `http://127.0.0.1:${ports.fakeTTS}/v1`,
+      },
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The m5 graph/regions walk on the packaged binary: the replay allowlist
+      // admits the repo's testdata so the region preview's `fixture` admits the
+      // synthetic textbox frame, and the preview runs the real tesseract over it
+      // (no speech roles are needed — no session runs in this walk).
+      command: `node web/e2e/serve.mjs graph-regions 127.0.0.1:${ports.graphRegions} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${graphRegionsUrl}/api/v1/health/live`,
       env: { GAME_NARRATOR_REPLAY_ROOTS: replayRoots },
       reuseExistingServer: false,
       timeout: 60_000,

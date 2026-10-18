@@ -38,7 +38,7 @@ export type Schemas = components["schemas"];
 // ── path / method typing ────────────────────────────────────────────────────
 
 type PathTemplate = keyof paths & string;
-type MethodKey = "get" | "post" | "patch" | "delete";
+type MethodKey = "get" | "post" | "put" | "patch" | "delete";
 
 /** The operation object for one (path template, method) pair. */
 export type Operation<T extends PathTemplate, M extends MethodKey> = M extends keyof paths[T]
@@ -401,6 +401,18 @@ export class ApiClient {
     opts: RequestOptions<QueryOf<Operation<T, "post">>, BodyOf<Operation<T, "post">>> = {},
   ): Promise<ResponseFor<T, "post">> {
     return this.request("post", template, opts) as Promise<ResponseFor<T, "post">>;
+  }
+
+  /**
+   * PUT — the whole-document draft writes (the region set replace is the one
+   * the catalog exposes): the body is exhaustive and If-Match rides the
+   * profile's row version, exactly like the message PATCH.
+   */
+  put<T extends PathTemplate>(
+    template: T,
+    opts: RequestOptions<QueryOf<Operation<T, "put">>, BodyOf<Operation<T, "put">>> = {},
+  ): Promise<ResponseFor<T, "put">> {
+    return this.request("put", template, opts) as Promise<ResponseFor<T, "put">>;
   }
 
   patch<T extends PathTemplate>(

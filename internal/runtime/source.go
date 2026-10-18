@@ -33,14 +33,16 @@ const (
 	EnvDevDolphin = "GAME_NARRATOR_DEV_DOLPHIN"
 )
 
-// replaySpeed is the pacing of a replayed session. Speed 0 drains the
-// recording as fast as the pipeline consumes it: the tracker decides on the
-// recording's own source clock, so the decision is a pure function of the
-// frames and the engine — docs/spec/12's "a replay must not depend on machine
-// speed". Pacing at real time (1.0) would interleave wall-clock OCR/ranking
-// latency with the source clock and make the outcome a function of machine
-// speed, which is exactly the failure the Frame-replay gate exists to forbid.
-const replaySpeed = 0.0
+// The pacing of a replayed session comes from Options.ReplaySpeed. Speed 0
+// (the default) drains the recording as fast as the pipeline consumes it:
+// the tracker decides on the recording's own source clock, so the decision is
+// a pure function of the frames and the engine — docs/spec/12's "a replay
+// must not depend on machine speed". Pacing at real time (1.0) would
+// interleave wall-clock OCR/ranking latency with the source clock and make
+// the outcome a function of machine speed, which is exactly the failure the
+// Frame-replay gate exists to forbid — so the default stays 0, and only a
+// caller that deliberately wants real-time pacing (the live session test,
+// whose evidence is the audio half, not the frame-replay gate) sets 1.0.
 
 // DefaultReplayRoots answers the allowlist default: an explicit
 // GAME_NARRATOR_REPLAY_ROOTS (comma-separated, absolute) wins; otherwise the
@@ -161,7 +163,7 @@ func isUnder(root, p string) bool {
 // (ErrSourceUnsupported) — the runtime never fakes the emulator and never
 // launches one itself; the closure is the one place the dev bridge hands a
 // ready frame source to the pipeline.
-func buildFrameSource(kind, dir string, roots []string, devDolphin func() (capture.Source, error), lookupEnv func(string) (string, bool)) (capture.Source, error) {
+func buildFrameSource(kind, dir string, roots []string, speed float64, devDolphin func() (capture.Source, error), lookupEnv func(string) (string, bool)) (capture.Source, error) {
 	if lookupEnv == nil {
 		lookupEnv = os.LookupEnv
 	}
@@ -171,7 +173,7 @@ func buildFrameSource(kind, dir string, roots []string, devDolphin func() (captu
 		if err != nil {
 			return nil, err
 		}
-		return &replay.Source{Dir: dir, Speed: replaySpeed}, nil
+		return &replay.Source{Dir: dir, Speed: speed}, nil
 	case SourceKindTestPattern:
 		// 640x480 at the clip's 10 Hz cadence: the tracker's documented knobs
 		// are sized to a 10 Hz recording, and the pattern needs no device.

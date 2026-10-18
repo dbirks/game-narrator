@@ -2064,6 +2064,13 @@
     "responses": {
      "200": {
       "description": "The regions.",
+      "headers": {
+       "ETag": {
+        "schema": {
+         "type": "string"
+        }
+       }
+      },
       "content": {
        "application/json": {
         "schema": {
@@ -2071,6 +2078,241 @@
         }
        }
       }
+     },
+     "404": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   },
+   "put": {
+    "operationId": "replaceRegions",
+    "tags": [
+     "profiles"
+    ],
+    "summary": "Replace a draft revision's whole region set.",
+    "description": "If-Match carries the profile revision's row version, the same token the message edit sends back (ADR-0015): 428 when absent, 412 when stale, 409 when the revision is published or archived. The body is exhaustive — a region set is one calibration, not a bag of boxes — and the store advances the set's revision exactly once, so cached detections keyed on it invalidate precisely (docs/spec/09 \"edits yield new region-set revision\"). Geometry is normalised [0,1] frame fractions; a box running past the frame is a 422 with the finding naming the box.",
+    "x-required-role": "curator",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/ProfileId"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/RegionSetInput"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Saved. ETag is the revision's new token.",
+      "headers": {
+       "ETag": {
+        "schema": {
+         "type": "string"
+        }
+       }
+      },
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/RegionSet"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "404": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "409": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "412": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "422": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "428": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   }
+  },
+  "/api/v1/profiles/{id}/regions/preview": {
+   "post": {
+    "operationId": "previewRegions",
+    "tags": [
+     "profiles"
+    ],
+    "summary": "OCR one frame against the boxes on the canvas.",
+    "description": "A what-if read, never a write: the editor sends a frame — an uploaded capture (multipart, image part ≤ 4 MB) or a fixture path under the configured replay roots (application/json, fixture) — plus the boxes to read, and gets back per box four OCR variants (PSM 6/7 crossed with preprocess on/off, the settings a profile stores in regions.ocr_settings), the textbox-presence classification the runtime's panel detector applies (docs/spec/04), and the timings the page renders. Boxes default to the revision's stored regions when the request names none. The image is held in memory for the request only; it is persisted exactly when dev_trace is set and an event hub is wired, as a regions.preview event carrying the frame.",
+    "x-required-role": "curator",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/ProfileId"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "fixture"
+        ],
+        "properties": {
+         "fixture": {
+          "type": "string",
+          "description": "A clean relative frame path under the replay roots, e.g. synthetic/textbox/plain-dejavu-01.png. Traversal and absolute paths are refused."
+         },
+         "regions": {
+          "type": "array",
+          "items": {
+           "$ref": "#/components/schemas/PreviewBox"
+          }
+         },
+         "dev_trace": {
+          "type": "boolean"
+         }
+        }
+       }
+      },
+      "multipart/form-data": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "image"
+        ],
+        "properties": {
+         "image": {
+          "type": "string",
+          "format": "binary",
+          "description": "The capture frame, at most 4 MB."
+         },
+         "regions": {
+          "type": "string",
+          "description": "A JSON array of PreviewBox, optional: the revision's stored regions answer when it is absent."
+         },
+         "dev_trace": {
+          "type": "string",
+          "description": "true/1 for the dev-trace event; optional."
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "The preview.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/PreviewResult"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "404": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "413": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "415": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "502": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "503": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   }
+  },
+  "/api/v1/profiles/{id}/graph": {
+   "get": {
+    "operationId": "listGraph",
+    "tags": [
+     "profiles"
+    ],
+    "summary": "One page of a revision's dialogue graph.",
+    "description": "The virtualized graph's page contract (docs/spec/09): nodes carry the short normalized text (≤ 80 runes) the list row renders, plus the attribution a verified-vs-inferred label needs; edges are returned only when both endpoints are on the page, so a filtered or partial page is a connected subgraph rather than half-edges at its boundary. Filters are exact, server-side matches on speaker, message kind and scene.",
+    "x-required-role": "viewer",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/ProfileId"
+     },
+     {
+      "name": "speaker",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "kind",
+      "in": "query",
+      "schema": {
+       "$ref": "#/components/schemas/TextKind"
+      }
+     },
+     {
+      "name": "scene",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "$ref": "#/components/parameters/Cursor"
+     },
+     {
+      "$ref": "#/components/parameters/GraphLimit"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "One page of nodes and the edges between them.",
+      "headers": {
+       "ETag": {
+        "schema": {
+         "type": "string"
+        }
+       }
+      },
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/GraphList"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Problem"
      },
      "404": {
       "$ref": "#/components/responses/Problem"
@@ -2659,6 +2901,56 @@
         }
        }
       }
+     },
+     "404": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "503": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   }
+  },
+  "/api/v1/sessions/{id}/audio": {
+   "post": {
+    "operationId": "setSessionAudio",
+    "tags": [
+     "sessions"
+    ],
+    "summary": "Apply the live audio controls (mute, volume, speech delay) to one session.",
+    "description": "The operator's audio controls of docs/spec/07 (\u201cApply volume, short fade, optional delay calibration\u201d): mute skips playback but the events still flow (result \u201cmuted\u201d), volume scales the samples in the sink path and speech_delay_ms waits before start, still fenced by newer commits. The body is partial: a field left out keeps its current value. The 200 body is the session snapshot with the applied state (Session.audio), not an acknowledgement. A session without a voice pipeline answers 503 audio_unavailable; an out-of-range control (volume outside 0..1, delay outside 0..2000) answers 400 invalid_audio_settings.",
+    "x-required-role": "operator",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/SessionId"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/SessionAudioSettings"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "The session snapshot with the applied settings (see Session.audio).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Session"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Problem"
      },
      "404": {
       "$ref": "#/components/responses/Problem"
@@ -3951,6 +4243,17 @@
      "default": 50
     },
     "description": "Search hits carry whole message rows, so the ceiling is tighter than a list's."
+   },
+   "GraphLimit": {
+    "name": "limit",
+    "in": "query",
+    "schema": {
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 2000,
+     "default": 400
+    },
+    "description": "The graph page virtualizes, so its ceiling is the 2 000 nodes docs/spec/09 bounds the view at, and an omitted limit is one list-pane pageful, not the whole revision."
    },
    "IdempotencyKey": {
     "name": "Idempotency-Key",
@@ -5455,6 +5758,468 @@
      }
     }
    },
+   "RegionSetInput": {
+    "type": "object",
+    "description": "The region set a draft editor saves: every box on the canvas, exhaustive, in normalized [0,1] frame fractions. Omitted ids are minted by the service; omitted constraints stay unconstrained.",
+    "required": [
+     "regions"
+    ],
+    "additionalProperties": false,
+    "properties": {
+     "regions": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/RegionInput"
+      }
+     }
+    }
+   },
+   "RegionInput": {
+    "type": "object",
+    "description": "One box as the editor sends it. x+w and y+h must stay ≤ 1: the same box-inside-the-frame rule the regions table's CHECK enforces.",
+    "required": [
+     "region_type",
+     "x",
+     "y",
+     "w",
+     "h"
+    ],
+    "properties": {
+     "id": {
+      "type": "string",
+      "description": "A region id from a previous GET, or omitted for a new box (the service mints one)."
+     },
+     "label": {
+      "type": "string",
+      "maxLength": 200
+     },
+     "region_type": {
+      "type": "string",
+      "enum": [
+       "textbox",
+       "speaker_label",
+       "subtitle",
+       "sign",
+       "item",
+       "menu",
+       "tutorial",
+       "hud",
+       "other"
+      ]
+     },
+     "detect_method": {
+      "type": "string",
+      "enum": [
+       "manual",
+       "auto_discovered",
+       "imported",
+       "inferred"
+      ],
+      "description": "Defaults to manual when omitted."
+     },
+     "scene_id": {
+      "type": "string",
+      "description": "The scene this box is calibrated against; empty for a set-wide box."
+     },
+     "x": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+     },
+     "y": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+     },
+     "w": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+     },
+     "h": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+     },
+     "min_aspect": {
+      "type": "number",
+      "description": "The capture constraints the preset picker fills in: the region only reads inside this aspect band and at or above these source pixels. Null when omitted."
+     },
+     "max_aspect": {
+      "type": "number"
+     },
+     "min_width_px": {
+      "type": "integer"
+     },
+     "min_height_px": {
+      "type": "integer"
+     },
+     "ocr_settings": {
+      "type": "object",
+      "description": "The OCR engine settings for this crop (scale, threshold, PSM, whitelist) the adapter interprets. Defaults to {}."
+     },
+     "mask_asset_ids": {
+      "type": "array",
+      "description": "Asset hashes holding occlusion/crop masks. Defaults to []."
+     },
+     "reliability": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Measured reliability on [0,1]; null until a fixture run measures it."
+     }
+    }
+   },
+   "RegionSet": {
+    "type": "object",
+    "description": "The stored set a replace wrote: the rows with server-assigned timestamps and the set revision the edit advanced.",
+    "required": [
+     "regions",
+     "revision"
+    ],
+    "properties": {
+     "regions": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/Region"
+      }
+     },
+     "revision": {
+      "type": "integer",
+      "description": "The region-set revision this save stamped (0002's regions.revision, one number per set)."
+     }
+    }
+   },
+   "GraphList": {
+    "type": "object",
+    "description": "One page of a revision's dialogue graph (docs/spec/09 \"/games/:id/graph\"): the nodes the virtualized list renders plus every edge whose two endpoints both land on the page.",
+    "required": [
+     "nodes",
+     "edges",
+     "total"
+    ],
+    "properties": {
+     "nodes": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/GraphNode"
+      }
+     },
+     "edges": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/GraphEdge"
+      }
+     },
+     "next_cursor": {
+      "type": "string"
+     },
+     "total": {
+      "type": "integer",
+      "description": "The filtered node count, for the page's \"n of m\" line."
+     }
+    }
+   },
+   "GraphNode": {
+    "type": "object",
+    "description": "One list row of the graph. text is the normalized text cut to the row's 80-rune label; speaker and scene are null for the unattributed and un-scene lines, which the page renders by name absence.",
+    "required": [
+     "id",
+     "kind",
+     "text",
+     "attribution_status",
+     "attribution_confidence",
+     "speaker",
+     "scene"
+    ],
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "kind": {
+      "$ref": "#/components/schemas/TextKind"
+     },
+     "text": {
+      "type": "string",
+      "maxLength": 80
+     },
+     "attribution_status": {
+      "type": "string",
+      "enum": [
+       "unknown",
+       "proposed",
+       "confirmed",
+       "rejected"
+      ],
+      "description": "The verified-vs-inferred label the page renders (docs/spec/09 \"UX robustness\")."
+     },
+     "attribution_confidence": {
+      "type": "number"
+     },
+     "speaker": {
+      "type": [
+       "object",
+       "null"
+      ],
+      "required": [
+       "id",
+       "name"
+      ],
+      "properties": {
+       "id": {
+        "type": "string"
+       },
+       "name": {
+        "type": "string"
+       }
+      }
+     },
+     "scene": {
+      "type": [
+       "object",
+       "null"
+      ],
+      "required": [
+       "id",
+       "name"
+      ],
+      "properties": {
+       "id": {
+        "type": "string"
+       },
+       "name": {
+        "type": "string"
+       }
+      }
+     }
+    }
+   },
+   "GraphEdge": {
+    "type": "object",
+    "description": "One dialogue transition with its provenance: the kind the legend colours, the confidence that ranks it, the source row that established it and how many observations back it (docs/spec/04 \"Dialogue graph\").",
+    "required": [
+     "from",
+     "to",
+     "kind",
+     "confidence",
+     "source",
+     "evidence"
+    ],
+    "properties": {
+     "from": {
+      "type": "string"
+     },
+     "to": {
+      "type": "string"
+     },
+     "kind": {
+      "type": "string",
+      "enum": [
+       "next",
+       "branch",
+       "repeat",
+       "contextual",
+       "inferred"
+      ]
+     },
+     "confidence": {
+      "type": "number"
+     },
+     "source": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "description": "The source row that established the transition, null when the graph builder inferred it."
+     },
+     "evidence": {
+      "type": "integer",
+      "description": "The backing observations' count, derived from the stored evidence array."
+     },
+     "condition": {
+      "type": "string",
+      "description": "The data-only condition expression (0002's condition_expr); absent for edges without one."
+     }
+    }
+   },
+   "PreviewBox": {
+    "type": "object",
+    "description": "One canvas box: normalized [0,1] geometry plus the stored region's id when the box edits a saved row.",
+    "required": [
+     "x",
+     "y",
+     "w",
+     "h"
+    ],
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "x": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+     },
+     "y": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+     },
+     "w": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+     },
+     "h": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+     }
+    }
+   },
+   "PreviewResult": {
+    "type": "object",
+    "description": "The OCR preview: per-box variants (PSM 6/7 crossed with preprocess on/off), the textbox-presence classification, and timings. The image itself never appears outside the dev-trace event the caller opts into.",
+    "required": [
+     "source",
+     "width",
+     "height",
+     "engine",
+     "duration_ms",
+     "regions",
+     "textbox_verdict"
+    ],
+    "properties": {
+     "source": {
+      "type": "string",
+      "enum": [
+       "upload",
+       "fixture"
+      ]
+     },
+     "fixture_path": {
+      "type": "string",
+      "description": "The fixture path as admitted, for the dev-trace line; absent on uploads."
+     },
+     "width": {
+      "type": "integer"
+     },
+     "height": {
+      "type": "integer"
+     },
+     "engine": {
+      "type": "string",
+      "description": "The engine that produced the variants (tesseract)."
+     },
+     "duration_ms": {
+      "type": "integer",
+      "description": "Wall-clock of the whole preview, every box and variant."
+     },
+     "regions": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/PreviewRegion"
+      }
+     },
+     "textbox_verdict": {
+      "type": "string",
+      "enum": [
+       "present",
+       "absent"
+      ],
+      "description": "The classification the page headlines: present when any box's panel detector fired."
+     },
+     "dev_trace": {
+      "type": "boolean",
+      "description": "Set when the regions.preview event was stored with this preview."
+     }
+    }
+   },
+   "PreviewRegion": {
+    "type": "object",
+    "description": "One box's preview result. A variant's error is carried in the variant, not thrown: the page's job is to show which setting reads the box and which does not.",
+    "required": [
+     "box",
+     "textbox",
+     "variants"
+    ],
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "box": {
+      "$ref": "#/components/schemas/PreviewBox"
+     },
+     "empty": {
+      "type": "boolean",
+      "description": "The box covered nothing at this resolution: a different fact from a box that is there and blank."
+     },
+     "textbox": {
+      "$ref": "#/components/schemas/PreviewPresence"
+     },
+     "variants": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/PreviewVariant"
+      }
+     }
+    }
+   },
+   "PreviewPresence": {
+    "type": "object",
+    "description": "The textbox-presence classification: the runtime's panel detector (a crop is a panel when the share of its pixels below the dark-luma threshold reaches the minimum), measured on the raw crop the runtime measures on.",
+    "required": [
+     "present",
+     "dark_share"
+    ],
+    "properties": {
+     "present": {
+      "type": "boolean"
+     },
+     "dark_share": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+     }
+    }
+   },
+   "PreviewVariant": {
+    "type": "object",
+    "description": "One (PSM, preprocess) cell of the preview matrix: what that setting reads, how confident it is, how long it took, or why it failed.",
+    "required": [
+     "psm",
+     "preprocess",
+     "text",
+     "mean_confidence",
+     "duration_ms"
+    ],
+    "properties": {
+     "psm": {
+      "type": "integer",
+      "description": "6 (uniform text block) or 7 (single line): the two PSMs the preview matrix runs (docs/spec/05)."
+     },
+     "preprocess": {
+      "type": "boolean",
+      "description": "Whether the crop went through the pipeline's preprocess steps (scale, threshold, auto-invert) before the engine saw it."
+     },
+     "text": {
+      "type": "string",
+      "description": "The engine's reading, raw: normalization is the caller's step, as the pipeline keeps it (docs/spec/05)."
+     },
+     "mean_confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+     },
+     "duration_ms": {
+      "type": "integer"
+     },
+     "error": {
+      "type": "string",
+      "description": "Set when this cell failed (engine missing, timeout, failed read): the other cells still answer."
+     }
+    }
+   },
    "PublishActionList": {
     "type": "object",
     "description": "An edition's publication history, newest first: what shipped, what it retired, what was refused and which findings refused it (docs/spec/16 answers those from the database).",
@@ -5718,6 +6483,152 @@
      },
      "stats": {
       "$ref": "#/components/schemas/PipelineStats"
+     },
+     "audio": {
+      "description": "Present when the process has a voice workflow wired and this session's sink built; absent on a silent session, where the audio route answers 503 audio_unavailable.",
+      "$ref": "#/components/schemas/SessionAudio"
+     }
+    }
+   },
+   "SessionAudioSettings": {
+    "type": "object",
+    "description": "The live audio controls of POST /api/v1/sessions/{id}/audio. Every field is optional and applied when present; a field left out keeps its current value.",
+    "properties": {
+     "muted": {
+      "type": "boolean",
+      "description": "Skip playback. The voice still resolves and the audio still synthesises (the cache is filled); the utterance ends with result \u201cmuted\u201d instead of starting."
+     },
+     "volume": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Scale the samples in the sink path (1.0 = unity). Outside 0..1 is a 400 invalid_audio_settings."
+     },
+     "speech_delay_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2000,
+      "description": "Wait this long before starting playback; the wait is fenced, a newer commit during the delay still cancels the waiting utterance."
+     }
+    }
+   },
+   "SessionAudio": {
+    "type": "object",
+    "description": "The session's audio half: the sink in use, the live controls, the speech counters and the current utterance (docs/spec/07, docs/spec/13 \u201cdid it speak, and why not\u201d).",
+    "required": [
+     "sink",
+     "muted",
+     "volume",
+     "speech_delay_ms",
+     "speech"
+    ],
+    "properties": {
+     "sink": {
+      "type": "string",
+      "enum": [
+       "dummy",
+       "filesink",
+       "pipewire"
+      ],
+      "description": "The audio sink the utterances play on."
+     },
+     "muted": {
+      "type": "boolean"
+     },
+     "volume": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+     },
+     "speech_delay_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2000
+     },
+     "speech": {
+      "$ref": "#/components/schemas/SpeechCounters"
+     },
+     "current_utterance": {
+      "description": "The session's current audio position; absent until the first speech event.",
+      "$ref": "#/components/schemas/UtteranceState"
+     }
+    }
+   },
+   "SpeechCounters": {
+    "type": "object",
+    "description": "One session's speech decision counters (docs/spec/13): the counts that make \u201cdid it speak, and why not\u201d answerable.",
+    "required": [
+     "requested",
+     "ready",
+     "started",
+     "cancelled",
+     "ended",
+     "cache_hits"
+    ],
+    "properties": {
+     "requested": {
+      "type": "integer",
+      "description": "Commits the speech pipeline was asked to speak."
+     },
+     "ready": {
+      "type": "integer",
+      "description": "Utterances for which audio was resolved (cache or TTS)."
+     },
+     "started": {
+      "type": "integer",
+      "description": "Playbacks the scheduler started on a sink."
+     },
+     "cancelled": {
+      "type": "integer",
+      "description": "Cancellations announced (new commit, stale generation, session end)."
+     },
+     "ended": {
+      "type": "integer",
+      "description": "Utterances that reached a terminal state — natural end, failure, skip or mute."
+     },
+     "cache_hits": {
+      "type": "integer",
+      "description": "Resolutions served from the TTS cache."
+     }
+    }
+   },
+   "UtteranceState": {
+    "type": "object",
+    "description": "The last speech lifecycle step any utterance of the session went through.",
+    "required": [
+     "phase",
+     "generation",
+     "at"
+    ],
+    "properties": {
+     "phase": {
+      "type": "string",
+      "enum": [
+       "requested",
+       "ready",
+       "playing",
+       "ended",
+       "cancelled",
+       "skipped",
+       "muted",
+       "failed"
+      ]
+     },
+     "result": {
+      "type": "string",
+      "description": "The terminal payload result when the phase is terminal (ended, muted, skipped, failed)."
+     },
+     "generation": {
+      "type": "integer",
+      "description": "The committing generation of the utterance."
+     },
+     "utterance_id": {
+      "type": "string",
+      "description": "The dialogue occurrence the audio belongs to."
+     },
+     "at": {
+      "type": "string",
+      "format": "date-time"
      }
     }
    },

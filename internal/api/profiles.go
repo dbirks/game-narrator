@@ -614,7 +614,7 @@ func (s *Server) handleProfileRegions(w http.ResponseWriter, r *http.Request) {
 	if !s.catalogRequired(w, r) {
 		return
 	}
-	p, _, ok := s.resolveProfile(w, r, r.PathValue("id"))
+	p, version, ok := s.resolveProfile(w, r, r.PathValue("id"))
 	if !ok {
 		return
 	}
@@ -627,5 +627,10 @@ func (s *Server) handleProfileRegions(w http.ResponseWriter, r *http.Request) {
 	for _, rg := range rows {
 		out = append(out, toRegionDTO(rg))
 	}
+	// The region-set PUT is If-Match guarded, so the read it feeds must hand
+	// the editor the token (client.ts caches the ETag and sends it back); the
+	// other profile-scoped reads do exactly this and 428s are how a missing
+	// one surfaces otherwise.
+	setETag(w, version)
 	writeList(w, "regions", out, "")
 }

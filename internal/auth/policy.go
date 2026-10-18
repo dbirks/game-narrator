@@ -167,6 +167,7 @@ func DefaultPolicy() *Policy {
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/profiles/{id}/export", Access: Require(RoleViewer)},
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/profiles/{id}/characters", Access: Require(RoleViewer)},
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/profiles/{id}/regions", Access: Require(RoleViewer)},
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/profiles/{id}/graph", Access: Require(RoleViewer)},
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/profiles/{id}/messages/{mid}", Access: Require(RoleViewer)},
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/jobs", Access: Require(RoleViewer)},
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/jobs/{id}", Access: Require(RoleViewer)},

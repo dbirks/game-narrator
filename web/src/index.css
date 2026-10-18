@@ -1063,3 +1063,152 @@ pre.muted {
 .check-fail td:nth-child(2) {
   color: var(--bad, #b00020);
 }
+
+/* ── dialogue graph (m5) ─────────────────────────────────────────────── */
+.graph-page {
+  display: grid;
+  gap: 1rem;
+}
+.graph-filters {
+  display: flex;
+  gap: 0.75rem;
+  align-items: end;
+}
+.graph-legend {
+  display: flex;
+  gap: 0.75rem;
+  list-style: none;
+  padding: 0;
+}
+.graph-legend-swatch {
+  display: inline-block;
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 2px;
+  margin-right: 0.25rem;
+}
+.graph-columns {
+  display: grid;
+  grid-template-columns: 3fr 2fr;
+  gap: 1rem;
+}
+.graph-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0 0.5rem;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.graph-row-selected {
+  background: #eef2ff;
+}
+.graph-row-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.graph-row-speaker {
+  color: #555;
+}
+.kind-badge,
+.attr-badge {
+  font-size: 0.7rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  border: 1px solid #ccc;
+}
+.attr-badge.verified {
+  border-color: #059669;
+  color: #059669;
+}
+.attr-badge.inferred {
+  border-color: #6b7280;
+  color: #6b7280;
+}
+
+/* ── OCR regions (m5) ────────────────────────────────────────────────── */
+.regions-page {
+  display: grid;
+  gap: 1rem;
+}
+.regions-header {
+  display: flex;
+  gap: 0.75rem;
+  align-items: end;
+  flex-wrap: wrap;
+}
+.regions-frame-src {
+  display: flex;
+  gap: 1rem;
+}
+.regions-columns {
+  display: grid;
+  grid-template-columns: 3fr 2fr;
+  gap: 1rem;
+}
+.regions-canvas img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+.regions-fixture-ph {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #9ca3af;
+  font-family: monospace;
+  pointer-events: none;
+}
+.region-box-label {
+  position: absolute;
+  top: -1.1rem;
+  left: 0;
+  font-size: 0.7rem;
+  color: #22d3ee;
+}
+.region-handle {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: #22d3ee;
+}
+.region-handle.nw {
+  top: -4px;
+  left: -4px;
+  cursor: nwse-resize;
+}
+.region-handle.ne {
+  top: -4px;
+  right: -4px;
+  cursor: nesw-resize;
+}
+.region-handle.sw {
+  bottom: -4px;
+  left: -4px;
+  cursor: nesw-resize;
+}
+.region-handle.se {
+  bottom: -4px;
+  right: -4px;
+  cursor: nwse-resize;
+}
+.regions-variants {
+  margin-bottom: 1rem;
+}
+.regions-variants table {
+  border-collapse: collapse;
+  width: 100%;
+}
+.regions-variants th,
+.regions-variants td {
+  border: 1px solid #ddd;
+  padding: 0.2rem 0.4rem;
+  text-align: left;
+}

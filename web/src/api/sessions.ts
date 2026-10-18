@@ -27,6 +27,10 @@ import type { Schemas } from "./client";
 export type Session = Schemas["Session"];
 export type SessionState = Schemas["SessionState"];
 export type PipelineStats = Schemas["PipelineStats"];
+export type SessionAudio = Schemas["SessionAudio"];
+export type SessionAudioSettings = Schemas["SessionAudioSettings"];
+export type SpeechCounters = Schemas["SpeechCounters"];
+export type UtteranceState = Schemas["UtteranceState"];
 export type EventEnvelope = Schemas["EventEnvelope"];
 export type DevEventsPage = Schemas["DevEventsPage"];
 export type FrameSource = Schemas["FrameSource"];
@@ -49,6 +53,14 @@ export const sessionsApi = {
   /** Idempotent: answering the terminal snapshot for a finished run is a 200. */
   stop(id: string): Promise<Session> {
     return api.post("/api/v1/sessions/{id}/stop", { params: { id }, body: {} }) as Promise<Session>;
+  },
+  /**
+   * The live audio controls (docs/spec/07, ADR-0039): the body is partial —
+   * a field left out keeps its current value — and the 200 body is the
+   * session's fresh snapshot with the applied state, not an acknowledgement.
+   */
+  audio(id: string, body: SessionAudioSettings): Promise<Session> {
+    return api.post("/api/v1/sessions/{id}/audio", { params: { id }, body }) as Promise<Session>;
   },
 };
 

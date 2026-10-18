@@ -149,6 +149,69 @@ func (s *Server) handleSessionsStop(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, info)
 }
 
+// handleSessionsAudio answers POST /api/v1/sessions/{id}/audio: the live
+// audio controls of docs/spec/07 ("Apply volume, short fade, optional delay
+// calibration") — mute, volume and the speech delay. The body is partial:
+// a nil field keeps its current value, so the operator never has to read
+// the settings back to change one of them. The answer is the session's fresh
+// snapshot with the applied state, so the caller sees the result, not just
+// an acknowledgement. A session the process could not give a voice pipeline
+// answers 503 audio-unavailable: the control was not applied to nothing.
+func (s *Server) handleSessionsAudio(w http.ResponseWriter, r *http.Request) {
+	if s.sessions == nil {
+		s.writeProblem(w, r, http.StatusServiceUnavailable, "sessions-unavailable",
+			"Sessions Unavailable",
+			"no session runtime is wired in this process; the serve configuration did not start the session manager")
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		s.writeProblem(w, r, http.StatusBadRequest, "invalid-session-id",
+			"Bad Request", "the session id in the path is empty")
+		return
+	}
+	// runtime.AudioSettings is the wire shape: each control is optional and
+	// the manager validates the ranges (volume 0..1, delay 0..2000 ms).
+	var req runtime.AudioSettings
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxSessionBodyBytes)).Decode(&req); err != nil {
+		s.writeProblem(w, r, http.StatusBadRequest, "invalid-audio-settings",
+			"Bad Request", "the audio settings body is not valid JSON: "+err.Error())
+		return
+	}
+	info, err := s.sessions.SetAudio(id, req)
+	if err != nil {
+		s.audioProblem(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
+// audioProblem maps the SetAudio sentinels onto the documented answers:
+// 404 for a missing session, 400 for an out-of-range control, 503 when the
+// process has no voice workflow or the session's sink could not be built —
+// the session runs on, it simply cannot be heard (docs/spec/13: the degraded
+// status is reported, not hidden).
+func (s *Server) audioProblem(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, runtime.ErrSessionNotFound):
+		s.writeProblem(w, r, http.StatusNotFound, "session-not-found",
+			"Session Not Found", fmt.Sprintf("no session with id %q exists in this process", r.PathValue("id")))
+	case errors.Is(err, runtime.ErrInvalidAudioSettings):
+		s.writeProblem(w, r, http.StatusBadRequest, "invalid-audio-settings",
+			"Bad Request", err.Error())
+	case errors.Is(err, runtime.ErrAudioUnavailable):
+		s.writeProblem(w, r, http.StatusServiceUnavailable, "audio-unavailable",
+			"Audio Unavailable",
+			"this session has no voice pipeline: the process has no voice workflow configured, or the session's audio sink could not be built")
+	case errors.Is(err, runtime.ErrManagerClosed):
+		s.writeProblem(w, r, http.StatusServiceUnavailable, "runtime-closed",
+			"Runtime Closed", "the session runtime is shutting down; try again once the process is up")
+	default:
+		s.writeProblem(w, r, http.StatusInternalServerError, "internal-error",
+			"Internal Error", "applying the audio settings failed; see the server log for this request_id")
+	}
+}
+
 // sessionProblem maps a runtime sentinel to its documented problem+json
 // answer (docs/spec/08 "Error contract examples"). The stable code travels in
 // the problem's type, so a client can branch on machine-readable identity.

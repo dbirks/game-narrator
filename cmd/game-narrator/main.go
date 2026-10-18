@@ -48,6 +48,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/runtime"
 	"github.com/dbirks/game-narrator/internal/speech"
 	"github.com/dbirks/game-narrator/internal/store"
+	"github.com/dbirks/game-narrator/internal/vision/ocr"
 	"github.com/dbirks/game-narrator/internal/voices"
 	"github.com/dbirks/game-narrator/internal/web"
 	"github.com/dbirks/game-narrator/internal/web/search"
@@ -498,12 +499,33 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 	// allowlist is the documented default — GAME_NARRATOR_REPLAY_ROOTS, else
 	// testdata/ from a dev checkout, else nothing in production.
 	devTraceDir := filepath.Join(cfg.DataDir, "dev-trace")
+	// The session's speech pipeline (docs/spec/07, ADR-0039): wired only when
+	// the voice workflow is — a silent appliance keeps answering the audio
+	// route 503 rather than applying a control to nothing. The sink is the
+	// operator's configuration (filesink under the durable directory by
+	// default), and a sink that cannot be built degrades the session to
+	// silent, never the run.
+	var speechOpts *runtime.SpeechOptions
+	if voiceSvc != nil {
+		sinkKind, device, err := audioSinkFromEnv(os.LookupEnv)
+		if err != nil {
+			return 1, fmt.Errorf("audio sink configuration: %w", err)
+		}
+		speechOpts = &runtime.SpeechOptions{
+			Voices:         voiceSvc,
+			Assets:         assetStore,
+			Sink:           sinkKind,
+			FileSinkDir:    filepath.Join(cfg.DataDir, "audio"),
+			PipeWireTarget: device,
+		}
+	}
 	sessions, err := runtime.New(runtime.Options{
 		Store:       st,
 		Hub:         hub,
 		Jobs:        runner,
 		AssetsRoot:  devTraceDir,
 		ReplayRoots: runtime.DefaultReplayRoots(os.LookupEnv),
+		Speech:      speechOpts,
 		Log:         log,
 	})
 	if err != nil {
@@ -569,6 +591,13 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 		api.WithAuth(auth.NewService(authRepo, auth.WithLogger(log)), authRepo),
 		api.WithStore(st),
 		api.WithImport(assetStore, adapters, runner),
+		// The region editor's OCR preview: the same tesseract engine the live
+		// pipeline runs (ADR-0012's supervised subprocess), and the configured
+		// replay roots as the fixture allowlist (ADR-0024, reused for the
+		// preview's test-on-fixture frames).
+		api.WithOCRPreview(func(psm int) ocr.Engine {
+			return ocr.Tesseract{PSM: psm, Timeout: 15 * time.Second}
+		}, runtime.DefaultReplayRoots(os.LookupEnv)),
 		api.WithTrustedProxy(trustedProxyCIDRs(os.LookupEnv)...),
 	}
 	if voiceSvc != nil {
@@ -590,6 +619,35 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 	}
 	<-shutdownDone
 	return 0, nil
+}
+
+// audioSinkFromEnv reads the session's audio sink configuration
+// (docs/spec/07, ADR-0039): GAME_NARRATOR_AUDIO_SINK picks dummy (the test
+// default: paces and records, plays nothing), filesink (the production
+// default: one WAV per started playback under the data directory) or
+// pipewire (the named sink of GAME_NARRATOR_AUDIO_DEVICE; the presence
+// preflight and its file-sink degradation are the wiring's own job).
+// An unknown value fails the boot loudly, the same way a malformed role
+// env does.
+func audioSinkFromEnv(lookupEnv func(string) (string, bool)) (kind, device string, err error) {
+	const sinkEnv = "GAME_NARRATOR_AUDIO_SINK"
+	const deviceEnv = "GAME_NARRATOR_AUDIO_DEVICE"
+	rawSink, _ := lookupEnv(sinkEnv)
+	kind = strings.TrimSpace(rawSink)
+	if kind == "" {
+		kind = runtime.SinkFile
+	}
+	switch kind {
+	case runtime.SinkDummy, runtime.SinkFile, runtime.SinkPipeWire:
+	default:
+		return "", "", fmt.Errorf("unknown %s %q (want dummy, filesink or pipewire)", sinkEnv, kind)
+	}
+	rawDevice, _ := lookupEnv(deviceEnv)
+	device = strings.TrimSpace(rawDevice)
+	if device == "" {
+		device = "default"
+	}
+	return kind, device, nil
 }
 
 // AssetDir is the content-addressed asset root of a data directory

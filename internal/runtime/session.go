@@ -39,6 +39,10 @@ type Info struct {
 	EndedAt         time.Time      `json:"ended_at,omitempty"`
 	EventCursor     int64          `json:"event_cursor"`
 	Stats           pipeline.Stats `json:"stats"`
+	// Audio is the session's speech half — the sink, the live controls, the
+	// speech counters and the current utterance — present when the process
+	// has a voice workflow wired and the session's sink built.
+	Audio *AudioInfo `json:"audio,omitempty"`
 }
 
 // session is one pipeline run owned by the Manager. Finished sessions are
@@ -55,13 +59,18 @@ type session struct {
 	mu       sync.Mutex
 	info     Info
 	rec      *devTraceRecorder
-	stopKind string // "", "requested", "closed" — who cancelled the run
+	speech   *speechWiring // nil when the process has no speech pipeline
+	stopKind string        // "", "requested", "closed" — who cancelled the run
 }
 
 func (s *session) Snapshot() Info {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.info
+	info := s.info
+	if s.speech != nil {
+		info.Audio = s.speech.audioInfo()
+	}
+	return info
 }
 
 // setState records a terminal or transitional state; reason "" keeps the
@@ -130,7 +139,7 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 	if err != nil {
 		return Info{}, fmt.Errorf("runtime: build candidate index: %w", err)
 	}
-	src, err := buildFrameSource(kind, req.FrameSource.Dir, m.opts.ReplayRoots, m.opts.DevDolphin, nil)
+	src, err := buildFrameSource(kind, req.FrameSource.Dir, m.opts.ReplayRoots, m.opts.ReplaySpeed, m.opts.DevDolphin, nil)
 	if err != nil {
 		return Info{}, err
 	}
@@ -209,7 +218,28 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 	}
 
 	obs := &observedSource{inner: src, rec: rec, regions: content.Regions, log: m.log}
-	pub := &tracePublisher{hub: m.opts.Hub, rec: rec, sessionID: id}
+	tracePub := &tracePublisher{hub: m.opts.Hub, rec: rec, sessionID: id}
+	var pub ses.Publisher = tracePub
+
+	// The voice pipeline (docs/spec/07, ADR-0039): when the process has a
+	// voice workflow wired, the session's publisher chain watches its own
+	// commits — the watcher intercepts message.committed and the fenced
+	// scheduler owns the playback events. A sink that cannot be built degrades
+	// to a silent session (logged), never a failed run: audio output
+	// misconfiguration must not take the capture down with it.
+	if m.opts.Speech != nil {
+		speakers := make(map[string]string, len(content.Messages))
+		for _, msg := range content.Messages {
+			if msg.SpeakerID != "" {
+				speakers[msg.ID] = msg.SpeakerID
+			}
+		}
+		if w := m.newSpeechWiring(id, speakers, runCtx); w != nil {
+			sess.speech = w
+			pub = &commitWatcher{w: w, inner: tracePub}
+		}
+	}
+
 	go sess.run(runCtx, obs, pub)
 
 	snap := sess.Snapshot()
@@ -303,7 +333,7 @@ func (m *Manager) trackerConfig(kind string) recognition.Config {
 // the foreground-busy flag is released and the terminal events are published,
 // so a crash mid-run cannot leave the box looking busy or the session
 // missing its session.stopped.
-func (s *session) run(runCtx context.Context, src *observedSource, pub *tracePublisher) {
+func (s *session) run(runCtx context.Context, src *observedSource, pub ses.Publisher) {
 	defer close(s.done)
 	s.setState(StateRunning, "")
 	s.m.log.Info("session running",
@@ -312,6 +342,13 @@ func (s *session) run(runCtx context.Context, src *observedSource, pub *tracePub
 		"source", src.ID(), "dev_trace", s.info.DevTrace)
 
 	err := s.runner.Run(runCtx, src, pub)
+
+	// The session's audio ends with the run: pending synthesis is cancelled,
+	// active playback stops within the scheduler's bound, the sink releases
+	// its resources — all before the terminal events go out, so the run's
+	// final state is the session's final state.
+	s.stopSpeech()
+
 	st := s.runner.Stats()
 
 	s.mu.Lock()
@@ -403,6 +440,45 @@ func (m *Manager) Get(id string) (Info, bool) {
 		return Info{}, false
 	}
 	return s.Snapshot(), true
+}
+
+// SetAudio applies the operator's live audio controls to one session
+// (docs/spec/07 "Apply volume, short fade, optional delay calibration"): the
+// change is effective at the next fence-checked decision — the next start
+// for mute and delay, the next sample for volume. The body is partial: a nil
+// field keeps its current value. The answer is the session's fresh snapshot,
+// so the caller sees the applied state, not just an acknowledgement.
+func (m *Manager) SetAudio(id string, s AudioSettings) (Info, error) {
+	m.mu.Lock()
+	closed := m.closed
+	m.mu.Unlock()
+	if closed {
+		return Info{}, ErrManagerClosed
+	}
+	sess, ok := m.sessionByID(id)
+	if !ok {
+		return Info{}, ErrSessionNotFound
+	}
+	if sess.speech == nil {
+		return Info{}, ErrAudioUnavailable
+	}
+	if s.Volume != nil && (*s.Volume < 0 || *s.Volume > 1) {
+		return Info{}, fmt.Errorf("%w: volume must be in 0..1, got %v", ErrInvalidAudioSettings, *s.Volume)
+	}
+	if s.SpeechDelayMS != nil && (*s.SpeechDelayMS < 0 || *s.SpeechDelayMS > speechDelayMaxMS) {
+		return Info{}, fmt.Errorf("%w: speech_delay_ms must be in 0..%d, got %d", ErrInvalidAudioSettings, speechDelayMaxMS, *s.SpeechDelayMS)
+	}
+	sess.speech.setAudio(s)
+	return sess.Snapshot(), nil
+}
+
+// stopSpeech ends the session's audio pipeline (nil when unwired). It is
+// bounded by the scheduler's own stop bound, so a wedged sink cannot hold
+// the run's finalisation open.
+func (s *session) stopSpeech() {
+	if s.speech != nil {
+		s.speech.stop()
+	}
 }
 
 // sessionByID looks a session up; finished sessions stay readable until Close.

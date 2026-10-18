@@ -30,16 +30,20 @@ import (
 // domainEnums maps a documented schema (or a "Schema.properties.member" path) onto
 // the Go type name whose values it must contain exactly.
 var domainEnums = map[string]string{
-	"ProfileStatus":                   "ProfileStatus",
-	"RightsStatus":                    "RightsStatus",
-	"TextKind":                        "TextKind",
-	"AttributionStatus":               "AttributionStatus",
-	"JobState":                        "JobState",
-	"Region.properties.region_type":   "RegionType",
-	"Region.properties.detect_method": "DetectMethod",
-	"Character.properties.status":     "CharacterStatus",
-	"JobAttempt.properties.outcome":   "AttemptOutcome",
-	"Role":                            "", // the ladder lives in internal/auth, checked below
+	"ProfileStatus":                           "ProfileStatus",
+	"RightsStatus":                            "RightsStatus",
+	"TextKind":                                "TextKind",
+	"AttributionStatus":                       "AttributionStatus",
+	"JobState":                                "JobState",
+	"Region.properties.region_type":           "RegionType",
+	"RegionInput.properties.region_type":      "RegionType",
+	"RegionInput.properties.detect_method":    "DetectMethod",
+	"GraphEdge.properties.kind":               "EdgeType",
+	"GraphNode.properties.attribution_status": "AttributionStatus",
+	"Region.properties.detect_method":         "DetectMethod",
+	"Character.properties.status":             "CharacterStatus",
+	"JobAttempt.properties.outcome":           "AttemptOutcome",
+	"Role":                                    "", // the ladder lives in internal/auth, checked below
 }
 
 // literalEnums pins the vocabularies that some other package writes without a
@@ -82,6 +86,18 @@ var literalEnums = map[string][]string{
 	// status route, so the vocabulary is pinned here like the other
 	// api-owned literals.
 	"DolphinStatus.properties.state": {string(dolphin.StateStopped), string(dolphin.StateLaunching), string(dolphin.StateRunning), string(dolphin.StateFailed)},
+	// The session audio half (M4, ADR-0039): the sink kinds internal/runtime
+	// builds (a factory sink is named by the sink it supplies) and the speech
+	// lifecycle phases the wiring and the scheduler write into
+	// UtteranceState — inline strings in internal/runtime/speech.go and
+	// internal/speech/scheduler.go, pinned the same way as the session states.
+	"SessionAudio.properties.sink":    {runtime.SinkDummy, runtime.SinkFile, runtime.SinkPipeWire},
+	"UtteranceState.properties.phase": {"requested", "ready", "playing", "ended", "cancelled", "skipped", "muted", "failed"},
+	// The region OCR preview (docs/spec/09) writes these two vocabularies in
+	// internal/api/regions_preview.go: the frame source it admits and the
+	// textbox verdict the panel detector answers.
+	"PreviewResult.properties.source":          {"upload", "fixture"},
+	"PreviewResult.properties.textbox_verdict": {"present", "absent"},
 }
 
 func TestOpenAPIEnumVocabulariesMatchTheDomainEnums(t *testing.T) {

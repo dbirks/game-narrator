@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -17,9 +17,12 @@ import { expectDefaultDataDirUntouched, serverRun } from "./support/servers";
  *      speakers and attribution included — the manifest builder signs it the
  *      way internal/profileio/canonical.go does);
  *   2. /play: start a replay session on the published revision, watch the two
- *      committed lines arrive with their message ids and roster speakers,
- *      reload the page mid-session and still see the state (SSE resumes from
- *      the session's event cursor), then stop;
+ *      committed lines arrive with their message ids and roster speakers, and
+ *      the speech counters show them requested and ended skipped (no approved
+ *      voice in this walk); the live audio controls — mute, volume, speech
+ *      delay — are applied through POST /audio (ADR-0039) and survive the
+ *      mid-session page reload (SSE resumes from the session's event cursor),
+ *      then stop;
  *   3. /games/:id/characters: the roster with line counts and the verified /
  *      inferred attribution badges;
  *   4. derive a revision, edit one speech text, /games/:id/publish shows
@@ -218,11 +221,90 @@ test("m5 part 1: play, characters, publish review, diagnostics", async ({
     })
     .toBeGreaterThanOrEqual(1);
 
+  // ── 2b. the audio controls: real, applied live, counters honest ───────────
+  // The play server runs with the speech roles pointed at the scripted TTS
+  // instance, so this session has an audio pipeline. The walk's roster has
+  // no approved voice (no narrator is configured), so the committed lines
+  // end skipped with the reason — the counters have to say so, not fake a
+  // playback (docs/spec/13 "did it speak, and why not").
+  await expect(page.getByTestId("play-audio-sink")).toHaveText("filesink");
+  await expect(page.getByTestId("play-audio-counters")).toBeVisible();
+  await expect(page.getByTestId("play-speech-requested")).toHaveText(/^[1-9]/, { timeout: 30_000 });
+  await expect(page.getByTestId("play-utterance-state")).toContainText("skipped", {
+    timeout: 30_000,
+  });
+
+  const audioOf = async () => {
+    const s = (await (await request.get(`${origin}/api/v1/sessions/${sessionId}`)).json()) as {
+      audio?: { muted: boolean; volume: number; speech_delay_ms: number };
+    };
+    return s.audio;
+  };
+
+  // One audio apply, awaited the way the page owns it: the browser's own POST
+  // response is the acknowledgement (the server applies the settings
+  // synchronously and answers with the fresh snapshot). A separate client's
+  // read confirms the server's state without telling us the page has seen it,
+  // so a gesture or a reload must wait on the page's own acknowledgement.
+  const audioAck = (pg: Page) =>
+    pg.waitForResponse(
+      (r) => r.request().method() === "POST" && new URL(r.url()).pathname.endsWith("/audio"),
+      { timeout: 10_000 },
+    );
+
+  // Mute: the 200 body is the fresh snapshot with the applied state, and the
+  // API's own snapshot agrees — the control was applied to a pipeline, not to
+  // a placeholder. The acknowledgement is awaited before the next gesture, so
+  // it cannot land while the mute apply is still in flight.
+  const muteApply = audioAck(page);
+  await page.getByTestId("play-mute").click();
+  const muteAckRes = await muteApply;
+  expect(muteAckRes.status(), "the mute apply is acknowledged").toBe(200);
+  await expect(page.getByTestId("play-mute")).toHaveText("Unmute");
+  await expect.poll(() => audioOf().then((a) => a?.muted === true)).toBe(true);
+
+  // Ten detents down from the default of 100 lands on 90: one debounce
+  // window posts one apply, its response carries the fresh snapshot, and the
+  // resting value the control settles on is asserted against that
+  // acknowledgement (then the server's own snapshot is checked to agree).
+  const volume = page.getByTestId("play-volume");
+  await volume.focus();
+  // The debounce posts one apply per rest; await its response so the resting
+  // value read below is the acknowledged one, not a value the page is still
+  // settling (the 1s snapshot poll can re-sync local state while presses land).
+  const volumeApply = audioAck(page);
+  for (let i = 0; i < 10; i++) {
+    await page.keyboard.press("ArrowLeft");
+  }
+  const volumeAckRes = await volumeApply;
+  expect(volumeAckRes.status(), "the volume apply is acknowledged").toBe(200);
+  await expect(volume).toHaveValue("90", { timeout: 10_000 });
+  const volumeAtRest = await volume.inputValue();
+  expect(volumeAtRest).toBe("90");
+  const delayApply = audioAck(page);
+  await page.getByTestId("play-speech-delay").fill("750");
+  const delayAckRes = await delayApply;
+  expect(delayAckRes.status(), "the delay apply is acknowledged").toBe(200);
+  await expect
+    .poll(
+      async () => {
+        const a = await audioOf();
+        return a?.volume === Number(volumeAtRest) / 100 && a?.speech_delay_ms === 750;
+      },
+      { timeout: 30_000 },
+    )
+    .toBe(true);
+
   // The refresh: the URL keeps the session, the snapshot refetches, and the
   // stream resumes from the session's own event cursor.
   await page.reload();
   await expect(page).toHaveURL(/\/play\?session=/);
   await expect(page.getByTestId("play-session-id")).toHaveText(sessionId);
+  // The applied audio state survives the reload from the snapshot — the
+  // controls are the server's state, not the page's scratch.
+  await expect(page.getByTestId("play-mute")).toHaveText("Unmute");
+  await expect(page.getByTestId("play-volume")).toHaveValue(volumeAtRest);
+  await expect(page.getByTestId("play-speech-delay")).toHaveValue("750");
   // Commit 1 is replayed from the hub's window; commit 2 arrives live or from
   // the same replay. The order is the story's order: newest line on top.
   const linesAfterReload = page.locator('[data-testid="recent-lines"] li');
@@ -333,8 +415,26 @@ test("m5 part 1: play, characters, publish review, diagnostics", async ({
   await shot("06-published");
 
   // ── 5. /diagnostics: readiness and its detail ─────────────────────────────
+  // The readiness probe runs a live integrity check. While the replay session
+  // has been writing, that probe can transiently report a failure and answer
+  // 503 — the page's documented degradation is the honest error panel with a
+  // retry, so the walk exercises that path until the probe agrees again. A
+  // readiness that never recovers is a real failure: the retries exhaust and
+  // the assertion below fails.
   await page.goto("/diagnostics");
-  await expect(page.getByTestId("readiness")).toHaveText("ok");
+  let readinessOk = false;
+  for (let attempt = 0; attempt < 6 && !readinessOk; attempt++) {
+    if (attempt > 0) {
+      await page.getByRole("button", { name: /try again/i }).click();
+    }
+    readinessOk = await expect(page.getByTestId("readiness"))
+      .toHaveText("ok", { timeout: 5_000 })
+      .then(
+        () => true,
+        () => false,
+      );
+  }
+  expect(readinessOk, "readiness reports ok (the transient probe 503s are retried)").toBe(true);
   await expect(page.getByTestId("readiness-check-database")).toContainText("ok");
   await expect(page.getByTestId("model-health")).toBeVisible();
   await shot("07-diagnostics");

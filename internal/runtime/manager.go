@@ -56,6 +56,14 @@ var (
 	ErrDevTraceUnavailable   = errors.New("runtime: developer trace storage is not configured")
 	ErrSessionNotFound       = errors.New("runtime: no such session")
 	ErrManagerClosed         = errors.New("runtime: the runtime is closed")
+	// ErrAudioUnavailable: the session has no speech pipeline — either the
+	// process has no voice workflow configured, or the session's sink could
+	// not be built. The answer says so rather than pretending a control was
+	// applied to nothing (docs/spec/13: degraded status is reported).
+	ErrAudioUnavailable = errors.New("runtime: no speech pipeline on this session")
+	// ErrInvalidAudioSettings: a control value outside its documented range
+	// (volume 0..1, speech_delay_ms 0..speechDelayMaxMS).
+	ErrInvalidAudioSettings = errors.New("runtime: invalid audio settings")
 )
 
 // ModeConservative and ModePredictive are the session decision modes
@@ -91,8 +99,16 @@ type Options struct {
 	Hub   *events.Hub
 	Jobs  *jobs.Runner
 
-	AssetsRoot    string
-	ReplayRoots   []string
+	AssetsRoot  string
+	ReplayRoots []string
+	// ReplaySpeed paces a replayed session's frames: 0 (the default) drains
+	// the recording as fast as the pipeline consumes it, the documented
+	// Frame-replay-gate behaviour (docs/spec/12: the decision is a pure
+	// function of the frames, never of machine speed). 1.0 paces real time
+	// from the recording's own deltas; only a caller that deliberately wants
+	// its evidence on the wall clock (the live session test's audio half) sets
+	// it (ADR-0039).
+	ReplaySpeed   float64
 	DevTraceQuota int64 // 0 = DefaultDevTraceQuota
 
 	OCR     ocr.Engine
@@ -104,6 +120,13 @@ type Options struct {
 	// in; nil (the default) keeps that kind a 501, which is the production
 	// shape: the core runtime never imports or launches the emulator itself.
 	DevDolphin func() (capture.Source, error)
+
+	// Speech wires the per-session voice pipeline (docs/spec/07, ADR-0039):
+	// committed lines resolve the speaker's approved voice and play through
+	// the TTS cache, the fenced scheduler and the configured sink. nil
+	// (the default) runs sessions silent: the voice workflow is not
+	// configured in this process, and the audio API answers 503.
+	Speech *SpeechOptions
 
 	Log *slog.Logger
 }
@@ -131,6 +154,9 @@ func New(opts Options) (*Manager, error) {
 	}
 	if opts.Log == nil {
 		opts.Log = slog.New(slog.DiscardHandler)
+	}
+	if opts.Speech != nil && opts.Speech.Voices == nil {
+		return nil, errors.New("runtime: Speech options require the voice service (Speech.Voices)")
 	}
 	if err := events.Register(EventSessionStarted, EventSessionFailed); err != nil {
 		return nil, err

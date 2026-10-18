@@ -323,6 +323,18 @@ function RevisionRow({
           Characters
         </Link>
         <Link
+          to={`/games/${gameId}/graph?profile=${encodeURIComponent(profile.id)}`}
+          data-testid={`graph-${profile.revision_num}`}
+        >
+          Dialogue graph
+        </Link>
+        <Link
+          to={`/games/${gameId}/regions?profile=${encodeURIComponent(profile.id)}`}
+          data-testid={`regions-${profile.revision_num}`}
+        >
+          OCR regions
+        </Link>
+        <Link
           to={`/games/${gameId}/voices?profile=${encodeURIComponent(profile.id)}`}
           data-testid={`voices-${profile.revision_num}`}
         >

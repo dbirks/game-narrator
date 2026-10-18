@@ -160,6 +160,12 @@ type Server struct {
 	// controller input through the API no matter what a developer-role caller
 	// asks it to.
 	dolphinBridge dolphin.Bridge
+
+	// ocrPreview wires the region editor's OCR preview (regions_preview.go):
+	// the per-PSM engine factory and the replay-root fixture allowlist. A nil
+	// factory answers 503 on the preview route: empty results would read as
+	// "the box is blank" rather than "no OCR engine is wired here".
+	ocrPreview ocrPreviewDeps
 }
 
 // ReadinessFunc answers GET /api/v1/health/ready. It returns the per-dependency
@@ -259,6 +265,15 @@ func WithSessions(mgr *rt.Manager) Option {
 // answers 503 rather than an empty inspector.
 func WithDevEvents(st events.Store) Option {
 	return func(s *Server) { s.devEvents = st }
+}
+
+// WithOCRPreview wires the region preview's OCR engine factory (one engine per
+// page-segmentation mode) and the replay-root allowlist a `fixture` preview
+// resolves against (ADR-0024's replay allowlist, reused for the preview's test
+// frames). Production passes a real tesseract factory; tests inject a stub.
+// Without it POST …/regions/preview answers 503 rather than an empty read.
+func WithOCRPreview(factory ocrFactoryFunc, replayRoots []string) Option {
+	return func(s *Server) { s.ocrPreview = ocrPreviewDeps{Factory: factory, ReplayRoots: replayRoots} }
 }
 
 // JobQueue is the slice of the durable queue this package uses: enqueue one job,
@@ -383,6 +398,7 @@ func (s *Server) Handler() http.Handler {
 	routes.register(mux, http.MethodPost, "/api/v1/sessions", s.handleSessionsStart)
 	routes.register(mux, http.MethodGet, "/api/v1/sessions/{id}", s.handleSessionsGet)
 	routes.register(mux, http.MethodPost, "/api/v1/sessions/{id}/stop", s.handleSessionsStop)
+	routes.register(mux, http.MethodPost, "/api/v1/sessions/{id}/audio", s.handleSessionsAudio)
 
 	// Developer inspection (docs/spec/08 "APIs": dev/events, dev/traces; the
 	// asset route is ADR-0024's sampled-evidence read path). All three sit
@@ -444,6 +460,9 @@ func (s *Server) Handler() http.Handler {
 	routes.register(mux, http.MethodPatch, "/api/v1/profiles/{id}/messages/{mid}", s.handleMessagePatch)
 	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/characters", s.handleProfileCharacters)
 	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/regions", s.handleProfileRegions)
+	routes.register(mux, http.MethodPut, "/api/v1/profiles/{id}/regions", s.handleProfileRegionsPut)
+	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/regions/preview", s.handleProfileRegionsPreview)
+	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/graph", s.handleProfileGraph)
 	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/import", s.handleImportFile)
 	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/export", s.handleProfileExport)
 

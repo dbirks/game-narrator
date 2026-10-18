@@ -1,5 +1,5 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useReducer, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 
 import {
@@ -12,7 +12,13 @@ import {
 } from "../api/client";
 import { fetchReadiness } from "../api/system";
 import { fetchAllMessages } from "../api/profiles";
-import { openEventStream, sessionsApi } from "../api/sessions";
+import {
+  openEventStream,
+  sessionsApi,
+  type Session,
+  type SessionAudioSettings,
+  type UtteranceState,
+} from "../api/sessions";
 import { useAuth } from "../auth/auth-context";
 import { EmptyState, ErrorState, Loading } from "../components/states";
 import {
@@ -25,15 +31,13 @@ import {
 
 /**
  * `/play` — docs/spec/09: the active session view with its live state, the
- * committed lines and the session controls. The session id lives in the URL
- * (`?session=`), so a refresh reopens the same watch: the snapshot refetches
- * and the event stream resumes from the session's own `event_cursor`, which is
- * the docs/spec/09 "session survives a refresh" contract with the hub's
- * Last-Event-ID replay doing the history half.
- *
- * The audio controls are rendered disabled on purpose: this build has no
- * `/audio` API (the scope table reserves it, the routes do not exist), so a
- * control that would do nothing is not a control.
+ * committed lines, the session controls and the live audio controls (mute,
+ * volume, speech delay) over `POST /api/v1/sessions/{id}/audio` (docs/spec/07,
+ * ADR-0039). The session id lives in the URL (`?session=`), so a refresh
+ * reopens the same watch: the snapshot refetches and the event stream resumes
+ * from the session's own `event_cursor`, which is the docs/spec/09 "session
+ * survives a refresh" contract with the hub's Last-Event-ID replay doing the
+ * history half.
  */
 
 const DEFAULT_REPLAY_DIR = "testdata/synthetic/replay/dialogue-advance-001";
@@ -225,6 +229,7 @@ function SetupForm() {
 function LiveSession({ sessionId }: { sessionId: string }) {
   const { atLeast } = useAuth();
   const operator = atLeast("operator");
+  const queryClient = useQueryClient();
   const sessionQuery = useQuery({
     queryKey: ["session", sessionId],
     queryFn: ({ signal }) => sessionsApi.get(sessionId, signal),
@@ -269,6 +274,13 @@ function LiveSession({ sessionId }: { sessionId: string }) {
     if (!events.resyncRequired) return;
     void sessionQuery.refetch();
   }, [events.resyncRequired, sessionQuery]);
+
+  // The applied audio snapshot: the /audio 200 body is the fresh session
+  // snapshot, and installing it keeps the polling query from racing the
+  // control that just landed (docs/spec/09: the snapshot is the truth).
+  const setSessionSnapshot = (id: string, next: Session) => {
+    queryClient.setQueryData(["session", id], next);
+  };
 
   // The committed line's assigned speaker: message → speaker_id → character name.
   const profileId = session?.profile_id;
@@ -427,33 +439,11 @@ function LiveSession({ sessionId }: { sessionId: string }) {
         )}
       </section>
 
-      <section className="play-audio" aria-label="Audio output">
-        <h2>Audio output</h2>
-        <p className="muted" data-testid="play-audio-note">
-          Audio output wiring lands next: this build has no audio API, so playback runs on the
-          appliance&apos;s own audio path and these controls are placeholders that do nothing.
-        </p>
-        <div className="audio-controls" data-testid="play-audio-controls">
-          <button type="button" disabled data-testid="play-mute">
-            Mute
-          </button>
-          <label className="muted">
-            Volume
-            <input
-              type="range"
-              min={0}
-              max={100}
-              defaultValue={100}
-              disabled
-              data-testid="play-volume"
-            />
-          </label>
-          <label className="muted">
-            Speech delay
-            <input type="number" value={0} disabled data-testid="play-speech-delay" />
-          </label>
-        </div>
-      </section>
+      <AudioPanel
+        sessionId={sessionId}
+        audio={session.audio}
+        onApplied={(next) => setSessionSnapshot(sessionId, next)}
+      />
     </section>
   );
 }
@@ -475,4 +465,202 @@ function LineRow({
       </span>
     </li>
   );
+}
+
+/**
+ * The live audio controls (docs/spec/07, ADR-0039): mute, volume and the
+ * speech delay over `POST /api/v1/sessions/{id}/audio`. The body is partial,
+ * so each control posts only its own field; the 200 body is the fresh session
+ * snapshot, which the parent installs as the query data — the snapshot is the
+ * source of truth, and the local state re-syncs from it (a refresh or a
+ * second operator may have moved the controls). A session the process cannot
+ * give a voice pipeline renders the honest degraded note and inert controls:
+ * the API answers 503 and a control that would do nothing is not a control.
+ */
+function AudioPanel({
+  sessionId,
+  audio,
+  onApplied,
+}: {
+  sessionId: string;
+  audio: Session["audio"];
+  onApplied: (next: Session) => void;
+}) {
+  const { atLeast } = useAuth();
+  const operator = atLeast("operator");
+  const [muted, setMuted] = useState(audio?.muted ?? false);
+  const [volumePct, setVolumePct] = useState(Math.round((audio?.volume ?? 1) * 100));
+  const [delayMS, setDelayMS] = useState(audio?.speech_delay_ms ?? 0);
+
+  // The apply sequence: each POST is tagged with the sequence it was issued
+  // under, and only the most recently issued apply may install its snapshot.
+  // A late acknowledgement of an earlier apply is by definition older than
+  // the state the operator set in the meantime, and installing it would
+  // show the control a value the server no longer holds (read-your-writes).
+  const applySeq = useRef(0);
+
+  const apply = useMutation({
+    mutationFn: (body: SessionAudioSettings) => {
+      applySeq.current += 1;
+      const seq = applySeq.current;
+      return sessionsApi.audio(sessionId, body).then((next) => ({ seq, next }));
+    },
+    onSuccess: ({ seq, next }) => {
+      if (seq === applySeq.current) onApplied(next);
+    },
+  });
+
+  // Re-sync from the snapshot — except while an apply is in flight. The 1s
+  // snapshot poll can still be carrying a response the server built before
+  // the apply landed; during that window the local value is the honest one,
+  // and the apply's own fresh snapshot is what the controls re-sync from
+  // when it is acknowledged. A refresh or a second operator is a different
+  // story: their change is the server's truth, whatever the local state did.
+  useEffect(() => {
+    if (!audio || apply.isPending) return;
+    setMuted(audio.muted);
+    setVolumePct(Math.round(audio.volume * 100));
+    setDelayMS(audio.speech_delay_ms);
+  }, [audio, apply.isPending]);
+
+  // The sliders fire on every detent; the server sees one apply per rest,
+  // not one per pixel (the debounce is the operator's "short fade" half).
+  // Changed fields accumulate into the window's body, so a rest between two
+  // different controls posts both — the last field alone would swallow the
+  // earlier one.
+  const pending = useRef<SessionAudioSettings>({});
+  const commitTimer = useRef<number | undefined>(undefined);
+  const commit = (body: SessionAudioSettings) => {
+    Object.assign(pending.current, body);
+    window.clearTimeout(commitTimer.current);
+    commitTimer.current = window.setTimeout(() => {
+      const settled = pending.current;
+      pending.current = {};
+      apply.mutate(settled);
+    }, 250);
+  };
+  useEffect(() => () => window.clearTimeout(commitTimer.current), []);
+
+  // The controls stay operable while an apply is in flight — disabling the
+  // slider mid-gesture would drop the detents the operator just pressed. The
+  // in-flight window is shown instead ("Applying…") and the debounce carries
+  // the pressed value to the next apply, so nothing is lost while it runs.
+  const disabled = !operator || audio === undefined;
+  const current = audio?.current_utterance;
+
+  return (
+    <section className="play-audio" aria-label="Audio output">
+      <h2>Audio output</h2>
+      {audio === undefined ? (
+        <p className="muted" data-testid="play-audio-note">
+          This process has no voice workflow wired (the audio API answers 503 audio_unavailable):
+          the session runs silent, and the controls below stay inert until a voice is configured.
+        </p>
+      ) : (
+        <p className="muted" data-testid="play-audio-note">
+          Sink <code data-testid="play-audio-sink">{audio.sink}</code> — the controls apply live.
+          Muting still speaks the events: the utterance ends with result&nbsp;“muted” instead of
+          starting.
+        </p>
+      )}
+      {apply.isPending ? (
+        <p className="muted" aria-live="polite" data-testid="play-audio-pending">
+          Applying the audio controls…
+        </p>
+      ) : null}
+      <div className="audio-controls" data-testid="play-audio-controls">
+        <button
+          type="button"
+          role="switch"
+          aria-checked={muted}
+          disabled={disabled}
+          onClick={() => {
+            const next = !muted;
+            setMuted(next);
+            apply.mutate({ muted: next });
+          }}
+          data-testid="play-mute"
+        >
+          {muted ? "Unmute" : "Mute"}
+        </button>
+        <label className="muted">
+          Volume {volumePct}%
+          <input
+            type="range"
+            min={0}
+            max={100}
+            value={volumePct}
+            disabled={disabled}
+            onChange={(event) => {
+              const pct = Number(event.target.value);
+              setVolumePct(pct);
+              commit({ volume: pct / 100 });
+            }}
+            data-testid="play-volume"
+          />
+        </label>
+        <label className="muted">
+          Speech delay (ms)
+          <input
+            type="number"
+            min={0}
+            max={2000}
+            value={delayMS}
+            disabled={disabled}
+            onChange={(event) => {
+              const ms = Number(event.target.value);
+              setDelayMS(ms);
+              if (Number.isFinite(ms) && ms >= 0 && ms <= 2000) {
+                commit({ speech_delay_ms: ms });
+              }
+            }}
+            data-testid="play-speech-delay"
+          />
+        </label>
+      </div>
+      {apply.isError ? (
+        <ErrorState error={apply.error} action="Cannot apply the audio controls" />
+      ) : null}
+      {audio ? (
+        <dl className="facts" data-testid="play-audio-counters">
+          <div>
+            <dt>Requested</dt>
+            <dd data-testid="play-speech-requested">{audio.speech.requested}</dd>
+          </div>
+          <div>
+            <dt>Ready</dt>
+            <dd data-testid="play-speech-ready">{audio.speech.ready}</dd>
+          </div>
+          <div>
+            <dt>Started</dt>
+            <dd data-testid="play-speech-started">{audio.speech.started}</dd>
+          </div>
+          <div>
+            <dt>Cancelled</dt>
+            <dd data-testid="play-speech-cancelled">{audio.speech.cancelled}</dd>
+          </div>
+          <div>
+            <dt>Ended</dt>
+            <dd data-testid="play-speech-ended">{audio.speech.ended}</dd>
+          </div>
+          <div>
+            <dt>Cache hits</dt>
+            <dd data-testid="play-speech-cache-hits">{audio.speech.cache_hits}</dd>
+          </div>
+          <div>
+            <dt>Current utterance</dt>
+            <dd data-testid="play-utterance-state">
+              {current ? `${describeUtterance(current)}` : "none yet"}
+            </dd>
+          </div>
+        </dl>
+      ) : null}
+    </section>
+  );
+}
+
+/** The current-utterance state in one human line (the snapshot's shape). */
+function describeUtterance(state: UtteranceState): string {
+  const result = state.result ? ` (${state.result})` : "";
+  return `${state.phase}${result} · generation ${state.generation}`;
 }
