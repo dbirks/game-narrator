@@ -206,7 +206,7 @@ synthesis failure for an existing registered voice, stays FAIL.
   fast 10 s role unchanged; the 5 min cap), and the probe's effort/prompt
   contract against a recorded gateway.
 - Real device (2026-10-17, UNO Q at the appliance): `scripts/hw/run-on-device.sh
-  arduino@10.0.0.139` → `artifacts/gates/test-hardware-device.xml`: 20 PASS,
+  <user>@<uno-q-host>` → `artifacts/gates/test-hardware-device.xml`: 20 PASS,
   0 FAIL, 2 NOT RUN (exit 2) — the NOT RUNs are the honest "dongle and DAC
   not attached" states; `TestHWResourceBudget` ran the installed
   `/usr/bin/game-narrator` (peak RSS 28 MiB over the 60 s session, budget

@@ -46,7 +46,7 @@ From the dev host (the normal way for the appliance: the UNO Q has no repo
 checkout, and this is also what `make test-hardware` NOT RUN lines point to):
 
 ```sh
-scripts/hw/run-on-device.sh arduino@10.0.0.139
+scripts/hw/run-on-device.sh <user>@<uno-q-host>
 ```
 
 The script cross-compiles the hwsmoke test binary for linux/arm64

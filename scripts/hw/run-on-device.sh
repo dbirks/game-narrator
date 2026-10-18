@@ -28,7 +28,7 @@
 #
 # Usage (from the repo root or anywhere):
 #
-#   scripts/hw/run-on-device.sh arduino@10.0.0.139
+#   scripts/hw/run-on-device.sh <user>@<uno-q-host>
 #
 # Environment:
 #   GN_HW_SMOKE_TIMEOUT  -test.timeout passed to the remote run (default 15m;
@@ -37,7 +37,7 @@
 set -u
 
 if [ $# -ne 1 ]; then
-	echo "usage: $0 USER@HOST  (e.g. $0 arduino@10.0.0.139)" >&2
+	echo "usage: $0 USER@HOST  (e.g. $0 <user>@<uno-q-host>)" >&2
 	exit 1
 fi
 host=$1
