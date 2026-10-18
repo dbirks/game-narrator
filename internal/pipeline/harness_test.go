@@ -127,6 +127,30 @@ func ocrScript(t *testing.T) map[string]string {
 	return out
 }
 
+// ocrRawScript is the ocrScript of the RAW crop: the hash of the crop's actual
+// pixels (the crop as cut, before the recipe greyed, upscaled and thresholded
+// it) → the same text. The natural-image secondary the fallback engine runs
+// (ocr.RawCropRecognizer, ADR-0040, the 2026-10-18 amendment) reads these pixels, so a scripted VLM
+// that simulates "a VLM that reads well" is keyed on THIS map: the recipe's
+// output is the primary's identity, the raw crop the secondary's.
+func ocrRawScript(t *testing.T) map[string]string {
+	t.Helper()
+	dir := corpusDir(t)
+	out := map[string]string{}
+	for _, r := range readTruth(t) {
+		img := decodeFrame(t, dir, r.File)
+		crop := vision.CropNormalized(img, vision.Rect{X: r.Rect.X, Y: r.Rect.Y, W: r.Rect.W, H: r.Rect.H}, vision.CropOptions{})
+		if crop == nil || crop.Bounds().Empty() {
+			t.Fatalf("%s: rect %v crops nothing", r.File, r.Rect)
+		}
+		out[vision.ImageHash(crop)] = r.Text
+	}
+	if len(out) < 10 {
+		t.Fatalf("raw script has only %d distinct crops; the corpus should have one per change", len(out))
+	}
+	return out
+}
+
 func regionRect(t *testing.T) normBox {
 	t.Helper()
 	rows := readTruth(t)

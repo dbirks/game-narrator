@@ -176,3 +176,48 @@ No schema change.
   (Options.Speech, ReplaySpeed, SetAudio), internal/api/sessions.go (audio route + problem
   mapping), internal/speech (cache/scheduler/sinks, read-only), internal/voices (read-only),
   docs/spec/07, docs/spec/12, docs/spec/13, docs/spec/16.
+
+## Amendment (2026-10-18): persistent speech-cache index, eviction reference check, and a deterministic delay-injection seam
+
+Status: accepted. Owners: agent (runtime-wiring). Builds on the composition above; the
+voice-resolution, sink and pacing decisions are unchanged.
+
+**Persistent index (migration 0011).** The production index was `speech.NewMemIndex()`
+(`cmd/game-narrator/main.go`), so the key→metadata index died with the process and every
+restart re-synthesised the whole corpus — exactly what docs/spec/07 voice lifecycle step 7
+forbids ("a restart reuses the asset-backed WAVs instead of re-synthesizing"). The index is
+now store-backed: `store.SpeechCacheIndex` (internal/store, migration
+`0011_speech_cache.sql`) implements `speech.Index` over a `speech_cache` table keyed by the
+cache key, with columns for blob sha256, size, duration/sample-rate, QA state, the key
+version the key's canonical JSON embeds (`speech.KeyVersion()`), and created/accessed
+timestamps (accessed bumped on every write, the eviction order). The WAV bytes were already
+content-addressed blobs in the asset store; only the index was ephemeral. `MemIndex` stays
+the test default. The backup/restore round-trip test (`TestNewTablesSurviveBackupRoundTrip`)
+carries the new table, and `TestSpeechCacheSurvivesRestart` proves the AGENTS.md restart
+requirement end to end: generate → close the app's store → re-open → `Get` is an asset-backed
+hit with the TTS function never called a second time. No schema change to any pre-existing
+table; the new table is empty on upgrade.
+
+**Eviction reference check wired.** `speech.New(...)` in the voice wiring now takes
+`speech.WithReferenceChecker(st)` (the option commit 7548559 added). Until now eviction in
+the production process was index-only: with no reference checker every blob delete was
+refused, so the cache could never actually evict. With the store as the checker, eviction
+deletes a blob only after the store proves no catalogue row still names it (ADR-0041).
+
+**Deterministic delay-injection seam (`Options.ManualSource`).** `TestSpeechRapidAdvanceCancelsStale`
+(docs/spec/12 "zero stale audio starts") flaked once in ~24 runs under load: its assertions
+were on the *publish order* of the speak path's `speech.started` versus the clip's second
+commit, and the clip's arrival is a function of machine speed (replay drains as fast as the
+pipeline consumes it). The test now drives the clock explicitly, per docs/spec/12's
+deterministic delay-injection suite: a new frame-source kind `manual` runs the source a
+wired `Options.ManualSource` closure returns, and the test pushes the clip's frames at its
+own pace — line-a frames, wait on line-a's commit and its `speech.started`, then the line-b
+frames, wait on the cancellation and the successor's start. The manual source speaks the
+recording's recorded clock (the clip's own timestamps), so it runs the lossless replay
+semantics (`ModeReplay`/`QueueLossless`): every pushed frame is processed in order and the
+run is a pure function of the frames. The asserted orderings are the causal ones — the stale
+start strictly predates its cancellation, the cancellation strictly postdates the new
+commit, the sink records the stale generation interrupted, and no stale start exists at or
+after the cancel — which hold on the event stream regardless of how loaded the host is.
+Production wires no `ManualSource` closure, so the `manual` kind is refused
+(`ErrSourceUnsupported`), pinned by `TestStartValidation/manual_source_unwired`.

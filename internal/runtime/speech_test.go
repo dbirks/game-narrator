@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/assets"
+	"github.com/dbirks/game-narrator/internal/capture"
 	"github.com/dbirks/game-narrator/internal/events"
 	"github.com/dbirks/game-narrator/internal/games"
 	"github.com/dbirks/game-narrator/internal/providers/tts"
@@ -128,7 +129,10 @@ type voiceEnv struct {
 // OCR engine and the TTS client as seams. seedVoice gives the narrator
 // character an approved, registered voice. A non-nil sink is supplied
 // through the test seam; nil selects the file sink under fileSinkDir.
-func newVoiceEnv(t *testing.T, ocrDelay, toneS time.Duration, seedVoice bool, sink speech.AudioSink, fileSinkDir string) *voiceEnv {
+// manual is the explicitly-driven frame source seam (Options.ManualSource,
+// docs/spec/12's deterministic delay-injection suite); nil (the default)
+// leaves the kind refused and the session runs the synthetic replay.
+func newVoiceEnv(t *testing.T, ocrDelay, toneS time.Duration, seedVoice bool, sink speech.AudioSink, fileSinkDir string, manual func() (capture.Source, error)) *voiceEnv {
 	t.Helper()
 	corpusPresent(t)
 	ctx := context.Background()
@@ -173,13 +177,14 @@ func newVoiceEnv(t *testing.T, ocrDelay, toneS time.Duration, seedVoice bool, si
 		opts.FileSinkDir = fileSinkDir
 	}
 	mgr, err := runtime.New(runtime.Options{
-		Store:       st,
-		Hub:         hub,
-		AssetsRoot:  t.TempDir(),
-		ReplayRoots: []string{absPath(t, syntheticDir)},
-		OCR:         &fakeOCR{script: truthScript(t), delay: ocrDelay},
-		Speech:      &opts,
-		Log:         slog.New(slog.DiscardHandler),
+		Store:        st,
+		Hub:          hub,
+		AssetsRoot:   t.TempDir(),
+		ReplayRoots:  []string{absPath(t, syntheticDir)},
+		OCR:          &fakeOCR{script: truthScript(t), delay: ocrDelay},
+		Speech:       &opts,
+		ManualSource: manual,
+		Log:          slog.New(slog.DiscardHandler),
 	})
 	if err != nil {
 		t.Fatalf("runtime.New: %v", err)
@@ -347,7 +352,7 @@ func mustCommitGen(t *testing.T, evs []events.Envelope, n int) int64 {
 // generation and the committing frame's trace id.
 func TestSpeechCommitLifecycle(t *testing.T) {
 	sink := dummy.New(0, 0)
-	e := newVoiceEnv(t, 10*time.Millisecond, 100*time.Millisecond, true, sink, "")
+	e := newVoiceEnv(t, 10*time.Millisecond, 100*time.Millisecond, true, sink, "", nil)
 	sid := e.startReplay()
 	defer waitState(t, e.mgr, sid, 30*time.Second)
 
@@ -420,49 +425,120 @@ func TestSpeechCommitLifecycle(t *testing.T) {
 // TestSpeechRapidAdvanceCancelsStale is docs/spec/12's "zero stale audio
 // starts": a faster commit cancels the older utterance (the event and the
 // sink agree), and the stale generation never starts after it.
+//
+// Deterministic by construction — docs/spec/12's "deterministic
+// delay-injection suite": the session runs on the explicitly-driven manual
+// frame source (Options.ManualSource), and the test pushes frames at its
+// own pace, waiting on the specific events between pushes:
+//
+//  1. push the line-a frames → wait for line a's commit (g1) and for g1's
+//     speech.started: the stale utterance is demonstrably in playback;
+//  2. push the line-b frames (the rapid advance) → wait for g1's
+//     speech.cancelled (the fence moved past it: reason new_commit or
+//     stale_generation, the tick's and the explicit cancel's reasons) and
+//     g2's speech.started.
+//
+// Every ordering asserted below therefore holds on the event stream, and no
+// wall-clock margin — however loaded the machine is — can reorder what the
+// test observes. (The replay-driven version of this test raced the speak
+// path's publish order against the clip's pipeline-speed arrival of the
+// second commit, and flaked once in ~24 runs under load.)
 func TestSpeechRapidAdvanceCancelsStale(t *testing.T) {
 	sink := dummy.New(0, 0)
-	// A tone longer than the clip: the first playback is genuinely still
-	// going when the second line commits.
-	e := newVoiceEnv(t, 10*time.Millisecond, 3*time.Second, true, sink, "")
-	sid := e.startReplay()
-	defer waitState(t, e.mgr, sid, 30*time.Second)
+	src := newManualSource(64)
+	e := newVoiceEnv(t, 10*time.Millisecond, 3*time.Second, true, sink, "",
+		func() (capture.Source, error) { return src, nil })
 
-	evs := e.waitEvents(t, sid, "stale utterance cancelled", 20*time.Second,
+	info, err := e.mgr.Start(e.ctx, runtime.StartRequest{
+		ProfileID:   e.profileID,
+		FrameSource: runtime.FrameSource{Kind: runtime.SourceKindManual},
+		Mode:        runtime.ModeConservative,
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	sid := info.ID
+	defer waitState(t, e.mgr, sid, 30*time.Second)
+	// The source's EOF ends the session; defer it (LIFO: it runs before the
+	// waitState above) so a mid-test failure still lets the session reach a
+	// terminal state instead of outliving the 30 s wait.
+	defer func() { _ = src.Close() }()
+
+	// Phase 1: line a. The clip's line-a frames (4..18: box appearing,
+	// typewriter reveal, then stable) on the clip's own 10 fps source clock.
+	for n := 4; n <= 18; n++ {
+		src.push(t, manualClipFrame(t, n))
+	}
+	evCommit1 := e.waitEvents(t, sid, "line a committed", 60*time.Second, func(evs []events.Envelope) bool {
+		for _, ev := range evs {
+			if ev.Name == events.MessageCommitted {
+				return true
+			}
+		}
+		return false
+	})
+	g1 := mustCommitGen(t, evCommit1, 1)
+
+	// The stale utterance is in playback — wait on the specific event before
+	// the advance is pushed, so its start is observed, not assumed.
+	e.waitEvents(t, sid, "stale utterance started", 60*time.Second, func(evs []events.Envelope) bool {
+		for _, ev := range evs {
+			if ev.Name == events.SpeechStarted && genOf(t, ev) == g1 {
+				return true
+			}
+		}
+		return false
+	})
+
+	// Phase 2: line b — the rapid advance. Frames 19..22 carry the second
+	// line on the same source clock.
+	for n := 19; n <= 22; n++ {
+		src.push(t, manualClipFrame(t, n))
+	}
+
+	evsDone := e.waitEvents(t, sid, "stale utterance cancelled and successor started", 60*time.Second,
 		func(evs []events.Envelope) bool {
-			var started, cancelled int
+			var cancelled, started2 int
 			for _, ev := range evs {
 				switch ev.Name {
-				case events.SpeechStarted:
-					started++
 				case events.SpeechCancelled:
-					cancelled++
+					if genOf(t, ev) == g1 {
+						cancelled++
+					}
+				case events.SpeechStarted:
+					if genOf(t, ev) != g1 {
+						started2++
+					}
 				}
 			}
-			return started >= 2 && cancelled >= 1
+			return cancelled >= 1 && started2 >= 1
 		})
 
-	g1, g2 := mustCommitGen(t, evs, 1), mustCommitGen(t, evs, 2)
-	if g1 == g2 {
+	// The record: both generations, the causal orderings, the sink.
+	g2 := mustCommitGen(t, evsDone, 2)
+	if g2 == g1 {
 		t.Fatalf("the two commits share generation %d; the clip should advance", g1)
 	}
-	var commitSeq2, startSeq1, startSeq2, cancelSeq1 int64
-	for _, ev := range evs {
+	var startSeq1, startSeq2, firstCancelSeq1, lastCancelSeq1 int64
+	var staleStartsAfterCancel int
+	for _, ev := range e.sessionEvents(sid) {
 		switch ev.Name {
-		case events.MessageCommitted:
-			if genOf(t, ev) == g2 {
-				commitSeq2 = ev.Seq
-			}
 		case events.SpeechStarted:
 			switch genOf(t, ev) {
 			case g1:
 				startSeq1 = ev.Seq
+				if firstCancelSeq1 != 0 && ev.Seq >= firstCancelSeq1 {
+					staleStartsAfterCancel++
+				}
 			case g2:
 				startSeq2 = ev.Seq
 			}
 		case events.SpeechCancelled:
 			if genOf(t, ev) == g1 {
-				cancelSeq1 = ev.Seq
+				if firstCancelSeq1 == 0 {
+					firstCancelSeq1 = ev.Seq
+				}
+				lastCancelSeq1 = ev.Seq
 			}
 		}
 	}
@@ -472,18 +548,42 @@ func TestSpeechRapidAdvanceCancelsStale(t *testing.T) {
 	if startSeq2 == 0 {
 		t.Fatal("the second utterance never started")
 	}
-	if cancelSeq1 == 0 {
+	if firstCancelSeq1 == 0 {
 		t.Fatal("the first utterance was never cancelled")
 	}
-	// No stale start: the stale generation started before the new commit.
-	if startSeq1 > commitSeq2 {
-		t.Fatalf("stale generation started after the new commit (seq %d > %d)", startSeq1, commitSeq2)
+	// Zero stale audio starts: the stale generation has exactly one start and
+	// it predates the first cancellation — a start at or after a cancel would
+	// be a stale start (the scheduler's fence drops it; this counts them).
+	if staleStartsAfterCancel != 0 {
+		t.Fatalf("%d stale start(s) of generation %d at/after its cancellation (seq %d)",
+			staleStartsAfterCancel, g1, firstCancelSeq1)
 	}
-	// The cancellation came after the new commit…
-	if cancelSeq1 < commitSeq2 {
-		t.Fatalf("the cancellation (seq %d) predates the new commit (seq %d)", cancelSeq1, commitSeq2)
+	if startSeq1 > lastCancelSeq1 {
+		t.Fatalf("stale generation started after its cancellation (seq %d > %d)", startSeq1, lastCancelSeq1)
 	}
-	// …and the sink agrees: the stale playback was interrupted, not played out.
+	// The successor plays (startSeq2 != 0 is asserted above). Its publish
+	// order against the commit's own publish is NOT asserted, no more than
+	// the cancel's: the commit watcher runs in-band, before the commit's hub
+	// publish takes its sequence, and the speech workers are async — neither
+	// ordering is a contract. The contract is the one above: the stale start
+	// strictly predates its cancellation, no stale start exists at or after
+	// it, the successor plays, and the sink agrees.
+	// Every stale cancellation carries the advance's reason: either the
+	// explicit new-commit cancel or the scheduler's own fence tick stopping
+	// the stale playback (stopStale) — the same product fact (the fence moved
+	// past the generation), and under load the 100 ms tick can beat the
+	// cancel request, so the test accepts both and pins no other.
+	for _, ev := range e.sessionEvents(sid) {
+		if ev.Name != events.SpeechCancelled || genOf(t, ev) != g1 {
+			continue
+		}
+		switch payload(t, ev)["reason"] {
+		case "new_commit", "stale_generation":
+		default:
+			t.Fatalf("stale cancellation reason = %v, want new_commit or stale_generation (the advance): %s", payload(t, ev)["reason"], ev.Data)
+		}
+	}
+	// The sink agrees: the stale playback was interrupted, not played out.
 	stale := false
 	for _, r := range sink.Records() {
 		if r.Generation == g1 && r.Interrupted {
@@ -500,7 +600,7 @@ func TestSpeechRapidAdvanceCancelsStale(t *testing.T) {
 // and no TTS call, ever (never a builtin or a different voice).
 func TestSpeechNoApprovedVoice(t *testing.T) {
 	sink := dummy.New(0, 0)
-	e := newVoiceEnv(t, 10*time.Millisecond, 100*time.Millisecond, false, sink, "")
+	e := newVoiceEnv(t, 10*time.Millisecond, 100*time.Millisecond, false, sink, "", nil)
 	sid := e.startReplay()
 	defer waitState(t, e.mgr, sid, 30*time.Second)
 
@@ -548,7 +648,7 @@ func TestSpeechAudioControls(t *testing.T) {
 	// ~250 ms per frame: ~6 s of run. The last cycle outlives the 150 ms
 	// delay, so the ready→start gap is asserted on the real 150 ms wait —
 	// the assertion is on the gap, not on the delay value.
-	e := newVoiceEnv(t, 500*time.Millisecond, 150*time.Millisecond, true, nil, dir)
+	e := newVoiceEnv(t, 500*time.Millisecond, 150*time.Millisecond, true, nil, dir, nil)
 	sid := e.startReplay()
 	defer waitState(t, e.mgr, sid, 90*time.Second)
 
@@ -671,7 +771,7 @@ func TestSpeechAudioControls(t *testing.T) {
 // ends speech.ended{result:"failed", reason:"session_ended"}.
 func TestSpeechSessionEndTerminatesPending(t *testing.T) {
 	sink := dummy.New(0, 0)
-	e := newVoiceEnv(t, 10*time.Millisecond, 100*time.Millisecond, true, sink, "")
+	e := newVoiceEnv(t, 10*time.Millisecond, 100*time.Millisecond, true, sink, "", nil)
 	sid := e.startReplay()
 	// The delay must be applied before the first commit's worker reaches its
 	// wait: the session starts, the commits land ~100 ms later. 2000 ms is
@@ -732,7 +832,7 @@ func TestSpeechSessionEndTerminatesPending(t *testing.T) {
 // the cache, with no second TTS request.
 func TestSpeechCacheHitSecondSession(t *testing.T) {
 	sink := dummy.New(0, 0)
-	e := newVoiceEnv(t, 10*time.Millisecond, 100*time.Millisecond, true, sink, "")
+	e := newVoiceEnv(t, 10*time.Millisecond, 100*time.Millisecond, true, sink, "", nil)
 
 	first := e.startReplay()
 	// Let both lines resolve (and commit to the cache) before the run ends.
@@ -773,7 +873,7 @@ func TestSpeechCacheHitSecondSession(t *testing.T) {
 // speech pipeline reports the audio unavailable.
 func TestSpeechAudioValidation(t *testing.T) {
 	sink := dummy.New(0, 0)
-	e := newVoiceEnv(t, 10*time.Millisecond, 100*time.Millisecond, true, sink, "")
+	e := newVoiceEnv(t, 10*time.Millisecond, 100*time.Millisecond, true, sink, "", nil)
 	sid := e.startReplay()
 	defer waitState(t, e.mgr, sid, 30*time.Second)
 

@@ -76,8 +76,9 @@ func (s *lowConfPrimary) Recognize(_ context.Context, img image.Image) (ocr.Resu
 // the box with no text (docs/spec/05 makes "empty text on a frame classified
 // as textbox" unresolved). The pipeline's presence gate and crop dedupe decide
 // which crops reach an engine, so the count comes from the truth rows that
-// survive both: present, empty, and distinct after the same preprocessing the
-// ROI stage applies (ocrScript's recipe).
+// survive both: present, empty, and distinct on the RAW crop's hash — the
+// identity the fallback's secondary cache keys on (ADR-0040, the 2026-10-18 amendment: the
+// secondary's input is the raw crop, not the recipe's output).
 func distinctPresentEmptyCrops(t *testing.T) int {
 	t.Helper()
 	dir := corpusDir(t)
@@ -91,7 +92,7 @@ func distinctPresentEmptyCrops(t *testing.T) int {
 		if crop == nil || crop.Bounds().Empty() {
 			t.Fatalf("%s: rect %v crops nothing", r.File, r.Rect)
 		}
-		seen[vision.ImageHash(vision.Preprocess(crop, steps()))] = true
+		seen[vision.ImageHash(crop)] = true
 	}
 	return len(seen)
 }
@@ -191,7 +192,9 @@ func TestOCRFallbackResolvedNeverCalls(t *testing.T) {
 func TestOCRFallbackUnresolvedEngages(t *testing.T) {
 	script := ocrScript(t)
 	prim := &lowConfPrimary{script: script}
-	sec := &scriptSecondary{script: script}
+	// The secondary reads the RAW crop (ocr.RawCropRecognizer, ADR-0040, the 2026-10-18 amendment),
+	// so its truth is keyed on the raw crop's hash, not the recipe's output.
+	sec := &scriptSecondary{script: ocrRawScript(t)}
 	h := newHarness(t, prim, func(c *pipeline.Config) {
 		c.Mode = pipeline.ModeReplay
 		c.OCRFallback = &pipeline.OCRFallback{

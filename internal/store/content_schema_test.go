@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/dbirks/game-narrator/internal/speech"
 )
 
 // Tests for 0002_content.sql and 0003_jobs_events.sql: docs/spec/02 "Entity
@@ -408,6 +410,16 @@ func TestNewTablesSurviveBackupRoundTrip(t *testing.T) {
 	mustExec(t, s.db, jobBaseline("snap-job").insert())
 	mustExec(t, s.db, eventBaseline("snap-event").insert())
 
+	// The speech-cache index row (migration 0011) goes through the index's own
+	// write path: it is the row a restart LoadAlls, so the backup/restore
+	// round trip (AGENTS.md rule 10) must carry it like the jobs/events rows.
+	if err := NewSpeechCacheIndex(s).Put(speechTestKey(0), speech.Entry{
+		SHA256: "aa" + tail62('a'), Size: 4096, Duration: 1_000_000,
+		SampleRate: 16000, QA: speech.QAPassed,
+	}); err != nil {
+		t.Fatalf("seed speech_cache: %v", err)
+	}
+
 	dest := DBPath(t.TempDir())
 	if err := s.Backup(ctx, dest); err != nil {
 		t.Fatalf("Backup: %v", err)
@@ -421,6 +433,18 @@ func TestNewTablesSurviveBackupRoundTrip(t *testing.T) {
 	}
 	if n := countRows(t, backup.db, "events"); n != 1 {
 		t.Fatalf("backup events = %d, want 1", n)
+	}
+	if n := countRows(t, backup.db, "speech_cache"); n != 1 {
+		t.Fatalf("backup speech_cache = %d, want 1", n)
+	}
+	// Restoring the backup reproduces a usable index, not just a row count:
+	// a fresh index over the backup LoadAlls the seeded entry.
+	loaded, err := NewSpeechCacheIndex(backup).LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll on the backup: %v", err)
+	}
+	if e, ok := loaded[speechTestKey(0)]; !ok || e.QA != speech.QAPassed {
+		t.Fatalf("backup LoadAll entry = %+v ok=%v, want the QA-passed row", e, ok)
 	}
 }
 

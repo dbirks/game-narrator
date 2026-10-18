@@ -43,6 +43,25 @@ type Engine interface {
 	Recognize(ctx context.Context, img image.Image) (Result, error)
 }
 
+// RawCropRecognizer is an OCR engine that may receive both the pipeline's
+// preprocessed input and the raw crop that input was prepared from. An
+// engine that implements it runs its local path on the preprocessed image —
+// the recipe its local engine was tuned on — and any secondary that reads
+// natural images on the raw crop: the actual game pixels (ADR-0040 "input
+// contract"). The recipe's output — greyed, inverted, upscaled,
+// thresholded — is a local-engine tuning, not a picture a vision model was
+// trained on: on the corpus's hard crop the VLM reads the raw pixels and
+// hallucinates dialogue on the recipe's (live evidence, ADR-0040, the 2026-10-18 amendment).
+// Engines that do not implement it see no change: every reading comes from
+// the single input.
+type RawCropRecognizer interface {
+	// RecognizeWithRawCrop recognises one crop given as a pair: the
+	// preprocessed input the engine's local path runs on, and the raw crop
+	// (the actual pixels) a natural-image secondary runs on. A nil or empty
+	// rawCrop degrades to the single-input behaviour.
+	RecognizeWithRawCrop(ctx context.Context, preprocessed, rawCrop image.Image) (Result, error)
+}
+
 // Name reports the engine's stable identifier for logs and for the OCR
 // provenance field on an observation. It must not be derived from user input:
 // the recognition log is part of an evidence bundle (AGENTS.md "manifest").

@@ -16,6 +16,7 @@ import (
 
 	"github.com/dbirks/game-narrator/internal/events"
 	"github.com/dbirks/game-narrator/internal/games"
+	"github.com/dbirks/game-narrator/internal/pipeline"
 	"github.com/dbirks/game-narrator/internal/runtime"
 	"github.com/dbirks/game-narrator/internal/scenario"
 	"github.com/dbirks/game-narrator/internal/store"
@@ -57,6 +58,9 @@ type env struct {
 	assets string
 	roots  []string
 	ocr    ocr.Engine
+	// ocrFallback is the VLM fallback wiring (ADR-0040); nil (the default)
+	// runs the session on the single OCR engine above.
+	ocrFallback *pipeline.OCRFallback
 }
 
 // newEnv builds the environment. With no options the OCR engine is Tesseract
@@ -90,6 +94,7 @@ func newEnv(t *testing.T, opts ...func(*env)) *env {
 		AssetsRoot:  e.assets,
 		ReplayRoots: e.roots,
 		OCR:         e.ocr,
+		OCRFallback: e.ocrFallback,
 		Log:         slog.New(slog.DiscardHandler),
 	})
 	if err != nil {
@@ -114,6 +119,27 @@ func withFakeOCR(script map[string]string, delay time.Duration) func(*env) {
 	return func(e *env) {
 		e.ocr = &fakeOCR{script: script, delay: delay}
 	}
+}
+
+// withOCR swaps the session's OCR engine outright (a scripted primary the
+// fallback tests need: one that reads the crop but not well enough to be
+// resolved).
+func withOCR(engine ocr.Engine) func(*env) {
+	return func(e *env) { e.ocr = engine }
+}
+
+// withReplayRoot admits one more directory to the replay allowlist: a test
+// that builds its own clip in a temp dir (the live OCR fallback test) needs
+// the manager to accept its dir rather than answer the allowlist refusal.
+func withReplayRoot(dir string) func(*env) {
+	return func(e *env) { e.roots = append(e.roots, dir) }
+}
+
+// withOCRFallback wires the VLM fallback (docs/spec/05, ADR-0040): the
+// test's scripted VLM behind the same option shape the production wiring
+// builds over the role's OpenAI client.
+func withOCRFallback(fb *pipeline.OCRFallback) func(*env) {
+	return func(e *env) { e.ocrFallback = fb }
 }
 
 // replayStart is the session request for the synthetic clip with the given

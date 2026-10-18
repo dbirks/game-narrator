@@ -239,6 +239,13 @@ type OCRFallbackTrace struct {
 	Discrepancy float64 `json:"discrepancy"`
 	Chosen      string  `json:"chosen"`
 	Reason      string  `json:"reason,omitempty"`
+	// SecondaryText is the VLM's own reading, kept on the record beside the
+	// primary's (docs/spec/05: "include both and the discrepancy") so the
+	// developer UI and the evidence bundle show what each engine saw; empty
+	// when the secondary was not called this frame (rate-limited or failed,
+	// SecondaryReason then says why).
+	SecondaryText   string `json:"secondary_text,omitempty"`
+	SecondaryEngine string `json:"secondary_engine,omitempty"`
 }
 
 func (c *counters) add(f func(*Stats)) {

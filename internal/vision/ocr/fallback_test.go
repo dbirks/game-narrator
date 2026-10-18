@@ -86,6 +86,108 @@ func TestFallbackResolvedPrimaryNeverCallsVLM(t *testing.T) {
 	}
 }
 
+// recordingSecondary is a plain Engine (not a PreparedRecognizer) that logs
+// the exact image it was handed, so a test can assert WHICH pixels the
+// fallback sent the secondary (ADR-0040, the 2026-10-18 amendment) rather than only that a call went
+// out.
+type recordingSecondary struct {
+	calls  atomic.Int64
+	images []image.Image
+}
+
+func (s *recordingSecondary) Name() string { return "recording" }
+func (s *recordingSecondary) Recognize(_ context.Context, img image.Image) (Result, error) {
+	s.calls.Add(1)
+	s.images = append(s.images, img)
+	return Result{Text: "The harbour bell rang twice.", MeanConf: 0.6, Engine: "recording"}, nil
+}
+
+// TestFallbackRawCropPath pins ADR-0040, the 2026-10-18 amendment at the engine level: the
+// dual-input path runs the primary on the recipe's preprocessed image and the
+// secondary on the raw crop — the actual pixels — and the cache is keyed on
+// the prepared RAW bytes, so a stable raw crop whose preprocessed input drifts
+// (the recipe's own variance) still costs exactly one remote call.
+func TestFallbackRawCropPath(t *testing.T) {
+	raw, raw2 := solidImage(300, 80), solidImage(301, 80)
+	pre, pre2 := solidImage(301, 81), solidImage(301, 82) // the recipe's output: distinct images
+	primary := &scriptedPrimary{results: map[image.Image]resultOrErr{
+		pre:  {res: Result{Text: "garbled", MeanConf: 0.2, Engine: "scripted"}},
+		pre2: {res: Result{Text: "garbled", MeanConf: 0.2, Engine: "scripted"}},
+	}}
+	sec := &recordingSecondary{}
+	f := newFallback(t, primary, sec, FallbackPolicy{})
+
+	// Frame 1: both inputs are fresh. The secondary must receive the RAW
+	// crop, not the recipe's output — that is the whole point of the path.
+	res, err := f.RecognizeWithRawCrop(context.Background(), pre, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Fallback == nil || res.Fallback.Chosen != "secondary" {
+		t.Fatalf("first read = %+v, want the secondary's reading chosen (primary conf 0.2)", res.Fallback)
+	}
+	if len(sec.images) != 1 || sec.images[0] != image.Image(raw) {
+		t.Fatalf("the secondary saw %d image(s) %v, want exactly the raw crop", len(sec.images), sec.images)
+	}
+	if primary.calls.Load() != 1 {
+		t.Fatalf("primary called %d times, want 1", primary.calls.Load())
+	}
+
+	// Frame 2: the raw crop is the same pixels, the recipe's output drifted
+	// (pre2). The cache key is the prepared RAW bytes — unchanged — so the
+	// secondary is not called again and the cached reading serves the frame.
+	res, err = f.RecognizeWithRawCrop(context.Background(), pre2, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Fallback == nil || res.Fallback.Reason != "secondary_cached" {
+		t.Fatalf("second read reason = %+v, want secondary_cached (raw crop unchanged, recipe drifted)", res.Fallback)
+	}
+	if sec.calls.Load() != 1 {
+		t.Fatalf("secondary called %d times, want 1 (cache keyed on the prepared RAW bytes, not the recipe's)", sec.calls.Load())
+	}
+
+	// Frame 3: the raw crop changes (a new typewriter state) → a fresh remote
+	// call, and it is the new raw pixels the secondary sees.
+	res, err = f.RecognizeWithRawCrop(context.Background(), pre, raw2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sec.calls.Load() != 2 {
+		t.Fatalf("secondary called %d times after the raw crop changed, want 2", sec.calls.Load())
+	}
+	if len(sec.images) != 2 || sec.images[1] != image.Image(raw2) {
+		t.Fatalf("the second call saw %v, want the new raw crop", sec.images)
+	}
+	_ = res
+}
+
+// TestFallbackRawCropEmptyRawDegrades pins the guard: a nil or empty raw crop
+// degrades to the single-input behaviour (both readers see the preprocessed
+// input) instead of sending an empty crop to a remote model.
+func TestFallbackRawCropEmptyRawDegrades(t *testing.T) {
+	pre := solidImage(300, 80)
+	primary := &scriptedPrimary{results: map[image.Image]resultOrErr{pre: {
+		res: Result{Text: "garbled", MeanConf: 0.2, Engine: "scripted"},
+	}}}
+	sec := &recordingSecondary{}
+	f := newFallback(t, primary, sec, FallbackPolicy{})
+	if _, err := f.RecognizeWithRawCrop(context.Background(), pre, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(sec.images) != 1 || sec.images[0] != image.Image(pre) {
+		t.Fatalf("nil raw crop: the secondary saw %v, want the preprocessed input (degraded single-input behaviour)", sec.images)
+	}
+	if _, err := f.RecognizeWithRawCrop(context.Background(), pre, image.Image(image.NewRGBA(image.Rectangle{}))); err != nil {
+		t.Fatal(err)
+	}
+	// The degraded path prepares the same preprocessed bytes the first call
+	// cached: the cache hits and no second remote call goes out.
+	if sec.calls.Load() != 1 {
+		t.Fatalf("empty raw crop: secondary called %d times, want 1 (the degraded path caches on the preprocessed bytes like any single-input read)", sec.calls.Load())
+	}
+}
+
 func TestFallbackUnresolvedCallsVLMOncePerCropHash(t *testing.T) {
 	img := solidImage(300, 80)
 	primary := &scriptedPrimary{results: map[image.Image]resultOrErr{img: {

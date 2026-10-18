@@ -42,7 +42,9 @@ import (
 	"github.com/dbirks/game-narrator/internal/games/adapter/windwaker"
 	"github.com/dbirks/game-narrator/internal/gcdisc"
 	"github.com/dbirks/game-narrator/internal/jobs"
+	"github.com/dbirks/game-narrator/internal/pipeline"
 	"github.com/dbirks/game-narrator/internal/providers"
+	"github.com/dbirks/game-narrator/internal/providers/openai"
 	"github.com/dbirks/game-narrator/internal/providers/router"
 	"github.com/dbirks/game-narrator/internal/providers/tts"
 	"github.com/dbirks/game-narrator/internal/runtime"
@@ -519,6 +521,16 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 			PipeWireTarget: device,
 		}
 	}
+	// The VLM OCR fallback (docs/spec/05, ADR-0040): wired only when the
+	// vision_ocr_fallback role is configured — an unconfigured role is the
+	// documented "NOT CONFIGURED" degraded mode, and sessions then run the
+	// single local engine exactly as before. The secondary is an ocr.VLMEngine
+	// over the role's OpenAI-compatible client; the runtime wraps each
+	// session's OCR engine with it (per-session rate limit and crop cache).
+	ocrFallback, ocrFallbackModel, err := newOCRFallbackWiring(os.LookupEnv)
+	if err != nil {
+		return 1, fmt.Errorf("wiring the VLM OCR fallback: %w", err)
+	}
 	sessions, err := runtime.New(runtime.Options{
 		Store:       st,
 		Hub:         hub,
@@ -526,10 +538,16 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 		AssetsRoot:  devTraceDir,
 		ReplayRoots: runtime.DefaultReplayRoots(os.LookupEnv),
 		Speech:      speechOpts,
+		OCRFallback: ocrFallback,
 		Log:         log,
 	})
 	if err != nil {
 		return 1, fmt.Errorf("creating the session runtime: %w", err)
+	}
+	if ocrFallback != nil {
+		log.Info("VLM OCR fallback ready", "model", ocrFallbackModel)
+	} else {
+		log.Info("VLM OCR fallback not configured: sessions run the local OCR engine only (role vision_ocr_fallback)")
 	}
 	log.Info("session runtime ready",
 		"dev_trace_root", filepath.Base(devTraceDir),
@@ -791,8 +809,14 @@ func newVoiceWiring(st *store.Store, assetStore *assets.Local, log *slog.Logger)
 
 	svc := &voices.Service{
 		Store: st, Assets: assetStore, Design: designClient, Base: cloneClient,
-		Registry:      registry,
-		Speech:        speech.New(assetStore, speech.NewMemIndex(), 8),
+		Registry: registry,
+		// The speech cache's index is store-backed (migration 0011, ADR-0039
+		// amendment): a restart reuses the asset-backed WAVs instead of
+		// re-synthesising the corpus. The reference checker is the same store
+		// (ADR-0041): eviction may delete a blob only after the store proves
+		// no catalogue row still names it — without it, eviction is
+		// index-only and every delete is refused.
+		Speech:        speech.New(assetStore, store.NewSpeechCacheIndex(st), 8, speech.WithReferenceChecker(st)),
 		InstanceID:    voices.DefaultInstanceID,
 		BaseModelID:   cloneCfg.Model,
 		BackendDigest: previewBackendDigest(cloneCfg.Model),
@@ -803,6 +827,32 @@ func newVoiceWiring(st *store.Store, assetStore *assets.Local, log *slog.Logger)
 	log.Info("voice workflow ready",
 		"design_model", designCfg.Model, "clone_model", cloneCfg.Model, "instance", svc.InstanceID)
 	return svc, func() {}, nil
+}
+
+// newOCRFallbackWiring builds the VLM OCR fallback's secondary engine from
+// the vision_ocr_fallback role (docs/spec/05, ADR-0040): the role's
+// OpenAI-compatible client, its timeout and reasoning-effort default applied
+// by NewFromRole, behind the ocr.VLMClient adapter and the ocr.VLMEngine the
+// runtime's sessions wrap their OCR engine with. A role that is not
+// configured is the documented degraded mode — nil, not an error — so the
+// sessions keep the single local engine and preflight keeps reporting the
+// missing configuration.
+func newOCRFallbackWiring(lookupEnv func(string) (string, bool)) (*pipeline.OCRFallback, string, error) {
+	roles, err := providers.LoadRoles(lookupEnv)
+	if err != nil {
+		return nil, "", fmt.Errorf("loading provider roles: %w", err)
+	}
+	cfg := roles[providers.RoleVisionOCRFallback]
+	if !cfg.Configured() {
+		return nil, "", nil
+	}
+	client, err := openai.NewFromRole(cfg)
+	if err != nil {
+		return nil, "", fmt.Errorf("vision_ocr_fallback client: %w", err)
+	}
+	return &pipeline.OCRFallback{
+		Secondary: ocr.NewVLMEngine(ocr.OpenAIClient{Client: client}),
+	}, cfg.Model, nil
 }
 
 // previewBackendDigest is the preview cache key's backend_config_digest

@@ -159,8 +159,10 @@ nil-able field that no other producer sets.
 
 - Runtime task: construct `ocr.VLMEngine` over the role-configured client
   (adapter applies the role's timeout, reasoning effort `none`, `MaxTokens`
-  256) and set `Config.OCRFallback` when the role is configured.
+  256) and set `Config.OCRFallback` when the role is configured. — **done
+  2026-10-18, see the amendment below.**
 - Profile task: surface the `DifficultFont` flag from `regions.ocr_settings`.
+  — **done 2026-10-18, see the amendment below.**
 - Developer UI task: render the `ocr.fallback` trace field (and the two
   `Stats` counters) in the inspector.
 - Docs sync (outside this task's boundaries): `docs/dev-environment.md` and
@@ -169,3 +171,132 @@ nil-able field that no other producer sets.
 - If a live profile shows the discrepancy measure is dominated by ligature /
   fullwidth glyph reads, vendor a small NFKC compatibility table (the
   documented gap in `NormaliseForCompare`).
+
+## Amendment (2026-10-18): runtime wiring
+
+Status: accepted. Owners: agent (runtime-wiring). The policy, confidence
+heuristic and privacy boundary above are unchanged; this records how the
+runtime turned the option on.
+
+**Wiring.** `cmd/game-narrator/main.go` builds the fallback from the
+`vision_ocr_fallback` role: the role's OpenAI-compatible client
+(`providers.LoadRoles` + `openai.NewFromRole`, which applies the role's
+timeout floor and reasoning-effort default) behind `ocr.OpenAIClient` (the
+production adapter over the `ocr.VLMClient` seam, internal/vision/ocr) and
+`ocr.NewVLMEngine`. `newOCRFallbackWiring` returns a nil fallback — not an
+error — when the role is not configured: nil is the documented
+"NOT CONFIGURED" degraded mode and sessions then run the single local
+engine exactly as before. A half-configured fallback (option set, no
+secondary) is refused at `runtime.New`, at construction rather than at the
+first session start.
+
+**Per-session wrap.** `runtime.Options.OCRFallback` carries the process
+default; each session's `pipeline.Config` wraps its OCR engine in the
+`ocr.FallbackEngine` with the secondary shared across sessions (stateless)
+and a per-session policy (the rate limiter and crop cache are per-run
+state, decision 2 above). The policy's `DifficultFont` is the documented
+profile-level knob, merged in per session from `regions.ocr_settings`
+(`difficultFontIn`): a region's `{"difficult_font": true}` runs the
+secondary on every frame of every region of that session — the session's
+OCR engine is one engine shared by all of the pipeline's regions, so the
+session-level policy takes the conservative union, bounded by the rate
+limit and the crop cache (one call per distinct crop, at most one per
+second). Malformed `ocr_settings` reads as "no flag", never a session
+failure. Unconfigured (nil option) keeps the single-engine behaviour and
+the trace field off.
+
+**The trace field in the session's event stream.** When the fallback is on,
+the session enables the pipeline's bounded run timeline and the terminal
+events (`session.stopped` / `session.failed`) carry it as `trace`: the
+`ocr.fallback` field — both readings, primary confidence, discrepancy, the
+chosen read and the reason — is the decision's home in the session's event
+stream (docs/spec/05 "include both and the discrepancy"), with the
+documentation's 512-row cap, in memory only (the event log stays the
+durable record). When the fallback is off the trace stays off: the event
+log remains the record and the timeline's cost is the cost of the feature,
+not of every session.
+
+**Verification.** Unit (fake `ocr.VLMClient` behind a real `ocr.VLMEngine`,
+`internal/runtime/ocr_fallback_test.go`): an unresolved primary hands every
+frame to the secondary; the trace rows carry the decision
+(`chosen=secondary`, the garbled primary disagrees on every annotated
+frame); the terminal event carries the `ocr.fallback` field; the seam's
+privacy contract (crop PNG + fixed instruction + the 256 MaxTokens bound,
+never raised); the unconfigured negative (no secondary call, no field, both
+lines still commit). Wiring unit (`TestDifficultFontInRegions`): the flag
+merges from any region and malformed settings degrade to off. Live
+(`TestLiveOCRFallbackSession`, NOT RUN without the gateway env / magick /
+tesseract): a replay session on a hard-font synthetic crop rendered with the
+ocr live test's recipe (same font pick, noise and blur), real Tesseract as
+primary and the role's real VLM as secondary, with the hard-font region's
+`difficult_font` flag landed in the draft and the revision published (a
+published revision is immutable — the flag lands in the draft, then the
+revision is published, the same shape a profile-level flag edit takes in
+production). It asserts the secondary was called, at least one
+`ocr.fallback` row with `chosen=secondary` in the session's terminal
+`trace`, the `ocr.fallback` field present, and the secondary's reading
+within the documented CER (<0.10) against the known text.
+
+## Amendment (2026-10-18): the secondary reads the raw crop
+
+Status: accepted. Owners: agent (runtime-wiring). The policy, confidence
+heuristic and privacy boundary are unchanged; this records one input
+contract the original text left open: **which pixels the secondary sees**.
+
+**The finding.** The pipeline prepares each region crop through the local
+engine's recipe (`vision.Preprocess`: grey, auto-invert, 2× nearest-neighbour
+upscale, Otsu threshold, median filter, pad) and hands the recipe's output to
+the configured OCR engine. The fallback wrapped that engine, so the VLM
+secondary received the recipe's output too. On the corpus's hard crop this
+was wrong for a vision model: the recipe's output is a tesseract tuning
+(greyed, inverted, blocky, thresholded), not a picture a VLM was trained
+on. Live evidence on this host (qwen3-8-27b behind the shared gateway,
+`TestLiveOCRFallbackSession`): the same rendered crop, sent as the recipe's
+output, drew hallucinated dialogue three times in a row ("The first time I
+ever saw you", "He has a bad heart", "I'm sorry, I can't help with
+that."); sent as the raw crop — the actual pixels, downscaled to the 1024
+bound — it read "The harbour bell rang twice." at CER 0.000. The ocr
+package's standalone live test, which sends the raw crop, had always passed.
+
+**The decision.** `ocr.FallbackEngine` implements the new
+`ocr.RawCropRecognizer` interface alongside `ocr.Engine`:
+`RecognizeWithRawCrop(ctx, preprocessed, rawCrop)` runs the primary on the
+preprocessed input — the recipe the local engine was tuned on, unchanged —
+and the secondary on the raw crop, the actual game pixels. The prepared-crop
+bytes that are hashed and sent are the RAW crop's, so the cache key stays
+exactly what the original text promised: the SHA-256 of the bytes that
+leave the appliance, and "one call per stable textbox" is a statement about
+the game's own pixels (a stable box's pixels are stable), not about the
+recipe's output. The privacy boundary is unchanged: the request still
+carries the downscaled crop only — no full frame, no other role's input.
+
+**The dispatch.** `pipeline.Runner` now carries the raw crop on the OCR job
+alongside the preprocessed input and, at the single dispatch point, gives
+engines that implement `ocr.RawCropRecognizer` the pair; every other engine
+receives exactly what it received before (the interface assertion is the
+only coupling point — no concrete-type branch, matching the wrap's own
+comment in `Config.normalize`). A nil or empty raw crop degrades to the
+single-input behaviour. The primary's identity (the dedupe hash, the
+presence gate, the retry policy) is still computed on the preprocessed
+input: the thing the local engine re-reads is what its cache and staleness
+math describe.
+
+**Verification.** `TestFallbackRawCropPath` (ocr package): the primary sees
+the recipe's image, the secondary sees the raw crop; a stable raw crop whose
+preprocessed input drifts still costs exactly one remote call (cache keyed
+on the prepared raw bytes); a changed raw crop costs a fresh one.
+`TestFallbackRawCropEmptyRawDegrades`: nil/empty raw degrades to the
+single-input behaviour. `TestOCRFallbackUnresolvedEngages` (pipeline):
+the scripted VLM's truth is now keyed on the raw crop's hash — the
+pipeline-level proof that the secondary's pixels are the raw ones.
+`TestLiveOCRFallbackSession` (runtime, live): passes on the raw crop at
+CER 0.000 where it failed on the recipe's output; the test also captures
+the exact bytes each call sent (hash logged; all crops dumpable under
+`GAME_NARRATOR_LIVE_DBG_DIR`) and runs controlled direct VLM calls on the
+same bytes, so a future failure separates wiring from model sampling by
+evidence instead of guesswork.
+
+**Reversal.** Drop the `RawCropRecognizer` implementation off
+`FallbackEngine` and the type assertion out of `Runner.ocrRecognize` and the
+fallback returns to sending the recipe's output to the secondary; nothing
+else in the pipeline or store is affected.

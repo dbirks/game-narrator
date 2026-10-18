@@ -24,7 +24,16 @@ const (
 	SourceKindTestPattern = "test_pattern"
 	SourceKindV4L2        = "v4l2"
 	SourceKindDolphin     = "dolphin"
-	EnvReplayRoots        = "GAME_NARRATOR_REPLAY_ROOTS"
+	// SourceKindManual is the explicitly-driven frame source: the caller
+	// pushes frames at its own pace (the runtime's Options.ManualSource
+	// seam). It is a test seam for docs/spec/12's "deterministic
+	// delay-injection suite" — a session test that must assert an ordering
+	// between a frame and the events it causes pushes the frame, waits on
+	// the specific events, then pushes the next one, so the assertion holds
+	// on the event stream rather than on a wall-clock margin. Production
+	// never wires the closure, so the kind answers ErrSourceUnsupported.
+	SourceKindManual = "manual"
+	EnvReplayRoots   = "GAME_NARRATOR_REPLAY_ROOTS"
 	// EnvDevDolphin mirrors internal/dolphin.EnvDevDolphin: the runtime admits
 	// the dolphin frame source only on an explicit developer opt-in. The name
 	// is duplicated rather than imported so the core package keeps no
@@ -163,7 +172,12 @@ func isUnder(root, p string) bool {
 // (ErrSourceUnsupported) — the runtime never fakes the emulator and never
 // launches one itself; the closure is the one place the dev bridge hands a
 // ready frame source to the pipeline.
-func buildFrameSource(kind, dir string, roots []string, speed float64, devDolphin func() (capture.Source, error), lookupEnv func(string) (string, bool)) (capture.Source, error) {
+//
+// manual is the test seam (Options.ManualSource): a nil closure means the
+// process has no manual source to hand out, so the kind is refused rather
+// than faked — the same no-simulation-theater rule the dolphin gate applies
+// to the emulator.
+func buildFrameSource(kind, dir string, roots []string, speed float64, devDolphin func() (capture.Source, error), manual func() (capture.Source, error), lookupEnv func(string) (string, bool)) (capture.Source, error) {
 	if lookupEnv == nil {
 		lookupEnv = os.LookupEnv
 	}
@@ -186,6 +200,11 @@ func buildFrameSource(kind, dir string, roots []string, speed float64, devDolphi
 			return nil, fmt.Errorf("runtime: frame source kind %q is enabled (%s=1) but no Dolphin bridge closure is wired into this process: %w", kind, EnvDevDolphin, ErrSourceUnsupported)
 		}
 		return devDolphin()
+	case SourceKindManual:
+		if manual == nil {
+			return nil, fmt.Errorf("runtime: frame source kind %q is a test seam: no manual source closure is wired into this process: %w", kind, ErrSourceUnsupported)
+		}
+		return manual()
 	case SourceKindV4L2:
 		return nil, fmt.Errorf("runtime: frame source kind %q is not implemented in this build: %w", kind, ErrSourceUnsupported)
 	default:

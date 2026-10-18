@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -139,7 +140,7 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 	if err != nil {
 		return Info{}, fmt.Errorf("runtime: build candidate index: %w", err)
 	}
-	src, err := buildFrameSource(kind, req.FrameSource.Dir, m.opts.ReplayRoots, m.opts.ReplaySpeed, m.opts.DevDolphin, nil)
+	src, err := buildFrameSource(kind, req.FrameSource.Dir, m.opts.ReplayRoots, m.opts.ReplaySpeed, m.opts.DevDolphin, m.opts.ManualSource, nil)
 	if err != nil {
 		return Info{}, err
 	}
@@ -271,7 +272,7 @@ func (m *Manager) checkRequest(ctx context.Context, req StartRequest) error {
 		return fmt.Errorf("%w: %q", ErrInvalidMode, req.Mode)
 	}
 	switch req.FrameSource.Kind {
-	case SourceKindReplay, SourceKindTestPattern, SourceKindV4L2, SourceKindDolphin:
+	case SourceKindReplay, SourceKindTestPattern, SourceKindV4L2, SourceKindDolphin, SourceKindManual:
 	default:
 		return fmt.Errorf("%w: %q", ErrUnknownSourceKind, req.FrameSource.Kind)
 	}
@@ -283,14 +284,21 @@ func (m *Manager) checkRequest(ctx context.Context, req StartRequest) error {
 // claims to be); every other source runs live.
 func (m *Manager) pipelineConfig(req StartRequest, published games.Profile, sessionID string, regions []games.Region, idx *matcher.Index, kind string) pipeline.Config {
 	mode := pipeline.ModeLive
-	if kind == SourceKindReplay {
+	// The manual source (the test seam) hands the pipeline a recording it
+	// claims to be — the clip's own frames on the clip's own source clock,
+	// pushed by hand — so it runs the lossless replay semantics too:
+	// every pushed frame is processed in order (no latest-slot drops), and
+	// the run's outcome is a pure function of the frames, which is exactly
+	// the determinism the push-wait-push protocol of the speech tests needs
+	// (docs/spec/12 "deterministic delay-injection suite").
+	if kind == SourceKindReplay || kind == SourceKindManual {
 		mode = pipeline.ModeReplay
 	}
 	engine := m.opts.OCR
 	if engine == nil {
 		engine = ocr.Tesseract{}
 	}
-	return pipeline.Config{
+	cfg := pipeline.Config{
 		Mode:            mode,
 		SessionID:       sessionID,
 		ProfileRevision: strconv.Itoa(published.RevisionNum),
@@ -306,6 +314,57 @@ func (m *Manager) pipelineConfig(req StartRequest, published games.Profile, sess
 		// profile-level OCR settings, not one session's guess.
 		TextKindHint: games.TextDialogue,
 	}
+	if fb := m.opts.OCRFallback; fb != nil && fb.Secondary != nil {
+		// One FallbackEngine per session (its rate limiter and crop cache are
+		// per-run state, ADR-0040 §2): the Secondary engine is shared across
+		// sessions (stateless) and the Policy is the process default with the
+		// session's regions' difficult_font flag merged in — the documented
+		// knob for a font the local engine is known to defeat.
+		policy := fb.Policy
+		if difficultFontIn(regions) {
+			policy.DifficultFont = true
+		}
+		cfg.OCRFallback = &pipeline.OCRFallback{Secondary: fb.Secondary, Policy: policy}
+		// The ocr.fallback field is recorded in the pipeline's bounded
+		// timeline and the session's terminal event carries that timeline, so
+		// a fallback session keeps the timeline (512 rows, in-memory, no
+		// durable write). The trace stays off where the fallback is off — the
+		// event log remains the durable record and the timeline's cost is the
+		// cost of the feature, not of every session.
+		cfg.Trace = true
+	}
+	return cfg
+}
+
+// difficultFontIn reports whether one of the session's regions flags
+// difficult_font in its ocr_settings — the profile-level flag ADR-0040
+// names ("the profile's DifficultFont flag"), stored as the
+// {"difficult_font": true} member of the regions.ocr_settings JSON object.
+// The session's OCR engine is one engine shared by all of the pipeline's
+// regions (pipeline.Config.OCR), so the session-level policy takes the
+// conservative union: a single hard-font region runs the secondary on every
+// frame of every region, and the rate limit and crop cache bound the cost
+// (one call per distinct crop, at most one per second).
+//
+// Malformed ocr_settings (a row the profile validator should never admit)
+// reads as "no flag", not an error: the recognition path must not fail a
+// session over a store-shape surprise it did not cause.
+func difficultFontIn(regions []games.Region) bool {
+	for _, r := range regions {
+		if len(r.OCRSettings) == 0 {
+			continue
+		}
+		var s struct {
+			DifficultFont bool `json:"difficult_font"`
+		}
+		if err := json.Unmarshal(r.OCRSettings, &s); err != nil {
+			continue
+		}
+		if s.DifficultFont {
+			return true
+		}
+	}
+	return false
 }
 
 // trackerConfig takes the caller's explicit settings when given, otherwise
@@ -322,7 +381,10 @@ func (m *Manager) trackerConfig(kind string) recognition.Config {
 		return m.opts.Tracker
 	}
 	cfg := recognition.DefaultConfig()
-	if kind == SourceKindReplay {
+	// The manual source speaks the recording's recorded clock (its frames
+	// carry the clip's timestamps), so the tracker is sized the same way a
+	// replay session's is: the 10 fps cadence is what the knobs assume.
+	if kind == SourceKindReplay || kind == SourceKindManual {
 		cfg.StableWindow = 100 * time.Millisecond
 		cfg.VoteWindow = 3
 	}
@@ -350,6 +412,15 @@ func (s *session) run(runCtx context.Context, src *observedSource, pub ses.Publi
 	s.stopSpeech()
 
 	st := s.runner.Stats()
+	// The run's bounded timeline (frame→state→text→candidate→event, capped at
+	// the pipeline's 512 rows) travels with the terminal events: it is the
+	// ocr.fallback trace field's home in the session's event stream
+	// (docs/spec/05 "include both and the discrepancy", ADR-0040) and the
+	// evidence-bundle half of the run that the event log keeps.
+	trace := s.runner.Trace()
+	if trace == nil {
+		trace = []pipeline.TraceEntry{}
+	}
 
 	s.mu.Lock()
 	kind := s.stopKind
@@ -374,7 +445,7 @@ func (s *session) run(runCtx context.Context, src *observedSource, pub ses.Publi
 		if _, perr := s.m.opts.Hub.Publish(stopCtx, events.Envelope{
 			Name:      EventSessionFailed,
 			SessionID: s.id,
-			Data:      mustJSON(map[string]any{"error": truncateError(err), "stats": st}),
+			Data:      mustJSON(map[string]any{"error": truncateError(err), "stats": st, "trace": trace}),
 		}); perr != nil {
 			s.m.log.Warn("publish session.failed", "session_id", s.id, "error", perr)
 		}
@@ -382,7 +453,7 @@ func (s *session) run(runCtx context.Context, src *observedSource, pub ses.Publi
 	if _, perr := s.m.opts.Hub.Publish(stopCtx, events.Envelope{
 		Name:      events.SessionStopped,
 		SessionID: s.id,
-		Data:      mustJSON(map[string]any{"reason": reason, "stats": st}),
+		Data:      mustJSON(map[string]any{"reason": reason, "stats": st, "trace": trace}),
 	}); perr != nil {
 		s.m.log.Warn("publish session.stopped", "session_id", s.id, "error", perr)
 	}

@@ -353,6 +353,7 @@ func (c *Cache) generate(ctx context.Context, key CacheKey, gen GenerationFunc) 
 	}
 	entry := Entry{
 		SHA256:     commit.SHA256,
+		Size:       commit.Size,
 		Duration:   info.Duration.Nanoseconds(),
 		SampleRate: info.SampleRate,
 		QA:         QAUnknown,

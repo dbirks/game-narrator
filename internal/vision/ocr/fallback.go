@@ -117,15 +117,35 @@ func (f *FallbackEngine) Name() string { return "ocr-fallback" }
 
 // Recognize implements Engine. The common path — a resolved primary — runs
 // exactly what the bare primary would run: no crop, no hash, no network.
-// Everything below only happens for an unresolved read.
+// Everything below only happens for an unresolved read. With the single
+// input, both readers see the same image; the pipeline's RawCropRecognizer
+// path is the one that splits them (ADR-0040, the 2026-10-18 amendment).
 func (f *FallbackEngine) Recognize(ctx context.Context, img image.Image) (Result, error) {
+	return f.recognize(ctx, img, img)
+}
+
+// RecognizeWithRawCrop implements RawCropRecognizer (ADR-0040, the 2026-10-18 amendment): the
+// primary runs on the preprocessed input — the recipe the local engine was
+// tuned on — and the secondary runs on the raw crop, the actual game
+// pixels. The prepared-crop bytes that are hashed and sent are the RAW
+// crop's: the cache key stays "the SHA-256 of the bytes that leave the
+// appliance", and the privacy story is unchanged (crop only, downscaled,
+// no full frame).
+func (f *FallbackEngine) RecognizeWithRawCrop(ctx context.Context, preprocessed, rawCrop image.Image) (Result, error) {
+	if rawCrop == nil || rawCrop.Bounds().Empty() {
+		return f.recognize(ctx, preprocessed, preprocessed)
+	}
+	return f.recognize(ctx, preprocessed, rawCrop)
+}
+
+func (f *FallbackEngine) recognize(ctx context.Context, pre, raw image.Image) (Result, error) {
 	p := f.normalizedPolicy()
-	primary, perr := f.Primary.Recognize(ctx, img)
+	primary, perr := f.Primary.Recognize(ctx, pre)
 	if perr == nil && !p.DifficultFont && isResolved(primary, p.ConfidenceThreshold) {
 		return primary, nil
 	}
 
-	png, cerr := encodeCrop(img, p.MaxSide)
+	png, cerr := encodeCrop(raw, p.MaxSide)
 	if cerr != nil {
 		if perr != nil {
 			return Result{}, perr
@@ -162,7 +182,7 @@ func (f *FallbackEngine) Recognize(ctx context.Context, img image.Image) (Result
 		return applyOutcome(primary, nil, Result{}, out)
 	}
 
-	sec, serr := f.callSecondary(ctx, img, png)
+	sec, serr := f.callSecondary(ctx, raw, png)
 	out := f.decide(primary, perr, sec, serr, p.ConfidenceThreshold)
 	if serr == nil {
 		// Only successful reads are cached: a gateway blip must not poison a

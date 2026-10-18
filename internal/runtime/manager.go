@@ -8,6 +8,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/capture"
 	"github.com/dbirks/game-narrator/internal/events"
 	"github.com/dbirks/game-narrator/internal/jobs"
+	"github.com/dbirks/game-narrator/internal/pipeline"
 	"github.com/dbirks/game-narrator/internal/recognition"
 	"github.com/dbirks/game-narrator/internal/store"
 	"github.com/dbirks/game-narrator/internal/vision/ocr"
@@ -114,12 +115,36 @@ type Options struct {
 	OCR     ocr.Engine
 	Tracker recognition.Config // zero = the mode's documented defaults
 
+	// OCRFallback is the VLM fallback wiring (docs/spec/05 "Compare
+	// lightweight OCR against an optional VLM fallback for difficult fonts",
+	// ADR-0040): when its Secondary is non-nil — an ocr.VLMEngine over the
+	// vision_ocr_fallback role's OpenAI-compatible client — each session's
+	// OCR engine is wrapped in an ocr.FallbackEngine: the local read always
+	// runs first and for free, and the VLM is consulted only for unresolved
+	// reads, or for every frame when one of the session's regions flags
+	// difficult_font in its ocr_settings. Policy's zero fields take the
+	// documented ocr-package defaults (threshold 0.6, 1 call/s burst 3,
+	// crop cache 64); the per-session DifficultFont is merged in here from
+	// the session's regions. nil (the default) keeps the single-engine
+	// behaviour, which is what the role's preflight "NOT CONFIGURED"
+	// continues to mean.
+	OCRFallback *pipeline.OCRFallback
+
 	// DevDolphin is the dev-only seam that hands a running Dolphin bridge's
 	// frame source to a session (docs/spec/11, ADR-0007). It is called only
 	// for a kind:dolphin request on an explicit GAME_NARRATOR_DEV_DOLPHIN opt-
 	// in; nil (the default) keeps that kind a 501, which is the production
 	// shape: the core runtime never imports or launches the emulator itself.
 	DevDolphin func() (capture.Source, error)
+
+	// ManualSource is the test seam for an explicitly-driven frame source
+	// (docs/spec/12 "deterministic delay-injection suite"): a kind:manual
+	// session runs the source this closure returns, and the caller pushes
+	// frames at its own pace, waiting on specific events between pushes, so
+	// a test asserts an ordering on the event stream instead of a wall-clock
+	// margin. nil (the default) keeps the kind refused (ErrSourceUnsupported)
+	// — production wires no closure, so the seam is unreachable there.
+	ManualSource func() (capture.Source, error)
 
 	// Speech wires the per-session voice pipeline (docs/spec/07, ADR-0039):
 	// committed lines resolve the speaker's approved voice and play through
@@ -157,6 +182,13 @@ func New(opts Options) (*Manager, error) {
 	}
 	if opts.Speech != nil && opts.Speech.Voices == nil {
 		return nil, errors.New("runtime: Speech options require the voice service (Speech.Voices)")
+	}
+	// A half-configured fallback is a wiring bug, not a degraded mode: the
+	// degraded mode is a nil OCRFallback (the role is not configured), and
+	// the pipeline refuses a set fallback without its secondary — so does
+	// the Manager, at construction rather than at the first session start.
+	if opts.OCRFallback != nil && opts.OCRFallback.Secondary == nil {
+		return nil, errors.New("runtime: OCR fallback options require a secondary engine (OCRFallback.Secondary)")
 	}
 	if err := events.Register(EventSessionStarted, EventSessionFailed); err != nil {
 		return nil, err

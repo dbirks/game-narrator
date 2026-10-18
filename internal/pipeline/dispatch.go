@@ -420,6 +420,7 @@ func (rs *regionState) startJob(r *Runner, ctx context.Context, frameSeq int64, 
 		hash:     a.hash,
 		frameSeq: frameSeq,
 		input:    a.input,
+		raw:      a.crop,
 		ctx:      jctx,
 		cancel:   cancel,
 		base:     ctx,
@@ -563,7 +564,7 @@ func (rs *regionState) emit(r *Runner, ctx context.Context, in chan<- *obsIn, p 
 	var fb *OCRFallbackTrace
 	if p.ready != nil && p.ready.Fallback != nil {
 		f := p.ready.Fallback
-		fb = &OCRFallbackTrace{PrimaryConf: f.PrimaryConf, Discrepancy: f.Discrepancy, Chosen: f.Chosen, Reason: f.Reason}
+		fb = &OCRFallbackTrace{PrimaryConf: f.PrimaryConf, Discrepancy: f.Discrepancy, Chosen: f.Chosen, Reason: f.Reason, SecondaryText: f.SecondaryText, SecondaryEngine: f.SecondaryEngine}
 	}
 	r.cnt.observations(1)
 	r.cnt.recordTrace(TraceEntry{

@@ -92,6 +92,13 @@ var canonicalKeyFields = []string{
 // space instead of colliding with an old key by chance.
 const keyVersion = 1
 
+// KeyVersion reports the version field of the canonical key JSON. It guards
+// the key space: a new field set is a new key version, never a silent append
+// (ADR-0023). The store-backed index persists it (migration 0011's
+// key_version column) so a future key-space change can partition the rows
+// without re-deriving the version from the hash.
+func KeyVersion() int { return keyVersion }
+
 // keyJSON is the exact shape hashed. Every field of KeyInput appears exactly
 // once; nothing else appears.
 type keyJSON struct {

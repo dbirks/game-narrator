@@ -40,9 +40,12 @@ func (s QAState) String() string {
 // Duration and SampleRate are recorded at commit time from the validated WAV
 // so a player can reserve time and a QA loop can flag duration outliers
 // without re-reading the blob (docs/spec/07 "ASR loop": duration outliers and
-// silent audio are QA signals).
+// silent audio are QA signals). Size is the committed blob's byte count, so a
+// store-backed index (ADR-0039 amendment) can persist and report cache weight
+// without reading the blob.
 type Entry struct {
 	SHA256     string  `json:"sha256"`
+	Size       int64   `json:"size_bytes"`
 	Duration   int64   `json:"duration_ns"`
 	SampleRate int     `json:"sample_rate"`
 	QA         QAState `json:"qa_state"`

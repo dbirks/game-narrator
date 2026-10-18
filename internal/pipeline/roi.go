@@ -94,8 +94,14 @@ type ocrJob struct {
 	// policy (ModeReplay only) derives a fresh deadline from it after the job's
 	// own one has expired, so a wedged-but-recoverable engine cannot burn the
 	// whole retry budget on the first attempt's timer.
-	base    context.Context
+	base context.Context
+	// input is the preprocessed crop (the recipe's output) the OCR engine's
+	// local path reads. raw is the crop's actual pixels: engines that
+	// implement ocr.RawCropRecognizer (the fallback engine does, ADR-0040
+	// §6) run a natural-image secondary on it instead of on the recipe's
+	// output.
 	input   image.Image
+	raw     image.Image
 	started time.Time
 
 	// dead is set by the frame loop when it stops wanting this result. Only the

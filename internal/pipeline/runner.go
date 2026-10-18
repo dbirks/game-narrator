@@ -273,14 +273,28 @@ func (r *Runner) ocrWorker(ctx context.Context, jobs <-chan *ocrJob, done chan<-
 // Live mode retries nothing: a live player has already moved on, and there the
 // supersede/cancellation machinery — not a retry — is the policy.
 func (r *Runner) recognize(job *ocrJob) (ocr.Result, error) {
-	res, err := r.cfg.OCR.Recognize(job.ctx, job.input)
+	res, err := r.ocrRecognize(job.ctx, job)
 	for attempt := 1; r.cfg.Mode == ModeReplay && err != nil && !isCancelledErr(err) &&
 		attempt < ReplayOCRMaxAttempts && job.base.Err() == nil; attempt++ {
 		retryCtx, cancel := context.WithTimeout(job.base, r.cfg.ReplayOCRTimeout)
-		res, err = r.cfg.OCR.Recognize(retryCtx, job.input)
+		res, err = r.ocrRecognize(retryCtx, job)
 		cancel()
 	}
 	return res, err
+}
+
+// ocrRecognize runs the configured OCR engine for one attempt, giving engines
+// that implement ocr.RawCropRecognizer both inputs the analyse pass carried:
+// the preprocessed crop (the local recipe's reading) and the raw crop (the
+// actual pixels a natural-image secondary reads, ADR-0040, the 2026-10-18 amendment). The interface
+// assertion — not a concrete-type branch — is the only coupling: an engine
+// that does not implement it receives exactly what it received before, and
+// the wrap in Config.normalize is untouched.
+func (r *Runner) ocrRecognize(ctx context.Context, job *ocrJob) (ocr.Result, error) {
+	if raw, ok := r.cfg.OCR.(ocr.RawCropRecognizer); ok {
+		return raw.RecognizeWithRawCrop(ctx, job.input, job.raw)
+	}
+	return r.cfg.OCR.Recognize(ctx, job.input)
 }
 
 // rankWorker ranks observations off the reducer goroutine. matcher.Rank is pure

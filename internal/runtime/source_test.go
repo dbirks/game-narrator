@@ -53,6 +53,13 @@ func TestStartValidation(t *testing.T) {
 			runtime.ErrSourceUnsupported, "",
 		},
 		{
+			// The manual seam is unwired in this manager (nil closure), so the
+			// kind is refused exactly like the unimplemented live kinds.
+			"manual source unwired",
+			runtime.StartRequest{ProfileID: profileID, FrameSource: runtime.FrameSource{Kind: runtime.SourceKindManual}},
+			runtime.ErrSourceUnsupported, "",
+		},
+		{
 			"replay dir outside allowlist",
 			runtime.StartRequest{ProfileID: profileID, FrameSource: runtime.FrameSource{Kind: runtime.SourceKindReplay, Dir: "/etc"}},
 			runtime.ErrSourceNotAllowed, "",
