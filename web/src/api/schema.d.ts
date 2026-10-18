@@ -1318,6 +1318,127 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/settings": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * The effective configuration, read-only (admin).
+     * @description Model roles (endpoints redacted to '<configured>', tokens as presence booleans), storage, audio sink, security, import policies, version, the update policy (none: no auto-update) and the mutable notice. Every value carries the variable that controls it, because this build has no runtime-mutable setting.
+     */
+    get: operations["getSettings"];
+    /**
+     * Declined on purpose (admin).
+     * @description No setting of this build is runtime-mutable; the 405 body names the environment variables the change would have to go through (Allow: GET).
+     */
+    put: operations["putSettings"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/admin/backup": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * A consistent SQLite backup of the live catalogue, as a download (admin).
+     * @description The store's online-backup API writes the snapshot while the live connection keeps serving. Restore is CLI-only (game-narrator db restore): it is a process-lifecycle act and the UI documents it rather than offering a button.
+     */
+    post: operations["createBackup"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/dev/tests": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * The /tests page: scenario catalog, gate results, Dolphin and provider readiness (developer).
+     * @description State of this machine: the scenarios the checkout's testdata/scenarios contains (with blocked reasons), the gate results recorded under artifacts/gates (PASS/FAIL/NOT RUN with the NOT RUN instruction), the Dolphin binaries and game-image variable, and which model roles are configured. Answers 503-free content with repo_root_known=false when no repository root resolves.
+     */
+    get: operations["getDevTests"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/dev/tests/scenarios/{rest...}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Run one scenario as a background job (developer).
+     * @description The path is <scenario id>/run; the trailing wildcard exists because a scenario id carries its directory (synthetic/dialogue-advance-001). The run is a durable scenario.run job; poll GET /api/v1/dev/tests/runs/{job_id} for its state and report links. A blocked scenario runs: the harness reports it BLOCKED with its reason.
+     */
+    post: operations["runDevTestScenario"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/dev/tests/runs/{job_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** One scenario run's job state and report links (developer). */
+    get: operations["getDevTestRun"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/dev/tests/reports/{sha256}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * One stored report blob, by content hash (developer).
+     * @description The HTML report is script-free and carries a Content-Security-Policy for the viewer's sandboxed iframe; the JSON report is served as application/json.
+     */
+    get: operations["getDevTestReport"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2377,6 +2498,195 @@ export interface components {
       Y: number;
       W: number;
       H: number;
+    };
+    /** @description One model role's effective configuration. The base URL is the literal '<configured>' when set (docs/spec/14: the host never reaches the browser) and the token is a presence boolean; the state string carries the NOT CONFIGURED note with the variable to set. */
+    SettingsModelRole: {
+      role: string;
+      /** @description CONFIGURED, NOT CONFIGURED or NOT AVAILABLE. */
+      state: string;
+      configured: boolean;
+      model: string;
+      protocol: string;
+      /** @description '<configured>' or '' — never the actual endpoint. */
+      base_url: string;
+      /** @description '' means omit the field; the model's default applies. */
+      reasoning_effort: string;
+      timeout: string;
+      token_configured: boolean;
+      /** @description openai.Capabilities() findings. null: the API layer holds no live client in this build. */
+      capabilities: unknown;
+      /** @description The variables that control this role. */
+      env: string[];
+    };
+    /** @description The shared-gateway state by presence only: variable names, never values. */
+    SettingsGateway: {
+      url_env: string;
+      token_env_name: string;
+      url_configured: boolean;
+      token_configured: boolean;
+    };
+    SettingsModels: {
+      gateway: components["schemas"]["SettingsGateway"];
+      roles: components["schemas"]["SettingsModelRole"][];
+    };
+    SettingsSpeechCache: {
+      /** @description null: the cache's blobs are content-addressed inside the asset store and not distinguishable by size. */
+      bytes: unknown;
+      note: string;
+    };
+    SettingsStorage: {
+      /** @description The data directory's base name only; the absolute path is a host path and stays server-side. */
+      data_dir: string;
+      data_dir_known: boolean;
+      free_space_bytes: number;
+      free_space_known: boolean;
+      asset_store_bytes: number;
+      speech_cache: components["schemas"]["SettingsSpeechCache"];
+      env: string[];
+    };
+    SettingsAudio: {
+      /** @description dummy, filesink or pipewire (filesink when the variable is unset). */
+      sink: string;
+      device: string;
+      note?: string;
+      env: string[];
+    };
+    SettingsSecurity: {
+      listen: string;
+      listen_env: string;
+      auth: {
+        mode: string;
+        admin_configured: boolean;
+      };
+    };
+    SettingsWebSearch: {
+      enabled: boolean;
+      provider: string;
+      note: string;
+      env_private_allow: string;
+      /** @description The count of allowlist entries; the entries themselves are operator network topology and stay server-side. */
+      private_hosts_allowed: number;
+    };
+    SettingsAgent: {
+      max_steps: number;
+      max_tool_calls: number;
+      /** @description Where the numbers live: build constants, not environment, in this build. */
+      source: string;
+    };
+    SettingsImports: {
+      web_search: components["schemas"]["SettingsWebSearch"];
+      agent: components["schemas"]["SettingsAgent"];
+    };
+    SettingsVersion: {
+      version: string;
+      commit: string;
+      go_version: string;
+      os: string;
+      arch: string;
+    };
+    SettingsUpdate: {
+      auto_update: boolean;
+      docs: string;
+      note: string;
+    };
+    SettingsMutable: {
+      /** @description 0 in this build: nothing is runtime-mutable. */
+      count: number;
+      note: string;
+      /** @description The variables that control the rendered values. */
+      env: string[];
+    };
+    /** @description The effective configuration of the running process, read-only where it comes from the environment (docs/spec/09 /settings). Secrets never reach the browser: tokens are presence booleans, endpoints are '<configured>'. */
+    Settings: {
+      models: components["schemas"]["SettingsModels"];
+      storage: components["schemas"]["SettingsStorage"];
+      audio: components["schemas"]["SettingsAudio"];
+      security: components["schemas"]["SettingsSecurity"];
+      imports: components["schemas"]["SettingsImports"];
+      version: components["schemas"]["SettingsVersion"];
+      update: components["schemas"]["SettingsUpdate"];
+      mutable: components["schemas"]["SettingsMutable"];
+    };
+    /** @description One row of the scenario catalog (a testdata/scenarios YAML as the loader parsed it). */
+    ScenarioView: {
+      id: string;
+      /** @description The docs/test-plan/scenario-catalog.md row, when labelled. */
+      catalog?: string;
+      file: string;
+      origin?: string;
+      mode?: string;
+      profile?: string;
+      /** @description none, recorded or live. */
+      decision?: string;
+      tts?: string;
+      voice?: string;
+      faults?: number;
+      /** @description runnable, blocked (with reason), or load_error. */
+      status: string;
+      reason?: string;
+    };
+    /** @description One gate's latest recorded result from artifacts/gates. */
+    GateView: {
+      name: string;
+      /** @description PASS, FAIL or NOT RUN. */
+      result: string;
+      exit_code?: number;
+      finished_at?: string;
+      tests?: number;
+      failures?: number;
+      errors?: number;
+      skipped?: number;
+      /** @description What makes the gate run (the make target plus its prerequisites) — the actionable form of NOT RUN. */
+      instruction: string;
+    };
+    /** @description The Arch-side Dolphin prerequisites, by presence only: booleans and variable names, never paths (docs/spec/14). */
+    DolphinReadiness: {
+      dev_mode_enabled: boolean;
+      dolphin_binary_present: boolean;
+      xvfb_present: boolean;
+      game_image_env_set: boolean;
+      env: string[];
+    };
+    /** @description Which model roles this process has configured, by name only. */
+    ProviderReadiness: {
+      configured: string[];
+      missing: string[];
+    };
+    /** @description The /tests page's snapshot: the scenario catalog, the recorded gate results, and the Dolphin/provider readiness of this host. */
+    DevTests: {
+      scenarios: components["schemas"]["ScenarioView"][];
+      gates: components["schemas"]["GateView"][];
+      dolphin: components["schemas"]["DolphinReadiness"];
+      providers: components["schemas"]["ProviderReadiness"];
+      /** @description false: no repository root could be resolved; the catalog and gates are empty by design. */
+      repo_root_known: boolean;
+      repo_root_env: string;
+      scenario_dir?: string;
+      gates_dir?: string;
+    };
+    ScenarioRunAccepted: {
+      job_id: string;
+      scenario_id: string;
+      status: string;
+    };
+    /** @description The run job's state plus, once succeeded, the report's links. */
+    ScenarioRunStatus: {
+      job_id: string;
+      kind: string;
+      /** @description queued, running, succeeded, failed, cancelled or recoverable. */
+      state: string;
+      scenario_id: string;
+      attempts: number;
+      created_at: string;
+      updated_at: string;
+      /** @description passed, failed or blocked, once the job is terminal. */
+      status?: string;
+      summary?: string;
+      /** @description Route paths to the stored report blobs. */
+      report?: {
+        json?: string;
+        html?: string;
+      };
     };
   };
   responses: {
@@ -4720,6 +5030,164 @@ export interface operations {
       };
       501: components["responses"]["Problem"];
       503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  getSettings: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The effective configuration. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Settings"];
+        };
+      };
+      default: components["responses"]["Problem"];
+    };
+  };
+  putSettings: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description No mutable setting; the detail names the controlling variables. */
+      405: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      default: components["responses"]["Problem"];
+    };
+  };
+  createBackup: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The backup file. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/x-sqlite3": string;
+        };
+      };
+      default: components["responses"]["Problem"];
+    };
+  };
+  getDevTests: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The snapshot. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DevTests"];
+        };
+      };
+      default: components["responses"]["Problem"];
+    };
+  };
+  runDevTestScenario: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description <scenario id>/run */
+        rest: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The run was queued. */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ScenarioRunAccepted"];
+        };
+      };
+      404: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  getDevTestRun: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        job_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The job's state. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ScenarioRunStatus"];
+        };
+      };
+      404: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  getDevTestReport: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        sha256: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The report bytes. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "text/html": string;
+        };
+      };
+      404: components["responses"]["Problem"];
       default: components["responses"]["Problem"];
     };
   };

@@ -81,6 +81,14 @@ func DefaultPolicy() *Policy {
 		// config, users and sealed provider credentials are admin (docs/spec/08
 		// scopes; docs/spec/14 "Agent cannot update admin/gateway/secret config
 		// … without role-protected explicit action").
+		// The /settings page is the same tier: it renders the effective
+		// configuration (model endpoints, storage, security, import policies,
+		// audio sinks) and its backup download copies the appliance's whole
+		// state, so a kiosk viewer or a session operator must not read either
+		// (docs/spec/09 "/settings"; docs/spec/14 "Authorization").
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/settings", Access: Require(RoleAdmin)},
+		Grant{Method: http.MethodPut, Pattern: "/api/v1/settings", Access: Require(RoleAdmin)},
+		Grant{Method: http.MethodPost, Pattern: "/api/v1/admin/backup", Access: Require(RoleAdmin)},
 		Grant{Method: "", Pattern: "/api/v1/config", Access: Require(RoleAdmin)},
 		Grant{Method: "", Pattern: "/api/v1/config/{rest...}", Access: Require(RoleAdmin)},
 		Grant{Method: "", Pattern: "/api/v1/secrets/{rest...}", Access: Require(RoleAdmin)},

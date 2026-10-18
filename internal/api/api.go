@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/assets"
@@ -166,6 +167,24 @@ type Server struct {
 	// factory answers 503 on the preview route: empty results would read as
 	// "the box is blank" rather than "no OCR engine is wired here".
 	ocrPreview ocrPreviewDeps
+
+	// listenAddr is the bound listen address the /settings page's security
+	// section reports (WithListen). Empty when the host did not wire it, and
+	// the page then falls back to the environment resolution of the same
+	// flag > env > default precedence the process itself used.
+	listenAddr string
+
+	// harnessRepoRoot is the repository root the /tests page's dev harness
+	// reads (WithTestHarness): testdata/scenarios for the catalog and runs,
+	// artifacts/gates for the recorded gate results. Empty falls back to the
+	// GAME_NARRATOR_REPO_ROOT variable and then the working directory, which
+	// is how the e2e binary (started from the checkout) finds its fixtures
+	// without any extra wiring.
+	harnessRepoRoot string
+
+	// workerOnce starts the scenario.run worker at most once per process
+	// (tests_worker.go), from the run route after the enqueue.
+	workerOnce sync.Once
 }
 
 // ReadinessFunc answers GET /api/v1/health/ready. It returns the per-dependency
@@ -274,6 +293,24 @@ func WithDevEvents(st events.Store) Option {
 // Without it POST …/regions/preview answers 503 rather than an empty read.
 func WithOCRPreview(factory ocrFactoryFunc, replayRoots []string) Option {
 	return func(s *Server) { s.ocrPreview = ocrPreviewDeps{Factory: factory, ReplayRoots: replayRoots} }
+}
+
+// WithListen records the bound listen address for the /settings page's
+// security section. The bound address — not the environment — is what an
+// operator needs to answer "is this box reachable off-loopback?", so it
+// outranks the fallback the page uses when the host did not wire it.
+func WithListen(addr string) Option {
+	return func(s *Server) { s.listenAddr = strings.TrimSpace(addr) }
+}
+
+// WithTestHarness wires the /tests page's dev harness to a repository root
+// (docs/spec/09 "/tests"): the checkout whose testdata/scenarios the catalog
+// lists and whose artifacts/gates the gate section renders. A process without
+// it falls back to GAME_NARRATOR_REPO_ROOT and then its working directory;
+// with no resolvable root the dev test routes answer 503 with the variable
+// named, the same honest-degradation rule the other unwired subsystems follow.
+func WithTestHarness(repoRoot string) Option {
+	return func(s *Server) { s.harnessRepoRoot = strings.TrimSpace(repoRoot) }
 }
 
 // JobQueue is the slice of the durable queue this package uses: enqueue one job,
@@ -418,6 +455,27 @@ func (s *Server) Handler() http.Handler {
 	routes.register(mux, http.MethodPost, "/api/v1/dev/dolphin/input", s.handleDolphinInput)
 	routes.register(mux, http.MethodPost, "/api/v1/dev/dolphin/screenshot", s.handleDolphinScreenshot)
 	routes.register(mux, http.MethodPost, "/api/v1/dev/dolphin/stop", s.handleDolphinStop)
+
+	// The /tests page (docs/spec/09): the scenario catalog with run controls,
+	// the recorded gate results, Dolphin/provider readiness, and the report
+	// viewer's blob route. All under the developer-only /api/v1/dev prefix of
+	// the scope table. The run route is a trailing wildcard because a scenario
+	// id carries its directory (synthetic/dialogue-advance-001), which a
+	// single-segment pattern cannot hold; the handler requires the final
+	// segment to be "run".
+	routes.register(mux, http.MethodGet, "/api/v1/dev/tests", s.handleDevTests)
+	routes.register(mux, http.MethodPost, "/api/v1/dev/tests/scenarios/{rest...}", s.handleDevTestRun)
+	routes.register(mux, http.MethodGet, "/api/v1/dev/tests/runs/{job_id}", s.handleDevTestRunStatus)
+	routes.register(mux, http.MethodGet, "/api/v1/dev/tests/reports/{sha256}", s.handleDevTestReport)
+
+	// The /settings page (docs/spec/09): the effective configuration, read-only
+	// where it comes from the environment, with the backup download. Admin by
+	// the scope table's grants below; PUT answers 405 on purpose (no setting
+	// of this build is runtime-mutable — settings.go says so with the env
+	// names the change would have to go through).
+	routes.register(mux, http.MethodGet, "/api/v1/settings", s.handleSettingsGet)
+	routes.register(mux, http.MethodPut, "/api/v1/settings", s.handleSettingsPut)
+	routes.register(mux, http.MethodPost, "/api/v1/admin/backup", s.handleAdminBackup)
 
 	// Onboarding agent (docs/spec/08 "APIs", ADR-0028): the run lives as a
 	// durable agent.run job; this surface starts, chats with, watches and

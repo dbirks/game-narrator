@@ -43,6 +43,19 @@ export function AppNav() {
         </Link>
       ) : null}
       <Link to="/diagnostics">Diagnostics</Link>
+      {/* The two operator-facing pages: settings is admin-only (its API routes
+          say so with a 403), the test harness is developer-and-up (ADR-0047).
+          Hiding a link the role cannot use is the nav's job, not the page's. */}
+      {atLeast("admin") ? (
+        <Link to="/settings" data-testid="nav-settings">
+          Settings
+        </Link>
+      ) : null}
+      {atLeast("developer") ? (
+        <Link to="/tests" data-testid="nav-tests">
+          Tests
+        </Link>
+      ) : null}
       <span className="nav-spacer" />
       {state === "authenticated" && user ? (
         <span className="nav-user" data-testid="nav-user">

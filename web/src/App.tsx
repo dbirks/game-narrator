@@ -16,6 +16,8 @@ import { PlayPage } from "./pages/Play";
 import { PublishPage } from "./pages/Publish";
 import { RegionsPage } from "./pages/Regions";
 import { SetupPage } from "./pages/Setup";
+import { SettingsPage } from "./pages/Settings";
+import { TestsPage } from "./pages/Tests";
 import { VoicesPage } from "./pages/Voices";
 
 /**
@@ -41,6 +43,24 @@ export function App() {
         <Route path="/setup" element={<SetupPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/diagnostics" element={<DiagnosticsPage />} />
+        {/* /settings is admin-gated by the API (403 otherwise); the guard here
+            is the unauthenticated case only (ADR-0047). */}
+        <Route
+          path="/settings"
+          element={
+            <RequireAuth>
+              <SettingsPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/tests"
+          element={
+            <RequireAuth>
+              <TestsPage />
+            </RequireAuth>
+          }
+        />
         <Route
           path="/developer"
           element={

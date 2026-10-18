@@ -74,6 +74,14 @@
   {
    "name": "dev",
    "description": "Developer-only inspection and hardware tooling (docs/spec/08; the scope table grants the whole /api/v1/dev prefix to the developer role)."
+  },
+  {
+   "name": "settings",
+   "description": "The effective configuration (admin) and the backup download."
+  },
+  {
+   "name": "devtests",
+   "description": "The /tests page: scenario catalog, gate results, readiness and reports (developer)."
   }
  ],
  "paths": {
@@ -2093,7 +2101,7 @@
      "profiles"
     ],
     "summary": "Replace a draft revision's whole region set.",
-    "description": "If-Match carries the profile revision's row version, the same token the message edit sends back (ADR-0015): 428 when absent, 412 when stale, 409 when the revision is published or archived. The body is exhaustive — a region set is one calibration, not a bag of boxes — and the store advances the set's revision exactly once, so cached detections keyed on it invalidate precisely (docs/spec/09 \"edits yield new region-set revision\"). Geometry is normalised [0,1] frame fractions; a box running past the frame is a 422 with the finding naming the box.",
+    "description": "If-Match carries the profile revision's row version, the same token the message edit sends back (ADR-0015): 428 when absent, 412 when stale, 409 when the revision is published or archived. The body is exhaustive \u2014 a region set is one calibration, not a bag of boxes \u2014 and the store advances the set's revision exactly once, so cached detections keyed on it invalidate precisely (docs/spec/09 \"edits yield new region-set revision\"). Geometry is normalised [0,1] frame fractions; a box running past the frame is a 422 with the finding naming the box.",
     "x-required-role": "curator",
     "parameters": [
      {
@@ -2159,7 +2167,7 @@
      "profiles"
     ],
     "summary": "OCR one frame against the boxes on the canvas.",
-    "description": "A what-if read, never a write: the editor sends a frame — an uploaded capture (multipart, image part ≤ 4 MB) or a fixture path under the configured replay roots (application/json, fixture) — plus the boxes to read, and gets back per box four OCR variants (PSM 6/7 crossed with preprocess on/off, the settings a profile stores in regions.ocr_settings), the textbox-presence classification the runtime's panel detector applies (docs/spec/04), and the timings the page renders. Boxes default to the revision's stored regions when the request names none. The image is held in memory for the request only; it is persisted exactly when dev_trace is set and an event hub is wired, as a regions.preview event carrying the frame.",
+    "description": "A what-if read, never a write: the editor sends a frame \u2014 an uploaded capture (multipart, image part \u2264 4 MB) or a fixture path under the configured replay roots (application/json, fixture) \u2014 plus the boxes to read, and gets back per box four OCR variants (PSM 6/7 crossed with preprocess on/off, the settings a profile stores in regions.ocr_settings), the textbox-presence classification the runtime's panel detector applies (docs/spec/04), and the timings the page renders. Boxes default to the revision's stored regions when the request names none. The image is held in memory for the request only; it is persisted exactly when dev_trace is set and an event hub is wired, as a regions.preview event carrying the frame.",
     "x-required-role": "curator",
     "parameters": [
      {
@@ -2259,7 +2267,7 @@
      "profiles"
     ],
     "summary": "One page of a revision's dialogue graph.",
-    "description": "The virtualized graph's page contract (docs/spec/09): nodes carry the short normalized text (≤ 80 runes) the list row renders, plus the attribution a verified-vs-inferred label needs; edges are returned only when both endpoints are on the page, so a filtered or partial page is a connected subgraph rather than half-edges at its boundary. Filters are exact, server-side matches on speaker, message kind and scene.",
+    "description": "The virtualized graph's page contract (docs/spec/09): nodes carry the short normalized text (\u2264 80 runes) the list row renders, plus the attribution a verified-vs-inferred label needs; edges are returned only when both endpoints are on the page, so a filtered or partial page is a connected subgraph rather than half-edges at its boundary. Filters are exact, server-side matches on speaker, message kind and scene.",
     "x-required-role": "viewer",
     "parameters": [
      {
@@ -4138,6 +4146,230 @@
      }
     }
    }
+  },
+  "/api/v1/settings": {
+   "get": {
+    "operationId": "getSettings",
+    "tags": [
+     "settings"
+    ],
+    "summary": "The effective configuration, read-only (admin).",
+    "description": "Model roles (endpoints redacted to '<configured>', tokens as presence booleans), storage, audio sink, security, import policies, version, the update policy (none: no auto-update) and the mutable notice. Every value carries the variable that controls it, because this build has no runtime-mutable setting.",
+    "x-required-role": "admin",
+    "responses": {
+     "200": {
+      "description": "The effective configuration.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Settings"
+        }
+       }
+      }
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   },
+   "put": {
+    "operationId": "putSettings",
+    "tags": [
+     "settings"
+    ],
+    "summary": "Declined on purpose (admin).",
+    "description": "No setting of this build is runtime-mutable; the 405 body names the environment variables the change would have to go through (Allow: GET).",
+    "x-required-role": "admin",
+    "responses": {
+     "405": {
+      "description": "No mutable setting; the detail names the controlling variables.",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   }
+  },
+  "/api/v1/admin/backup": {
+   "post": {
+    "operationId": "createBackup",
+    "tags": [
+     "settings"
+    ],
+    "summary": "A consistent SQLite backup of the live catalogue, as a download (admin).",
+    "description": "The store's online-backup API writes the snapshot while the live connection keeps serving. Restore is CLI-only (game-narrator db restore): it is a process-lifecycle act and the UI documents it rather than offering a button.",
+    "x-required-role": "admin",
+    "responses": {
+     "200": {
+      "description": "The backup file.",
+      "content": {
+       "application/x-sqlite3": {
+        "schema": {
+         "type": "string",
+         "format": "binary"
+        }
+       }
+      }
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   }
+  },
+  "/api/v1/dev/tests": {
+   "get": {
+    "operationId": "getDevTests",
+    "tags": [
+     "devtests"
+    ],
+    "summary": "The /tests page: scenario catalog, gate results, Dolphin and provider readiness (developer).",
+    "description": "State of this machine: the scenarios the checkout's testdata/scenarios contains (with blocked reasons), the gate results recorded under artifacts/gates (PASS/FAIL/NOT RUN with the NOT RUN instruction), the Dolphin binaries and game-image variable, and which model roles are configured. Answers 503-free content with repo_root_known=false when no repository root resolves.",
+    "x-required-role": "developer",
+    "responses": {
+     "200": {
+      "description": "The snapshot.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/DevTests"
+        }
+       }
+      }
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   }
+  },
+  "/api/v1/dev/tests/scenarios/{rest...}": {
+   "post": {
+    "operationId": "runDevTestScenario",
+    "tags": [
+     "devtests"
+    ],
+    "summary": "Run one scenario as a background job (developer).",
+    "description": "The path is <scenario id>/run; the trailing wildcard exists because a scenario id carries its directory (synthetic/dialogue-advance-001). The run is a durable scenario.run job; poll GET /api/v1/dev/tests/runs/{job_id} for its state and report links. A blocked scenario runs: the harness reports it BLOCKED with its reason.",
+    "x-required-role": "developer",
+    "parameters": [
+     {
+      "name": "rest",
+      "in": "path",
+      "required": true,
+      "description": "<scenario id>/run",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "202": {
+      "description": "The run was queued.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ScenarioRunAccepted"
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "503": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   }
+  },
+  "/api/v1/dev/tests/runs/{job_id}": {
+   "get": {
+    "operationId": "getDevTestRun",
+    "tags": [
+     "devtests"
+    ],
+    "summary": "One scenario run's job state and report links (developer).",
+    "x-required-role": "developer",
+    "parameters": [
+     {
+      "name": "job_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "The job's state.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ScenarioRunStatus"
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   }
+  },
+  "/api/v1/dev/tests/reports/{sha256}": {
+   "get": {
+    "operationId": "getDevTestReport",
+    "tags": [
+     "devtests"
+    ],
+    "summary": "One stored report blob, by content hash (developer).",
+    "description": "The HTML report is script-free and carries a Content-Security-Policy for the viewer's sandboxed iframe; the JSON report is served as application/json.",
+    "x-required-role": "developer",
+    "parameters": [
+     {
+      "name": "sha256",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "The report bytes.",
+      "content": {
+       "text/html": {
+        "schema": {
+         "type": "string",
+         "format": "binary"
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   }
   }
  },
  "components": {
@@ -5776,7 +6008,7 @@
    },
    "RegionInput": {
     "type": "object",
-    "description": "One box as the editor sends it. x+w and y+h must stay ≤ 1: the same box-inside-the-frame rule the regions table's CHECK enforces.",
+    "description": "One box as the editor sends it. x+w and y+h must stay \u2264 1: the same box-inside-the-frame rule the regions table's CHECK enforces.",
     "required": [
      "region_type",
      "x",
@@ -6584,7 +6816,7 @@
      },
      "ended": {
       "type": "integer",
-      "description": "Utterances that reached a terminal state — natural end, failure, skip or mute."
+      "description": "Utterances that reached a terminal state \u2014 natural end, failure, skip or mute."
      },
      "cache_hits": {
       "type": "integer",
@@ -7629,6 +7861,654 @@
       "type": "integer"
      }
     }
+   },
+   "SettingsModelRole": {
+    "type": "object",
+    "description": "One model role's effective configuration. The base URL is the literal '<configured>' when set (docs/spec/14: the host never reaches the browser) and the token is a presence boolean; the state string carries the NOT CONFIGURED note with the variable to set.",
+    "properties": {
+     "role": {
+      "type": "string"
+     },
+     "state": {
+      "type": "string",
+      "description": "CONFIGURED, NOT CONFIGURED or NOT AVAILABLE."
+     },
+     "configured": {
+      "type": "boolean"
+     },
+     "model": {
+      "type": "string"
+     },
+     "protocol": {
+      "type": "string"
+     },
+     "base_url": {
+      "type": "string",
+      "description": "'<configured>' or '' \u2014 never the actual endpoint."
+     },
+     "reasoning_effort": {
+      "type": "string",
+      "description": "'' means omit the field; the model's default applies."
+     },
+     "timeout": {
+      "type": "string"
+     },
+     "token_configured": {
+      "type": "boolean"
+     },
+     "capabilities": {
+      "description": "openai.Capabilities() findings. null: the API layer holds no live client in this build."
+     },
+     "env": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "The variables that control this role."
+     }
+    },
+    "required": [
+     "role",
+     "state",
+     "configured",
+     "model",
+     "protocol",
+     "base_url",
+     "reasoning_effort",
+     "timeout",
+     "token_configured",
+     "capabilities",
+     "env"
+    ]
+   },
+   "SettingsGateway": {
+    "type": "object",
+    "description": "The shared-gateway state by presence only: variable names, never values.",
+    "properties": {
+     "url_env": {
+      "type": "string"
+     },
+     "token_env_name": {
+      "type": "string"
+     },
+     "url_configured": {
+      "type": "boolean"
+     },
+     "token_configured": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "url_env",
+     "token_env_name",
+     "url_configured",
+     "token_configured"
+    ]
+   },
+   "SettingsModels": {
+    "type": "object",
+    "properties": {
+     "gateway": {
+      "$ref": "#/components/schemas/SettingsGateway"
+     },
+     "roles": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/SettingsModelRole"
+      }
+     }
+    },
+    "required": [
+     "gateway",
+     "roles"
+    ]
+   },
+   "SettingsSpeechCache": {
+    "type": "object",
+    "properties": {
+     "bytes": {
+      "description": "null: the cache's blobs are content-addressed inside the asset store and not distinguishable by size."
+     },
+     "note": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "bytes",
+     "note"
+    ]
+   },
+   "SettingsStorage": {
+    "type": "object",
+    "properties": {
+     "data_dir": {
+      "type": "string",
+      "description": "The data directory's base name only; the absolute path is a host path and stays server-side."
+     },
+     "data_dir_known": {
+      "type": "boolean"
+     },
+     "free_space_bytes": {
+      "type": "integer"
+     },
+     "free_space_known": {
+      "type": "boolean"
+     },
+     "asset_store_bytes": {
+      "type": "integer"
+     },
+     "speech_cache": {
+      "$ref": "#/components/schemas/SettingsSpeechCache"
+     },
+     "env": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    },
+    "required": [
+     "data_dir",
+     "data_dir_known",
+     "free_space_bytes",
+     "free_space_known",
+     "asset_store_bytes",
+     "speech_cache",
+     "env"
+    ]
+   },
+   "SettingsAudio": {
+    "type": "object",
+    "properties": {
+     "sink": {
+      "type": "string",
+      "description": "dummy, filesink or pipewire (filesink when the variable is unset)."
+     },
+     "device": {
+      "type": "string"
+     },
+     "note": {
+      "type": "string"
+     },
+     "env": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    },
+    "required": [
+     "sink",
+     "device",
+     "env"
+    ]
+   },
+   "SettingsSecurity": {
+    "type": "object",
+    "properties": {
+     "listen": {
+      "type": "string"
+     },
+     "listen_env": {
+      "type": "string"
+     },
+     "auth": {
+      "type": "object",
+      "properties": {
+       "mode": {
+        "type": "string"
+       },
+       "admin_configured": {
+        "type": "boolean"
+       }
+      },
+      "required": [
+       "mode",
+       "admin_configured"
+      ]
+     }
+    },
+    "required": [
+     "listen",
+     "listen_env",
+     "auth"
+    ]
+   },
+   "SettingsWebSearch": {
+    "type": "object",
+    "properties": {
+     "enabled": {
+      "type": "boolean"
+     },
+     "provider": {
+      "type": "string"
+     },
+     "note": {
+      "type": "string"
+     },
+     "env_private_allow": {
+      "type": "string"
+     },
+     "private_hosts_allowed": {
+      "type": "integer",
+      "description": "The count of allowlist entries; the entries themselves are operator network topology and stay server-side."
+     }
+    },
+    "required": [
+     "enabled",
+     "provider",
+     "note",
+     "env_private_allow",
+     "private_hosts_allowed"
+    ]
+   },
+   "SettingsAgent": {
+    "type": "object",
+    "properties": {
+     "max_steps": {
+      "type": "integer"
+     },
+     "max_tool_calls": {
+      "type": "integer"
+     },
+     "source": {
+      "type": "string",
+      "description": "Where the numbers live: build constants, not environment, in this build."
+     }
+    },
+    "required": [
+     "max_steps",
+     "max_tool_calls",
+     "source"
+    ]
+   },
+   "SettingsImports": {
+    "type": "object",
+    "properties": {
+     "web_search": {
+      "$ref": "#/components/schemas/SettingsWebSearch"
+     },
+     "agent": {
+      "$ref": "#/components/schemas/SettingsAgent"
+     }
+    },
+    "required": [
+     "web_search",
+     "agent"
+    ]
+   },
+   "SettingsVersion": {
+    "type": "object",
+    "properties": {
+     "version": {
+      "type": "string"
+     },
+     "commit": {
+      "type": "string"
+     },
+     "go_version": {
+      "type": "string"
+     },
+     "os": {
+      "type": "string"
+     },
+     "arch": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "version",
+     "commit",
+     "go_version",
+     "os",
+     "arch"
+    ]
+   },
+   "SettingsUpdate": {
+    "type": "object",
+    "properties": {
+     "auto_update": {
+      "type": "boolean"
+     },
+     "docs": {
+      "type": "string"
+     },
+     "note": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "auto_update",
+     "docs",
+     "note"
+    ]
+   },
+   "SettingsMutable": {
+    "type": "object",
+    "properties": {
+     "count": {
+      "type": "integer",
+      "description": "0 in this build: nothing is runtime-mutable."
+     },
+     "note": {
+      "type": "string"
+     },
+     "env": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "The variables that control the rendered values."
+     }
+    },
+    "required": [
+     "count",
+     "note",
+     "env"
+    ]
+   },
+   "Settings": {
+    "type": "object",
+    "description": "The effective configuration of the running process, read-only where it comes from the environment (docs/spec/09 /settings). Secrets never reach the browser: tokens are presence booleans, endpoints are '<configured>'.",
+    "properties": {
+     "models": {
+      "$ref": "#/components/schemas/SettingsModels"
+     },
+     "storage": {
+      "$ref": "#/components/schemas/SettingsStorage"
+     },
+     "audio": {
+      "$ref": "#/components/schemas/SettingsAudio"
+     },
+     "security": {
+      "$ref": "#/components/schemas/SettingsSecurity"
+     },
+     "imports": {
+      "$ref": "#/components/schemas/SettingsImports"
+     },
+     "version": {
+      "$ref": "#/components/schemas/SettingsVersion"
+     },
+     "update": {
+      "$ref": "#/components/schemas/SettingsUpdate"
+     },
+     "mutable": {
+      "$ref": "#/components/schemas/SettingsMutable"
+     }
+    },
+    "required": [
+     "models",
+     "storage",
+     "audio",
+     "security",
+     "imports",
+     "version",
+     "update",
+     "mutable"
+    ]
+   },
+   "ScenarioView": {
+    "type": "object",
+    "description": "One row of the scenario catalog (a testdata/scenarios YAML as the loader parsed it).",
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "catalog": {
+      "type": "string",
+      "description": "The docs/test-plan/scenario-catalog.md row, when labelled."
+     },
+     "file": {
+      "type": "string"
+     },
+     "origin": {
+      "type": "string"
+     },
+     "mode": {
+      "type": "string"
+     },
+     "profile": {
+      "type": "string"
+     },
+     "decision": {
+      "type": "string",
+      "description": "none, recorded or live."
+     },
+     "tts": {
+      "type": "string"
+     },
+     "voice": {
+      "type": "string"
+     },
+     "faults": {
+      "type": "integer"
+     },
+     "status": {
+      "type": "string",
+      "description": "runnable, blocked (with reason), or load_error."
+     },
+     "reason": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "file",
+     "status"
+    ]
+   },
+   "GateView": {
+    "type": "object",
+    "description": "One gate's latest recorded result from artifacts/gates.",
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "result": {
+      "type": "string",
+      "description": "PASS, FAIL or NOT RUN."
+     },
+     "exit_code": {
+      "type": "integer"
+     },
+     "finished_at": {
+      "type": "string"
+     },
+     "tests": {
+      "type": "integer"
+     },
+     "failures": {
+      "type": "integer"
+     },
+     "errors": {
+      "type": "integer"
+     },
+     "skipped": {
+      "type": "integer"
+     },
+     "instruction": {
+      "type": "string",
+      "description": "What makes the gate run (the make target plus its prerequisites) \u2014 the actionable form of NOT RUN."
+     }
+    },
+    "required": [
+     "name",
+     "result",
+     "instruction"
+    ]
+   },
+   "DolphinReadiness": {
+    "type": "object",
+    "description": "The Arch-side Dolphin prerequisites, by presence only: booleans and variable names, never paths (docs/spec/14).",
+    "properties": {
+     "dev_mode_enabled": {
+      "type": "boolean"
+     },
+     "dolphin_binary_present": {
+      "type": "boolean"
+     },
+     "xvfb_present": {
+      "type": "boolean"
+     },
+     "game_image_env_set": {
+      "type": "boolean"
+     },
+     "env": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    },
+    "required": [
+     "dev_mode_enabled",
+     "dolphin_binary_present",
+     "xvfb_present",
+     "game_image_env_set",
+     "env"
+    ]
+   },
+   "ProviderReadiness": {
+    "type": "object",
+    "description": "Which model roles this process has configured, by name only.",
+    "properties": {
+     "configured": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "missing": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    },
+    "required": [
+     "configured",
+     "missing"
+    ]
+   },
+   "DevTests": {
+    "type": "object",
+    "description": "The /tests page's snapshot: the scenario catalog, the recorded gate results, and the Dolphin/provider readiness of this host.",
+    "properties": {
+     "scenarios": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/ScenarioView"
+      }
+     },
+     "gates": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/GateView"
+      }
+     },
+     "dolphin": {
+      "$ref": "#/components/schemas/DolphinReadiness"
+     },
+     "providers": {
+      "$ref": "#/components/schemas/ProviderReadiness"
+     },
+     "repo_root_known": {
+      "type": "boolean",
+      "description": "false: no repository root could be resolved; the catalog and gates are empty by design."
+     },
+     "repo_root_env": {
+      "type": "string"
+     },
+     "scenario_dir": {
+      "type": "string"
+     },
+     "gates_dir": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "scenarios",
+     "gates",
+     "dolphin",
+     "providers",
+     "repo_root_known",
+     "repo_root_env"
+    ]
+   },
+   "ScenarioRunAccepted": {
+    "type": "object",
+    "properties": {
+     "job_id": {
+      "type": "string"
+     },
+     "scenario_id": {
+      "type": "string"
+     },
+     "status": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "job_id",
+     "scenario_id",
+     "status"
+    ]
+   },
+   "ScenarioRunStatus": {
+    "type": "object",
+    "description": "The run job's state plus, once succeeded, the report's links.",
+    "properties": {
+     "job_id": {
+      "type": "string"
+     },
+     "kind": {
+      "type": "string"
+     },
+     "state": {
+      "type": "string",
+      "description": "queued, running, succeeded, failed, cancelled or recoverable."
+     },
+     "scenario_id": {
+      "type": "string"
+     },
+     "attempts": {
+      "type": "integer"
+     },
+     "created_at": {
+      "type": "string"
+     },
+     "updated_at": {
+      "type": "string"
+     },
+     "status": {
+      "type": "string",
+      "description": "passed, failed or blocked, once the job is terminal."
+     },
+     "summary": {
+      "type": "string"
+     },
+     "report": {
+      "type": "object",
+      "properties": {
+       "json": {
+        "type": "string"
+       },
+       "html": {
+        "type": "string"
+       }
+      },
+      "description": "Route paths to the stored report blobs."
+     }
+    },
+    "required": [
+     "job_id",
+     "kind",
+     "state",
+     "scenario_id",
+     "attempts",
+     "created_at",
+     "updated_at"
+    ]
    }
   }
  }
