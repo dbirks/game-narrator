@@ -531,6 +531,17 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 	if err != nil {
 		return 1, fmt.Errorf("wiring the VLM OCR fallback: %w", err)
 	}
+	// The Clef adjudication (docs/spec/05, ADR-0050): wired only when the
+	// decision role is a configured System One role — an unconfigured role
+	// is the documented "NOT CONFIGURED" degraded mode, and sessions commit
+	// locally exactly as before. The call flows through the provider router
+	// (breaker and the role's per-attempt timeout, docs/spec/06 "Routing,
+	// reliability and replicas"); the runtime bounds the whole adjudication
+	// and keeps at most one in flight per session.
+	decisionOpts, decisionModel, err := newDecisionWiring(os.LookupEnv)
+	if err != nil {
+		return 1, fmt.Errorf("wiring the Clef decision role: %w", err)
+	}
 	sessions, err := runtime.New(runtime.Options{
 		Store:       st,
 		Hub:         hub,
@@ -539,6 +550,7 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 		ReplayRoots: runtime.DefaultReplayRoots(os.LookupEnv),
 		Speech:      speechOpts,
 		OCRFallback: ocrFallback,
+		Decision:    decisionOpts,
 		Log:         log,
 	})
 	if err != nil {
@@ -548,6 +560,11 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 		log.Info("VLM OCR fallback ready", "model", ocrFallbackModel)
 	} else {
 		log.Info("VLM OCR fallback not configured: sessions run the local OCR engine only (role vision_ocr_fallback)")
+	}
+	if decisionOpts != nil {
+		log.Info("Clef decision role ready", "model", decisionModel)
+	} else {
+		log.Info("Clef decision role not configured: sessions commit locally (role decision)")
 	}
 	log.Info("session runtime ready",
 		"dev_trace_root", filepath.Base(devTraceDir),
@@ -852,6 +869,32 @@ func newOCRFallbackWiring(lookupEnv func(string) (string, bool)) (*pipeline.OCRF
 	}
 	return &pipeline.OCRFallback{
 		Secondary: ocr.NewVLMEngine(ocr.OpenAIClient{Client: client}),
+	}, cfg.Model, nil
+}
+
+// newDecisionWiring builds the Clef adjudication wiring from the decision
+// role (docs/spec/05 "Clef adjudication and commit policy", ADR-0050): the
+// role's System One endpoint behind the provider router — the breaker and
+// the role's per-attempt timeout live there (docs/spec/06 "Routing,
+// reliability and replicas"), and the runtime's decision step composes the
+// adjudication the way the scenario harness does. A role that is not
+// configured, or that does not speak System One, is the documented degraded
+// mode — nil, not an error — so the sessions keep committing locally and
+// preflight keeps reporting the missing configuration. A malformed
+// GAME_NARRATOR_* value, by contrast, fails the boot loudly, the same way
+// the other role wirings do.
+func newDecisionWiring(lookupEnv func(string) (string, bool)) (*runtime.DecisionOptions, string, error) {
+	roles, err := providers.LoadRoles(lookupEnv)
+	if err != nil {
+		return nil, "", fmt.Errorf("loading provider roles: %w", err)
+	}
+	cfg := roles[providers.RoleDecision]
+	if !cfg.Configured() || cfg.Protocol != providers.ProtocolSystemOne {
+		return nil, "", nil
+	}
+	return &runtime.DecisionOptions{
+		Router: router.New(providers.NewRegistry(roles), router.Options{}),
+		Role:   cfg,
 	}, cfg.Model, nil
 }
 

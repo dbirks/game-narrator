@@ -166,6 +166,23 @@ type Stats struct {
 	// RankingsAbstained counts rankings whose answer was ABSTAINED.
 	RankingsAbstained uint64 `json:"rankings_abstained"`
 
+	// Decisions counts the locally ambiguous rankings offered to the
+	// configured Decider (docs/spec/05 "optional Clef/VLM adjudication",
+	// ADR-0050). It is the number of adjudication requests the run asked,
+	// not the number of provider calls (a breaker-open or not-configured
+	// role still asks, and abstains on the reply).
+	Decisions uint64 `json:"decisions"`
+	// DecisionApplied counts adjudication answers the session's fences
+	// accepted and that the commitment policy could read: the answers that
+	// actually drove (or vetted) a commit.
+	DecisionApplied uint64 `json:"decision_applied"`
+	// DecisionFenced counts answers the session discarded — a reply that
+	// landed after a newer commit (stale_generation), a redelivered one
+	// (duplicate_seq), a superseded observation, or an answer that could not
+	// be applied at all. It must stay distinct from DecisionApplied: a
+	// discarded answer never narrows a commit.
+	DecisionFenced uint64 `json:"decision_fenced"`
+
 	// Commits counts message.committed events this pipeline's reducer emitted.
 	Commits uint64 `json:"commits"`
 	// Events counts every envelope published through the reducer.
@@ -287,6 +304,9 @@ const maxReplayDegradedSeqs = 64
 func (c *counters) ranking()          { c.add(func(s *Stats) { s.Rankings++ }) }
 func (c *counters) rankingStale()     { c.add(func(s *Stats) { s.RankingStale++ }) }
 func (c *counters) rankingAbstained() { c.add(func(s *Stats) { s.RankingsAbstained++ }) }
+func (c *counters) decisions()        { c.add(func(s *Stats) { s.Decisions++ }) }
+func (c *counters) decisionApplied()  { c.add(func(s *Stats) { s.DecisionApplied++ }) }
+func (c *counters) decisionFenced()   { c.add(func(s *Stats) { s.DecisionFenced++ }) }
 func (c *counters) commits(n uint64)  { c.add(func(s *Stats) { s.Commits += n }) }
 func (c *counters) events(n uint64)   { c.add(func(s *Stats) { s.Events += n }) }
 func (c *counters) staleApplied()     { c.add(func(s *Stats) { s.StaleApplied++ }) }

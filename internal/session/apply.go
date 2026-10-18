@@ -721,6 +721,29 @@ func commitReason(predictive bool) string {
 	return recognition.ReasonCommitted
 }
 
+// NeedsAdjudication reports whether the commitment policy asks for Clef's
+// adjudication before committing rank (docs/spec/05 "Clef adjudication and
+// commit policy", ADR-0050): a ranking the local scoring abstained on, or one
+// whose margin over the runner-up falls below the configured threshold — the
+// ambiguous candidates the local evidence cannot settle. A ranking the local
+// policy committed on confidently never spends a model call. This is the single
+// source of truth for the signal: the pipeline consults it to decide whether
+// to dispatch the decision at all, so "the policy asked" and "a call went out"
+// can never disagree. With Adjudicate off (the default) it is always false and
+// the matcher's commitment is the commitment.
+func (c Config) NeedsAdjudication(rank matcher.Ranking) bool {
+	if !c.Adjudicate {
+		return false
+	}
+	if rank.Abstain {
+		return true
+	}
+	if c.AdjudicateMargin > 0 && rank.Margin < c.AdjudicateMargin {
+		return true
+	}
+	return false
+}
+
 // decide turns a ranking plus any advisory decision into (message id, speech
 // eligibility, reason). The rules are docs/spec/05 "Clef adjudication and commit
 // policy": abstention is an answer, a model may refuse but never supply a line

@@ -290,6 +290,7 @@ func statsEqual(a, b pipeline.Stats) bool {
 		a.OCRCancelled != b.OCRCancelled || a.OCRStale != b.OCRStale || a.OCRErrors != b.OCRErrors ||
 		a.ReplayDegradedFrames != b.ReplayDegradedFrames ||
 		a.Rankings != b.Rankings || a.RankingStale != b.RankingStale || a.RankingsAbstained != b.RankingsAbstained ||
+		a.Decisions != b.Decisions || a.DecisionApplied != b.DecisionApplied || a.DecisionFenced != b.DecisionFenced ||
 		a.Commits != b.Commits || a.Events != b.Events || a.StaleApplied != b.StaleApplied {
 		return false
 	}

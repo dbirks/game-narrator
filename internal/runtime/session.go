@@ -44,6 +44,13 @@ type Info struct {
 	// speech counters and the current utterance — present when the process
 	// has a voice workflow wired and the session's sink built.
 	Audio *AudioInfo `json:"audio,omitempty"`
+	// Decision is the session's Clef adjudication view (docs/spec/05,
+	// ADR-0050): whether the decision role is engaged for this session,
+	// whether its last engagement degraded it (and why), and the call
+	// counts that explain why a line was committed on the local evidence
+	// alone. nil when the session runs local (DecisionOptions nil, or the
+	// role not configured / not System One).
+	Decision *DecisionStatus `json:"decision,omitempty"`
 }
 
 // session is one pipeline run owned by the Manager. Finished sessions are
@@ -60,8 +67,9 @@ type session struct {
 	mu       sync.Mutex
 	info     Info
 	rec      *devTraceRecorder
-	speech   *speechWiring // nil when the process has no speech pipeline
-	stopKind string        // "", "requested", "closed" — who cancelled the run
+	speech   *speechWiring   // nil when the process has no speech pipeline
+	decision *decisionWiring // nil when the session runs local (no System One decision role)
+	stopKind string          // "", "requested", "closed" — who cancelled the run
 }
 
 func (s *session) Snapshot() Info {
@@ -70,6 +78,10 @@ func (s *session) Snapshot() Info {
 	info := s.info
 	if s.speech != nil {
 		info.Audio = s.speech.audioInfo()
+	}
+	if s.decision != nil {
+		d := s.decision.status()
+		info.Decision = &d
 	}
 	return info
 }
@@ -158,7 +170,47 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 	}
 
 	runCtx, cancel := context.WithCancel(context.Background()) // the run outlives the request
-	runner, err := pipeline.New(m.pipelineConfig(req, published, id, content.Regions, idx, kind))
+	cfg := m.pipelineConfig(req, published, id, content.Regions, idx, kind)
+
+	// The Clef adjudication (docs/spec/05, ADR-0050): when the process has a
+	// configured System One decision role, the session's commitment policy
+	// runs with the adjudication on — the pipeline's Decider is this
+	// session's wiring, and the reducer's policy asks it for every locally
+	// ambiguous ranking. The texts the candidate options are rendered with
+	// come from the published content (the canonical original text, falling
+	// back to the speech text); the speaker options are the profile's
+	// distinct declared speakers. A role that is not configured keeps the
+	// pipeline local (Decider nil) — the documented degraded shape, not an
+	// error.
+	if m.opts.Decision != nil {
+		texts := make(map[string]string, len(content.Messages))
+		speakerSeen := make(map[string]bool, len(content.Messages))
+		var speakers []pipeline.SpeakerOption
+		for _, msg := range content.Messages {
+			t := msg.OriginalText
+			if t == "" {
+				t = msg.NormalizedText
+			}
+			if t == "" {
+				t = msg.SpeechText
+			}
+			if t != "" {
+				texts[msg.ID] = t
+			}
+			if msg.SpeakerID != "" && !speakerSeen[msg.SpeakerID] {
+				speakerSeen[msg.SpeakerID] = true
+				speakers = append(speakers, pipeline.SpeakerOption{ID: msg.SpeakerID})
+			}
+		}
+		cfg.Reducer.Adjudicate = true
+		cfg.Reducer.AdjudicateMargin = m.opts.Decision.Margin
+		cfg.Speakers = speakers
+		if w := m.newDecisionWiring(id, texts); w != nil {
+			cfg.Decider = w
+		}
+	}
+
+	runner, err := pipeline.New(cfg)
 	if err != nil {
 		cancel()
 		_ = src.Close()
@@ -239,6 +291,13 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 			sess.speech = w
 			pub = &commitWatcher{w: w, inner: tracePub}
 		}
+	}
+
+	// The decision wiring lives on the session (for the Snapshot's Decision
+	// view) once the pipeline has been handed it: cfg.Decider was built
+	// before the runner above.
+	if w, ok := cfg.Decider.(*decisionWiring); ok && w != nil {
+		sess.decision = w
 	}
 
 	go sess.run(runCtx, obs, pub)

@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -179,6 +180,26 @@ type Config struct {
 	// is what the role's preflight "NOT CONFIGURED" continues to mean.
 	OCRFallback *OCRFallback
 
+	// Decider is the optional Clef adjudication (docs/spec/05 "candidate
+	// retrieval → graph-aware scoring → optional Clef/VLM adjudication →
+	// commitment policy", ADR-0050): when set, a locally ambiguous ranking
+	// (one that abstained, or whose margin over the runner-up falls below the
+	// session's adjudication threshold — see Config.Reducer's Adjudicate and
+	// AdjudicateMargin) is offered to the Decider before the commit for the
+	// same observation, and the reply is applied to the session's reducer
+	// before the commitment policy reads it. nil (the default) commits purely
+	// on the local matcher evidence, which is what the decision role's
+	// preflight "NOT CONFIGURED" continues to mean. The pipeline holds no
+	// provider client (the same rule as OCRFallback.Secondary).
+	Decider Decider
+
+	// Speakers are the declared speaker options the adjudication's speaker
+	// question is rendered with (in profile order, newest attribution
+	// first is the runtime's business). Only meaningful when Decider is set;
+	// empty means "no declared speakers", which the Decider renders as the
+	// unknown option alone.
+	Speakers []SpeakerOption
+
 	// Index is the compiled candidate corpus. Safe to share across Runners.
 	Index *matcher.Index
 
@@ -257,6 +278,122 @@ type OCRFallback struct {
 	// Policy tunes the trigger threshold, rate limit and crop cache. Zero
 	// fields take the documented defaults (ocr package).
 	Policy ocr.FallbackPolicy
+}
+
+// SpeakerOption is one declared speaker option for the adjudication's
+// speaker question. It mirrors the provider adapter's own speaker shape
+// without importing it: the pipeline stays provider-free (the same rule
+// that keeps OCRFallback.Secondary an ocr.Engine, not a client).
+type SpeakerOption struct {
+	ID          string
+	Description string
+}
+
+// DecisionRequest is one locally ambiguous ranking the pipeline offers to
+// the Decider (docs/spec/05 "candidate retrieval → graph-aware scoring →
+// optional Clef/VLM adjudication → commitment policy"): the ranking that
+// just finished scoring, the observation it answers and the context the
+// bundled adjudication questions are rendered from. The pipeline owns the
+// ordering — the call sits between the local scoring and the commit for
+// this observation — and the fences: the reply the Decider returns is
+// applied to the session's reducer before the commit, stamped with the
+// generation it was asked under, so a reply that lands after a newer commit
+// is discarded by the session's own generation fence.
+type DecisionRequest struct {
+	// SessionID and ProfileRevision are the session the request belongs to;
+	// the Decider stamps them onto the message it returns.
+	SessionID       string
+	ProfileRevision string
+	// RegionID names the box; ObservationSeq and Generation are the fences
+	// the reply has to carry back (docs/spec/01 invariant 2).
+	RegionID       string
+	ObservationSeq int64
+	Generation     int64
+	// SceneID is the scene the ranking scored against ("" when unknown).
+	SceneID string
+	// Text and RawText are the accepted and raw readings the ranking was
+	// computed from; Confidence is the OCR confidence of the raw reading.
+	Text       string
+	RawText    string
+	Confidence float64
+	// Ranking is the local scoring's answer: the ordered candidates, the
+	// margin over the runner-up and the matcher's own verdict.
+	Ranking matcher.Ranking
+	// Speakers are the declared speaker options for the speaker question, in
+	// profile order. Empty means "no declared speakers", which the Decider
+	// renders as the unknown option alone.
+	Speakers []SpeakerOption
+	// LastMessage is the id of the last committed message, when known; the
+	// request's context carries it the way docs/spec/05's example context does.
+	LastMessage string
+}
+
+// DecisionReply is the Decider's answer to one DecisionRequest. The pipeline
+// applies Msg to the session's reducer before the commit for the request's
+// observation (a nil Msg is an abstain: the commit proceeds on the local
+// scoring alone, and the reply's metadata still goes on the decision events
+// so the abstention is explainable). The metadata fields are what the
+// decision.requested/resolved events carry: the provider's request id and
+// latency are the correlation the developer UI joins frame → OCR →
+// candidates → Clef request → commit → audio on (docs/spec/13).
+type DecisionReply struct {
+	// Msg is the session's decision message, or nil when no message may be
+	// applied (the role could not be asked or did not answer, and the
+	// commit proceeds on the local evidence).
+	Msg *session.DecisionMsg
+	// Provider is the provider label for the events ("systemone").
+	Provider string
+	// RequestID is the provider's request id ("" when no provider call
+	// was made: not configured, breaker open, skipped).
+	RequestID string
+	// Latency is the call's duration (zero when no call was made).
+	Latency time.Duration
+	// Model is the model that answered ("" when none).
+	Model string
+	// Accepted reports whether the provider's answer survived the provider
+	// adapter's own checks (a rejected answer is recorded but narrows
+	// nothing, docs/spec/06).
+	Accepted bool
+	// Reason is the one-phrase outcome: "answered" when a valid answer
+	// drove the reply, otherwise the failure class ("provider_error",
+	// "not_configured", "skipped", …).
+	Reason string
+	// Candidates are the candidate ids offered to the model, in the order
+	// the request declared them (c1..cN), so the events and the wire agree
+	// on what an option id meant.
+	Candidates []string
+	// Choice is the candidate option id the model picked ("" = none /
+	// missing), as rendered on the wire (cN), before mapping back to ids.
+	Choice string
+	// ChosenID is the message id the answer mapped back to ("" when the
+	// model picked none or the answer was missing).
+	ChosenID string
+	// Probabilities are the model's raw candidate probabilities, keyed by
+	// message id (docs/spec/06: signals for the commitment policy, not
+	// reliability guarantees).
+	Probabilities map[string]float64
+	// Speaker is the speaker option id the model chose ("unknown" when it
+	// could not be established).
+	Speaker string
+	// SpeakerKnown reports the model's speaker verdict.
+	SpeakerKnown bool
+	// SafeToSpeak is the model's safe_to_speak answer (nil when the answer
+	// was missing).
+	SafeToSpeak *bool
+}
+
+// Decider is the pipeline's seam for the optional Clef adjudication
+// (docs/spec/05 "Clef adjudication and commit policy", ADR-0050). The
+// pipeline calls it from its dedicated decision worker for one locally
+// ambiguous ranking — after the local scoring, before the commit for the
+// same observation — and the worker's dedicatedness is the bounded
+// concurrency: at most one adjudication is in flight per session, and the
+// call's context carries the deadline (the decision role's timeout).
+// The pipeline never builds a provider client (the same rule as
+// OCRFallback.Secondary): the runtime constructs the implementation over
+// the decision role's System One client, behind the model router.
+type Decider interface {
+	Decide(ctx context.Context, req DecisionRequest) DecisionReply
 }
 
 // normalize clamps rather than rejecting, except for the three required inputs,

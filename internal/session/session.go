@@ -173,6 +173,23 @@ type Config struct {
 	// carries. The envelope payload limit is 64 KB (events.MaxDataSize) and a
 	// 10k-message corpus must not be able to make one event enormous.
 	MaxCandidates int
+	// Adjudicate turns on the commitment policy's "needs adjudication" signal
+	// (docs/spec/05 "Clef adjudication and commit policy", ADR-0050): when true,
+	// a ranking the local scoring cannot settle on its own — one it abstained
+	// on, or one whose margin over the runner-up falls below AdjudicateMargin —
+	// is offered to the configured decision provider before the commit for the
+	// same observation, and the answer narrows the commit (CLEF_DISAMBIGUATED).
+	// Off by default: the matcher's commitment stands and no decision call is
+	// made, the documented "NOT CONFIGURED" shape of the decision role.
+	Adjudicate bool
+	// AdjudicateMargin is the margin over the runner-up below which a
+	// non-abstaining ranking still counts as ambiguous (docs/spec/05 "If model
+	// confidence low"). It is separate from the matcher's RankOptions.MinMargin:
+	// that floor keeps the local policy from committing on weak evidence, this
+	// one decides when weak-but-accepted evidence is worth a model call. Zero
+	// takes the documented default: the matcher's own acceptance floor, so by
+	// default only locally-abstained rankings are offered to Clef.
+	AdjudicateMargin float64
 	// AllowCommitWhilePaused stops observations from committing during a pause.
 	// The default (false) is the conservative reading of docs/spec/05 "belief
 	// decays or resets on … pause": a paused runtime should not be deciding what
@@ -224,6 +241,17 @@ func (c Config) normalize() Config {
 	}
 	if c.MaxCandidates > 64 {
 		c.MaxCandidates = 64
+	}
+	// AdjudicateMargin: zero is "unset" (the documented default: the matcher's
+	// own acceptance floor), a negative is a wiring mistake that clamps to the
+	// same default, and a value above 1 would demand a margin that no
+	// probability distribution can reach, which would adjudicate everything —
+	// including a 0.99 winner — so it clamps to 1.
+	if !(c.AdjudicateMargin >= 0) { // also catches NaN
+		c.AdjudicateMargin = 0
+	}
+	if c.AdjudicateMargin > 1 {
+		c.AdjudicateMargin = 1
 	}
 	return c
 }

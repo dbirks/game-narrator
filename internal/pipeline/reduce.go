@@ -110,7 +110,7 @@ func newGates(regions []games.Region) map[string]*rankGate {
 // landed after the session had gone, or spun on the closed channel re-arming a
 // grace timer on every iteration and never returned at all.
 func (r *Runner) reduceLoop(ctx context.Context, red *session.Reducer, in <-chan *obsIn,
-	replies <-chan rankIn, ranks chan<- rankJob) error {
+	replies <-chan rankIn, ranks chan<- rankJob, pub session.Publisher) error {
 	defer close(ranks)
 	gates := r.gates
 
@@ -147,10 +147,11 @@ func (r *Runner) reduceLoop(ctx context.Context, red *session.Reducer, in <-chan
 				}
 				continue
 			}
-			dispatched, err := r.applyObservation(ctx, red, head, v, ranks, next)
+			obsRes, dispatched, err := r.applyObservation(ctx, red, head, v, ranks, next)
 			if err != nil {
 				return err
 			}
+			r.noteCommit(obsRes)
 			outstanding += dispatched
 
 		case rk, ok := <-replies:
@@ -158,12 +159,50 @@ func (r *Runner) reduceLoop(ctx context.Context, red *session.Reducer, in <-chan
 				continue
 			}
 			outstanding--
-			err := r.applyRanking(ctx, red, head, rk, next)
+			// The adjudication answer, when the local scoring asked for one,
+			// goes through the session's fences before the commit for this
+			// observation reads it (docs/spec/05: the decision sits between the
+			// scoring and the commitment policy). A reply that landed after a
+			// newer commit names a generation the session has passed and is
+			// discarded there — counted, not applied — and the commit proceeds
+			// on the local evidence alone.
+			//
+			// The observation seq both are stamped with is the region's current
+			// one at reply time, not the ask-time one the job carried (the
+			// scenario harness's own rule, ADR-0050): a stable box keeps
+			// advancing its observation seq frame after frame, and an ask-time
+			// seq would make a healthy reply race every later observation of
+			// the box — with the decision call in flight for up to the role's
+			// timeout, the ranking would lose that race every time and the
+			// commit for the line would be fenced as stale_observation. The
+			// staleness the fences still owe (the box advanced while the call
+			// was out) is content's and generation's: the ranking carries the
+			// ask-time text (stale_text fences a changed box) and the ask-time
+			// generation (stale_generation fences a dialogue that committed
+			// ahead), and the decision's answer may only narrow to a candidate
+			// the retrieval for the commit actually offered (the session's own
+			// rule: a model may refuse but never supply).
+			obsSeq := rk.req.obsSeq
+			if cur := replyObsSeq(red, rk.req.region); cur > 0 {
+				obsSeq = cur
+			}
+			decRes := r.applyDecision(ctx, red, rk, obsSeq, next)
+			rankRes, err := r.applyRanking(ctx, red, head, rk, obsSeq, next)
 			if g := gates[rk.req.region]; g != nil {
 				g.open()
 			}
 			if err != nil {
 				return err
+			}
+			r.noteCommit(rankRes)
+			// The resolved event goes out for every adjudication the policy
+			// asked — an applied answer, a fenced one, and a provider that
+			// could not be asked (the decision.requested the wiring emitted
+			// at call start needs its counterpart so the developer UI's
+			// frame → OCR → candidates → Clef request → commit chain never
+			// dangles): the payload says which of the three it was.
+			if rk.reply.Reason != "" || rk.reply.Msg != nil {
+				r.emitDecisionResolved(ctx, pub, rk, obsSeq, decRes, rankRes)
 			}
 			if streamClosed && outstanding == 0 {
 				return nil
@@ -197,9 +236,10 @@ type reducerState struct {
 
 // applyObservation applies one observation and, when the box's state says the
 // session could use candidates, dispatches at most one retrieval. It reports the
-// dispatches so the caller can keep the in-flight reply count honest.
+// applied result (the caller records any commit it carried) and the dispatches
+// so the caller can keep the in-flight reply count honest.
 func (r *Runner) applyObservation(ctx context.Context, red *session.Reducer, head *reducerState,
-	v *obsIn, ranks chan<- rankJob, next func() int64) (int, error) {
+	v *obsIn, ranks chan<- rankJob, next func() int64) (session.Result, int, error) {
 	gen := red.Generation()
 	n := next()
 	res, err := red.Apply(ctx, session.ObservationMsg{
@@ -216,9 +256,9 @@ func (r *Runner) applyObservation(ctx context.Context, red *session.Reducer, hea
 	head.anchors[v.region] = &anchor{entered: v.entered, ocrAt: v.ocrAt}
 	r.bookObservation(v, res)
 	if err != nil {
-		return 0, err
+		return res, 0, err
 	}
-	return r.maybeRank(ctx, red, head, v, gen, ranks), nil
+	return res, r.maybeRank(ctx, red, head, v, gen, ranks), nil
 }
 
 // maybeRank dispatches a ranking for the region this observation belongs to, when
@@ -287,7 +327,7 @@ func (r *Runner) maybeRank(ctx context.Context, red *session.Reducer, head *redu
 }
 
 func (r *Runner) applyRanking(ctx context.Context, red *session.Reducer, head *reducerState,
-	rk rankIn, next func() int64) error {
+	rk rankIn, obsSeq int64, next func() int64) (session.Result, error) {
 	active := red.Generation()
 	n := next()
 	res, err := red.Apply(ctx, session.RankingMsg{
@@ -298,13 +338,13 @@ func (r *Runner) applyRanking(ctx context.Context, red *session.Reducer, head *r
 			ProfileRevision: r.cfg.ProfileRevision,
 		},
 		RegionID:       rk.req.region,
-		ObservationSeq: rk.req.obsSeq,
+		ObservationSeq: obsSeq,
 		Text:           rk.req.text,
 		SceneID:        rk.req.scene,
 		Ranking:        rk.rank,
 	})
 	if err != nil {
-		return err
+		return res, err
 	}
 	if res.Applied && rk.req.gen < active {
 		// The invariant-2 violation this counter exists to catch: a message naming a
@@ -321,7 +361,7 @@ func (r *Runner) applyRanking(ctx context.Context, red *session.Reducer, head *r
 			// retrieval was refused, and would go silent for the rest of that line.
 			head.ranked[rk.req.region] = ""
 		}
-		return r.bookRanking(rk, res)
+		return res, r.bookRanking(rk, res)
 	}
 	r.cnt.ranking()
 	if rk.rank.Abstain {
@@ -333,7 +373,151 @@ func (r *Runner) applyRanking(ctx context.Context, red *session.Reducer, head *r
 	if a := head.anchors[rk.req.region]; a != nil && !a.entered.IsZero() {
 		r.cnt.frameComm.observe(r.cfg.Now().Sub(a.entered))
 	}
-	return r.bookRanking(rk, res)
+	return res, r.bookRanking(rk, res)
+}
+
+// replyObsSeq reports the region's current observation seq from the reducer's
+// own state, for the reply-time stamp. It is read on the single writer's
+// goroutine between applies — the reducer's lock is free then, and no
+// observation can land between the read and the apply that uses it. Zero when
+// the region is not yet known to the reducer (the ranking was dispatched from
+// an applied observation, so this is a defensive path only: the caller falls
+// back to the ask-time seq, and the fences decide).
+func replyObsSeq(red *session.Reducer, region string) int64 {
+	for _, rs := range red.State().Regions {
+		if rs.RegionID == region {
+			return rs.ObservationSeq
+		}
+	}
+	return 0
+}
+
+// applyDecision applies the Decider's answer to the session's reducer before
+// the commit for the same observation reads it (docs/spec/05: the adjudication
+// sits between the scoring and the commitment policy, ADR-0050). The message
+// the Decider returned is stamped here — the session-wide seq and the session
+// and revision it belongs to — and it goes through the session's fences with
+// the generation it was asked under: a reply that landed after a newer commit
+// is discarded there (stale_generation), a redelivered one on its seq
+// (duplicate_seq), and the commit proceeds on the local evidence alone. It
+// reports the applied result (nil when the reply carried no message: the
+// role abstained and there is nothing to fence), so the decision.resolved
+// event can say how the session treated the answer.
+func (r *Runner) applyDecision(ctx context.Context, red *session.Reducer, rk rankIn, obsSeq int64, next func() int64) *session.Result {
+	if rk.reply.Msg == nil {
+		return nil
+	}
+	dm := *rk.reply.Msg
+	dm.Header.Seq = next()
+	dm.Header.SessionID = r.cfg.SessionID
+	dm.Header.ProfileRevision = r.cfg.ProfileRevision
+	dm.Header.Generation = rk.req.gen
+	// Reply-time observation seq (see the caller's note): the stamp the
+	// decision is stored under, and the one the commit for the same ranking
+	// reads it back with.
+	dm.ObservationSeq = obsSeq
+	res, err := red.Apply(ctx, dm)
+	if err != nil {
+		// A decision that cannot be applied is no reason to fail the run the
+		// way a failed observation would: the commit for the observation still
+		// has the local evidence, and the failure goes on the decision's own
+		// event below rather than ending a run over an advisory answer.
+		if res.Reason == "" {
+			res.Reason = err.Error()
+		}
+		r.cnt.decisionFenced()
+		return &res
+	}
+	if res.Applied {
+		r.cnt.decisionApplied()
+	} else {
+		// A fenced answer (stale generation, duplicate seq, a superseded
+		// observation) is the session's discard working as designed:
+		// counted, and named on the event so the developer UI can show
+		// "Clef said X, it arrived after the page had turned, the commit
+		// stands on the local evidence".
+		r.cnt.decisionFenced()
+	}
+	return &res
+}
+
+// emitDecisionResolved publishes the decision.resolved event: the provider's
+// verdict on the ambiguous ranking, its request id and latency (the
+// correlation the developer UI joins frame → OCR → candidates → Clef request
+// → commit → audio on, docs/spec/13), and how the session's fences treated
+// the answer. It rides the session's publisher chain after the ranking's own
+// events, causally on the candidates event the decision answers, so the
+// envelope order is the wire order. obsSeq is the reply-time stamp the
+// decision was applied under (the candidates event's observation_seq), so
+// the developer UI's join keys agree.
+func (r *Runner) emitDecisionResolved(ctx context.Context, pub session.Publisher, rk rankIn, obsSeq int64, decRes *session.Result, rankRes session.Result) {
+	// The decision answers the candidates event this ranking just emitted:
+	// causation and trace come from that envelope. A ranking the session
+	// fenced carried no candidates event; then the decision is about an
+	// observation the session no longer stands behind and there is nothing
+	// to causally attach it to — the payload still goes out, unattached.
+	var trace, cause string
+	for _, e := range rankRes.Events {
+		if e.Name == events.MessageCandidates {
+			trace, cause = e.TraceID, e.EventID
+			break
+		}
+	}
+	// The fence outcome, when a message reached the fences at all; when the
+	// provider could not be asked there is no fence outcome and the reply's
+	// own reason is the explanation (the event is the run's record of why
+	// the commit ran on the local evidence).
+	applied := false
+	reason := rk.reply.Reason
+	if decRes != nil {
+		applied = decRes.Applied
+		reason = decRes.Reason
+	}
+	payload := map[string]any{
+		"provider":        rk.reply.Provider,
+		"region_id":       rk.req.region,
+		"observation_seq": obsSeq,
+		"generation":      rk.req.gen,
+		"text":            rk.req.text,
+		"accepted":        rk.reply.Accepted,
+		"applied":         applied,
+		"reason":          reason,
+		"request_id":      rk.reply.RequestID,
+		"latency_ms":      int64(rk.reply.Latency / time.Millisecond),
+		"candidates":      rk.reply.Candidates,
+		"choice":          rk.reply.Choice,
+		"message_id":      rk.reply.ChosenID,
+		"probabilities":   rk.reply.Probabilities,
+		"speaker":         rk.reply.Speaker,
+	}
+	if rk.reply.Model != "" {
+		payload["model"] = rk.reply.Model
+	}
+	if rk.reply.SafeToSpeak != nil {
+		payload["safe_to_speak"] = *rk.reply.SafeToSpeak
+	}
+	if rk.reply.Reason != "" {
+		payload["decision_reason"] = rk.reply.Reason
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return // the event is diagnostics; the run reports on its own counters
+	}
+	env, err := pub.Publish(ctx, events.Envelope{
+		SessionID:   r.cfg.SessionID,
+		TraceID:     trace,
+		CausationID: cause,
+		Name:        events.DecisionResolved,
+		OccurredAt:  r.cfg.Now(),
+		Data:        data,
+	})
+	if err != nil {
+		// The event is diagnostics, not state: a publish failure is counted on
+		// the reducer's own counter if the next ranking event hits it, and the
+		// run's decision counters (applied/fenced) are the record that stands.
+		return
+	}
+	r.cnt.events(uint64(len([]events.Envelope{env})))
 }
 
 // bookRanking records a reply's counters and its trace row.

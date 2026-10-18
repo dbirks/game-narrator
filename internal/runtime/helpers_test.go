@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dbirks/game-narrator/internal/capture"
 	"github.com/dbirks/game-narrator/internal/events"
 	"github.com/dbirks/game-narrator/internal/games"
 	"github.com/dbirks/game-narrator/internal/pipeline"
@@ -61,6 +62,13 @@ type env struct {
 	// ocrFallback is the VLM fallback wiring (ADR-0040); nil (the default)
 	// runs the session on the single OCR engine above.
 	ocrFallback *pipeline.OCRFallback
+	// decision is the Clef adjudication wiring (ADR-0050); nil (the default)
+	// runs the session local (the matcher's commitment stands without a
+	// decision gate).
+	decision *runtime.DecisionOptions
+	// manual is the explicitly-driven frame source seam (docs/spec/12);
+	// nil (the default) keeps kind "manual" refused, the production shape.
+	manual func() (capture.Source, error)
 }
 
 // newEnv builds the environment. With no options the OCR engine is Tesseract
@@ -89,13 +97,15 @@ func newEnv(t *testing.T, opts ...func(*env)) *env {
 	e.hub = events.New(events.WithStore(e.mem))
 	e.assets = t.TempDir()
 	e.mgr, err = runtime.New(runtime.Options{
-		Store:       e.st,
-		Hub:         e.hub,
-		AssetsRoot:  e.assets,
-		ReplayRoots: e.roots,
-		OCR:         e.ocr,
-		OCRFallback: e.ocrFallback,
-		Log:         slog.New(slog.DiscardHandler),
+		Store:        e.st,
+		Hub:          e.hub,
+		AssetsRoot:   e.assets,
+		ReplayRoots:  e.roots,
+		OCR:          e.ocr,
+		OCRFallback:  e.ocrFallback,
+		Decision:     e.decision,
+		ManualSource: e.manual,
+		Log:          slog.New(slog.DiscardHandler),
 	})
 	if err != nil {
 		t.Fatalf("runtime.New: %v", err)
@@ -140,6 +150,21 @@ func withReplayRoot(dir string) func(*env) {
 // builds over the role's OpenAI client.
 func withOCRFallback(fb *pipeline.OCRFallback) func(*env) {
 	return func(e *env) { e.ocrFallback = fb }
+}
+
+// withDecision wires the Clef adjudication (docs/spec/05, ADR-0050): the
+// same DecisionOptions shape the production wiring builds over the decision
+// role's router entry.
+func withDecision(opts *runtime.DecisionOptions) func(*env) {
+	return func(e *env) { e.decision = opts }
+}
+
+// withManualSource hands the manager an explicitly-driven frame source (the
+// Options.ManualSource seam, docs/spec/12 "deterministic delay-injection
+// suite"): a session of kind "manual" runs it, and the test pushes frames at
+// its own pace, waiting on events between pushes.
+func withManualSource(fn func() (capture.Source, error)) func(*env) {
+	return func(e *env) { e.manual = fn }
 }
 
 // replayStart is the session request for the synthetic clip with the given

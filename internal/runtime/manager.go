@@ -130,6 +130,18 @@ type Options struct {
 	// continues to mean.
 	OCRFallback *pipeline.OCRFallback
 
+	// Decision is the Clef adjudication wiring (docs/spec/05 "Clef
+	// adjudication and commit policy", ADR-0050): when its Role is a
+	// configured System One role, each session's pipeline runs the
+	// commitment policy with the adjudication on — a locally ambiguous
+	// ranking holds its commit for one adjudication (bounded by the role's
+	// timeout, at most one in flight), and the answer narrows the commit
+	// (CLEF_DISAMBIGUATED) or vetoes the utterance; a failure abstains, the
+	// commit proceeds on the local evidence and the session reports
+	// degraded. nil (the default) keeps sessions local, which is what the
+	// role's preflight "NOT CONFIGURED" continues to mean.
+	Decision *DecisionOptions
+
 	// DevDolphin is the dev-only seam that hands a running Dolphin bridge's
 	// frame source to a session (docs/spec/11, ADR-0007). It is called only
 	// for a kind:dolphin request on an explicit GAME_NARRATOR_DEV_DOLPHIN opt-
@@ -152,8 +164,7 @@ type Options struct {
 	// (the default) runs sessions silent: the voice workflow is not
 	// configured in this process, and the audio API answers 503.
 	Speech *SpeechOptions
-
-	Log *slog.Logger
+	Log    *slog.Logger
 }
 
 // Manager owns the one running session (docs/spec/01 "Key invariants": one

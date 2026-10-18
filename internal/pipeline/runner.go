@@ -2,12 +2,14 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/capture"
+	"github.com/dbirks/game-narrator/internal/events"
 	"github.com/dbirks/game-narrator/internal/matcher"
 	"github.com/dbirks/game-narrator/internal/recognition"
 	"github.com/dbirks/game-narrator/internal/session"
@@ -25,6 +27,46 @@ type Runner struct {
 	// gates is allocated per Runner (not per Run) and is only meaningful while a
 	// Run is in flight: it is the retrieval hold described on rankGate.
 	gates map[string]*rankGate
+
+	// lastMsg is the id of the last message this run committed ("" before the
+	// first commit). The rank worker reads it for the adjudication request's
+	// context ("the last committed message, when known", docs/spec/05), so it
+	// is guarded by its own lock: the reduce loop writes it, the rank worker
+	// reads it from a different goroutine, and a torn read would put one
+	// occurrence's id on another occurrence's request.
+	lastMu  sync.Mutex
+	lastMsg string
+}
+
+// lastCommitted reports the id of the last message this run committed, for
+// the adjudication request's context. Safe from the rank worker's goroutine.
+func (r *Runner) lastCommitted() string {
+	r.lastMu.Lock()
+	defer r.lastMu.Unlock()
+	return r.lastMsg
+}
+
+// noteCommit records a committed message id from one Apply result's events,
+// so the next adjudication request names the line the session stood behind
+// when it asked. The id is read off the message.committed payload the reducer
+// owns; an unparseable payload keeps the previous value (context is a hint,
+// not a fence, and a missing hint must not lose a decision call).
+func (r *Runner) noteCommit(res session.Result) {
+	for _, e := range res.Events {
+		if e.Name != events.MessageCommitted {
+			continue
+		}
+		var p struct {
+			MessageID string `json:"message_id"`
+		}
+		if err := json.Unmarshal(e.Data, &p); err != nil || p.MessageID == "" {
+			continue
+		}
+		r.lastMu.Lock()
+		r.lastMsg = p.MessageID
+		r.lastMu.Unlock()
+		return
+	}
 }
 
 // New validates cfg and returns a Runner ready to Run.
@@ -68,6 +110,11 @@ type rankIn struct {
 	req  rankRequest
 	rank matcher.Ranking
 	at   time.Time
+	// reply is the Decider's answer to this ranking, when the local scoring
+	// asked for adjudication (docs/spec/05 "optional Clef/VLM adjudication"): nil
+	// Msg commits on the local evidence, a non-nil Msg is applied to the
+	// session's reducer before the commit for this observation.
+	reply DecisionReply
 }
 
 // rankRequest is the ranking worker's whole input plus the fences the reply has
@@ -149,7 +196,7 @@ func (r *Runner) Run(ctx context.Context, src capture.Source, pub session.Publis
 	// and reports through redErrC.
 	redErrC := make(chan error, 1)
 	go func() {
-		redErrC <- r.reduceLoop(runCtx, red, in, replies, ranks)
+		redErrC <- r.reduceLoop(runCtx, red, in, replies, ranks, pub)
 	}()
 	roiErr := r.roiLoop(runCtx, bridge, in, jobs, done)
 	redErr := <-redErrC
@@ -314,8 +361,35 @@ func (r *Runner) rankWorker(ctx context.Context, ranks <-chan rankJob, replies c
 				SceneID:      j.req.scene,
 				TextKindHint: string(r.cfg.TextKindHint),
 			}, r.cfg.RankOptions)
+			// The optional Clef adjudication (docs/spec/05 "candidate retrieval →
+			// graph-aware scoring → optional Clef/VLM adjudication → commitment
+			// policy", ADR-0050): when the local scoring cannot settle the line on
+			// its own (session.Config.NeedsAdjudication) and a Decider is wired, ask
+			// it before the commit for this observation. The call is synchronous on
+			// this dedicated worker — at most one adjudication is in flight per
+			// session — and the Decider owns the deadline (the decision role's
+			// timeout) and the breaker; a failure is an honest abstain (a nil Msg
+			// with its reason), never a guess.
+			var reply DecisionReply
+			if r.cfg.Decider != nil && r.cfg.Reducer.NeedsAdjudication(rank) {
+				r.cnt.decisions()
+				reply = r.cfg.Decider.Decide(ctx, DecisionRequest{
+					SessionID:       r.cfg.SessionID,
+					ProfileRevision: r.cfg.ProfileRevision,
+					RegionID:        j.req.region,
+					ObservationSeq:  j.req.obsSeq,
+					Generation:      j.req.gen,
+					SceneID:         j.req.scene,
+					Text:            j.req.text,
+					RawText:         j.raw,
+					Confidence:      j.conf,
+					Ranking:         rank,
+					Speakers:        r.cfg.Speakers,
+					LastMessage:     r.lastCommitted(),
+				})
+			}
 			select {
-			case replies <- rankIn{req: j.req, rank: rank, at: r.cfg.Now()}:
+			case replies <- rankIn{req: j.req, rank: rank, at: r.cfg.Now(), reply: reply}:
 			case <-ctx.Done():
 				return
 			}
