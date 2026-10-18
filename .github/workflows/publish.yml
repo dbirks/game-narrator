@@ -3,9 +3,11 @@
 # Two flows, one file:
 #   1. edge: a push to main after the ci workflow succeeds (workflow_run) —
 #      GoReleaser snapshot build (per-arch images locally), artifact scan that
-#      must pass BEFORE any push, push of the per-arch images plus the
-#      multi-arch manifests tagged `edge` and `sha-<short>`, then cosign
-#      keyless signature + SBOM attestation on the manifest digest.
+#      must pass BEFORE any push, push of the per-arch images, then the
+#      multi-arch manifest tags `edge` and `sha-<short>` assembled registry-
+#      side via `docker buildx imagetools create` (manifest lists can only
+#      reference images already in a registry, never local-only ones), then
+#      cosign keyless signature + SBOM attestation on the manifest digest.
 #   2. release: a v* tag — GoReleaser release --clean: archives, .debs,
 #      SBOMs, GitHub Release (prerelease for v0.* tags) and the multi-arch
 #      image push + keyless cosign signing (docker_signs in .goreleaser.yaml).
@@ -105,19 +107,6 @@ jobs:
         env:
           GN_DOCKER_REPO: ghcr.io/dbirks/game-narrator
 
-      - name: Create local multi-arch manifests (no push yet)
-        run: |
-          set -euo pipefail
-          SHORT="$(git rev-parse --short=7 HEAD)"
-          REPO="ghcr.io/dbirks/game-narrator"
-          BASE="0.0.0-snapshot-${SHORT}"
-          docker manifest create --amend "${REPO}:edge" \
-            "${REPO}:${BASE}-amd64" "${REPO}:${BASE}-arm64"
-          docker manifest create --amend "${REPO}:sha-${SHORT}" \
-            "${REPO}:${BASE}-amd64" "${REPO}:${BASE}-arm64"
-          # local-only validation that both children are present
-          docker manifest inspect "${REPO}:edge" >/dev/null
-
       - name: Scan release artifacts (must pass before any push)
         run: |
           set -euo pipefail
@@ -126,7 +115,7 @@ jobs:
           GN_SCAN_IMAGE="ghcr.io/dbirks/game-narrator:${BASE}-amd64 ghcr.io/dbirks/game-narrator:${BASE}-arm64" \
             scripts/release/scan-artifacts.sh
 
-      - name: Push per-arch images and multi-arch manifests (edge, sha-<short>)
+      - name: Push per-arch images (scanned; manifest tags not created yet)
         run: |
           set -euo pipefail
           SHORT="$(git rev-parse --short=7 HEAD)"
@@ -134,14 +123,30 @@ jobs:
           BASE="0.0.0-snapshot-${SHORT}"
           docker push "${REPO}:${BASE}-amd64"
           docker push "${REPO}:${BASE}-arm64"
-          docker manifest push "${REPO}:edge"
-          docker manifest push "${REPO}:sha-${SHORT}"
+
+      - name: Create multi-arch manifest tags (edge, sha-<short>) via buildx imagetools
+        run: |
+          set -euo pipefail
+          SHORT="$(git rev-parse --short=7 HEAD)"
+          REPO="ghcr.io/dbirks/game-narrator"
+          BASE="0.0.0-snapshot-${SHORT}"
+          # A manifest list can only reference images that already exist in
+          # a registry, so the per-arch images are pushed above first; this
+          # assembles the multi-arch tags registry-side (no local manifest
+          # state, no docker manifest create/push).
+          docker buildx imagetools create \
+            -t "${REPO}:edge" \
+            -t "${REPO}:sha-${SHORT}" \
+            "${REPO}:${BASE}-amd64" "${REPO}:${BASE}-arm64"
+          # registry-side validation that both children are present
+          docker buildx imagetools inspect "${REPO}:edge" >/dev/null
 
       - name: Sign manifest digest + attach SBOM attestation (cosign keyless)
         run: |
           set -euo pipefail
           REPO="ghcr.io/dbirks/game-narrator"
-          DIGEST="$(docker buildx imagetools inspect "${REPO}:edge" | awk '/^Digest: /{print $2; exit}')"
+          DIGEST="$(docker buildx imagetools inspect --format '{{json .Manifest}}' "${REPO}:edge" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["Digest"])')"
           case "${DIGEST}" in sha256:*) : ;; *) echo "manifest digest not found for ${REPO}:edge" >&2; exit 1 ;; esac
           SBOM="$(ls dist/game-narrator_*_amd64.sbom.spdx.json | head -n1)"
           echo "attaching SBOM: ${SBOM}"
