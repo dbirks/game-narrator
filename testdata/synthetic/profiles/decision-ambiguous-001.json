@@ -1,0 +1,35 @@
+{
+  "id": "decision-ambiguous-001",
+  "origin": "generated_synthetic",
+  "description": "Synthetic dialogue profile for the generated 24-frame replay clip testdata/synthetic/replay/dialogue-advance-001, tuned so the clip's two stable OCR readings are locally ambiguous (the best local candidate does not clear the margin floor) and the pipeline's optional Clef adjudication is genuinely exercised (docs/spec/05 'candidate retrieval → graph-aware scoring → optional Clef/VLM adjudication → commitment policy', ADR-0050). The two real lines are the clip's invented sentences; the distractors are invented near-duplicates. No real game text.",
+  "text_kind": "dialogue",
+  "messages": [
+    { "id": "demo-page-1", "original_text": "The harbour bell rang twice before anyone looked up." },
+    { "id": "demo-page-2", "original_text": "Nobody in the village had seen that boat before." },
+    { "id": "demo-x01", "original_text": "The harbour bell rang twice before anyone looked up again." },
+    { "id": "demo-x02", "original_text": "The harbour bell was missing from the wreck." },
+    { "id": "demo-x03", "original_text": "Nobody in the village had seen that boat before long." },
+    { "id": "demo-x04", "original_text": "The keeper left the lamp burning all night." },
+    { "id": "demo-x05", "original_text": "Someone had moved the crates before tide turn." },
+    { "id": "demo-x06", "original_text": "The waterline was higher than the last chart said." },
+    { "id": "demo-x07", "original_text": "A rowboat sat untied beneath the broken jetty." },
+    { "id": "demo-x08", "original_text": "Nobody mentioned the light that went out at dusk." },
+    { "id": "demo-x09", "original_text": "The harbourmaster kept his ledger in the upper drawer." },
+    { "id": "demo-x10", "original_text": "Something had been dragged across the slipway." },
+    { "id": "demo-x11", "original_text": "The tide would not turn for another hour." },
+    { "id": "demo-x12", "original_text": "Every window on the quay faced the same direction." }
+  ],
+  "edges": [
+    { "from": "demo-page-1", "to": "demo-page-2", "type": "next", "confidence": 0.9 }
+  ],
+  "regions": [
+    {
+      "id": "bottom",
+      "type": "textbox",
+      "x": 0.096875,
+      "y": 0.75625,
+      "w": 0.80625,
+      "h": 0.158333
+    }
+  ]
+}

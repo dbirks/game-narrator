@@ -288,6 +288,7 @@ func (w *decisionWiring) Decide(ctx context.Context, req pipeline.DecisionReques
 		choice = a.Choice
 	}
 	reply.RequestID = dec.RequestID
+	reply.RequestIDSource = dec.RequestIDSource
 	reply.Latency = dec.Latency
 	reply.Model = dec.Model
 	reply.Accepted = true

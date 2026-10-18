@@ -346,6 +346,13 @@ type DecisionReply struct {
 	// RequestID is the provider's request id ("" when no provider call
 	// was made: not configured, breaker open, skipped).
 	RequestID string
+	// RequestIDSource names which side issued RequestID ("provider" when the
+	// gateway answered with its own request-id header, "client" when the
+	// X-Request-Id the adapter minted is all that exists, internal/providers/
+	// systemone); empty when the id's origin is unknown (a failed call's
+	// error carries the effective id but not its origin). The developer UI
+	// shows the correlation key with its origin on the decision row.
+	RequestIDSource string
 	// Latency is the call's duration (zero when no call was made).
 	Latency time.Duration
 	// Model is the model that answered ("" when none).

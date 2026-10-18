@@ -493,6 +493,9 @@ func (r *Runner) emitDecisionResolved(ctx context.Context, pub session.Publisher
 	if rk.reply.Model != "" {
 		payload["model"] = rk.reply.Model
 	}
+	if rk.reply.RequestIDSource != "" {
+		payload["request_id_source"] = rk.reply.RequestIDSource
+	}
 	if rk.reply.SafeToSpeak != nil {
 		payload["safe_to_speak"] = *rk.reply.SafeToSpeak
 	}

@@ -52,4 +52,11 @@ export const ports = {
    *  a fresh appliance, claimed and seeded with the synthetic game so every
    *  route is visited in the state the other specs establish. */
   a11y: 18108,
+  /** the scripted System One / Clef-Omni instance (web/e2e/fake-clef.mjs) the
+   *  developer-decision walk configures as the decision role. */
+  fakeClef: 18109,
+  /** the packaged binary the developer-decision walk drives (developer-decision.spec.ts):
+   *  the inspector's replay with the ambiguous ranking sent to the scripted
+   *  Clef instance and the endpoint-down degraded case. */
+  developerDecision: 18110,
 } as const;

@@ -35,6 +35,7 @@ const sseUrl = `http://127.0.0.1:${ports.sse}`;
 const curationUrl = `http://127.0.0.1:${ports.curation}`;
 const routesUrl = `http://127.0.0.1:${ports.routes}`;
 const a11yUrl = `http://127.0.0.1:${ports.a11y}`;
+const developerDecisionUrl = `http://127.0.0.1:${ports.developerDecision}`;
 const embeddedBinary = resolve(import.meta.dirname, "..", "bin", "game-narrator");
 // The replay allowlist for the inspector's server: the repo's testdata, named
 // explicitly (ADR-0024 "replay allowlist") rather than relying on the
@@ -199,6 +200,18 @@ export default defineConfig({
       name: "a11y",
       testMatch: /a11y\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: a11yUrl },
+    },
+    {
+      // The developer inspector's decision half (docs/spec/13 "did it speak,
+      // and why not"; ADR-0055): the replay session's ambiguous ranking is
+      // sent to the scripted System One instance configured as the decision
+      // role (a synthetic stub, labelled as such), and the same appliance's
+      // endpoint-down case shows the degraded local commit. One project,
+      // one server, one data directory: the second test toggles the scripted
+      // instance into down mode and drives a fresh session.
+      name: "developer-decision",
+      testMatch: /developer-decision\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: developerDecisionUrl },
     },
   ],
   webServer: [
@@ -424,6 +437,44 @@ export default defineConfig({
       command: `node web/e2e/serve.mjs a11y 127.0.0.1:${ports.a11y} ${embeddedBinary} serve`,
       cwd: "..",
       url: `${a11yUrl}/api/v1/health/live`,
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The scripted System One / Clef-Omni instance (web/e2e/fake-clef.mjs),
+      // a synthetic stub named for what it is. Started before the
+      // developer-decision server so the decision role URL it is given is
+      // already listening when the session's first ambiguous ranking lands.
+      command: `node web/e2e/fake-clef.mjs ${ports.fakeClef}`,
+      cwd: "..",
+      url: `http://127.0.0.1:${ports.fakeClef}/healthz`,
+      reuseExistingServer: false,
+      timeout: 30_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The developer inspector's decision walk on the packaged binary
+      // (ADR-0055): the same wiring as the developer server (the replay
+      // allowlist admits the synthetic clip) plus the decision role pointed
+      // at the scripted Clef instance and the speech roles at the scripted TTS
+      // instance, so an ambiguous ranking gets a real Clef call and the
+      // committed line's speech rows ride the same trace.
+      command: `node web/e2e/serve.mjs developer-decision 127.0.0.1:${ports.developerDecision} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${developerDecisionUrl}/api/v1/health/live`,
+      env: {
+        GAME_NARRATOR_REPLAY_ROOTS: replayRoots,
+        GAME_NARRATOR_ROLE_DECISION_URL: `http://127.0.0.1:${ports.fakeClef}`,
+        GAME_NARRATOR_ROLE_DECISION_MODEL: "fake-clef",
+        GAME_NARRATOR_GATEWAY_URL: `http://127.0.0.1:${ports.fakeTTS}/v1`,
+        GAME_NARRATOR_GATEWAY_TOKEN: "fake-e2e-token",
+        GAME_NARRATOR_ROLE_VOICE_DESIGN_MODEL: "fake-voicedesign",
+        GAME_NARRATOR_ROLE_VOICE_CLONE_MODEL: "fake-base",
+        GAME_NARRATOR_TTS_BASE_DIRECT_URL: `http://127.0.0.1:${ports.fakeTTS}/v1`,
+      },
       reuseExistingServer: false,
       timeout: 60_000,
       stdout: "ignore",

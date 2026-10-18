@@ -22,6 +22,13 @@ import { api } from "../../api/client";
 import { devApi, type EventEnvelope, type Session } from "../../api/sessions";
 import { EmptyState, Loading } from "../../components/states";
 import { captureMsAt } from "./timeline";
+import {
+  chainStage,
+  decisionFacts,
+  lastDecision,
+  requestSourceLabel,
+  type DecisionFacts,
+} from "./decision";
 
 /** The region DTO as `/profiles/{id}/regions` renders it (rect is normalised). */
 interface RegionRow {
@@ -282,6 +289,8 @@ function TraceDetail({ pinned, session }: { pinned: EventEnvelope; session: Sess
   const candidatesEvent =
     (pinned.name === "message.candidates" && hasCandidates(pinned) ? pinned : null) ??
     lastEvent(page.events, (event) => hasCandidates(event));
+  const decisionEvent =
+    (pinned.name === "decision.resolved" ? pinned : null) ?? lastDecision(page.events);
   const committed =
     (pinned.name === "message.committed" ? pinned : null) ??
     lastEvent(page.events, (event) => event.name === "message.committed");
@@ -293,6 +302,14 @@ function TraceDetail({ pinned, session }: { pinned: EventEnvelope; session: Sess
       ) : (
         <p className="muted">No ranking in this trace.</p>
       )}
+      {decisionEvent ? (
+        <DecisionBlock event={decisionEvent} />
+      ) : (
+        <p className="muted" data-testid="decision-pending">
+          No Clef decision in this trace (the ranking was unambiguous, or the decision role did not
+          engage).
+        </p>
+      )}
       {committed ? (
         <CommitOutcome event={committed} names={names} />
       ) : (
@@ -301,6 +318,68 @@ function TraceDetail({ pinned, session }: { pinned: EventEnvelope; session: Sess
         </p>
       )}
       <TraceView traceId={pinned.trace_id as string} page={page} />
+    </div>
+  );
+}
+
+/** The Clef decision row (docs/spec/13 "did it speak, and why not"): the
+ *  provider and model that answered, the request id the provider logs can be
+ *  searched by and which side issued it, the call's latency, the answer the
+ *  fences produced (accepted / abstain / late-discarded), and the generation
+ *  it was committed under — or, when the model could not be asked, the
+ *  degraded local commit with the reason the wiring recorded. */
+function DecisionBlock({ event }: { event: EventEnvelope }) {
+  const facts = decisionFacts(event);
+  if (!facts) return null;
+  return <DecisionFactsView facts={facts} event={event} />;
+}
+
+function DecisionFactsView({ facts, event }: { facts: DecisionFacts; event: EventEnvelope }) {
+  return (
+    <div data-testid="decision-block" className={facts.degraded ? "degraded" : undefined}>
+      <h3>
+        Clef decision{" "}
+        <span className={facts.degraded ? "muted" : undefined} data-testid="decision-outcome">
+          {facts.outcome}
+        </span>
+      </h3>
+      <dl className="stats" data-testid="decision-stats">
+        <dt>Provider / model</dt>
+        <dd data-testid="decision-provider-model">
+          {facts.provider ?? "—"}
+          {facts.model ? ` · ${facts.model}` : ""}
+        </dd>
+        <dt>Request id</dt>
+        <dd data-testid="decision-request-id">
+          {facts.requestId ? (
+            <span>
+              <code>{facts.requestId}</code>{" "}
+              <span className="muted" data-testid="decision-request-source">
+                ({requestSourceLabel(facts.requestIdSource)})
+              </span>
+            </span>
+          ) : (
+            "— (no provider call)"
+          )}
+        </dd>
+        <dt>Latency</dt>
+        <dd data-testid="decision-latency">
+          {facts.latencyMs === null ? "—" : `${facts.latencyMs} ms`}
+        </dd>
+        <dt>Answer</dt>
+        <dd data-testid="decision-answer">
+          {facts.outcome}
+          {facts.choice && facts.choice !== "none" ? ` (candidate ${facts.choice})` : ""}
+        </dd>
+        <dt>Generation applied</dt>
+        <dd data-testid="decision-generation">
+          {facts.generation === null ? "—" : `#${facts.generation}`}
+          {facts.observationSeq !== null ? ` · observation seq ${facts.observationSeq}` : ""}
+        </dd>
+      </dl>
+      <p className="muted">
+        Event seq {event.seq} · causation {event.causation_id ?? "(origin)"}
+      </p>
     </div>
   );
 }
@@ -443,9 +522,24 @@ function TraceView({ traceId, page }: { traceId?: string; page?: DevTracePage })
       <ol className="trace-list" data-testid="trace-events">
         {rows.map((event) => {
           const causation = event.causation_id;
+          const decision = event.name === "decision.resolved" ? decisionFacts(event) : null;
           return (
             <li key={event.event_id} data-testid={`trace-event-${event.seq}`}>
-              <code>{event.seq}</code> {event.name}
+              <code>{event.seq}</code> <span className="muted">[{chainStage(event.name)}]</span>{" "}
+              {event.name}
+              {decision ? (
+                <span className="muted">
+                  {" · req "}
+                  {decision.requestId ? (
+                    <code data-testid="trace-decision-request">{decision.requestId}</code>
+                  ) : (
+                    "(no provider call)"
+                  )}
+                  {" · "}
+                  {decision.outcome}
+                  {decision.latencyMs !== null ? ` · ${decision.latencyMs} ms` : ""}
+                </span>
+              ) : null}
               {causation ? (
                 <span className="muted"> caused by {causation}</span>
               ) : (
