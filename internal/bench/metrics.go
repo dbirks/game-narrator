@@ -22,6 +22,27 @@ const (
 )
 
 // RunMetrics computes the report's metric rows over one run's sample outcomes.
+// top1Misses returns the ranked in-script samples whose top-1 candidate was
+// not the truth message — the same samples RunMetrics counts against top1N
+// (in-script AND ranked) — as per-sample diagnostics (message ids, no text).
+// An empty list is nil so the report JSON carries nothing on a clean run.
+func top1Misses(outcomes []sampleOutcomes) []Top1Miss {
+	var misses []Top1Miss
+	for _, o := range outcomes {
+		s := o.sample
+		if s.msgID == "" || o.topID == "" || o.topID == s.msgID {
+			continue
+		}
+		misses = append(misses, Top1Miss{
+			SampleID:  s.id,
+			MessageID: s.msgID,
+			TopID:     o.topID,
+			TopProb:   o.topProb,
+		})
+	}
+	return misses
+}
+
 // Every row carries its sample count; a row with no samples is n/a, never a
 // 0% or 100% reading (docs/spec/12).
 func RunMetrics(outcomes []sampleOutcomes) []Metric {

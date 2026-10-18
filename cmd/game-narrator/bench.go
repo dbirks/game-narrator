@@ -40,11 +40,15 @@ image's SHA-256 must match the fixture manifest's. NOT RUN (exit 3) when the
 fixture dir or the image is absent.
 calibrate: fit the matcher's temperature on the set's tuning split plus the
 captured fixtures' real-frame observations (ADR-0035 "Calibration") through
-the real pipeline and write calibration.json under --out. The holdout split is
-never read. The fit refuses a degenerate tuning set (fewer than 10 incorrect
-top-1 examples or fewer than 50 samples, or an NLL minimum on the fit range's
-boundary): it prints NOT FITTED: <reason> with the per-source counts, exits
-non-zero, and writes no calibration.json.
+the real pipeline and write calibration.json under --out. Each captured
+fixture contributes its clean observations (class b) AND its deterministic
+degraded-render variants (class b′: JPEG re-encode, downscale+upscale,
+seeded Gaussian noise, fixed crop offset — generated at bench time, never
+stored, never reported as clean captures; ADR-0058 amendment 1). The
+holdout split is never read. The fit refuses a degenerate tuning set (fewer
+than 10 incorrect top-1 examples or fewer than 50 samples, or an NLL minimum
+on the fit range's boundary): it prints NOT FITTED: <reason> with the
+per-source counts, exits non-zero, and writes no calibration.json.
 `
 
 func newBenchFlagSet() (*flag.FlagSet, *string, *string, *string, *bool, *string, *uint64) {
@@ -156,7 +160,18 @@ func runBenchCaptured(args []string, log *slog.Logger) (int, error) {
 	if *image == "" {
 		return 3, fmt.Errorf("NOT RUN: bench captured: no game image (set GAME_NARRATOR_GAME_IMAGE_PATH to the user's Wind Waker image; see docs/spec/16)")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	// Run-level wall bound (ADR-0064): 30-minute floor + 10s per fixture
+	// frame. The per-sample deadlines are gone, so this is the replay's only
+	// patience bound, scaled to the fixture: no realistic load on a working
+	// host reaches it (measured per-frame cost is ~0.14s on the dense
+	// fixture), but a wedged run still cannot hang the gate forever. Loading
+	// the fixture here runs the SHA-256 verification gate up front, so a
+	// corrupt fixture is refused before the run starts.
+	frames, err := bench.CapturedFrameCount(*fixture)
+	if err != nil {
+		return 1, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), bench.ReplayRunBound(frames))
 	defer cancel()
 	rep, err := bench.RunCapturedBench(ctx, *fixture, *image, *out)
 	if err != nil {
@@ -203,10 +218,24 @@ func runBenchCalibrate(args []string, log *slog.Logger) (int, error) {
 	if _, err := exec.LookPath("magick"); err != nil {
 		return 3, fmt.Errorf("NOT RUN: bench calibrate needs ImageMagick (magick) for frame generation (install imagemagick; see docs/spec/16)")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	// Run-level wall bound (ADR-0064): the synthetic source alone runs under
+	// the 30-minute floor; each captured fixture adds its whole frame list
+	// once per replay source — the clean capture plus every degraded variant
+	// (class b′) — so the per-frame term scales with that. A corrupt fixture
+	// is refused here, before the fit starts.
+	fixtureDirs := fsArgsFixture(args)
+	capturedFrames := 0
+	for _, dir := range fixtureDirs {
+		n, err := bench.CapturedFrameCount(dir)
+		if err != nil {
+			return 1, err
+		}
+		capturedFrames += n * (1 + len(bench.DegradedVariants()))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), bench.ReplayRunBound(capturedFrames))
 	defer cancel()
 	var insufficient *matcher.ErrInsufficientCalibrationData
-	cal, err := bench.CalibrateCombined(ctx, *set, fsArgsFixture(args), *image, *out)
+	cal, err := bench.CalibrateCombined(ctx, *set, fixtureDirs, *image, *out)
 	if err != nil {
 		// A degenerate fit is a refusal, not a harness failure: print the
 		// reason (with the counts, for the data error) and exit non-zero

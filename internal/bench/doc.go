@@ -78,4 +78,29 @@ type Diagnostics struct {
 	// 0035 "Calibration"): the identity any fixture or cache key that embeds
 	// matcher settings must carry.
 	MatcherCalibration string `json:"matcher_calibration,omitempty"`
+	// NotRun lists the samples the harness failed to complete (sample id +
+	// error, no game text). They are excluded from every metric's denominator,
+	// and this list is the record that the set was not run in full — a holdout
+	// that lost samples must never read as full coverage (a silently shrunken
+	// denominator would grade absence as success).
+	NotRun []NotRunSample `json:"not_run,omitempty"`
+	// Top1Misses lists the ranked in-script samples whose top-1 candidate was
+	// not the truth message (sample id + message ids, no game text): the
+	// per-sample evidence behind the top-1 row.
+	Top1Misses []Top1Miss `json:"top1_misses,omitempty"`
+}
+
+// NotRunSample is one bench sample the harness could not complete.
+type NotRunSample struct {
+	SampleID string `json:"sample_id"`
+	Reason   string `json:"reason"`
+}
+
+// Top1Miss is one ranked in-script sample whose top-1 was not the truth
+// message. Message ids only: reports carry no game text (AGENTS.md rule 5).
+type Top1Miss struct {
+	SampleID  string  `json:"sample_id"`
+	MessageID string  `json:"message_id"` // the truth message
+	TopID     string  `json:"top_id"`     // the candidate the pipeline ranked first
+	TopProb   float64 `json:"top_prob"`
 }

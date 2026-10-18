@@ -29,6 +29,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -58,7 +59,19 @@ const EnvFixtureDir = "GAME_NARRATOR_FIXTURE_DIR"
 const DefaultFixtureRoot = "artifacts/fixtures"
 
 // FixtureSchema is the fixture manifest schema version this recorder writes.
-const FixtureSchema = 1
+//
+// Versioned (docs/spec discipline: a schema change keeps old fixtures
+// readable): schema 1 is the original drive-cadence manifest (frames are the
+// drive's own iteration screenshots); schema 2 adds the Capture block — the
+// parallel adaptive capture plan and its measured budget consumption, so a
+// dense recording (≥10 Hz during dialogue/subtitle scenes) states its rate
+// in the manifest (ADR-0054 amendment 2; ADR-0058 amendment 1). VerifyFixture
+// accepts both: a schema-1 fixture reads with a zero Capture block.
+const FixtureSchema = 2
+
+// schemaV1 is the original manifest schema, still verified (old fixtures are
+// never re-recorded just to bump a number).
+const schemaV1 = 1
 
 // FixtureDir resolves the external fixture root for this process.
 func FixtureDir() string {
@@ -120,10 +133,24 @@ type FixtureManifest struct {
 	GameImageSHA256 string           `json:"game_image_sha256"`
 	Dolphin         FixtureDolphin   `json:"dolphin"`
 	Resolution      FixtureSize      `json:"resolution"`
+	Capture         *FixtureCapture  `json:"capture,omitempty"`
 	Frames          []FixtureFrame   `json:"frames"`
 	Inputs          []FixtureInput   `json:"inputs"`
 	Oracle          FixtureOracle    `json:"oracle"`
 	OCR             FixtureOCRRecipe `json:"ocr"`
+}
+
+// FixtureCapture records the parallel adaptive capture plan (schema 2) and
+// what the run consumed of its budget: the rate the manifest claims, so the
+// bench and the ADR numbers state the sampling the frames actually have.
+type FixtureCapture struct {
+	Enabled         bool    `json:"enabled"`
+	HighHz          float64 `json:"high_hz"`       // the dialogue/subtitle-scene rate
+	LowHz           float64 `json:"low_hz"`        // the everywhere-else rate
+	DurationSecs    float64 `json:"duration_secs"` // measured capture window
+	MaxDurationSecs float64 `json:"max_duration_secs,omitempty"`
+	MaxBytes        int64   `json:"max_bytes,omitempty"`
+	Bytes           int64   `json:"bytes"` // measured encoded frame bytes
 }
 
 type FixtureDolphin struct {
@@ -165,7 +192,8 @@ type FixtureSummary struct {
 	ManifestPath   string
 	ManifestSHA256 string
 	Frames         int
-	Lines          int // distinct narration lines in profile.json
+	Lines          int             // distinct narration lines in profile.json
+	Capture        *FixtureCapture // the manifest's capture block (nil = legacy drive-cadence recording)
 }
 
 // FixtureRecorder is the Bridge wrapper that records a fixture while a drive
@@ -191,7 +219,67 @@ type FixtureRecorder struct {
 	inputs   []FixtureInput
 	st       Status // the launch's status (image SHA, user dir, display, pid)
 	launched bool
+
+	// Parallel adaptive capture (schema 2). The capture loop records frames
+	// on its own clock (independent of the drive's iteration cadence) at the
+	// plan's high rate while the last recorded frame measures a dialogue/
+	// subtitle screen and at the low rate elsewhere, until the plan's
+	// duration/byte budget is spent. The drive's own Screenshot calls are
+	// recorded exactly as before; the two streams interleave in capture
+	// order into one frame sequence (names and input markers stay
+	// consistent because both append under r.mu).
+	plan          CapturePlan
+	captureCancel context.CancelFunc
+	captureDone   chan struct{}
+	captureStart  time.Time
+	lastFrameTS   time.Time // the last published frame (either stream)
+	captureBytes  int64     // encoded frame bytes published since StartCapture
+	captureOn     bool
+
+	// Shared frame bookkeeping of both streams: a frame number is reserved
+	// at capture time (the drive synchronously, the loop at the grab), the
+	// frame is completed when its file is written (drive: inline; loop: by
+	// a worker), and publishLocked appends completed frames in capture
+	// order — so r.frames always reads in frame-number (capture) order
+	// whichever stream finishes first.
+	nextFrameNo int
+	pending     map[int]capturePending
+	publishNext int
+	lastScreen  DriveScreen // the last published frame's class (the loop's clock)
+	captureErr  error       // the first frame-write failure (Finalize surfaces it)
 }
+
+// capturePending is a reserved frame awaiting (or completing into) its
+// append into r.frames.
+type capturePending struct {
+	fr    FixtureFrame
+	err   error
+	ready bool
+	skip  bool // a grabbed frame dropped at cancel: no file, no manifest entry
+	bytes int64
+}
+
+// CapturePlan configures the recorder's parallel adaptive capture. Zero
+// fields take the defaults (10 Hz high / 1 Hz low, unbounded budget). The
+// high rate is the task's ≥10 Hz dialogue/subtitle requirement; the low rate
+// bounds the fixture's size on the long non-dialogue spans.
+type CapturePlan struct {
+	HighHz      float64       // frames per second while the last recorded frame is dialogue/subtitle
+	LowHz       float64       // frames per second everywhere else
+	MaxDuration time.Duration // stop capturing after this (0 = unbounded)
+	MaxBytes    int64         // stop capturing once this many encoded bytes were written (0 = unbounded)
+}
+
+// captureMinGap is the minimum spacing between any two recorded frames
+// (either stream): closer captures would duplicate the emulator's state for
+// the bytes' worth (a grab takes ~80 ms; the screen cannot out-run that).
+const captureMinGap = 100 * time.Millisecond
+
+// captureFailTolerance is how many consecutive grab failures the capture
+// loop survives before it stops (a lost window is honest to stop on; the
+// fixture then ends shorter and the manifest says so). The drive's own
+// retries are unaffected — this is the parallel stream only.
+const captureFailTolerance = 5
 
 // NewFixtureRecorder starts recording into <fixture root>/<id>. The dir tree
 // is created here so a recording failure is visible before any frame is
@@ -212,11 +300,407 @@ func NewFixtureRecorder(b Bridge, root, id string) (*FixtureRecorder, error) {
 	if err := os.MkdirAll(filepath.Join(dir, "frames"), 0o755); err != nil {
 		return nil, fmt.Errorf("dolphin: fixture dir %s: %w", dir, err)
 	}
-	return &FixtureRecorder{inner: b, id: id, root: dir}, nil
+	return &FixtureRecorder{inner: b, id: id, root: dir, pending: map[int]capturePending{}}, nil
 }
 
 // Dir is the fixture's directory (<root>/<id>).
 func (r *FixtureRecorder) Dir() string { return r.root }
+
+// SetCapturePlan arms the parallel adaptive capture (call before
+// StartCapture). It is a no-op after the capture has started: the plan is
+// what the manifest records, so it is fixed for the run. The zero plan is
+// the legacy drive-cadence recording (no parallel stream).
+func (r *FixtureRecorder) SetCapturePlan(p CapturePlan) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.captureOn {
+		return
+	}
+	r.plan = p
+}
+
+// StartCapture begins the parallel adaptive capture loop on its own clock:
+// it records frames at the plan's high rate while the last recorded frame
+// measures a dialogue/subtitle screen and at the low rate elsewhere, until
+// the budget is spent or StopCapture. The drive's own Screenshot recording
+// is unchanged; Finalize always joins a running capture, and a fixture
+// recorded without a capture is schema-1-shaped (zero Capture block) exactly
+// as before.
+func (r *FixtureRecorder) StartCapture(ctx context.Context) error {
+	r.mu.Lock()
+	if r.captureOn {
+		r.mu.Unlock()
+		return fmt.Errorf("dolphin: fixture %s capture already started", r.id)
+	}
+	// The zero plan is the legacy drive-cadence recording: refuse a
+	// default-on capture (checked before normalize, which would fill the
+	// defaults and make the plan non-zero).
+	if !r.plan.enabled() {
+		r.mu.Unlock()
+		return fmt.Errorf("dolphin: fixture %s has no capture plan (SetCapturePlan first)", r.id)
+	}
+	r.plan = r.plan.normalize()
+	r.captureOn = true
+	r.captureErr = nil
+	r.captureStart = time.Now()
+	cctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	r.captureCancel = cancel
+	r.captureDone = done
+	r.mu.Unlock()
+	go r.captureLoop(cctx, done)
+	return nil
+}
+
+// StopCapture joins the capture loop. It is idempotent and safe before
+// StartCapture. Finalize calls it, so a capture never writes a frame after
+// the manifest is assembled.
+func (r *FixtureRecorder) StopCapture() {
+	r.mu.Lock()
+	if !r.captureOn {
+		r.mu.Unlock()
+		return
+	}
+	r.captureOn = false
+	cancel := r.captureCancel
+	done := r.captureDone
+	r.captureCancel = nil
+	r.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if done != nil {
+		<-done
+	}
+}
+
+// captureWorkers is the parallel worker count of the capture loop (encode +
+// write + classify). The grab itself runs on the loop's own goroutine at
+// the plan's rate: the workers overlap the CPU-bound processing so the
+// effective high rate is not gated on the per-frame processing cost on a
+// loaded host (measured on the dev host: ~35 ms of CPU per frame plus the
+// X11 grab's spawn/round-trip, ~100-500 ms under contention with the
+// drive's and watch's own grabs).
+const captureWorkers = 4
+
+// captureInflight is the in-flight channel depth: how many grabbed frames
+// may wait for a worker. Bounded (bounded queues / explicit backpressure):
+// when the workers lag, the grabber blocks — the rate drops, never the
+// order.
+const captureInflight = 16
+
+// captureJob is one frame the loop grabbed: its reserved frame number (the
+// name is fixed at grab time, so the file, the manifest entry and the truth
+// row stay paired no matter how the workers finish) and the pixels captured
+// at ts.
+type captureJob struct {
+	no  int
+	ts  time.Time
+	img image.Image
+}
+
+// captureLoop is the parallel stream. It grabs on the plan's clock (this
+// goroutine — the grab is the one step that must keep the clock), hands
+// each frame to the captureWorkers parallel workers (encode + write +
+// classify — the CPU-bound half, off the clock), and the frame records are
+// appended in capture order by the shared reserve/complete/publish
+// bookkeeping (captureReserve/captureComplete), which the drive's
+// Screenshot shares. It stops on context cancel, the budget, or
+// captureFailTolerance consecutive grab failures (a lost display is not
+// something a capture loop should spin on).
+func (r *FixtureRecorder) captureLoop(ctx context.Context, done chan struct{}) {
+	defer close(done)
+	jobs := make(chan captureJob, captureInflight)
+	var wg sync.WaitGroup
+	for i := 0; i < captureWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range jobs {
+				r.captureWorker(j)
+			}
+		}()
+	}
+	// The grabber leaves the loop and then close(jobs) makes the workers
+	// drain the channel (every grabbed frame is a reserved frame number and
+	// must be completed); wg.Wait returns the loop to StopCapture only when
+	// nothing is in flight.
+	defer func() { close(jobs); wg.Wait() }()
+
+	interval := r.intervalFor(r.lastScreenLocked())
+	fails := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(interval):
+		}
+		active, fresh := r.captureGate()
+		if !active {
+			// The budget closed (or the capture was stopped): the recording
+			// is done with the frames it has.
+			return
+		}
+		if !fresh {
+			interval = 20 * time.Millisecond // someone else just recorded; re-check soon
+			continue
+		}
+		img, err := r.inner.Screenshot(ctx)
+		if err != nil {
+			fails++
+			if fails > captureFailTolerance {
+				r.captureFailStop() // stop grabbing; the in-flight frames still complete
+				return
+			}
+			interval = 500 * time.Millisecond
+			continue
+		}
+		fails = 0
+		no, active, fresh := r.captureReserve()
+		if !active {
+			// The capture stopped (budget or cancel) between the gate and
+			// the reserve: the grabbed frame is not part of the recording —
+			// let it go (no number was reserved, so nothing dangles).
+			return
+		}
+		if !fresh {
+			// Someone else captured in the gap since the gate: drop this
+			// grab, retry soon.
+			interval = 20 * time.Millisecond
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			r.captureSkip(no) // the grab happened but the recording ended: drop it, keep the sequence whole
+			return
+		case jobs <- captureJob{no: no, ts: time.Now(), img: img}:
+		}
+		interval = r.intervalFor(r.lastScreenLocked())
+	}
+}
+
+// lastScreenLocked is the screen class the interval is based on (the last
+// frame appended by either stream). Callers hold no lock; it takes r.mu.
+func (r *FixtureRecorder) lastScreenLocked() DriveScreen {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lastScreen
+}
+
+// captureReserve is the loop's gate and reservation in one lock: it reports
+// whether the capture is still active (budget and cancel), whether a frame
+// may be captured now (the captureMinGap since the last reservation of
+// either stream — the gap is enforced on reservations, the capture instant,
+// so in-flight frames cannot burst past it while a previous frame is still
+// in a worker), and, when both hold, hands out the reserved frame number.
+// (no, active, fresh): no>0 means the number is reserved and the frame
+// must be completed (or skipped at cancel); active=false means the capture
+// has stopped for good; fresh=false means retry soon.
+func (r *FixtureRecorder) captureReserve() (int, bool, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.captureOn {
+		return 0, false, false
+	}
+	if r.plan.MaxDuration > 0 && time.Since(r.captureStart) >= r.plan.MaxDuration {
+		r.captureOn = false // the budget is the stop; the manifest records the window
+		return 0, false, false
+	}
+	if r.plan.MaxBytes > 0 && r.captureBytes >= r.plan.MaxBytes {
+		r.captureOn = false
+		return 0, false, false
+	}
+	fresh := r.lastFrameTS.IsZero() || time.Since(r.lastFrameTS) >= captureMinGap
+	if !fresh {
+		return 0, true, false
+	}
+	no := r.nextFrameNo
+	r.nextFrameNo++
+	r.lastFrameTS = time.Now()
+	return no, true, true
+}
+
+// reserveFrameNoLocked reserves the next frame number unconditionally —
+// the drive's synchronous Screenshot path (which records whether or not a
+// capture plan is on). The drive always records (it is the fixture's
+// contract), so it stamps the capture gap unconditionally. Callers hold
+// r.mu.
+func (r *FixtureRecorder) reserveFrameNoLocked() int {
+	no := r.nextFrameNo
+	r.nextFrameNo++
+	r.lastFrameTS = time.Now()
+	return no
+}
+
+// captureWorker is the CPU-bound half of one captured frame: PNG encode,
+// write, the drive's own screen measurement, and the manifest entry — then
+// it completes the frame so the shared bookkeeping can publish it in
+// capture order.
+func (r *FixtureRecorder) captureWorker(j captureJob) {
+	buf := new(bytes.Buffer)
+	if err := png.Encode(buf, j.img); err != nil {
+		r.captureComplete(j.no, FixtureFrame{}, fmt.Errorf("dolphin: fixture encode frame: %w", err), 0)
+		return
+	}
+	sig := ScreenSigOf(j.img)
+	screen, side := DriveScreenOf(sig)
+	sum := sha256.Sum256(buf.Bytes())
+	name := fmt.Sprintf("frame-%05d.png", j.no+1)
+	path := filepath.Join(r.root, "frames", name)
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		r.captureComplete(j.no, FixtureFrame{}, fmt.Errorf("dolphin: fixture write frame %d: %w", j.no+1, err), 0)
+		return
+	}
+	fr := FixtureFrame{
+		File:   name,
+		TsNS:   j.ts.UnixNano(),
+		SHA256: hex.EncodeToString(sum[:]),
+		Screen: string(screen),
+		Side:   string(side),
+		Sig:    sig.Key(),
+	}
+	r.captureComplete(j.no, fr, nil, int64(buf.Len()))
+}
+
+// captureComplete records one frame's outcome (the manifest entry and/or an
+// error, plus the encoded byte count for the budget) and publishes every
+// contiguously completed frame into r.frames — the shared append path of
+// both streams, so the frame list always stays in capture order (frame
+// number order), whatever order the workers finish in.
+func (r *FixtureRecorder) captureComplete(no int, fr FixtureFrame, err error, n int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err != nil && r.captureErr == nil {
+		r.captureErr = err // Finalize surfaces it (a fixture missing a frame is a lie)
+	}
+	r.pending[no] = capturePending{fr: fr, err: err, ready: true, bytes: n}
+	r.publishLocked()
+}
+
+// publishLocked appends every contiguously completed frame to r.frames and
+// drops its pending slot. Callers hold r.mu. A gap (a lower number still
+// in a worker) parks the higher frames until the gap completes — order is
+// the invariant, completion is not.
+func (r *FixtureRecorder) publishLocked() {
+	for {
+		pp, ok := r.pending[r.publishNext]
+		if !ok || !pp.ready {
+			return
+		}
+		if !pp.skip && pp.err == nil {
+			r.frames = append(r.frames, pp.fr)
+			r.lastScreen = DriveScreen(pp.fr.Screen)
+			r.captureBytes += pp.bytes
+		}
+		delete(r.pending, r.publishNext)
+		r.publishNext++
+	}
+}
+
+// captureSkip drops a frame that was reserved (grabbed) but must not be
+// recorded: the capture stopped (cancel) between the reserve and the job
+// hand-off. The number is completed as a skip so the publish sequence
+// advances past it — the frame's file is never written and the manifest
+// never lists it (the numbering may then have a gap: the manifest is the
+// source of truth, and a cancelled grab is outside the recording).
+func (r *FixtureRecorder) captureSkip(no int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pending[no] = capturePending{skip: true, ready: true}
+	r.publishLocked()
+}
+
+// captureGate takes the loop's decision under one lock: whether the capture
+// is still on and within budget (active) and whether a frame may be grabbed
+// now (fresh — nothing was captured within captureMinGap by either
+// stream).
+func (r *FixtureRecorder) captureGate() (bool, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.captureOn {
+		return false, false
+	}
+	if r.plan.MaxDuration > 0 && time.Since(r.captureStart) >= r.plan.MaxDuration {
+		r.captureOn = false // the budget is the stop; the manifest records the window
+		return false, false
+	}
+	if r.plan.MaxBytes > 0 && r.captureBytes >= r.plan.MaxBytes {
+		r.captureOn = false
+		return false, false
+	}
+	fresh := r.lastFrameTS.IsZero() || time.Since(r.lastFrameTS) >= captureMinGap
+	return true, fresh
+}
+
+func (r *FixtureRecorder) captureFailStop() {
+	r.mu.Lock()
+	r.captureOn = false
+	cancel := r.captureCancel
+	r.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// intervalFor is the plan's clock for a screen class: the high rate on the
+// dialogue/subtitle screens (the scenes where a 2 s grid would sample a line
+// in one frame), the low rate everywhere else.
+func (r *FixtureRecorder) intervalFor(screen DriveScreen) time.Duration {
+	hz := r.plan.LowHz
+	switch screen {
+	case DriveScreenStorySubtitle, DriveScreenDialogueBox:
+		hz = r.plan.HighHz
+	}
+	if hz <= 0 {
+		hz = 1
+	}
+	return time.Duration(float64(time.Second) / hz)
+}
+
+// recordFrame records one frame (file, capture timestamp, the drive's own
+// measured screen class) and is the single write path of both streams. It
+// returns the measured screen so the capture loop can pick its next
+// interval. The whole record (name reservation, encode, write, append) is
+// one r.mu critical section: the frame NUMBER and the frame's bytes/hash
+// must pair atomically, or two streams interleaving between the number
+// reservation and the append could reserve the same name and one file's
+// bytes would carry another frame's hash (the verification gate would fail
+// on a healthy recording).
+// recordFrame records one frame on the drive's synchronous path: the
+// number is reserved immediately (the pixels are already in hand — reserve
+// order is capture order), the frame is encoded, written, classified and
+// completed through the shared bookkeeping, which appends it in capture
+// order (a frame can briefly wait behind a still-in-flight loop frame;
+// the manifest and the truth rows are built from the published order).
+func (r *FixtureRecorder) recordFrame(img image.Image, ts time.Time) (DriveScreen, error) {
+	r.mu.Lock()
+	no := r.reserveFrameNoLocked()
+	r.mu.Unlock()
+	buf := new(bytes.Buffer)
+	if err := png.Encode(buf, img); err != nil {
+		r.captureComplete(no, FixtureFrame{}, fmt.Errorf("dolphin: fixture encode frame: %w", err), 0)
+		return DriveScreenUnknown, fmt.Errorf("dolphin: fixture encode frame: %w", err)
+	}
+	sig := ScreenSigOf(img)
+	screen, side := DriveScreenOf(sig)
+	sum := sha256.Sum256(buf.Bytes())
+	name := fmt.Sprintf("frame-%05d.png", no+1)
+	path := filepath.Join(r.root, "frames", name)
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		r.captureComplete(no, FixtureFrame{}, fmt.Errorf("dolphin: fixture write frame %d: %w", no+1, err), 0)
+		return DriveScreenUnknown, fmt.Errorf("dolphin: fixture write frame %d: %w", no+1, err)
+	}
+	fr := FixtureFrame{
+		File:   name,
+		TsNS:   ts.UnixNano(),
+		SHA256: hex.EncodeToString(sum[:]),
+		Screen: string(screen),
+		Side:   string(side),
+		Sig:    sig.Key(),
+	}
+	r.captureComplete(no, fr, nil, int64(buf.Len()))
+	return screen, nil
+}
 
 // --- the Bridge surface the drive talks through ---------------------------
 
@@ -236,41 +720,18 @@ func (r *FixtureRecorder) Launch(ctx context.Context, spec LaunchSpec) error {
 
 // Screenshot records the frame (file, capture timestamp, measured screen
 // class) and hands the same pixels to the drive. A write failure is fatal to
-// the run: a fixture missing a frame is a lie about the recording.
+// the run: a fixture missing a frame is a lie about the recording. It shares
+// the capture loop's frame sequence (one mutex, capture order) and updates
+// the loop's min-gap clock, so the two streams never record the same instant
+// twice.
 func (r *FixtureRecorder) Screenshot(ctx context.Context) (image.Image, error) {
 	img, err := r.inner.Screenshot(ctx)
 	if err != nil {
 		return nil, err
 	}
-	ts := time.Now()
-	r.mu.Lock()
-	seq := len(r.frames)
-	r.mu.Unlock()
-
-	name := fmt.Sprintf("frame-%05d.png", seq+1)
-	path := filepath.Join(r.root, "frames", name)
-	buf := new(bytes.Buffer)
-	if err := png.Encode(buf, img); err != nil {
-		return nil, fmt.Errorf("dolphin: fixture encode frame %d: %w", seq+1, err)
+	if _, err := r.recordFrame(img, time.Now()); err != nil {
+		return nil, err
 	}
-	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
-		return nil, fmt.Errorf("dolphin: fixture write frame %d: %w", seq+1, err)
-	}
-	sum := sha256.Sum256(buf.Bytes())
-
-	sig := ScreenSigOf(img)
-	screen, side := DriveScreenOf(sig)
-	fr := FixtureFrame{
-		File:   name,
-		TsNS:   ts.UnixNano(),
-		SHA256: hex.EncodeToString(sum[:]),
-		Screen: string(screen),
-		Side:   string(side),
-		Sig:    sig.Key(),
-	}
-	r.mu.Lock()
-	r.frames = append(r.frames, fr)
-	r.mu.Unlock()
 	return img, nil
 }
 
@@ -335,12 +796,30 @@ const OCRConfFloor = 0.4
 // "recorded OCR answer" convention the synthetic corpus uses
 // (docs/spec/11 "Fixture origins").
 func (r *FixtureRecorder) Finalize(ctx context.Context, drv DriveTrace) (FixtureSummary, error) {
+	// Join any running parallel capture first: the manifest is assembled
+	// from the frame list as of this point, so no frame may land after it.
+	r.StopCapture()
 	r.mu.Lock()
 	frames := append([]FixtureFrame(nil), r.frames...)
 	inputs := append([]FixtureInput(nil), r.inputs...)
 	st := r.st
 	launched := r.launched
+	plan := r.plan
+	started := !r.captureStart.IsZero()
+	start := r.captureStart
+	bytes := r.captureBytes
 	r.mu.Unlock()
+	captureOn := plan.enabled() && started
+
+	r.mu.Lock()
+	capErr := r.captureErr
+	r.mu.Unlock()
+	if capErr != nil {
+		// A frame's file could not be written: the fixture would be missing
+		// frames its manifest truth implies — that is a lie, so the finalize
+		// fails and the caller must not ship this fixture.
+		return FixtureSummary{}, capErr
+	}
 
 	if len(frames) == 0 {
 		return FixtureSummary{}, fmt.Errorf("dolphin: fixture %s recorded no frames", r.id)
@@ -358,9 +837,19 @@ func (r *FixtureRecorder) Finalize(ctx context.Context, drv DriveTrace) (Fixture
 	// The truth text, per frame. Non-subtitle frames carry no narration text
 	// in the region (the presence/absence of the bottom bar is the point of
 	// those scenarios), so only the subtitle frames are OCR'd.
+	//
+	// The crop dedupe (dense recordings, schema 2): a high-rate capture holds
+	// a static subtitle for hundreds of near-identical frames; the OCR answer
+	// is a function of the crop's pixels, so a crop whose pixels are identical
+	// to a crop already read reuses that reading instead of re-running the
+	// engine (identical input, identical answer — the recipe is unchanged and
+	// the truth is still the engine's record-time reading, only not re-run on
+	// pixels the engine has already seen). The cache is the exact pixel hash,
+	// so any pixel difference re-runs the engine.
 	texts := make([]string, len(frames))
 	canonical := []string{} // distinct lines, in first-seen order
 	seen := map[string]int{}
+	cropCache := map[string]string{} // crop pixel hash -> the engine's reading
 	resolution := FixtureSize{W: st.Region.W, H: st.Region.H}
 	recipe := FixtureOCRRecipe{Engine: "tesseract", PSM: ocr.DefaultPSM, Scale: ocrSubtitleScale, Region: StorySubCrop}
 
@@ -368,7 +857,7 @@ func (r *FixtureRecorder) Finalize(ctx context.Context, drv DriveTrace) (Fixture
 		if fr.Screen != string(DriveScreenStorySubtitle) {
 			continue
 		}
-		text, err := r.ocrFrame(ctx, fr.File)
+		text, err := r.ocrFrameCached(ctx, fr.File, cropCache)
 		if err != nil {
 			return FixtureSummary{}, fmt.Errorf("dolphin: fixture OCR frame %s: %w", fr.File, err)
 		}
@@ -386,8 +875,21 @@ func (r *FixtureRecorder) Finalize(ctx context.Context, drv DriveTrace) (Fixture
 		}
 	}
 
-	manifest := r.buildManifest(frames, inputs, st, drv, imageSHA, resolution, recipe)
-	summary := FixtureSummary{Dir: r.root, ID: r.id, Frames: len(frames)}
+	var capture *FixtureCapture
+	if captureOn {
+		norm := plan.normalize()
+		capture = &FixtureCapture{
+			Enabled:         true,
+			HighHz:          norm.HighHz,
+			LowHz:           norm.LowHz,
+			DurationSecs:    time.Since(start).Seconds(),
+			MaxDurationSecs: plan.MaxDuration.Seconds(),
+			MaxBytes:        plan.MaxBytes,
+			Bytes:           bytes,
+		}
+	}
+	manifest := r.buildManifest(frames, inputs, st, drv, imageSHA, resolution, recipe, capture)
+	summary := FixtureSummary{Dir: r.root, ID: r.id, Frames: len(frames), Capture: capture}
 
 	if err := writeJSON(filepath.Join(r.root, "manifest.json"), manifest); err != nil {
 		return summary, err
@@ -418,11 +920,11 @@ func (r *FixtureRecorder) Finalize(ctx context.Context, drv DriveTrace) (Fixture
 	return summary, nil
 }
 
-// ocrFrame runs the real Tesseract on one frame's subtitle crop. The crop is
-// the drive's measured StorySubCrop, enlarged ocrSubtitleScale× (Catmull-Rom)
-// before the engine sees it — a 480p letterbox line is too small for Tesseract
-// at native size, and the enlargement is part of the recorded recipe.
-func (r *FixtureRecorder) ocrFrame(ctx context.Context, file string) (string, error) {
+// ocrFrameCached is ocrFrame with the crop dedupe: the crop's pixel hash is
+// computed first and, when the cache already holds an answer for exactly
+// these pixels, the engine is not re-run. cache is Finalize's per-run map
+// (see there for why identical pixels carry the identical reading).
+func (r *FixtureRecorder) ocrFrameCached(ctx context.Context, file string, cache map[string]string) (string, error) {
 	img, err := readPNGFile(filepath.Join(r.root, "frames", file))
 	if err != nil {
 		return "", err
@@ -434,6 +936,10 @@ func (r *FixtureRecorder) ocrFrame(ctx context.Context, file string) (string, er
 	if crop == nil || crop.Bounds().Empty() {
 		return "", nil
 	}
+	sum := cropPixelHash(crop)
+	if text, ok := cache[sum]; ok {
+		return text, nil
+	}
 	big := enlarge(crop, ocrSubtitleScale)
 	res, err := ocr.Tesseract{PSM: ocr.DefaultPSM}.Recognize(ctx, big)
 	if err != nil {
@@ -441,9 +947,30 @@ func (r *FixtureRecorder) ocrFrame(ctx context.Context, file string) (string, er
 	}
 	text := strings.TrimSpace(res.Text)
 	if text == "" || res.MeanConf < OCRConfFloor {
-		return "", nil
+		text = ""
 	}
+	cache[sum] = text
 	return text, nil
+}
+
+// cropPixelHash is the SHA-256 of the crop's raw RGBA pixels in row-major
+// order — the exact-input fingerprint the dedupe caches under (any pixel
+// difference is a different key; identical pixels reuse the reading).
+func cropPixelHash(img image.Image) string {
+	h := sha256.New()
+	b := img.Bounds()
+	var px [16]byte
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			cr, cg, cb, ca := img.At(x, y).RGBA()
+			binary.LittleEndian.PutUint32(px[0:4], uint32(cr))
+			binary.LittleEndian.PutUint32(px[4:8], uint32(cg))
+			binary.LittleEndian.PutUint32(px[8:12], uint32(cb))
+			binary.LittleEndian.PutUint32(px[12:16], uint32(ca))
+			h.Write(px[:])
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // writeTruth writes truth.json in the fixture's ground-truth shape: one row
@@ -532,7 +1059,7 @@ func (r *FixtureRecorder) writeProfile(canonical []string, resolution FixtureSiz
 // buildManifest assembles the manifest from the recorded frames, the input
 // log, the launch status and the drive's oracle (its transition log is the
 // record of which scene/state the drive believed it was in).
-func (r *FixtureRecorder) buildManifest(frames []FixtureFrame, inputs []FixtureInput, st Status, drv DriveTrace, imageSHA string, resolution FixtureSize, recipe FixtureOCRRecipe) FixtureManifest {
+func (r *FixtureRecorder) buildManifest(frames []FixtureFrame, inputs []FixtureInput, st Status, drv DriveTrace, imageSHA string, resolution FixtureSize, recipe FixtureOCRRecipe, capture *FixtureCapture) FixtureManifest {
 	oracle := FixtureOracle{OK: drv.OK, Reason: drv.Reason, SuccessText: drv.SuccessText}
 	for _, tr := range drv.Transitions {
 		oracle.Transitions = append(oracle.Transitions, FixtureTransition{
@@ -560,11 +1087,31 @@ func (r *FixtureRecorder) buildManifest(frames []FixtureFrame, inputs []FixtureI
 			Display: st.Display, UserDir: st.UserDir, PID: st.DolphinPID,
 		},
 		Resolution: resolution,
+		Capture:    capture,
 		Frames:     frames,
 		Inputs:     inputs,
 		Oracle:     oracle,
 		OCR:        recipe,
 	}
+}
+
+// normalize fills the plan's zero fields with the defaults (10 Hz high /
+// 1 Hz low, unbounded budget).
+func (p CapturePlan) normalize() CapturePlan {
+	if p.HighHz <= 0 {
+		p.HighHz = 10
+	}
+	if p.LowHz <= 0 {
+		p.LowHz = 1
+	}
+	return p
+}
+
+// enabled reports whether the plan arms a parallel capture at all (the zero
+// plan — SetCapturePlan never called — is the legacy drive-cadence
+// recording).
+func (p CapturePlan) enabled() bool {
+	return p.HighHz > 0 || p.LowHz > 0
 }
 
 // --- verification (the replay side's integrity check) -----------------------
@@ -583,8 +1130,11 @@ func VerifyFixture(dir string) (FixtureManifest, error) {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return FixtureManifest{}, fmt.Errorf("fixture %s: parse manifest: %w", dir, err)
 	}
-	if m.Schema != FixtureSchema {
-		return FixtureManifest{}, fmt.Errorf("fixture %s: unsupported manifest schema %d (want %d)", dir, m.Schema, FixtureSchema)
+	// Versioned gate: the current schema and the original one (the existing
+	// windwaker-newgame fixture and any other schema-1 recording stay
+	// readable; the Capture block is simply zero on them).
+	if m.Schema != FixtureSchema && m.Schema != schemaV1 {
+		return FixtureManifest{}, fmt.Errorf("fixture %s: unsupported manifest schema %d (want %d or %d)", dir, m.Schema, FixtureSchema, schemaV1)
 	}
 	if len(m.Frames) == 0 {
 		return FixtureManifest{}, fmt.Errorf("fixture %s: manifest names no frames", dir)

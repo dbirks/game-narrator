@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/capture/replay"
@@ -122,9 +123,17 @@ func runSample(ctx context.Context, framesDir, timestampsFile string, s Sample, 
 	mem := events.NewMemStore()
 	hub := events.New(events.WithStore(mem))
 	src := &replay.Source{Dir: framesDir, Speed: 0, TimestampsFile: timestampsFile}
-	rctx, cancel := context.WithTimeout(ctx, 120*time.Second)
-	defer cancel()
-	if err := runner.Run(rctx, src, hub); err != nil {
+	// No per-sample wall budget (ADR-0064): a replay verdict must not depend
+	// on host load, and any per-sample wall deadline is load-dependent by
+	// construction — under CPU contention a sample whose OCR calls slow down
+	// outlives its budget and is lost to a NOT RUN, which changes the sample
+	// count and every metric with it (the class (b) regression of ADR-0058
+	// amendment 1, measured on the dense fixture). The bounds that remain are
+	// the load-independent ones: the pipeline's own per-OCR-call deadline and
+	// retry budget (ModeReplay; a wedged engine is killed per call, so a
+	// sample cannot hang), and the caller's run-level timeout (ReplayRunBound),
+	// which is the harness's patience, scaled to the fixture.
+	if err := runner.Run(ctx, src, hub); err != nil {
 		_ = src.Close()
 		_ = hub.Close()
 		return sampleOutcomes{}, fmt.Errorf("pipeline run: %v", err)
@@ -189,6 +198,41 @@ func runSample(ctx context.Context, framesDir, timestampsFile string, s Sample, 
 		out.speakerID, out.speakerKnown, _ = scriptSpeaker(out.commitMsgIDs[0])
 	}
 	return out, nil
+}
+
+// pinReplayEngineThreads pins the OCR engine's OpenMP thread pool to one
+// thread per process. Tesseract 5 otherwise spawns a thread pool of the whole
+// core set per call, so the bench's parallel samples oversubscribe the host
+// (four single-threaded Tesseract processes plus the Go runtime fit on an
+// 8-core box with headroom; four default Tesseract calls run eight-plus
+// threads and push per-call latency into the retry budget under any
+// concurrent load). Single-threaded is also the deterministic configuration:
+// same crop, same thread count, same answer — the property the replay's
+// determinism contract (ADR-0037/0054) grades. It is process-global; the
+// bench is a leaf tool and its children (Tesseract) inherit the environment.
+func pinReplayEngineThreads() {
+	_ = os.Setenv("OMP_NUM_THREADS", "1")
+}
+
+// replayWorkers is the bench's parallel sample count: bounded so the
+// concurrent Tesseract processes cannot starve each other's per-call deadline
+// (the pipeline's ModeReplay retry budget is the load shield, but a bench
+// that saturates its own host manufactures the load it exists to tolerate).
+// Four on an 8-core box, two on a 4-core one, one on a small box; never more
+// samples than exist. Results never depend on the count: per-frame OCR is
+// deterministic and ModeReplay is sequential per region (ADR-0064).
+func replayWorkers(n int) int {
+	w := 4
+	if h := runtime.NumCPU() / 2; h < w {
+		w = h
+	}
+	if w < 1 {
+		w = 1
+	}
+	if n < w {
+		w = n
+	}
+	return w
 }
 
 // recPub is the sidecar's events.Publisher: it keeps the envelopes so the

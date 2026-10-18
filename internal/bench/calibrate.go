@@ -53,6 +53,12 @@ type CalibrationSource struct {
 	Samples       int    `json:"samples"`
 	IncorrectTop1 int    `json:"incorrect_top1"`
 	Skipped       int    `json:"skipped"`
+	// NotRun counts the samples the harness failed on (deadline, frame
+	// source) for this source: the accounting line (used + skipped + not-run
+	// = the source's sample count) must close, or a source that lost every
+	// sample would read as "0 used, 0 skipped" — indistinguishable from a
+	// source with nothing to calibrate.
+	NotRun int `json:"not_run,omitempty"`
 }
 
 // Calibrate fits the matcher's temperature on the set's tuning split
@@ -73,7 +79,10 @@ func Calibrate(ctx context.Context, setDir, outDir string) (*Calibration, error)
 // fitSource is one data source of a temperature fit: where its samples come
 // from, the index their readings are re-ranked against, and the frame source
 // each sample replays from. Sources run one after another (the shared
-// benchProfile sidecar script is swapped between phases, never mid-phase).
+// benchProfile sidecar script is swapped between phases, never mid-phase —
+// runFitSource installs the source's own profile before its samples run, so
+// the sidecar always answers from the script the samples were resolved
+// against).
 type fitSource struct {
 	name    string
 	class   string
@@ -85,6 +94,19 @@ type fitSource struct {
 	frames  func(id string) (dir, timestamps string, ok bool)
 	idx     *matcher.Index
 	regions []games.Region
+	// profile is the sidecar script this source's samples answer from (the
+	// synthetic set's profile or the fixture's imported script).
+	profile *ScriptProfile
+	// prepare renders this source's frames on demand (the class b′ degraded
+	// variants; nil for sources whose frames are ready at fit start). The fit
+	// loop calls it immediately before the source runs; an error NOT RUNs the
+	// whole fit (the same discipline as a synthetic render failure).
+	prepare func() error
+	// cleanup frees this source's temp frames. The fit loop calls it
+	// immediately after the source runs, so the disk peak is one source's
+	// frames, never all sources' (ADR-0064: six dense-fixture degraded variants
+	// prepared up front did not fit the shared /tmp).
+	cleanup func()
 }
 
 // syntheticFitSource prepares the synthetic set's tuning split as a fit
@@ -133,30 +155,33 @@ func syntheticFitSource(ctx context.Context, setDir string) (*fitSource, *TruthS
 		},
 		idx:     idx,
 		regions: regions,
+		profile: prof,
 	}
 	return src, ts, func() { os.RemoveAll(framesDir) }, nil
 }
 
-// capturedFitSource prepares one fixture as a fit source: the imported
-// script (the real game messages, in memory), the fixture's dialogue
-// segments, and the fixture's frames dir as the frame source. The image's
-// SHA-256 must match the fixture manifest (the same gate as RunCapturedBench).
-// The returned cleanup must run (deferred by the caller) before the fit ends.
-func capturedFitSource(ctx context.Context, fixtureDir, imagePath string, msgs []games.Message, idx *matcher.Index) (*fitSource, func(), error) {
-	fx, err := LoadCapturedFixture(fixtureDir)
-	if err != nil {
-		return nil, nil, err
-	}
+// checkCapturedImageSHA is the fixture-replay identity gate the fit shares
+// with RunCapturedBench: a fixture recorded against a different image would
+// grade the wrong frames, so the image's SHA-256 must match the manifest's.
+func checkCapturedImageSHA(fx *CapturedFixture, imagePath string) error {
 	sha, err := ImageSHA256(imagePath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("NOT RUN: bench calibrate cannot read the game image %s: %v", filepath.Base(imagePath), err)
+		return fmt.Errorf("NOT RUN: bench calibrate cannot read the game image %s: %v", filepath.Base(imagePath), err)
 	}
 	if fx.Manifest.GameImageSHA256 != "" && sha != fx.Manifest.GameImageSHA256 {
-		return nil, nil, fmt.Errorf("NOT RUN: bench calibrate: the image's SHA-256 does not match fixture %s's manifest (re-record the fixture or point GAME_NARRATOR_GAME_IMAGE_PATH at the recorded image)", fx.ID)
+		return fmt.Errorf("NOT RUN: bench calibrate: the image's SHA-256 does not match fixture %s's manifest (re-record the fixture or point GAME_NARRATOR_GAME_IMAGE_PATH at the recorded image)", fx.ID)
 	}
+	return nil
+}
+
+// capturedFitSource prepares one loaded fixture as a fit source: the
+// fixture's dialogue segments and the fixture's frames dir as the frame
+// source. The caller loads the fixture and checks the image SHA once (the
+// degraded variants reuse the same load: VerifyFixture hashes every frame,
+// so a second load of the same dir would pay that cost twice).
+func capturedFitSource(fx *CapturedFixture, samples []Sample, msgs []games.Message, idx *matcher.Index) (*fitSource, func(), error) {
 	prof := CapturedProfile(fx, msgs)
 	benchProfile = prof
-	samples := fx.Segments(resolveTruth(msgs))
 	work, err := os.MkdirTemp("", "bench-calibrate-captured-")
 	if err != nil {
 		return nil, nil, err
@@ -181,6 +206,7 @@ func capturedFitSource(ctx context.Context, fixtureDir, imagePath string, msgs [
 		},
 		idx:     idx,
 		regions: prof.BuildRegions(),
+		profile: prof,
 	}, func() { os.RemoveAll(work) }, nil
 }
 
@@ -236,15 +262,28 @@ func collectFit(outcomes []sampleOutcomes, idx *matcher.Index) (fit []matcher.Te
 
 // runFitSource runs one source's samples through the real pipeline (the same
 // runSample the bench uses) and returns the per-sample outcomes in source
-// order, NOT RUN slots dropped.
-func runFitSource(ctx context.Context, s *fitSource) []sampleOutcomes {
-	workers := 4
-	if len(s.samples) < workers {
-		workers = len(s.samples)
+// order, NOT RUN slots dropped, plus the count of those NOT RUN slots (a
+// source's not-run samples must stay visible in the fit's accounting, never
+// vanish). It installs the source's own sidecar profile
+// first: the sources run one after another and the sidecar answers from the
+// installed script, so a source's samples must never be answered from the
+// previous source's profile.
+func runFitSource(ctx context.Context, s *fitSource) ([]sampleOutcomes, int) {
+	if s.profile != nil {
+		benchProfile = s.profile
 	}
+	// Bounded parallelism (ADR-0064): the degraded dense-fixture sources replay
+	// the fixture's whole frame list each, and the concurrent Tesseract
+	// processes must not starve each other's per-call deadline — unbounded
+	// workers on an 8-core box oversubscribe the host and the bench
+	// manufactures the load the replay's retry budget exists to tolerate.
+	// Scheduler detail only: per-frame OCR is deterministic, results do not
+	// depend on the worker count.
+	workers := replayWorkers(len(s.samples))
 	jobs := make(chan int)
 	var (
 		mu       sync.Mutex
+		notRun   int
 		outcomes = make([]sampleOutcomes, len(s.samples))
 		wg       sync.WaitGroup
 	)
@@ -257,11 +296,17 @@ func runFitSource(ctx context.Context, s *fitSource) []sampleOutcomes {
 				dir, tsFile, ok := s.frames(sa.ID)
 				if !ok {
 					fmt.Fprintf(os.Stderr, "bench: calibrate: sample %s NOT RUN (frame source)\n", sa.ID)
+					mu.Lock()
+					notRun++
+					mu.Unlock()
 					continue
 				}
 				out, err := runSample(ctx, dir, tsFile, sa, s.idx, s.regions)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "bench: calibrate: sample %s NOT RUN: %v\n", sa.ID, err)
+					mu.Lock()
+					notRun++
+					mu.Unlock()
 					continue
 				}
 				mu.Lock()
@@ -281,7 +326,7 @@ func runFitSource(ctx context.Context, s *fitSource) []sampleOutcomes {
 			ok = append(ok, o)
 		}
 	}
-	return ok
+	return ok, notRun
 }
 
 // CalibrateCombined fits the matcher's temperature on the combined fit data:
@@ -304,6 +349,7 @@ func runFitSource(ctx context.Context, s *fitSource) []sampleOutcomes {
 // with the per-source breakdown (ErrCalibrationInsufficient) so the operator
 // sees exactly how many samples and errors exist where.
 func CalibrateCombined(ctx context.Context, synthSetDir string, fixtureDirs []string, imagePath, outDir string) (*Calibration, error) {
+	pinReplayEngineThreads()
 	var (
 		sources  []fitSource
 		synthSet *TruthSet
@@ -320,6 +366,7 @@ func CalibrateCombined(ctx context.Context, synthSetDir string, fixtureDirs []st
 			cleanupAll()
 			return nil, err
 		}
+		src.cleanup = cleanup
 		sources = append(sources, *src)
 		synthSet = ts
 		cleanups = append(cleanups, cleanup)
@@ -339,13 +386,39 @@ func CalibrateCombined(ctx context.Context, synthSetDir string, fixtureDirs []st
 			return nil, fmt.Errorf("bench: captured matcher index: %v", err)
 		}
 		for _, dir := range fixtureDirs {
-			src, cleanup, err := capturedFitSource(ctx, dir, imagePath, msgs, idx)
+			fx, err := LoadCapturedFixture(dir)
 			if err != nil {
 				cleanupAll()
 				return nil, err
 			}
+			if err := checkCapturedImageSHA(fx, imagePath); err != nil {
+				cleanupAll()
+				return nil, err
+			}
+			samples := fx.Segments(resolveTruth(msgs))
+			src, cleanup, err := capturedFitSource(fx, samples, msgs, idx)
+			if err != nil {
+				cleanupAll()
+				return nil, err
+			}
+			src.cleanup = cleanup
 			sources = append(sources, *src)
 			cleanups = append(cleanups, cleanup)
+			// The degraded-render sources (class b′, ADR-0058 amendment 1):
+			// the same samples replayed over the fixture's frames re-degraded
+			// at bench time (deterministic JPEG / downscale / seeded noise /
+			// crop offset — never stored, labelled b′, never clean captures).
+			// They are the fit's raw material: the labelled frames where the
+			// matcher's top-1 genuinely errs. Their temp frames are prepared
+			// and freed one variant at a time by the fit loop (ADR-0064).
+			dsrcs, err := degradedFitSources(fx, samples, msgs, idx)
+			if err != nil {
+				cleanupAll()
+				return nil, err
+			}
+			for i := range dsrcs {
+				sources = append(sources, dsrcs[i])
+			}
 		}
 	}
 	defer cleanupAll()
@@ -357,15 +430,28 @@ func CalibrateCombined(ctx context.Context, synthSetDir string, fixtureDirs []st
 	srcRows := make([]CalibrationSource, 0, len(sources))
 	totalUsed, totalSkipped := 0, 0
 	for i := range sources {
-		outcomes := runFitSource(ctx, &sources[i])
-		f, used, skipped, incorrect := collectFit(outcomes, sources[i].idx)
+		s := &sources[i]
+		// Stream the sources' temp frames: prepare this one, run it, free it
+		// (ADR-0064). A render failure here NOT RUNs the whole fit, as it did
+		// when the renders were prepared up front.
+		if s.prepare != nil {
+			if err := s.prepare(); err != nil {
+				cleanupAll()
+				return nil, err
+			}
+		}
+		outcomes, notRun := runFitSource(ctx, s)
+		f, used, skipped, incorrect := collectFit(outcomes, s.idx)
 		fit = append(fit, f...)
 		totalUsed += used
 		totalSkipped += skipped
 		srcRows = append(srcRows, CalibrationSource{
-			Name: sources[i].name, Class: sources[i].class,
-			Samples: used, IncorrectTop1: incorrect, Skipped: skipped,
+			Name: s.name, Class: s.class,
+			Samples: used, IncorrectTop1: incorrect, Skipped: skipped, NotRun: notRun,
 		})
+		if s.cleanup != nil {
+			s.cleanup()
+		}
 	}
 	if len(fit) == 0 {
 		return nil, fmt.Errorf("bench: no sample produced a rankable reading (%d skipped); nothing to fit", totalSkipped)
@@ -428,7 +514,7 @@ func (e *ErrCalibrationInsufficient) Error() string {
 	if len(e.Sources) > 0 {
 		b.WriteString("; fit data per source:")
 		for _, s := range e.Sources {
-			fmt.Fprintf(&b, " [%s class %s: %d used, %d incorrect top-1, %d skipped]", s.Name, s.Class, s.Samples, s.IncorrectTop1, s.Skipped)
+			fmt.Fprintf(&b, " [%s class %s: %d used, %d incorrect top-1, %d skipped, %d not-run]", s.Name, s.Class, s.Samples, s.IncorrectTop1, s.Skipped, s.NotRun)
 		}
 	}
 	return b.String()

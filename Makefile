@@ -126,26 +126,63 @@ test-full:
 ## bench: the docs/spec/12 benchmark gate — the holdout split of the committed
 ## synthetic set, replayed through the real pipeline (real Tesseract, real
 ## matcher), graded against the generated ground truth. Prints the holdout
-## report; artifacts land in artifacts/bench/ (gitignored). Holds under the
-## five-minute test-full budget (measured ~3 min, 2026-10).
-## The captured-Dolphin holdout (class (b) captured-frame replay, M7) runs the
-## external fixture's frames against the script imported at run time from
-## GAME_NARRATOR_GAME_IMAGE_PATH; it is NOT RUN with setup steps when the
-## fixture dir or the image is absent (never a silent pass, never a failure
-## of the synthetic part).
+## report; artifacts land in artifacts/bench/ (gitignored). The synthetic
+## holdout holds under the five-minute test-full budget (measured ~3 min,
+## 2026-10); the captured part (when the fixtures are configured) runs the
+## dense fixture's ~1085 frames through the same replay and adds several
+## minutes (ADR-0064). Tesseract runs single-threaded (OMP_NUM_THREADS=1):
+## the replay's per-frame OCR must be deterministic and the bench's bounded
+## workers must not oversubscribe the host with the engine's OpenMP pool.
+## The captured-Dolphin holdouts (class (b) captured-frame replay, M7) run
+## the external fixtures' frames (windwaker-newgame and, once recorded,
+## windwaker-legend-dense — the dense ≥10 Hz legend recording, ADR-0058
+## amendment 1) against the script imported at run time from
+## GAME_NARRATOR_GAME_IMAGE_PATH, each reported separately; then the
+## calibration fit runs over the synthetic tuning split plus the fixtures'
+## real-frame observations AND their deterministic degraded-render variants
+## (class b′, generated at bench time, never stored, never reported as
+## clean captures). A NOT FITTED refusal is a verdict (ADR-0035), never a
+## gate failure. The captured part is NOT RUN with setup steps when the
+## fixture dirs or the image are absent (never a silent pass, never a
+## failure of the synthetic part).
 bench:
 	@command -v tesseract >/dev/null 2>&1 || { echo "NOT RUN: bench (tesseract not installed; see docs/spec/16)" >&2; exit 1; }
 	@command -v magick >/dev/null 2>&1 || { echo "NOT RUN: bench (ImageMagick not installed; see docs/spec/16)" >&2; exit 1; }
 	@mkdir -p artifacts
-	go run ./cmd/game-narrator bench --set testdata/bench/bench-synthetic-001 --split holdout --out artifacts/bench
+	# One build, then direct binary runs: `go run` swallows the child's exit
+	# code (it always exits 1 on a non-zero child, printing "exit status N"),
+	# so the NOT FITTED verdict (exit 4, a refusal the gate must accept,
+	# ADR-0035) would read as a gate failure through go run. The binary lands
+	# under the gitignored artifacts/ tree (not game-derived content, ADR-0058
+	# amendment 1).
+	go build -o $(CURDIR)/artifacts/bench-bin/game-narrator ./cmd/game-narrator
+	OMP_NUM_THREADS=1 $(CURDIR)/artifacts/bench-bin/game-narrator bench --set testdata/bench/bench-synthetic-001 --split holdout --out artifacts/bench
 	@cat artifacts/bench/report.md
-	@if [ -n "$$GAME_NARRATOR_FIXTURE_DIR" ] && [ -d "$$GAME_NARRATOR_FIXTURE_DIR/windwaker-newgame" ] && [ -n "$$GAME_NARRATOR_GAME_IMAGE_PATH" ]; then \
-		echo; \
-		go run ./cmd/game-narrator bench captured --fixture "$$GAME_NARRATOR_FIXTURE_DIR/windwaker-newgame" --image "$$GAME_NARRATOR_GAME_IMAGE_PATH" --out artifacts/bench-captured; \
-		cat artifacts/bench-captured/report.md; \
+	@if [ -n "$$GAME_NARRATOR_FIXTURE_DIR" ] && [ -n "$$GAME_NARRATOR_GAME_IMAGE_PATH" ]; then \
+		fixtures=""; \
+		for fx in windwaker-newgame windwaker-legend-dense; do \
+			[ -d "$$GAME_NARRATOR_FIXTURE_DIR/$$fx" ] && fixtures="$$fixtures $$fx"; \
+		done; \
+		if [ -n "$$fixtures" ]; then \
+			rc=0; \
+			for fx in $$fixtures; do \
+				echo; \
+				OMP_NUM_THREADS=1 $(CURDIR)/artifacts/bench-bin/game-narrator bench captured --fixture "$$GAME_NARRATOR_FIXTURE_DIR/$$fx" --image "$$GAME_NARRATOR_GAME_IMAGE_PATH" --out "artifacts/bench-captured/$$fx" || rc=$$?; \
+				cat "artifacts/bench-captured/$$fx/report.md"; \
+			done; \
+			echo; \
+			cfix=""; for fx in $$fixtures; do cfix="$$cfix --fixture $$GAME_NARRATOR_FIXTURE_DIR/$$fx"; done; \
+			OMP_NUM_THREADS=1 $(CURDIR)/artifacts/bench-bin/game-narrator bench calibrate --set testdata/bench/bench-synthetic-001 $$cfix --image "$$GAME_NARRATOR_GAME_IMAGE_PATH" --out artifacts/bench-calibrate; \
+			calrc=$$?; \
+			if [ $$calrc -eq 4 ]; then echo "(calibration: NOT FITTED — the refusal is a verdict, ADR-0035; no calibration.json written)"; fi; \
+			if [ $$rc -ne 0 ] || { [ $$calrc -ne 0 ] && [ $$calrc -ne 4 ]; }; then exit 1; fi; \
+		else \
+			echo ""; \
+			echo "NOT RUN: bench captured holdout (class b): set GAME_NARRATOR_FIXTURE_DIR (fixture root containing windwaker-newgame and/or windwaker-legend-dense, recorded via the dolphin fixture factory, ADR-0054) and GAME_NARRATOR_GAME_IMAGE_PATH (the user's Wind Waker image) — see docs/spec/16 M7" >&2; \
+		fi; \
 	else \
 		echo ""; \
-		echo "NOT RUN: bench captured holdout (class b): set GAME_NARRATOR_FIXTURE_DIR (fixture root containing windwaker-newgame, recorded via the dolphin fixture factory, ADR-0054) and GAME_NARRATOR_GAME_IMAGE_PATH (the user's Wind Waker image) — see docs/spec/16 M7" >&2; \
+		echo "NOT RUN: bench captured holdout (class b): set GAME_NARRATOR_FIXTURE_DIR (fixture root containing windwaker-newgame and/or windwaker-legend-dense, recorded via the dolphin fixture factory, ADR-0054) and GAME_NARRATOR_GAME_IMAGE_PATH (the user's Wind Waker image) — see docs/spec/16 M7" >&2; \
 	fi
 
 ## test-replay: the docs/spec/12 replay gate — the synthetic scenario suite
@@ -196,9 +233,9 @@ test-dolphin:
 
 ## test-models: the live provider contract gate (docs/spec/12 "provider
 ## schema — recorded every PR, live conditional") — the -run Live tests in
-## the openai, recorded, systemone and tts providers, the voices workflow and
-## the runtime speech session, all against the real gateway. Sequential (-p
-## 1) so gateway calls never overlap. Requires GAME_NARRATOR_GATEWAY_URL
+## the openai, recorded, systemone, tts and asr providers, the voices workflow
+## and the runtime speech session, all against the real gateway. Sequential
+## (-p 1) so gateway calls never overlap. Requires GAME_NARRATOR_GATEWAY_URL
 ## plus the token env — the vision tests run by default (no opt-in; the
 ## GAME_NARRATOR_LIVE_VISION switch was removed with the VLM OCR fallback,
 ## ADR 0040) and the TTS registry tests need
@@ -208,7 +245,7 @@ test-models:
 	@scripts/gates/run-go-gate.sh test-models -count=1 -p 1 -timeout 30m -run Live \
 		./internal/providers/openai/... ./internal/providers/recorded/... \
 		./internal/providers/systemone/... ./internal/providers/tts/... \
-		./internal/voices/... ./internal/runtime/... ; \
+		./internal/providers/asr/... ./internal/voices/... ./internal/runtime/... ; \
 	rc=$$?; echo $$rc > artifacts/gates/test-models.rc ; exit $$rc
 
 ## test-hardware: the UNO Q hardware gate (docs/spec/16, M8) — the

@@ -19,6 +19,7 @@ import (
 // write report.json / report.md / manifest.json into outDir. It returns the
 // report so tests can assert its shape without re-reading the files.
 func RunBench(ctx context.Context, setDir, split, outDir string) (*Report, error) {
+	pinReplayEngineThreads()
 	if split != SplitTuning && split != SplitHoldout && split != SplitAll {
 		return nil, fmt.Errorf("bench: split must be tuning, holdout or all (got %q)", split)
 	}
@@ -64,13 +65,11 @@ func RunBench(ctx context.Context, setDir, split, outDir string) (*Report, error
 	// on a bounded worker pool. Each run is deterministic, so concurrency only
 	// changes wall time, never the numbers; the CPU figure below is the whole
 	// process's cumulative CPU, which is exactly what the benchmark reports.
-	workers := 4
-	if len(kept) < workers {
-		workers = len(kept)
-	}
+	workers := replayWorkers(len(kept))
 	jobs := make(chan int)
 	var (
 		mu       sync.Mutex
+		notRun   []NotRunSample
 		outcomes = make([]sampleOutcomes, len(kept))
 		wg       sync.WaitGroup
 	)
@@ -83,6 +82,9 @@ func RunBench(ctx context.Context, setDir, split, outDir string) (*Report, error
 				out, err := runSample(ctx, dirs[s.ID], "", s, idx, regions)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "bench: sample %s NOT RUN: %v\n", s.ID, err)
+					mu.Lock()
+					notRun = append(notRun, NotRunSample{SampleID: s.ID, Reason: err.Error()})
+					mu.Unlock()
 					continue
 				}
 				mu.Lock()
@@ -129,6 +131,8 @@ func RunBench(ctx context.Context, setDir, split, outDir string) (*Report, error
 			PeakRSSMB:          procPeakRSSMB(),
 			DurationSecs:       duration.Seconds(),
 			MatcherCalibration: matcherCalibrationDigest(),
+			NotRun:             notRun,
+			Top1Misses:         top1Misses(outcomes),
 		},
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 	}
@@ -252,6 +256,20 @@ func RenderMarkdown(rep *Report, outcomes []sampleOutcomes) string {
 		fmt.Fprintf(&b, "| %s | %d | %d |\n", c.key, c.hit, c.tot)
 	}
 	d := rep.Diagnostics
+	if len(d.NotRun) > 0 {
+		b.WriteString("\n## Not run — samples the harness failed (excluded from every metric's denominator; the set was NOT run in full)\n\n")
+		b.WriteString("| sample | reason |\n|---|---|\n")
+		for _, nr := range d.NotRun {
+			fmt.Fprintf(&b, "| %s | %s |\n", nr.SampleID, nr.Reason)
+		}
+	}
+	if len(d.Top1Misses) > 0 {
+		b.WriteString("\n## Top-1 misses — ranked in-script samples whose first candidate was not the truth (message ids; no game text in this report)\n\n")
+		b.WriteString("| sample | truth message | top-1 message | top-1 prob |\n|---|---|---|---|\n")
+		for _, m := range d.Top1Misses {
+			fmt.Fprintf(&b, "| %s | %s | %s | %.4f |\n", m.SampleID, m.MessageID, m.TopID, m.TopProb)
+		}
+	}
 	b.WriteString("\n## Manifest\n\n")
 	fmt.Fprintf(&b, "go %s · os %s · seed %d · set hash `%s`\n", d.GoVersion, d.OS, d.SeedBase, d.SetHash)
 	return b.String()

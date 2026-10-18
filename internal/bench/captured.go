@@ -461,15 +461,20 @@ func RunCapturedBench(ctx context.Context, fixtureDir, imagePath, outDir string)
 	}
 	defer os.RemoveAll(work)
 
+	pinReplayEngineThreads()
 	start := time.Now()
 	cpuBefore := procCPUTime()
-	workers := 4
-	if len(samples) < workers {
-		workers = len(samples)
-	}
+	// Bounded parallelism (ADR-0064): each sample's hot path is one Tesseract
+	// call at a time (ModeReplay is sequential per region) plus light Go work,
+	// so a handful of concurrent samples uses the box without oversubscribing
+	// it. The worker count is a scheduler detail: per-frame OCR is
+	// deterministic, so results do not depend on it (the M2 three-identical-
+	// runs property holds).
+	workers := replayWorkers(len(samples))
 	jobs := make(chan int)
 	var (
 		mu       sync.Mutex
+		notRun   []NotRunSample
 		outcomes = make([]sampleOutcomes, len(samples))
 		wg       sync.WaitGroup
 	)
@@ -486,11 +491,17 @@ func RunCapturedBench(ctx context.Context, fixtureDir, imagePath, outDir string)
 				tsPath := filepath.Join(work, fmt.Sprintf("ts-%s.json", s.ID))
 				if err := writeManifest(tsPath, s.Frames); err != nil {
 					fmt.Fprintf(os.Stderr, "bench: captured %s NOT RUN: %v\n", s.ID, err)
+					mu.Lock()
+					notRun = append(notRun, NotRunSample{SampleID: s.ID, Reason: err.Error()})
+					mu.Unlock()
 					continue
 				}
 				out, err := runSample(ctx, framesDir, tsPath, s, idx, regions)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "bench: captured %s NOT RUN: %v\n", s.ID, err)
+					mu.Lock()
+					notRun = append(notRun, NotRunSample{SampleID: s.ID, Reason: err.Error()})
+					mu.Unlock()
 					continue
 				}
 				mu.Lock()
@@ -544,6 +555,8 @@ func RunCapturedBench(ctx context.Context, fixtureDir, imagePath, outDir string)
 			PeakRSSMB:          procPeakRSSMB(),
 			DurationSecs:       time.Since(start).Seconds(),
 			MatcherCalibration: matcherCalibrationDigest(),
+			NotRun:             notRun,
+			Top1Misses:         top1Misses(ok),
 		},
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 	}
@@ -566,4 +579,52 @@ func RunCapturedBench(ctx context.Context, fixtureDir, imagePath, outDir string)
 		return nil, err
 	}
 	return rep, nil
+}
+
+// CapturedFrameCount verifies a fixture and returns its frame count, so the
+// run's caller can size the run-level wall bound (ReplayRunBound) before the
+// replay starts. It runs the full VerifyFixture gate (every frame's SHA-256),
+// so a fixture that cannot be verified is refused here, before any sample
+// runs — the same refusal the run itself would give.
+func CapturedFrameCount(fixtureDir string) (int, error) {
+	fx, err := LoadCapturedFixture(fixtureDir)
+	if err != nil {
+		return 0, err
+	}
+	return len(fx.Manifest.Frames), nil
+}
+
+// replayRunFloor is the run-level wall bound's floor: it covers a fixture of
+// any size on a normal host (the dense fixture, 1085 frames, runs in under
+// five minutes wall on the 8-core bench host) and keeps the bound honest for
+// the small fixtures (newgame: 25 frames) where the per-frame term alone
+// would be seconds.
+const replayRunFloor = 30 * time.Minute
+
+// replayRunPerFrame is the per-frame term of the run-level wall bound
+// (ADR-0064). It is the harness's patience bound, not a load-timing
+// mechanism: a captured replay's verdict must not depend on host load, so the
+// bound must be far above any realistic per-frame cost while still finite.
+// Measured per-frame wall cost on the dense fixture is ~0.14s (the one
+// 680-frame sample is ~0.14s/frame of Tesseract; the rest are
+// decode/analyze-only). The pipeline's own per-OCR-call budget is
+// ReplayOCRMaxAttempts x DefaultReplayOCRTimeout = 90s; 10s/frame is 1/9 of
+// that worst case and ~70x the measured cost, so no realistic load drives a
+// healthy run into it and a genuinely wedged run is still bounded.
+const replayRunPerFrame = 10 * time.Second
+
+// ReplayRunBound is the run-level wall bound one captured-replay phase
+// (bench captured, or one calibrate source) gets. The per-sample deadlines
+// are gone (ADR-0064: a load-sensitive deadline turns a slow sample into a
+// NOT RUN and changes the verdict), so this is the harness's only patience
+// bound: a 30-minute floor plus 10s per fixture frame. The caller creates a
+// context with this deadline and passes it to the run.
+func ReplayRunBound(totalFrames int) time.Duration {
+	if totalFrames <= 0 {
+		return replayRunFloor
+	}
+	if b := time.Duration(totalFrames) * replayRunPerFrame; b > replayRunFloor {
+		return b
+	}
+	return replayRunFloor
 }
