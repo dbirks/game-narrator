@@ -131,15 +131,32 @@ release:
   draft: false
   prerelease: "{{ if hasPrefix .Tag \"v0.\" }}enable{{ else }}disable{{ end }}"
 
-# Debian package for UNO Q (docs/spec/10 "UNO Q software deployment", ADR 0006).
-# .rpm is intentionally omitted: there is no install-smoke environment for it
-# on this host (docs/spec/15: "Optional .rpm if tested; avoid claiming support
-# without install smoke"). See ADR 0033.
+# Debian package for UNO Q (docs/spec/10 "UNO Q software deployment", ADR 0006)
+# and the optional Arch package (docs/spec/15 "OS packages", ADR 0033 +
+# ADR 0053). .rpm is intentionally omitted: there is no install-smoke
+# environment for it on this host (docs/spec/15: "Optional .rpm if tested; avoid
+# claiming support without install smoke").
+#
+# One entry builds both formats (docs/spec/15: "nFPM integration through
+# GoReleaser"):
+#   - deb: the shared scripts below are the packaging/deb/*.sh maintainer
+#     scripts — the .deb's behaviour is unchanged (scripts byte-identical;
+#     ADR 0053).
+#   - archlinux: `overrides.archlinux` swaps the shared scripts for the
+#     Arch .install hooks (packaging/arch/*.sh, wrapped into the package's
+#     .INSTALL by nfpm) and archlinux.scripts.postupgrade adds the upgrade
+#     hook (pacman 7.1 runs install/remove hooks on fresh install/remove
+#     only, so upgrade setup + stop live in post_upgrade — PKGBUILD(5)).
+#     The sysuser is created from the shipped sysusers.d file (hooks run
+#     systemd-sysusers, useradd fallback) and directory ownership is set by
+#     the hooks; the sysusers.d/tmpfiles.d files are the declarative
+#     definition applied at boot (ADR 0053).
 nfpms:
   - id: game-narrator
     package_name: game-narrator
     formats:
       - deb
+      - archlinux
     license: unspecified # README "License: Not yet chosen" — see ADR 0033
     maintainer: "dbirks (Game Narrator project)"
     description: >-
@@ -158,6 +175,87 @@ nfpms:
       postinstall: packaging/deb/postinst.sh
       preremove: packaging/deb/prerm.sh
       postremove: packaging/deb/postrm.sh
+    # Arch-specific settings for the archlinux format only (ADR 0053): nfpm
+    # wraps each file in `function <name>() { ... }` inside the package's
+    # .INSTALL; the deb keeps the shared scripts above.
+    overrides:
+      archlinux:
+        # Arch package names for the runtime dependencies. The shared list
+        # above uses Debian names (tesseract-ocr / tesseract-ocr-eng), which
+        # do not exist in the Arch repositories — `pacman -U` would fail with
+        # "could not be found" before installing anything. Verified on the
+        # Arch amd64 host (2026-10-18, `pacman -Si`): ffmpeg, tesseract,
+        # tesseract-data-eng, v4l-utils in extra; ca-certificates in core.
+        # goreleaser 2.14's mergeOverrides applies per-format overrides with
+        # mergo.WithOverride, which REPLACES slice fields, so this is the
+        # complete Arch dependency list; the .deb keeps the shared Debian
+        # list unchanged.
+        dependencies:
+          - ffmpeg
+          - tesseract
+          - tesseract-data-eng
+          - v4l-utils
+          - ca-certificates
+        scripts:
+          postinstall: packaging/arch/post_install.sh
+          preremove: packaging/arch/pre_remove.sh
+          postremove: packaging/arch/post_remove.sh
+        # nfpm merges format overrides by REPLACING the contents slice, so
+        # this is the full Arch file list: same files as the base list above,
+        # except the unit lands in /usr/lib/systemd/system. On Arch /lib is a
+        # symlink to /usr/lib owned by the `filesystem` package, so a package
+        # entry for /lib/ conflicts at install time (pacman 7.1); /usr/lib
+        # is the Arch unit path and is where the .deb's /lib path resolves on
+        # usrmerged Debian anyway. The .deb keeps /lib/systemd/system
+        # (field-verified path, unchanged behaviour — ADR 0053).
+        # Note: .PKGINFO pkgver is "0.0.0-1" for every snapshot build — the
+        # nfpm arch packager drops the version prerelease (the SHA) unless an
+        # epoch is set, and goreleaser 2.14 only reads epoch/release from the
+        # top-level nfpms entry (per-format overrides of them are ignored),
+        # which would change the .deb's version. Same-version `pacman -U`
+        # reinstalls an explicit local file (verified 2026-10-18), so upgrades
+        # between snapshot builds work; provenance is via checksums.txt /
+        # artifact names, not `pacman -Qi` (docs/release.md).
+        contents:
+          - src: packaging/systemd/game-narrator.service
+            dst: /usr/lib/systemd/system/game-narrator.service
+            file_info:
+              mode: 0o644
+          # Explicit dir entry: the hook sets root:game-narrator 0750 on
+          # /etc/game-narrator; without this the implicit entry records
+          # root:root 0755 and pacman warns "directory permissions differ"
+          # on every install/upgrade. (The deb keeps its implicit entry —
+          # dpkg does not warn and deb behaviour is unchanged.)
+          - dst: /etc/game-narrator
+            type: dir
+            file_info:
+              owner: root
+              group: game-narrator
+              mode: 0o750
+          - src: examples/config/config.example.yaml
+            dst: /etc/game-narrator/config.yaml
+            type: config|noreplace
+            file_info:
+              mode: 0o640
+          - src: examples/config/env.example
+            dst: /etc/game-narrator/env.example
+            file_info:
+              mode: 0o640
+          - src: packaging/sysusers.d/game-narrator.conf
+            dst: /usr/lib/sysusers.d/game-narrator.conf
+            file_info:
+              mode: 0o644
+          - src: packaging/tmpfiles.d/game-narrator.conf
+            dst: /usr/lib/tmpfiles.d/game-narrator.conf
+            file_info:
+              mode: 0o644
+    archlinux:
+      packager: "dbirks (Game Narrator project)"
+      scripts:
+        # pacman 7.1: on upgrades only the pre/post_upgrade hooks run (the
+        # install/remove hooks do NOT), so the deb-equivalent setup + stop-on-
+        # upgrade lives here (post_install covers fresh installs).
+        postupgrade: packaging/arch/post_upgrade.sh
     contents:
       - src: packaging/systemd/game-narrator.service
         dst: /lib/systemd/system/game-narrator.service
@@ -172,3 +270,22 @@ nfpms:
         dst: /etc/game-narrator/env.example
         file_info:
           mode: 0o640
+      # Declarative user + directory entries (ADR 0053), shipped in BOTH
+      # formats. On the .deb they are inert without systemd (the bookworm
+      # container smoke runs systemd-free) and idempotent under systemd
+      # (postinst creates the same user/dirs — deb behaviour is unchanged).
+      # On Arch they are the user/directory definition applied by the hooks.
+      - src: packaging/sysusers.d/game-narrator.conf
+        dst: /usr/lib/sysusers.d/game-narrator.conf
+        file_info:
+          mode: 0o644
+      - src: packaging/tmpfiles.d/game-narrator.conf
+        dst: /usr/lib/tmpfiles.d/game-narrator.conf
+        file_info:
+          mode: 0o644
+      # Note: /var/lib/game-narrator is deliberately NOT a package entry in
+      # either format — it is created/owned by the maintainer scripts (deb
+      # postinst) / the Arch .install hooks via the tmpfiles line above.
+      # A package-owned data dir would make removal semantics ambiguous
+      # (pacman -R on a non-empty dir) and weaken the "never deleted by the
+      # package" guarantee (docs/spec/15, docs/release.md section 5).

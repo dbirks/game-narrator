@@ -43,7 +43,8 @@ the `dockers_v2` section disables itself and no image is built), then
 `scripts/release/smoke.sh`:
 
 1. **Artifact scanner** over every `dist/*.tar.gz`, `dist/*.deb` (data +
-   control) and, when docker is available, the image's **owned** binary file
+   control), `dist/*.pkg.tar.zst` (payload + `.PKGINFO`/`.MTREE`/`.INSTALL`
+   metadata) and, when docker is available, the image's **owned** binary file
    (distribution layers are the distribution's supply chain — pinned base
    digest + SBOM — not this scanner's scope; Debian files legitimately
    contain `/home/` strings and would false-positive).
@@ -63,7 +64,8 @@ the `dockers_v2` section disables itself and no image is built), then
    both per-arch local images present.
 
 Artifacts land in `dist/`: `*.tar.gz` (+ README, config examples, the systemd
-unit), `*.deb`, per-arch `sbom.spdx.json` (syft, no network enrichment),
+unit), `*.deb`, `*.pkg.tar.zst` (Arch, ADR 0053), per-arch `sbom.spdx.json`
+(syft, no network enrichment),
 `checksums.txt`, `artifacts.json`, and the local images
 `game-narrator:<version>-amd64|arm64` (snapshot mode loads per-arch images;
 it does **not** create a manifest list and does **not** push — verified
@@ -266,3 +268,63 @@ images the manifest digest plus the `cosign verify` output (sections
 2.1/2.2/2.4).
 `make test-full` output lists every gate and its NOT RUN
 reason (hardware, replay, Dolphin, models — unverified on this host).
+
+## 8. Arch Linux package (optional — ADR 0053)
+
+The same pipeline also builds
+`game-narrator_<version>_linux_{amd64,arm64}.pkg.tar.zst` (nfpm `archlinux`
+format; one nfpms entry builds the .deb and the .pkg side by side). It reuses
+the deb's unit and files, with these format-specific choices (ADR 0053):
+
+- The shared nfpms `dependencies` list keeps the Debian package names for
+  the .deb; the Arch format overrides it with the Arch names (`ffmpeg`,
+  `tesseract`, `tesseract-data-eng`, `v4l-utils`, `ca-certificates` — all in
+  core/extra), so `pacman` resolves them normally.
+- The unit ships in `/usr/lib/systemd/system/` — on Arch `/lib` is a symlink
+  owned by the `filesystem` package, so the deb's `/lib/...` entry cannot be
+  packaged for Arch (pacman file conflict).
+- The sysuser and the directory definitions are the declarative
+  `/usr/lib/sysusers.d/game-narrator.conf` + `/usr/lib/tmpfiles.d/game-narrator.conf`
+  (both formats ship these files; on the .deb they are inert without systemd
+  and idempotent under systemd — deb behaviour is unchanged).
+- Every snapshot build has `pkgver 0.0.0-1` in `.PKGINFO`: the nfpm arch
+  packager embeds the version prerelease (the SHA) only when an epoch is set,
+  and goreleaser 2.14 reads epoch only from the top-level nfpms entry, which
+  would change the .deb's version. Pacman re-installs an explicit local file
+  at the same version ("up to date -- reinstalling", verified 2026-10-18), so
+  `pacman -U` upgrades work between any two snapshot builds; build provenance
+  is the artifact name + `checksums.txt`, not `pacman -Qi`.
+
+**Install:** `sudo pacman -U --noconfirm <pkg>` — pacman resolves the
+declared Arch dependencies (`ffmpeg`, `tesseract`, `tesseract-data-eng`,
+`v4l-utils`, `ca-certificates`) from core/extra, and the `post_install` hook
+creates the `game-narrator` sysuser (from the shipped sysusers.d file via
+`systemd-sysusers`, `useradd` fallback), the data/config directories with the
+.deb's ownership/modes (`/var/lib/game-narrator` 0750 game-narrator,
+`/etc/game-narrator` 0750 root:game-narrator, config.yaml 0640) and reloads
+systemd.
+
+**Upgrade:** `sudo pacman -U --noconfirm <new-pkg>` — `post_upgrade` stops
+the unit (graceful drain) and re-runs the setup; the unit is left stopped
+across the upgrade, so start it to pick up the new binary (section 3
+contract).
+
+**Remove:** `sudo pacman -Rns --noconfirm game-narrator` — `pre_remove`
+stops the unit, `post_remove` disables it and reloads systemd. Pacman has no
+purge verb: package files (including the config example) are removed on every
+remove, and the admin's `/etc/game-narrator/env` survives only because a
+non-empty directory cannot be deleted — keep it or `rm` it yourself.
+`/var/lib/game-narrator` is NOT a package file and is never touched
+(section 5); the sysuser is intentionally not removed (section 5).
+
+**Verification:** real `pacman -U`/`-Rns` install smoke on the Arch amd64
+dev host (2026-10-18, final build `bc9e690`, re-run **without** `--nodeps`):
+dependency resolution (`resolving dependencies…` over the five Arch dep
+names), unit file, sysuser, directory modes, `game-narrator version`,
+same-version reinstall (build `2ef5bc5`) and remove cleanup all verified; the
+service was never enabled or started on the dev host. arm64 is
+cross-compiled only — NOT VERIFIED (same status as the .deb arm64).
+A host-level defect was noted during testing: on that host
+`systemd-tmpfiles` could not resolve any non-root user name ("Unknown user";
+`root:root` resolves), so the hooks set directory ownership with
+`install`/`chown` (libc NSS) instead of `systemd-tmpfiles` — see ADR 0053.

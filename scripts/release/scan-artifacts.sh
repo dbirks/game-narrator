@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # scan-artifacts.sh — release artifact scanner (AGENTS.md rule 5, docs/spec/15
-# "Publishing restrictions", ADR 0033).
+# "Publishing restrictions", ADR 0033, ADR 0053).
 #
 # Fails the release when any release artifact in $DIST_DIR (tar.gz archives,
-# .deb packages) or a docker image (layer contents) contains:
+# .deb packages, .pkg.tar.zst Arch packages) or a docker image (layer contents)
+# contains:
 #   1. files matching game/voice/private name patterns, or
 #   2. content matching secret/topology patterns.
 #
@@ -101,6 +102,12 @@ if [ "${1:-}" = "--self-test" ]; then
 fi
 
 DIST_DIR="${GN_SCAN_DIST:-dist}"
+# Optional positional override of the artifacts directory (e.g.
+# `scan-artifacts.sh /path/to/dist`); GN_SCAN_DIST still works for the
+# make pipeline.
+if [ "$#" -ge 1 ]; then
+  DIST_DIR="$1"
+fi
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/gn-scan.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -202,6 +209,18 @@ extract_deb() {
   mkdir -p "$dest/data" "$dest/control"
   dpkg-deb -x "$1" "$dest/data"
   dpkg-deb --ctrl-tarfile "$1" 2>/dev/null | tar -x -C "$dest/control" || true
+}
+
+extract_pkg() {
+  # $1 = .pkg.tar.zst (Arch Linux package), $2 = dest dir
+  # A .pkg.tar.zst is a single zstd-compressed tar holding the payload files
+  # plus the package metadata entries (.PKGINFO, .MTREE, and .INSTALL when the
+  # package ships install hooks). Extracting the whole tar scans payload AND
+  # metadata — the .INSTALL hooks and the .PKGINFO depend list included
+  # (docs/spec/15: no private topology or secrets in any release artifact).
+  local dest="$2"
+  mkdir -p "$dest"
+  tar -xf "$1" -C "$dest"
 }
 
 extract_image() {
@@ -313,6 +332,16 @@ for pkg in "$DIST_DIR"/*.deb; do
   label="$(basename "$pkg")"
   dest="$WORK/$(echo "$label" | tr '/' '_')"
   if ! extract_deb "$pkg" "$dest"; then
+    fail "$label: cannot extract package"
+    continue
+  fi
+  scan_dir "$dest" "$label"
+done
+
+for pkg in "$DIST_DIR"/*.pkg.tar.zst; do
+  label="$(basename "$pkg")"
+  dest="$WORK/$(echo "$label" | tr '/' '_')"
+  if ! extract_pkg "$pkg" "$dest"; then
     fail "$label: cannot extract package"
     continue
   fi
