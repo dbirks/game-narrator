@@ -1,0 +1,36 @@
+# dolphin/inter-subtitle-black — The text-less frame between subtitle one's fade-out and subtitle two's fade-in (screen class: unknown). M6 task list: 'The black transition between subtitles (abstain)'.
+#
+# Origin: CAPTURED (real Dolphin, windwaker-newgame fixture, AGENTS.md rule
+# 5 — the fixture lives under gitignored artifacts/fixtures/ and is
+# referenced here by id + manifest SHA-256 only; no frame or game text is
+# stored in this file). Replay runs the real recognition/runtime path
+# (dolphin-emulator source) at the 2.2 s capture cadence; decision + tts are
+# RECORDED inference replayed through the fake provider gateways (recorded
+# profile oracle / recorded voice), never live.
+schema_version: 1
+id: dolphin/inter-subtitle-black
+origin: dolphin
+profile: windwaker-newgame
+mode: frame_replay
+input:
+  fixture: windwaker-newgame
+  manifest_sha256: 8bad2ce69b1afbc2fa8623f0315546a0cd261502c06b01f24d150ecc8a167c2a
+  first: 23
+  last: 23
+inference:
+  decision: recorded
+  tts: recorded
+  voice: dolphin-legend-narrator
+assertions:
+  - type: message_committed_count
+    message_id: ww-legend-01
+    count: 0
+  - type: message_committed_count
+    message_id: ww-legend-02
+    count: 0
+  - type: no_duplicate_commit
+  - type: no_stale_speech
+    message_id: ww-legend-01
+  - type: no_stale_speech
+    message_id: ww-legend-02
+

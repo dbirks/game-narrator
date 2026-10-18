@@ -1,0 +1,36 @@
+# dolphin/cursor-move-to-yes — The left-stick input moves the cursor from no to yes and A selects it. M6 task list: 'The cursor moving from no to yes'.
+#
+# Origin: CAPTURED (real Dolphin, windwaker-newgame fixture, AGENTS.md rule
+# 5 — the fixture lives under gitignored artifacts/fixtures/ and is
+# referenced here by id + manifest SHA-256 only; no frame or game text is
+# stored in this file). Replay runs the real recognition/runtime path
+# (dolphin-emulator source) at the 2.2 s capture cadence; decision + tts are
+# RECORDED inference replayed through the fake provider gateways (recorded
+# profile oracle / recorded voice), never live.
+schema_version: 1
+id: dolphin/cursor-move-to-yes
+origin: dolphin
+profile: windwaker-newgame
+mode: frame_replay
+input:
+  fixture: windwaker-newgame
+  manifest_sha256: 8bad2ce69b1afbc2fa8623f0315546a0cd261502c06b01f24d150ecc8a167c2a
+  first: 7
+  last: 8
+inference:
+  decision: recorded
+  tts: recorded
+  voice: dolphin-legend-narrator
+assertions:
+  # Nothing in this span is a narratable dialogue line: the pipeline must
+  # commit nothing and speak nothing.
+  - type: message_committed_count
+    message_id: ww-legend-01
+    count: 0
+  - type: message_committed_count
+    message_id: ww-legend-02
+    count: 0
+  - type: no_duplicate_commit
+  - type: no_stale_speech
+    message_id: ww-legend-01
+

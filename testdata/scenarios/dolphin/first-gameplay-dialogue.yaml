@@ -1,0 +1,26 @@
+# dolphin/first-gameplay-dialogue — BLOCKED — M6 task list: 'The first in-game dialogue after the legend (later game region)'. The recorded drive's observation budget ends inside the opening legend; the first gameplay dialogue is a later region the drive does not reach.
+#
+# Origin: CAPTURED (real Dolphin, windwaker-newgame fixture, AGENTS.md rule
+# 5 — the fixture lives under gitignored artifacts/fixtures/ and is
+# referenced here by id + manifest SHA-256 only; no frame or game text is
+# stored in this file). Replay runs the real recognition/runtime path
+# (dolphin-emulator source) at the 2.2 s capture cadence; decision + tts are
+# RECORDED inference replayed through the fake provider gateways (recorded
+# profile oracle / recorded voice), never live.
+schema_version: 1
+id: dolphin/first-gameplay-dialogue
+origin: dolphin
+profile: windwaker-newgame
+mode: frame_replay
+input:
+  fixture: windwaker-newgame
+  manifest_sha256: 8bad2ce69b1afbc2fa8623f0315546a0cd261502c06b01f24d150ecc8a167c2a
+  first: 24
+  last: 24
+inference:
+  decision: recorded
+  tts: recorded
+  voice: dolphin-legend-narrator
+status: blocked
+reason: "unreachable today: the recorded drive ends inside the opening legend (frame 25 of the fixture); the first gameplay dialogue is a later game region the drive does not reach. Unblock: capture a savestate at the first NPC dialogue (savestate hotkeys, opt-in per ADR-0043) and record a new fixture from that savestate."
+

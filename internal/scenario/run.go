@@ -58,6 +58,13 @@ import (
 // the implicit "runnable". A blocked scenario is reported, not passed.
 const StatusBlocked = "blocked"
 
+// StatusNotRun is the runner's verdict for a scenario whose recorded input is
+// not available on this host (a dolphin fixture that was never recorded, or
+// whose manifest hash no longer matches — the fixture was re-recorded). The
+// gate convention: NOT RUN with setup instructions, never a pass (ADR-0037
+// "blocked ≠ pass"; the same honesty applies to a recording that is absent).
+const StatusNotRun = "not_run"
+
 // eventNameFaultInjected is the scenario-timeline event that records a fault
 // activation. It is registered here, not in internal/events, because the
 // name belongs to the scenario harness that owns the faults: the events
@@ -90,14 +97,25 @@ const (
 type RunResult struct {
 	ID      string
 	Catalog string // the docs/test-plan/scenario-catalog.md row, when labelled
-	Status  string // "passed" | "failed" | "blocked"
-	Reason  string // blocked scenarios: the YAML's reason
-	Report  Report // empty for blocked scenarios
+	Status  string // "passed" | "failed" | "blocked" | "not_run"
+	Reason  string // blocked scenarios: the YAML's reason; not_run: the setup instructions
+	Report  Report // empty for blocked and not_run scenarios
 	Stats   pipeline.Stats
 	// SessionStats is the sidecar session's self-report: the fences the
 	// decision/TTS layer ran against (stale, duplicated, rejected counts).
 	SessionStats session.Stats
 	Faults       []Fault
+	// Timeline is the merged event timeline, oldest first (report material:
+	// the on-disk HTML report correlates its events against the frames and
+	// the audio). Nil until the run's events are read.
+	Timeline []events.Envelope
+	// AudioByOccurrence maps a dialogue occurrence to the synthesized WAV
+	// bytes the TTS layer produced for it (empty when the scenario runs
+	// without TTS or nothing was spoken).
+	AudioByOccurrence map[string][]byte
+	// Fixture is the provenance for dolphin-origin scenarios: the fixture the
+	// frames came from and the slice the scenario replayed (nil otherwise).
+	Fixture *DolphinFixtureInfo
 }
 
 // Summary is the one-line report the runner test prints per scenario. It
@@ -112,6 +130,8 @@ func (r RunResult) Summary() string {
 	switch r.Status {
 	case "blocked":
 		return fmt.Sprintf("BLOCKED: %s: %s", label, r.Reason)
+	case "not_run":
+		return fmt.Sprintf("NOT RUN: %s: %s", label, r.Reason)
 	case "passed":
 		return fmt.Sprintf("PASS: %s (%d assertions, fault_injected: %s)", label, len(r.Report.Results), faultKinds(r.Faults))
 	default:
@@ -155,6 +175,10 @@ func failedDetails(r RunResult) string {
 
 // RunScenario runs one scenario end-to-end and evaluates its assertions.
 // repoRoot is the repository root: scenario input paths are relative to it.
+// The synthetic and captured/hardware shapes read their frames from the
+// checkout; dolphin-origin scenarios go through RunDolphinScenario (their
+// frames live in the external fixture dir and their profile ships with the
+// fixture).
 func RunScenario(ctx context.Context, repoRoot string, sc *Scenario) (RunResult, error) {
 	if sc.Status == StatusBlocked {
 		return RunResult{ID: sc.ID, Catalog: sc.Catalog, Status: "blocked", Reason: sc.Reason, Faults: sc.Faults}, nil
@@ -164,7 +188,15 @@ func RunScenario(ctx context.Context, repoRoot string, sc *Scenario) (RunResult,
 	}
 
 	framesDir := filepath.Join(repoRoot, sc.Input.FramesDir)
-	profile, err := LoadProfile(filepath.Join(repoRoot, "testdata", "synthetic", "profiles", sc.Profile+".json"))
+	profilePath := filepath.Join(repoRoot, "testdata", "synthetic", "profiles", sc.Profile+".json")
+	return runScenarioCore(ctx, repoRoot, sc, framesDir, profilePath)
+}
+
+// runScenarioCore is the shared execution: profile + truth + matcher from the
+// named paths, both harness layers over the frames in framesDir, and the
+// assertions against the merged timeline.
+func runScenarioCore(ctx context.Context, repoRoot string, sc *Scenario, framesDir, profilePath string) (RunResult, error) {
+	profile, err := LoadProfile(profilePath)
 	if err != nil {
 		return RunResult{}, fmt.Errorf("scenario %s: %w", sc.ID, err)
 	}
@@ -199,13 +231,15 @@ func RunScenario(ctx context.Context, repoRoot string, sc *Scenario) (RunResult,
 		status = "failed"
 	}
 	return RunResult{
-		ID:           sc.ID,
-		Catalog:      sc.Catalog,
-		Status:       status,
-		Report:       report,
-		Stats:        run.pipelineStats,
-		SessionStats: run.session.Stats(),
-		Faults:       sc.Faults,
+		ID:                sc.ID,
+		Catalog:           sc.Catalog,
+		Status:            status,
+		Report:            report,
+		Stats:             run.pipelineStats,
+		SessionStats:      run.session.Stats(),
+		Faults:            sc.Faults,
+		Timeline:          evs,
+		AudioByOccurrence: run.audio,
 	}, nil
 }
 
@@ -284,9 +318,10 @@ type run struct {
 	// sidecar state (guarded by mu)
 	mu       sync.Mutex
 	seq      int64
-	spoken   map[string]bool  // occurrence already sent to TTS
-	started  map[string]int64 // occurrence → generation of the live utterance
-	degraded map[string]bool  // role → degraded state last seen on the wire
+	spoken   map[string]bool   // occurrence already sent to TTS
+	started  map[string]int64  // occurrence → generation of the live utterance
+	degraded map[string]bool   // role → degraded state last seen on the wire
+	audio    map[string][]byte // occurrence → the synthesized WAV (report material)
 	decWG    sync.WaitGroup
 }
 
@@ -308,6 +343,7 @@ func newRun(sc *Scenario, repoRoot, framesDir string, profile *Profile, truth []
 		spoken:    map[string]bool{},
 		started:   map[string]int64{},
 		degraded:  map[string]bool{},
+		audio:     map[string][]byte{},
 	}
 }
 
@@ -753,6 +789,10 @@ func (r *run) speak(ctx context.Context, c commitInfo) {
 		r.applySpeech(ctx, c, session.SpeechFailed, providerErrorKind(err))
 		return
 	}
+	// Report material: the actual synthesized bytes, per occurrence.
+	r.mu.Lock()
+	r.audio[c.occurrence] = audio.WAV
+	r.mu.Unlock()
 	key := fmt.Sprintf("text=%s|voice=%s", fold(c.text), r.voice)
 	latency := int64(audio.Latency / time.Millisecond)
 	// One fresh header per lifecycle step: the messages share the occurrence

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 )
 
 // Origin values (docs/spec/12 "provenance"): where the frames and their labels
@@ -71,9 +72,23 @@ type Scenario struct {
 
 // Input names where the frames and their recording manifest live, as paths
 // relative to the repository root. Load does not resolve them; the test does.
+//
+// For origin dolphin the fixture lives EXTERNALLY (AGENTS.md rule 5: captured
+// frames of a commercial game are never committed): Fixture names the
+// recorder's fixture id under $GAME_NARRATOR_FIXTURE_DIR (default the
+// gitignored artifacts/fixtures/) and ManifestSHA256 is the SHA-256 of its
+// manifest.json — the reference by which a replay proves it is running the
+// recording the scenario was authored against. First/Last slice the replay to
+// a frame range (0-based, inclusive; absent = the whole fixture), so one
+// recording can back many scenarios. FramesDir/Timestamps stay the synthetic
+// shape; the loader enforces exactly one of the two input forms per origin.
 type Input struct {
-	FramesDir  string
-	Timestamps string
+	FramesDir      string
+	Timestamps     string
+	Fixture        string
+	ManifestSHA256 string
+	First          int
+	Last           int
 }
 
 // Inference names which model providers the scenario expects to take part.
@@ -212,13 +227,61 @@ func fromNode(root *ynode) (*Scenario, error) {
 	if !ok {
 		return nil, fmt.Errorf("line %d: input is required (a mapping)", line)
 	}
-	s.Input.FramesDir, line, ok = input.scalarStr("frames_dir")
-	if !ok || s.Input.FramesDir == "" {
-		return nil, fmt.Errorf("line %d: input.frames_dir is required (non-empty string)", line)
-	}
-	s.Input.Timestamps, line, ok = input.scalarStr("timestamps")
-	if !ok || s.Input.Timestamps == "" {
-		return nil, fmt.Errorf("line %d: input.timestamps is required (non-empty string)", line)
+	// Exactly one input form per origin: the synthetic/captured/hardware
+	// scenarios name a frames dir in the checkout; the dolphin scenarios name
+	// an external fixture by id + manifest hash (the frames are gitignored).
+	if s.Origin == OriginDolphin {
+		f, fl, fok := input.scalarStr("fixture")
+		if !fok || f == "" {
+			return nil, fmt.Errorf("line %d: origin %q requires input.fixture (the recorder's fixture id)", fl, OriginDolphin)
+		}
+		if strings.ContainsAny(f, `\/`) || f == "." || f == ".." {
+			return nil, fmt.Errorf("line %d: input.fixture %q is not a safe fixture id", fl, f)
+		}
+		s.Input.Fixture = f
+		m, ml, mok := input.scalarStr("manifest_sha256")
+		if !mok || !isHex64(m) {
+			return nil, fmt.Errorf("line %d: origin %q requires input.manifest_sha256 (64 hex chars, the SHA-256 of the fixture's manifest.json)", ml, OriginDolphin)
+		}
+		s.Input.ManifestSHA256 = m
+		first, fl1, fok1 := input.scalarInt("first")
+		if fok1 {
+			if first < 0 {
+				return nil, fmt.Errorf("line %d: input.first must be a non-negative frame index", fl1)
+			}
+			s.Input.First = first
+		}
+		last, fl2, fok2 := input.scalarInt("last")
+		if fok2 {
+			if last < 0 {
+				return nil, fmt.Errorf("line %d: input.last must be a non-negative frame index", fl2)
+			}
+			s.Input.Last = last
+		}
+		if s.Input.Last != 0 && s.Input.First > s.Input.Last {
+			l, _ := input.child("first")
+			return nil, fmt.Errorf("line %d: input.first (%d) is after input.last (%d)", l.line, s.Input.First, s.Input.Last)
+		}
+		if input.hasKey("frames_dir") || input.hasKey("timestamps") {
+			l, _ := input.child("frames_dir")
+			if !input.hasKey("frames_dir") {
+				l, _ = input.child("timestamps")
+			}
+			return nil, fmt.Errorf("line %d: origin %q takes input.fixture, not input.frames_dir/timestamps", l.line, OriginDolphin)
+		}
+	} else {
+		if input.hasKey("fixture") || input.hasKey("manifest_sha256") || input.hasKey("first") || input.hasKey("last") {
+			l, _ := input.child("fixture")
+			return nil, fmt.Errorf("line %d: input.fixture/manifest_sha256/first/last are only allowed for origin %q", l.line, OriginDolphin)
+		}
+		s.Input.FramesDir, line, ok = input.scalarStr("frames_dir")
+		if !ok || s.Input.FramesDir == "" {
+			return nil, fmt.Errorf("line %d: input.frames_dir is required (non-empty string)", line)
+		}
+		s.Input.Timestamps, line, ok = input.scalarStr("timestamps")
+		if !ok || s.Input.Timestamps == "" {
+			return nil, fmt.Errorf("line %d: input.timestamps is required (non-empty string)", line)
+		}
 	}
 
 	inf, line, ok := inNode(root, "inference")
@@ -254,13 +317,21 @@ func fromNode(root *ynode) (*Scenario, error) {
 		return nil, fmt.Errorf("line %d: status %q requires a reason", l.line, StatusBlocked)
 	}
 
-	// faults: the M7 injection block. Synthetic scenarios only — a captured,
-	// dolphin or hardware scenario naming faults would present an injected
-	// adversity as a property of the real source, and the loader refuses the
-	// combination instead of carrying the lie into a report.
-	if items, line, ok := root.listAt("faults"); ok {
+	// faults: the M7 injection block. Provider faults are synthetic scenarios
+	// only — a captured, dolphin or hardware scenario naming them would present
+	// an injected adversity as a property of the real source. drop_frames is
+	// the exception: it withholds frames from the REPLAY stream (a harness
+	// knob the docs/spec/12 failure-injection gate applies to any origin), the
+	// recording itself is untouched, so a dolphin-origin scenario may carry it
+	// to exercise the fences on captured frames.
+	if items, _, ok := root.listAt("faults"); ok {
 		if s.Origin != OriginGeneratedSynthetic {
-			return nil, fmt.Errorf("line %d: faults are only allowed for origin %q (got %q)", line, OriginGeneratedSynthetic, s.Origin)
+			for _, item := range items {
+				kind, l, _ := item.scalarStr("kind")
+				if kind != "drop_frames" {
+					return nil, fmt.Errorf("line %d: fault kind %q is only allowed for origin %q (got %q); drop_frames is the replay-side exception", l, kind, OriginGeneratedSynthetic, s.Origin)
+				}
+			}
 		}
 		var ferr error
 		s.Faults, ferr = parseFaults(items)
@@ -296,6 +367,20 @@ var topLevelKeys = map[string]bool{
 	// Carried by the spec's own example; accepted and ignored until a milestone
 	// consumes it.
 	"reports": true,
+}
+
+// isHex64 reports whether s is 64 lowercase hex chars (a SHA-256 as the
+// recorder and the replay side both render it).
+func isHex64(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // inNode returns the value of a key that must be a mapping.

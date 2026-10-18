@@ -1,0 +1,59 @@
+# dolphin/subtitle-dropped-frames — The fault-injection variant of the
+# subtitle span: the replay withholds exactly one TEXT-LESS frame (the
+# cutscene frame at capture 1792304626528 ms, window 1792304626000..1792304627000
+# ms holds only it). Recognition is unaffected — subtitle one still commits
+# and the fade advance still cancels its audio, exactly the no-fault shape —
+# and the fault is counted exactly once. M6 task list: 'A frame-dropped
+# variant of the subtitle clip (fault injection at replay)'.
+#
+# Origin: CAPTURED (real Dolphin, windwaker-newgame fixture, AGENTS.md rule
+# 5 — the fixture lives under gitignored artifacts/fixtures/ and is
+# referenced here by id + manifest SHA-256 only; no frame or game text is
+# stored in this file). Replay runs the real recognition/runtime path
+# (dolphin-emulator source) at the 2.2 s capture cadence; decision + tts are
+# RECORDED inference replayed through the fake provider gateways (recorded
+# profile oracle / recorded voice), never live.
+schema_version: 1
+id: dolphin/subtitle-dropped-frames
+origin: dolphin
+profile: windwaker-newgame
+mode: frame_replay
+input:
+  fixture: windwaker-newgame
+  manifest_sha256: 8bad2ce69b1afbc2fa8623f0315546a0cd261502c06b01f24d150ecc8a167c2a
+  first: 19
+  last: 24
+inference:
+  decision: recorded
+  tts: recorded
+  voice: dolphin-legend-narrator
+faults:
+  - kind: drop_frames
+    from_ms: 1792304626000
+    to_ms: 1792304627000
+assertions:
+  - type: fault_count
+    kind: drop_frames
+    count: 1
+  # The withheld frame is text-less: recognition is the no-fault shape.
+  - type: message_detected
+    message_id: ww-legend-01
+    max_delay_ms: 10000
+  - type: message_committed_count
+    message_id: ww-legend-01
+    count: 1
+  - type: message_committed_count
+    message_id: ww-legend-02
+    count: 0
+  # The fade advance still vanishes the region and cancels the in-flight
+  # speech, exactly once (same as the no-fault clip).
+  - type: speech_cancelled
+    reason: region_vanished
+    count: 1
+  - type: no_duplicate_speech
+    message_id: ww-legend-01
+  - type: no_stale_speech
+    message_id: ww-legend-01
+  - type: no_duplicate_commit
+  - type: no_stale_generation_applied
+

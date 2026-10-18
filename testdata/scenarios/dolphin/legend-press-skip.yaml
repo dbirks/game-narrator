@@ -1,0 +1,26 @@
+# dolphin/legend-press-skip — BLOCKED — M6 task list: 'The legend advancing to the next subtitle (rapid advance — press pacing)'. A press-paced advance (A mid-subtitle) is not in the recorded drive: the measured drive is wait-only (ADR-0043 — a press may skip a subtitle, which corrupts the timing oracle), and the fixture ends mid subtitle two.
+#
+# Origin: CAPTURED (real Dolphin, windwaker-newgame fixture, AGENTS.md rule
+# 5 — the fixture lives under gitignored artifacts/fixtures/ and is
+# referenced here by id + manifest SHA-256 only; no frame or game text is
+# stored in this file). Replay runs the real recognition/runtime path
+# (dolphin-emulator source) at the 2.2 s capture cadence; decision + tts are
+# RECORDED inference replayed through the fake provider gateways (recorded
+# profile oracle / recorded voice), never live.
+schema_version: 1
+id: dolphin/legend-press-skip
+origin: dolphin
+profile: windwaker-newgame
+mode: frame_replay
+input:
+  fixture: windwaker-newgame
+  manifest_sha256: 8bad2ce69b1afbc2fa8623f0315546a0cd261502c06b01f24d150ecc8a167c2a
+  first: 20
+  last: 24
+inference:
+  decision: recorded
+  tts: recorded
+  voice: dolphin-legend-narrator
+status: blocked
+reason: "unreachable today: a press-paced legend advance needs a calibrated press cadence (a mistimed A skips a subtitle and corrupts the subtitle-timing oracle the drive deliberately avoided, ADR-0043); the recorded drive is wait-only and the fixture ends mid subtitle two. Unblock: add a press-pace drive option with measured per-subtitle press intervals (calibrate on a savestate at the legend start) and re-record the fixture."
+

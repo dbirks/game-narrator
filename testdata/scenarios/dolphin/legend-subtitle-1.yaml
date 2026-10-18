@@ -1,0 +1,54 @@
+# dolphin/legend-subtitle-1 — Subtitle one: fade-in and hold across three stable frames (the oracle's first full subtitle run), then the fade-out frame. M6 task list: 'The first legend subtitle (fade-in / hold / fade-out)'.
+#
+# Origin: CAPTURED (real Dolphin, windwaker-newgame fixture, AGENTS.md rule
+# 5 — the fixture lives under gitignored artifacts/fixtures/ and is
+# referenced here by id + manifest SHA-256 only; no frame or game text is
+# stored in this file). Replay runs the real recognition/runtime path
+# (dolphin-emulator source) at the 2.2 s capture cadence; decision + tts are
+# RECORDED inference replayed through the fake provider gateways (recorded
+# profile oracle / recorded voice), never live.
+schema_version: 1
+id: dolphin/legend-subtitle-1
+origin: dolphin
+profile: windwaker-newgame
+mode: frame_replay
+input:
+  fixture: windwaker-newgame
+  manifest_sha256: 8bad2ce69b1afbc2fa8623f0315546a0cd261502c06b01f24d150ecc8a167c2a
+  first: 20
+  last: 23
+inference:
+  decision: recorded
+  tts: recorded
+  voice: dolphin-legend-narrator
+assertions:
+  # The line is detected and committed within 10 s (capture clock) of the
+  # first truth frame that shows the full line.
+  - type: message_detected
+    message_id: ww-legend-01
+    max_delay_ms: 10000
+  # Exactly one commitment for the three repeated observations.
+  - type: message_committed_count
+    message_id: ww-legend-01
+    count: 1
+  # The real decision chain, in order: commit, ask, resolve, speak.
+  - type: events_order
+    names:
+      - message.committed
+      - decision.requested
+      - decision.resolved
+      - speech.started
+  # One speech per occurrence; a cancelled or never-started line may not
+  # complete, and the one that started must end cleanly (not stale).
+  - type: no_duplicate_speech
+    message_id: ww-legend-01
+  - type: no_stale_speech
+    message_id: ww-legend-01
+  - type: no_duplicate_commit
+  # Nothing but the two legend lines may ever be named.
+  - type: committed_only
+    names:
+      - ww-legend-01
+      - ww-legend-02
+  - type: no_stale_generation_applied
+

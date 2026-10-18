@@ -156,15 +156,25 @@ test-ui:
 	pnpm --dir web test:e2e
 
 ## test-dolphin: the docs/spec/12 "Dolphin emulator mode" gate — the real
-## Dolphin tests (real_test.go, drive_test.go) boot a real Dolphin against
-## the user-supplied game image; never labelled as unit coverage. Requires
-## GAME_NARRATOR_GAME_IMAGE_PATH plus dolphin-emu, Xvfb, ffmpeg and
-## x11-utils on PATH; without them the tests report NOT RUN (exit 2).
-## -p 1: one Dolphin at a time; the boot-to-first-dialogue drive takes
-## minutes, hence the 20-minute timeout.
+## Dolphin tests (real_test.go, drive_test.go, record_real_test.go) boot a
+## real Dolphin against the user-supplied game image; the recorder test
+## (TestRealRecordFixture) drives the new-game flow through the fixture
+## recorder and lands the replayable fixture under $GAME_NARRATOR_FIXTURE_DIR
+## (default artifacts/fixtures/, gitignored — AGENTS.md rule 5). The second
+## phase replays the committed dolphin scenarios (testdata/scenarios/dolphin)
+## through the real recognition/runtime path and writes the HTML report to
+## artifacts/scenarios/<run-id>/index.html. Never labelled as unit coverage.
+## Requires GAME_NARRATOR_GAME_IMAGE_PATH plus dolphin-emu, Xvfb, ffmpeg,
+## x11-utils and tesseract on PATH; without them the tests report NOT RUN
+## (exit 2). -p 1: one Dolphin at a time; the boot-to-first-dialogue drive
+## and its re-record take minutes, hence the 45-minute timeout.
 test-dolphin:
-	@scripts/gates/run-go-gate.sh test-dolphin -count=1 -p 1 -timeout 20m -run Real ./internal/dolphin/... ; \
-	rc=$$?; echo $$rc > artifacts/gates/test-dolphin.rc ; exit $$rc
+	@scripts/gates/run-go-gate.sh test-dolphin -count=1 -p 1 -timeout 45m -run Real ./internal/dolphin/... ; \
+	rc1=$$?; \
+	scripts/gates/run-go-gate.sh test-dolphin-scenarios -count=1 -timeout 30m -run TestDolphinScenarios ./internal/scenario/... ; \
+	rc2=$$?; \
+	if [ $$rc1 -eq 1 ] || [ $$rc2 -eq 1 ]; then rc=1; elif [ $$rc1 -eq 2 ] || [ $$rc2 -eq 2 ]; then rc=2; else rc=0; fi; \
+	echo $$rc > artifacts/gates/test-dolphin.rc ; exit $$rc
 
 ## test-models: the live provider contract gate (docs/spec/12 "provider
 ## schema — recorded every PR, live conditional") — the -run Live tests in
