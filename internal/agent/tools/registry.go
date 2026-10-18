@@ -121,8 +121,17 @@ func DefaultTools(d Deps) (*agent.Registry, error) {
 			Handler:    d.sourceQuality,
 		},
 		{
+			Name:        "stage_character",
+			Description: "Stage a researched character into the DRAFT roster: name, optional role and a short researched personality summary, plus the source_ids (registered on this profile) that evidence it. The character enters as proposed with those sources as verified refs; with no script lines yet, analyze_character grounds the brief in this staging (ADR-0046). Re-staging the same name updates the row.",
+			InputSchema: stageCharacterSchema,
+			MinRole:     auth.RoleCurator,
+			Budget:      agent.Budget{MaxCallsPerRun: 8, Timeout: 30 * time.Second},
+			SideEffect:  agent.SideEffectDraft,
+			Handler:     d.stageCharacter,
+		},
+		{
 			Name:        "analyze_character",
-			Description: "Produce an editable voice_brief JSON for a character from CITED LINES ONLY (the character's extracted messages). Every creative field is labelled creative:true; cited lines are the verified evidence. No lore is invented as fact.",
+			Description: "Produce an editable voice_brief JSON for a character from CITED LINES ONLY (the character's extracted messages); when the character has no lines but carries source grounding from stage_character, the brief is built from the researched character facts with the sources named (ADR-0046). Every creative field is labelled creative:true; the evidence is the cited lines or the staged sources.",
 			InputSchema: analyzeCharacterSchema,
 			MinRole:     auth.RoleViewer,
 			Budget:      agent.Budget{MaxCallsPerRun: 6, Timeout: 90 * time.Second},

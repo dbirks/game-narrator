@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/auth"
@@ -346,7 +347,22 @@ func IsProviderUnavailable(err error) bool {
 		if pe.Kind.RetryableByDefault() {
 			return true
 		}
-		return pe.Kind == providers.KindUnsupportedCapability && pe.Status == 0
+		if pe.Kind == providers.KindUnsupportedCapability {
+			if pe.Status == 0 {
+				return true
+			}
+			// A 404 whose body names a model that is "not currently available"
+			// is a transient serving condition, not a capability gap: the
+			// collective gateway (observed 2026-10-18) answers 404
+			// not_found_error while the configured model's replica is absent,
+			// and the same model id succeeds moments later. The run is not at
+			// fault, so the degraded mode applies: blocked + resumable, and the
+			// resume retries the exact same round-trip. The taxonomy-level fix
+			// (classifying that 404 at the wire) is a providers follow-up.
+			return pe.Status == 404 &&
+				strings.Contains(strings.ToLower(pe.Error()), "not currently available")
+		}
+		return false
 	}
 	// An unclassified error from the wire is treated as permanent: an
 	// unknown fault that the taxonomy cannot name is not the outage this

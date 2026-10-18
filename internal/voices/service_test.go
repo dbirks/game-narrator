@@ -26,10 +26,11 @@ import (
 // per (kind, voice, text) so the cache-hit assertions are exact, and the
 // counters are the evidence that a hit made no provider call.
 type fakeTTS struct {
-	mu          sync.Mutex
-	designCalls int
-	baseCalls   int
-	failBase    bool
+	mu                     sync.Mutex
+	designCalls            int
+	baseCalls              int
+	failBase               bool
+	lastDesignInstructions string
 }
 
 func newFakeTTS() *fakeTTS { return &fakeTTS{} }
@@ -38,6 +39,7 @@ func (f *fakeTTS) Design(_ context.Context, req tts.DesignRequest) (tts.Audio, e
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.designCalls++
+	f.lastDesignInstructions = req.Instructions
 	wav := wavTone(180+float64(f.designCalls)*40, 1)
 	return tts.Audio{
 		WAV: wav, SampleRate: 24000, Channels: 1, BitsPerSample: 16,

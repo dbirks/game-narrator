@@ -64,6 +64,12 @@ type Service struct {
 	BackendDigest string
 	// Language is the design/preview language code; empty means server default.
 	Language string
+	// InstructionCap is the ceiling (in runes) the VoiceDesign instruction
+	// derived from a brief may reach before it is sent to the design
+	// checkpoint (ADR-0050). The live gateway caps the instructions field
+	// at 500 characters; <= 0 uses DesignInstructionCap, so a struct-literal
+	// Service behaves like one built with defaults.
+	InstructionCap int
 }
 
 // New validates the wiring.
@@ -165,8 +171,12 @@ func (s *Service) CreateAuditionsOnDraft(ctx context.Context, profileID string) 
 // Each clip is validated by the client, committed to the asset store, and
 // recorded with its provenance (model, origin, latency, seed). n is capped at
 // the number of synthetic lines: more candidates than lines would repeat a
-// line and the UI would show the same text twice.
+// line and the UI would show the same text twice. The audition rows record
+// the FULL brief (Brief: rev.DesignInstruction); only the payload sent to
+// the design checkpoint carries the derived, capped instruction — the live
+// gateway rejects instructions longer than its 500-character cap (ADR-0050).
 func (s *Service) fillDraft(ctx context.Context, rev store.VoiceProfile, n int) ([]store.VoiceAudition, error) {
+	instruction := DesignInstruction(rev.DesignInstruction, s.InstructionCap)
 	var (
 		auditions []store.VoiceAudition
 		ids       []string
@@ -174,7 +184,7 @@ func (s *Service) fillDraft(ctx context.Context, rev store.VoiceProfile, n int) 
 	)
 	for i, line := range SyntheticAuditionLines[:n] {
 		audio, err := s.Design.Design(ctx, tts.DesignRequest{
-			Text: line, Instructions: rev.DesignInstruction, Language: s.Language,
+			Text: line, Instructions: instruction, Language: s.Language,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("voices: audition %d for %s: %w", i+1, rev.Character, err)
