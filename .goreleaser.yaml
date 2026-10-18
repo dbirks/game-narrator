@@ -1,9 +1,18 @@
 # Game Narrator GoReleaser pipeline (docs/spec/15).
-# v2 schema; validate with `goreleaser check`. No publishing is enabled —
-# see docs/release.md and ADR 0033.
+# v2 schema; validate with `goreleaser check`. Publishing is gated for the
+# GitHub Actions publish pipeline only — see docs/release.md, ADR 0033 and
+# ADR 0048.
 version: 2
 
 project_name: game-narrator
+
+# Snapshot version naming. Lowercase "snapshot" on purpose: docker image tags
+# must match [a-z0-9._-] (the default template's "SNAPSHOT" would be an
+# invalid docker tag once dockers_v2 builds the local snapshot images; see
+# ADR 0048). smoke.sh recovers the version from the artifact names, so the
+# whole pipeline stays consistent with any template.
+snapshot:
+  version_template: "{{ .Version }}-snapshot-{{ .ShortCommit }}"
 
 builds:
   - id: game-narrator
@@ -91,14 +100,36 @@ dockers_v2:
       org.opencontainers.image.source: https://github.com/dbirks/game-narrator
       org.opencontainers.image.licenses: UNLICENSED
 
-# --- No publishing by default (user has not approved a publish target yet) --
-# Snapshot runs never publish anyway; this additionally blocks tagged
-# `goreleaser release` (GitHub Releases & co.) until explicitly enabled in a
-# reviewed change plus user approval (docs/release.md). Keyless cosign signing
-# is documented there but NOT enabled.
+# --- Keyless cosign signing of pushed OCI images (ADR 0048) -----------------
+# docker_signs runs only in the publish phase, i.e. for non-snapshot runs that
+# actually push (dockers_v2 pushes only when GN_DOCKER_REPO is set). Local
+# snapshot runs therefore never sign or push anything. No keys in this file:
+# the default cosign command is overridden WITHOUT --key, so `cosign sign`
+# does keyless Sigstore signing with the GitHub Actions OIDC identity
+# (permissions: id-token: write in .github/workflows/publish.yml).
+# `artifacts: all` signs both the per-arch images and the multi-arch manifest
+# with a tag matching the image tag.
+docker_signs:
+  - id: game-narrator
+    cmd: cosign
+    artifacts: all
+    args:
+      - sign
+      - --yes
+      - "${artifact}@${digest}"
+
+# --- Publishing gates (docs/release.md, ADR 0048 — approved 2026-10-17) ----
+# Snapshot runs imply --skip=announce,publish,validate (goreleaser 2.14), so
+# `make release-snapshot` can never create a Release or push images, no
+# matter what these templates evaluate to. The templates additionally gate
+# the non-snapshot path: a local `goreleaser release` without CI env vars
+# still cannot publish (GITHUB_ACTIONS unset => release disabled), while the
+# GitHub Actions publish pipeline (publish.yml, tags v*) creates the GitHub
+# Release — as a prerelease for v0.* tags.
 release:
-  disable: true
-  draft: true
+  disable: "{{ if not (isEnvSet \"GITHUB_ACTIONS\") }}true{{ end }}"
+  draft: false
+  prerelease: "{{ if hasPrefix .Tag \"v0.\" }}enable{{ else }}disable{{ end }}"
 
 # Debian package for UNO Q (docs/spec/10 "UNO Q software deployment", ADR 0006).
 # .rpm is intentionally omitted: there is no install-smoke environment for it

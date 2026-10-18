@@ -27,13 +27,18 @@ DIST_DIR="${GN_SCAN_DIST:-dist}"
 
 # Docker group handling: group membership is per-login session. If this
 # session lacks the docker group but the user is a member, re-exec the whole
-# script under it so every docker call below is a plain `docker`.
+# script under it so every docker call below is a plain `docker`. Prefer sg
+# (it preserves the full environment); fall back to newgrp where sg is not
+# installed.
 if [ -z "${GN_SMOKE_IN_DOCKER_GROUP:-}" ] \
-   && ! docker info >/dev/null 2>&1 \
-   && command -v newgrp >/dev/null 2>&1 \
-   && newgrp docker -c 'docker info' >/dev/null 2>&1; then
-  export GN_SMOKE_IN_DOCKER_GROUP=1
-  exec newgrp docker -c "exec $0"
+   && ! docker info >/dev/null 2>&1; then
+  if command -v sg >/dev/null 2>&1 && sg docker -c 'docker info' >/dev/null 2>&1; then
+    export GN_SMOKE_IN_DOCKER_GROUP=1
+    exec sg docker -c "exec $0"
+  elif command -v newgrp >/dev/null 2>&1 && newgrp docker -c 'docker info' >/dev/null 2>&1; then
+    export GN_SMOKE_IN_DOCKER_GROUP=1
+    exec newgrp docker -c "exec $0"
+  fi
 fi
 
 [ -d "$DIST_DIR" ] || { echo "smoke: no $DIST_DIR — run goreleaser release --snapshot first" >&2; exit 2; }
@@ -91,8 +96,24 @@ trap 'rm -rf "$WORK"' EXIT
 # ---------------------------------------------------------------------------
 step "artifact scanner"
 if have_docker; then
-  GN_SCAN_IMAGE="game-narrator:$TAG-amd64 game-narrator:$TAG-arm64" \
+  # Only hand the scanner images the build stage actually produced (per-arch
+  # local images in snapshot mode). If none exist — e.g. the build ran
+  # without docker — scanning them would die on "No such image" without
+  # saying anything about artifact contents: report NOT RUN instead.
+  SCAN_IMAGES=""
+  for ref in "game-narrator:$TAG-amd64" "game-narrator:$TAG-arm64"; do
+    if d image inspect "$ref" >/dev/null 2>&1; then
+      SCAN_IMAGES="$SCAN_IMAGES $ref"
+    else
+      skip "image layer scan of $ref (image not built locally)"
+    fi
+  done
+  if [ -n "$SCAN_IMAGES" ]; then
+    GN_SCAN_IMAGE="$SCAN_IMAGES" ./scripts/release/scan-artifacts.sh
+  else
+    skip "artifact scanner image layer scan (no local images; dockers_v2 disabled or build without docker)"
     ./scripts/release/scan-artifacts.sh
+  fi
 else
   skip "artifact scanner image layer scan (docker unavailable); running file scans only"
   ./scripts/release/scan-artifacts.sh

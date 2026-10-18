@@ -7,6 +7,25 @@
 #   1. files matching game/voice/private name patterns, or
 #   2. content matching secret/topology patterns.
 #
+# Home-path rule: a bare "/home/" substring is NOT sufficient (the support
+# bundle's redactor legitimately carries the literal "/home/" inside its own
+# regex source, and so would any shipped scanner pattern). The rule is
+# "/home/" + a plausible username + a path separator, i.e. an absolute home
+# path of a real user leaked into an artifact.
+#
+# Modes: run plain (default) or with --self-test, which builds a planted
+# /home/<user> fixture (must fail) and a redactor-pattern fixture (must
+# pass) in a temp dir and asserts both outcomes.
+# Image scan: when docker is not usable, image layers are skipped with an
+# explicit "NOT RUN: image scan (docker unavailable)" — never a failure. An
+# image ref that does not exist locally is likewise NOT RUN (the build stage
+# owns building; a missing image says nothing about artifact contents).
+# Group membership is per-login session: if GN_SCAN_IMAGE is set but the
+# session lacks the docker group (the user may still be a member), the
+# scanner re-execs itself under the group (sg, or newgrp where sg is absent)
+# so every docker call below is a plain `docker` — the same pattern
+# smoke.sh uses.
+#
 # Environment (all optional; none of them is ever written into the repo):
 #   GN_SCAN_DIST    artifacts directory (default: dist)
 #   GN_SCAN_IMAGE   space-separated docker image refs to scan (default: none —
@@ -22,16 +41,68 @@
 # must use that exact placeholder — other values fail the build deliberately
 # (conservative: an unknown value could be a real token).
 #
-# Exit codes: 0 clean, 1 contamination found, 2 usage/environment error.
+# Exit codes: 0 clean, 1 contamination found (or self-test assertion failed),
+#         2 usage/environment error.
 set -euo pipefail
-
-DIST_DIR="${GN_SCAN_DIST:-dist}"
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/gn-scan.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
 failures=0
 note()  { printf 'scan: %s\n' "$*"; }
 fail()  { printf 'SCAN FAIL: %s\n' "$*"; failures=1; }
+
+# ---------------------------------------------------------------------------
+# --self-test: build both fixtures in a temp dir and assert pass/fail.
+#   bad:  a tarball with a planted /home/someuser/x (binary-aware content)
+#         -> the scan MUST fail (the rule still catches real leaks).
+#   good: a tarball containing the support-bundle redactor's home-path regex
+#         source, which contains a bare "/home/" -> the scan MUST pass
+#         (no false positive on the redactor's own pattern).
+# ---------------------------------------------------------------------------
+if [ "${1:-}" = "--self-test" ]; then
+  WORK="$(mktemp -d "${TMPDIR:-/tmp}/gn-scan-selftest.XXXXXX")"
+  trap 'rm -rf "$WORK"' EXIT
+
+  note 'self-test: building fixtures in a temp dir'
+  mkdir -p "$WORK/bad" "$WORK/good"
+  # Planted real home path, embedded in a binary file (NUL bytes) to prove
+  # the check is binary-aware (grep -a).
+  { printf 'lead\0\0'; printf '/home/someuser/x'; printf '\0trail\n'; } > "$WORK/bad/planted"
+  # The exact regex source the support-bundle redactor compiles in
+  # (internal/support/redact.go: homePathPattern). It contains "/home/" but
+  # not a real home path: after "/home/" comes "(", not a username.
+  printf '%s\n' '(?i)/home/([a-z0-9][a-z0-9._-]*)((?:/[^ ]*)?)' > "$WORK/good/redactor-pattern"
+  mkdir -p "$WORK/dist-bad" "$WORK/dist-good"
+  tar -C "$WORK" -czf "$WORK/dist-bad/fixture.tar.gz" bad
+  tar -C "$WORK" -czf "$WORK/dist-good/fixture.tar.gz" good
+
+  st=0
+  note 'self-test 1/2: planted /home/someuser/x must FAIL the scan'
+  if GN_SCAN_DIST="$WORK/dist-bad" GN_SCAN_IMAGE= "$SELF"; then
+    echo 'SELF-TEST FAIL: scan passed on the planted /home/someuser/x fixture (must fail)' >&2
+    st=1
+  else
+    note 'self-test 1/2: OK — planted home path caught'
+  fi
+
+  note 'self-test 2/2: redactor /home/ regex source must PASS the scan'
+  if GN_SCAN_DIST="$WORK/dist-good" GN_SCAN_IMAGE= "$SELF"; then
+    note 'self-test 2/2: OK — redactor pattern not flagged'
+  else
+    echo 'SELF-TEST FAIL: scan failed on the redactor-pattern fixture (false positive)' >&2
+    st=1
+  fi
+
+  if [ "$st" -eq 0 ]; then
+    note 'self-test PASS — planted home paths are caught, the redactor pattern is not flagged'
+    exit 0
+  fi
+  note 'self-test FAIL — see above' >&2
+  exit 1
+fi
+
+DIST_DIR="${GN_SCAN_DIST:-dist}"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/gn-scan.XXXXXX")"
+trap 'rm -rf "$WORK"' EXIT
 
 if [ ! -d "$DIST_DIR" ]; then
   echo "scan: no $DIST_DIR directory (GN_SCAN_DIST=$DIST_DIR)" >&2
@@ -69,23 +140,39 @@ check_tree() {
 }
 
 # ---------------------------------------------------------------------------
-# 2. Content patterns. Fixed-string, binary-aware. /home/ absolute paths leak
-#    developer-host topology; the gateway hostname (when provided via env)
-#    is private infrastructure; a gateway token value (when a prefix is
-#    provided via env) is a credential. The env variable NAME
-#    GAME_NARRATOR_GATEWAY_TOKEN is documented and may appear, but a real
-#    value must not.
+# 2. Content patterns (fixed-string and ERE), binary-aware via grep -a.
+#    Home-path absolute paths leak developer-host topology; the gateway
+#    hostname (when provided via env) is private infrastructure; a gateway
+#    token value (when a prefix is provided via env) is a credential. The
+#    env variable NAME GAME_NARRATOR_GATEWAY_TOKEN is documented and may
+#    appear, but a real value must not.
 # ---------------------------------------------------------------------------
-CONTENT_STRINGS=('/home/')
+# Fixed-string patterns (matched with grep -F; env-provided values must stay
+# literal — they may contain regex metacharacters).
+CONTENT_STRINGS=()
 [ -n "${GN_GATEWAY_HOSTNAME:-}" ] && CONTENT_STRINGS+=("$GN_GATEWAY_HOSTNAME")
 [ -n "${GN_GATEWAY_TOKEN_PREFIX:-}" ] && CONTENT_STRINGS+=("$GN_GATEWAY_TOKEN_PREFIX")
+
+# ERE patterns (matched with grep -E, binary-aware via -a). The home-path
+# rule: "/home/" + a plausible username (1..32 chars, lowercase start) + a
+# path separator. Catches /home/someuser/x; deliberately does NOT match a
+# bare "/home/" such as the redactor's own regex source or distribution
+# files like /usr/sbin/update-passwd.
+CONTENT_REGEXES=('/home/[a-z_][a-z0-9_.-]{0,31}/')
 
 check_content() {
   # $1 = extracted artifact root; $2 = artifact label
   local root="$1" label="$2" pat
-  for pat in "${CONTENT_STRINGS[@]}"; do
+  for pat in ${CONTENT_STRINGS[@]+"${CONTENT_STRINGS[@]}"}; do
     while IFS= read -r -d '' f; do
       if grep -aqF -- "$pat" "$f"; then
+        fail "$label: content pattern '$pat' in $f"
+      fi
+    done < <(find "$root" -type f -print0)
+  done
+  for pat in "${CONTENT_REGEXES[@]}"; do
+    while IFS= read -r -d '' f; do
+      if grep -aqE -- "$pat" "$f"; then
         fail "$label: content pattern '$pat' in $f"
       fi
     done < <(find "$root" -type f -print0)
@@ -167,8 +254,13 @@ scan_image_owned() {
     note "image-owned binary: $f"
     # content check on the binary itself
     local pat
-    for pat in "${CONTENT_STRINGS[@]}"; do
+    for pat in ${CONTENT_STRINGS[@]+"${CONTENT_STRINGS[@]}"}; do
       if grep -aqF -- "$pat" "$f"; then
+        fail "$label: content pattern '$pat' in owned image file $f"
+      fi
+    done
+    for pat in "${CONTENT_REGEXES[@]}"; do
+      if grep -aqE -- "$pat" "$f"; then
         fail "$label: content pattern '$pat' in owned image file $f"
       fi
     done
@@ -182,6 +274,26 @@ scan_image_owned() {
   done < <(find "$dest" -type f -print0)
   [ "$owned" -eq 1 ] || fail "$label: no owned game-narrator binary found in image layers (layer extraction broken?)"
 }
+
+# ---------------------------------------------------------------------------
+# Docker availability. Plain `docker info` first; if the session lacks the
+# docker group while the user is a member, re-exec the whole scanner under
+# the group when an image scan was requested (sg, or newgrp where sg is not
+# installed). After the re-exec every docker call below is plain `docker`.
+# ---------------------------------------------------------------------------
+have_docker() { docker info >/dev/null 2>&1; }
+
+if [ -n "${GN_SCAN_IMAGE:-}" ] \
+   && [ -z "${GN_SCAN_IN_DOCKER_GROUP:-}" ] \
+   && ! have_docker; then
+  if command -v sg >/dev/null 2>&1 && sg docker -c 'docker info' >/dev/null 2>&1; then
+    export GN_SCAN_IN_DOCKER_GROUP=1
+    exec sg docker -c "exec $0 $*"
+  elif command -v newgrp >/dev/null 2>&1 && newgrp docker -c 'docker info' >/dev/null 2>&1; then
+    export GN_SCAN_IN_DOCKER_GROUP=1
+    exec newgrp docker -c "exec $0 $*"
+  fi
+fi
 
 # ---------------------------------------------------------------------------
 # Run the scan over every artifact.
@@ -208,15 +320,25 @@ for pkg in "$DIST_DIR"/*.deb; do
 done
 
 if [ -n "${GN_SCAN_IMAGE:-}" ]; then
-  for ref in $GN_SCAN_IMAGE; do
-    label="$ref"
-    dest="$WORK/img-$(echo "$ref" | tr '/:@' '___')"
-    if ! extract_image "$ref" "$dest"; then
-      fail "$label: cannot save/extract image (docker unavailable?)"
-      continue
-    fi
-    scan_image_owned "$dest" "$label"
-  done
+  if ! have_docker; then
+    # Unusable docker is NOT a scan failure: the build stage decided not to
+    # (or could not) build images, and artifact files are still scanned.
+    note "NOT RUN: image scan (docker unavailable)"
+  else
+    for ref in $GN_SCAN_IMAGE; do
+      label="$ref"
+      if ! docker image inspect "$ref" >/dev/null 2>&1; then
+        note "NOT RUN: image scan $ref (image not built locally)"
+        continue
+      fi
+      dest="$WORK/img-$(echo "$ref" | tr '/:@' '___')"
+      if ! extract_image "$ref" "$dest"; then
+        fail "$label: cannot save/extract image"
+        continue
+      fi
+      scan_image_owned "$dest" "$label"
+    done
+  fi
 else
   note "GN_SCAN_IMAGE not set: skipping docker image layer scan"
 fi

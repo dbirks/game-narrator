@@ -7,14 +7,21 @@ AGENTS.md rules 5 and 12.
 
 ## Hard rules
 
-- **Never publish without explicit user approval.** `release.disable: true`
-  is committed in `.goreleaser.yaml`; flipping it is a reviewed change plus
-  user sign-off. Snapshot runs never publish regardless.
+- **Publishing is approved and limited to the GitHub Actions pipeline**
+  (user approval 2026-10-17; ADR 0048). `.github/workflows/publish.yml`
+  publishes `edge` images from `main` (after CI) and `v*` tags (prerelease
+  for `v0.*`), using the repo's `GITHUB_TOKEN` as the only credential and
+  cosign **keyless** (Sigstore identity bound to publish.yml — no keys in
+  the repo). Local `goreleaser` runs never publish: snapshot runs skip
+  publishing by design, and `release.disable` is a template that evaluates
+  to `true` whenever `GITHUB_ACTIONS` is unset (section 2.3).
 - **Hardware is NOT VERIFIED until proven.** Nothing in this repo proves the
   UNO Q install works. `arm64` artifacts are cross-compiled and file-verified
   only; the arm64 image layer builds under QEMU but was not executed on real
   ARM. Any release report must state which of (UNO Q install, real-hardware
-  capture/OCR/audio, cosign signatures) remain unverified — AGENTS.md rule 12.
+  capture/OCR/audio) remain unverified — AGENTS.md rule 12. (cosign
+  signatures are produced and self-verified by the publish pipeline,
+  section 2.)
 - **Secrets and private topology never enter artifacts.** The scanner
   (`scripts/release/scan-artifacts.sh`) fails the build on game/voice/private
   file names, `/home/` paths, the private gateway hostname (when provided via
@@ -64,49 +71,82 @@ against the goreleaser 2.14 `internal/pipe/docker/v2` source).
 
 Unimplemented steps report `NOT RUN: …`, never green.
 
-## 2. Tagged release (only after gates + approval)
+## 2. Publishing (approved — GitHub Actions only, ADR 0048)
 
-Preconditions (docs/spec/15 "Release gate matrix"):
+Publishing is limited to `.github/workflows/publish.yml`. It uses the repo's
+`GITHUB_TOKEN` only (`permissions: packages: write, id-token: write`): no
+personal registry credentials and no cosign keys — signatures are keyless
+Sigstore (Fulcio + CT) via GitHub OIDC, bound to the publish workflow.
 
-1. `make test-full` passes on the dev host (gates that cannot run here are
-   reported NOT RUN with setup instructions; the UNO Q hardware gate is
-   NOT RUN until UNO Q is available).
-2. Milestone complete, ADRs updated, release notes ready.
-3. **User approval** to publish: enable `release` in `.goreleaser.yaml` in a
-   reviewed change (draft: true recommended), provide the registry/repository
-   and credentials out-of-band.
+### 2.1 `edge` on every `main` push (after CI succeeds)
 
-Then:
+Triggered by `workflow_run` when the `ci` workflow completes `success` for a
+push to `main`:
+
+1. GoReleaser **snapshot** with `GN_DOCKER_REPO=ghcr.io/dbirks/game-narrator`
+   — per-arch images built locally (`0.0.0-snapshot-<sha7>-amd64|arm64`);
+   snapshot mode never pushes.
+2. `scripts/release/scan-artifacts.sh` over the dist artifacts **and the
+   image layers of both per-arch images** — a failure pushes nothing.
+3. Push: the per-arch images, then the multi-arch manifests tagged `edge`
+   and `sha-<short>` (immutable per-commit handle).
+4. `cosign sign` the manifest digest and attach the SBOM attestation
+   (`cosign attest --type spdxjson`; predicate = the goreleaser/syft SBOM
+   of the amd64 archive). The job finishes with a `cosign verify`
+   self-check against the publish.yml certificate identity.
+
+Pull `ghcr.io/dbirks/game-narrator:edge` (or `:sha-<short>`) to consume.
+
+### 2.2 Tagged release (`v*` tag)
+
+Preconditions (docs/spec/15 "Release gate matrix"): `make test-full` passes
+on the dev host (gates that cannot run here are reported NOT RUN with setup
+instructions; the UNO Q hardware gate is NOT RUN until UNO Q is available),
+milestone complete, ADRs updated, release notes ready.
 
 ```sh
-git tag v1.2.3
-GN_DOCKER_REPO=ghcr.io/<owner>/game-narrator goreleaser release --clean
+git tag v0.4.2 && git push origin v0.4.2
 ```
 
-- Archives/.debs/SBOMs/checksums are produced as in the snapshot; the
-  `release` pipe uploads to the (configured, non-GitHub-by-default) release
-  target; `dockers_v2` pushes a multi-arch manifest list with an SBOM
-  attestation (`--push --attest=type=sbom`) to `$GN_DOCKER_REPO` — requires a
-  `docker login` to a registry you own. Without `GN_DOCKER_REPO` the docker
-  section is disabled: no push path exists.
-- Record the pushed manifest digest in the release evidence
-  (`artifacts/<run-id>/manifest`, AGENTS.md).
-- **cosign keyless signing is documented, not enabled.** When approved, the
-  config addition is:
+This runs the `release` job in `.github/workflows/publish.yml`:
+`goreleaser release --clean` with `GN_DOCKER_REPO=ghcr.io/dbirks/game-narrator`
+— archives/.debs/SBOMs/checksums, a GitHub Release (**prerelease** for
+`v0.*` tags, normal release otherwise), the multi-arch image pushed under
+the tag (`v0.4.2`) with the goreleaser SBOM attestation, and keyless cosign
+signatures on the per-arch images **and** the multi-arch manifest
+(`docker_signs` in `.goreleaser.yaml`). The artifact scanner then runs over
+`dist/` (archives/.debs; image layers are covered by the pinned base digest
+and the image SBOM attestation), and the job verifies the image signature
+(self-check).
 
-  ```yaml
-  signs:
-    - cmd: cosign
-      args: [sign-blob, "--yes", "--output-sig=${signature}", "${artifact}"]
-    - cmd: cosign
-      artifacts: checksum
-      args: [sign-blob, "--yes", "--output-sig=${signature}", "${artifact}"]
-  ```
+### 2.3 Why local `goreleaser` cannot publish
 
-  (cosign keyless, Sigstore identity; fulcio at the default endpoint unless
-  `COSIGN_FULCIO_URL` is set in the signing environment. The `signs` schema
-  was verified against the installed 2.14 jsonschema; run `goreleaser check`
-  again after any edit. Not run here without approval.)
+- `--snapshot` implies `--skip=announce,publish,validate` (goreleaser 2.14):
+  `make release-snapshot` never pushes and never signs.
+- `release.disable` is the template
+  `{{ if not (isEnvSet "GITHUB_ACTIONS") }}true{{ end }}`: a local
+  `goreleaser release` (no CI env) creates no GitHub Release.
+- `dockers_v2` pushes only when `GN_DOCKER_REPO` is set, and `docker_signs`
+  runs only in the publish phase. A local non-snapshot `goreleaser release`
+  with `GN_DOCKER_REPO` set is an explicit operator opt-in that will push
+  images but fail at signing without CI OIDC — the safe failure is loud.
+
+### 2.4 Verifying a signature
+
+```sh
+cosign verify \
+  ghcr.io/dbirks/game-narrator:edge \
+  --certificate-identity-regexp 'https://github.com/dbirks/game-narrator/.github/workflows/publish.yml@.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+For a tagged release replace `:edge` with the tag (e.g. `:v1.2.3`);
+`cosign verify-attestation --type spdxjson` shows the SBOM attestation.
+
+**UNO Q remains NOT VERIFIED** until the hardware smoke
+(`make test-hardware`) passes (AGENTS.md rule 12): publishing and signing do
+not change that — arm64 artifacts are cross-compiled and file-verified only,
+and the arm64 image layer builds under QEMU but was not executed on real ARM.
 
 ## 3. Upgrade
 
@@ -163,6 +203,7 @@ GN_DOCKER_REPO=ghcr.io/<owner>/game-narrator goreleaser release --clean
 
 Each snapshot/release run should retain: `goreleaser` log, `dist/` listing +
 `checksums.txt`, scanner output, smoke log (all steps + NOT RUN reasons),
-SBOMs, image digests (`docker image inspect`), and for tagged releases the
-manifest digest. `make test-full` output lists every gate and its NOT RUN
+SBOMs, image digests (`docker image inspect`), and for published images the
+manifest digest plus the `cosign verify` output (sections 2.1/2.2/2.4).
+`make test-full` output lists every gate and its NOT RUN
 reason (hardware, replay, Dolphin, models — unverified on this host).
