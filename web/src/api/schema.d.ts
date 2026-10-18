@@ -850,6 +850,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/dev/fixtures": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Browse the recorded fixtures.
+     * @description The developer's view of the correction labels as the re-run inputs (docs/spec/08 "fixture recording and browsing", docs/spec/09 "save a fixture and inspect a test report"). Same rows and shape as GET /api/v1/corrections; the reading is the difference (ADR-0052).
+     */
+    get: operations["listFixtures"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/dev/traces/{trace_id}": {
     parameters: {
       query?: never;
@@ -1433,6 +1453,30 @@ export interface paths {
     get: operations["getDevTestReport"];
     put?: never;
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/corrections": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * The correction labels, newest first.
+     * @description User fixes recorded as labels (docs/spec/08 "user fixes become labels"): the dialogue editor records a speech_text correction inside its save (ADR-0052), and explicit recordings arrive through POST. The list is the curation-side reading of the same rows the developer browses as fixtures.
+     */
+    get: operations["listCorrections"];
+    put?: never;
+    /**
+     * Record a correction (a label only; it applies no fix).
+     * @description The inspector's correction actions and anything else that records a user fix. The label lands as proposed with the caller as actor; a message target must name an existing row of the revision. It never applies the fix — applying is the corresponding content write (ADR-0052).
+     */
+    post: operations["createCorrection"];
     delete?: never;
     options?: never;
     head?: never;
@@ -2688,6 +2732,89 @@ export interface components {
         html?: string;
       };
     };
+    /**
+     * @description What kind of mistake the correction fixed.
+     * @enum {string}
+     */
+    CorrectionKind:
+      | "speaker"
+      | "text"
+      | "speech_text"
+      | "scene"
+      | "region"
+      | "classification"
+      | "edge"
+      | "other";
+    /**
+     * @description The table the correction names.
+     * @enum {string}
+     */
+    CorrectionTarget:
+      | "message"
+      | "message_page"
+      | "message_edge"
+      | "character"
+      | "scene"
+      | "region"
+      | "other";
+    /**
+     * @description The review state. A correction is a proposal until a reviewer accepts it; the editor's own save is accepted by the acting curator in the same request (ADR-0052).
+     * @enum {string}
+     */
+    CorrectionStatus: "proposed" | "accepted" | "rejected" | "superseded";
+    /** @description One correction label — the regression fixture of its target: what was wrong (before_value), what it should be (after_value, the assertion a re-run checks) and who decided (actor). A correction of a message's speech text is recorded by the dialogue editor's save itself; explicit recordings land as proposed (ADR-0052). */
+    Correction: {
+      id: string;
+      profile_id: string;
+      kind: components["schemas"]["CorrectionKind"];
+      target_type: components["schemas"]["CorrectionTarget"];
+      /** @description Loose pointer to the corrected row; the label outlives the row (0002). */
+      target_id: string;
+      /** @description Set when the target is a message, so the common lookup is an index seek. */
+      message_id?: string;
+      /** @description What was wrong before the fix. */
+      before_value: string;
+      /** @description What it should be — the assertion a re-run checks. Required for an accepted correction; may be absent on a proposal the reviewer has not settled. */
+      after_value: string;
+      reason?: string;
+      /** @description Frame/observation ids, asset hashes. */
+      evidence: string[];
+      /** @description Who made the correction (username, or agent:<run id>). */
+      actor: string;
+      status: components["schemas"]["CorrectionStatus"];
+      /** @description Present once the correction is accepted or rejected. */
+      reviewer?: string;
+      /** Format: date-time */
+      created_at: string;
+      /**
+       * Format: date-time
+       * @description Present once the correction is accepted or rejected.
+       */
+      reviewed_at?: string;
+    };
+    /** @description Correction labels, newest first (created_at, then id). The developer's fixture browsing surface (GET /api/v1/dev/fixtures) serves the same rows: a correction is the regression fixture of its target (ADR-0052). */
+    CorrectionList: {
+      items: components["schemas"]["Correction"][];
+    };
+    /** @description Record a correction explicitly — the inspector's "text incorrect / speaker incorrect" actions. This records a label only; it never applies a fix. The row lands as proposed with the caller as actor (ADR-0052). */
+    CreateCorrectionRequest: {
+      profile_id: string;
+      kind: components["schemas"]["CorrectionKind"];
+      target_type: components["schemas"]["CorrectionTarget"];
+      /** @description Required. The row the correction is about. */
+      target_id: string;
+      /** @description For a message target: must equal target_id when present. */
+      message_id?: string;
+      /** @description What was wrong. */
+      before_value: string;
+      /** @description What it should be; the proposal's asserted fix. */
+      after_value?: string;
+      reason?: string;
+      evidence?: string[];
+    };
+    CreateCorrectionResponse: {
+      correction: components["schemas"]["Correction"];
+    };
   };
   responses: {
     /** @description RFC 9457 problem+json. code is the stable member of docs/spec/08's error contract; X-Request-Id correlates it with the server log and the event stream. */
@@ -2730,6 +2857,8 @@ export interface components {
     VoiceId: string;
     /** @description Audition clip ULID on the named revision. */
     AuditionId: string;
+    /** @description Hard upper bound 500; omitted means 100. Out-of-range is refused rather than clamped (docs/spec/08 "hard upper bounds"). */
+    CorrectionsLimit: number;
   };
   requestBodies: never;
   headers: never;
@@ -4352,6 +4481,36 @@ export interface operations {
       default: components["responses"]["Problem"];
     };
   };
+  listFixtures: {
+    parameters: {
+      query?: {
+        /** @description Restrict to one revision's labels. */
+        profile_id?: string;
+        /** @description Restrict to one correction kind. An unknown kind is a 400, not a dropped filter. */
+        kind?: components["schemas"]["CorrectionKind"];
+        /** @description Hard upper bound 500; omitted means 100. Out-of-range is refused rather than clamped (docs/spec/08 "hard upper bounds"). */
+        limit?: components["parameters"]["CorrectionsLimit"];
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The fixtures, newest first. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CorrectionList"];
+        };
+      };
+      400: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
   devTrace: {
     parameters: {
       query?: {
@@ -5188,6 +5347,65 @@ export interface operations {
         };
       };
       404: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  listCorrections: {
+    parameters: {
+      query?: {
+        /** @description Restrict to one revision's labels. */
+        profile_id?: string;
+        /** @description Restrict to one correction kind. An unknown kind is a 400, not a dropped filter. */
+        kind?: components["schemas"]["CorrectionKind"];
+        /** @description Hard upper bound 500; omitted means 100. Out-of-range is refused rather than clamped (docs/spec/08 "hard upper bounds"). */
+        limit?: components["parameters"]["CorrectionsLimit"];
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The labels, newest first. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CorrectionList"];
+        };
+      };
+      400: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  createCorrection: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CreateCorrectionRequest"];
+      };
+    };
+    responses: {
+      /** @description Recorded. */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CreateCorrectionResponse"];
+        };
+      };
+      400: components["responses"]["Problem"];
+      404: components["responses"]["Problem"];
+      422: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
       default: components["responses"]["Problem"];
     };
   };

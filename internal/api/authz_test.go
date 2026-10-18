@@ -67,12 +67,14 @@ func matrixCases() []routeCase {
 		{http.MethodGet, "/api/v1/voices/" + id + "/registrations", auth.RoleCurator, ""},
 		{http.MethodPost, "/api/v1/onboarding/runs", auth.RoleCurator, `{}`},
 		{http.MethodPost, "/api/v1/corrections", auth.RoleCurator, `{}`},
+		{http.MethodGet, "/api/v1/corrections", auth.RoleCurator, ""},
 
 		// developer: docs/spec/14's "dev screenshot" is exactly this row
 		{http.MethodGet, "/api/v1/dev/events", auth.RoleDeveloper, ""},
 		{http.MethodGet, "/api/v1/dev/screenshots", auth.RoleDeveloper, ""},
 		{http.MethodGet, "/api/v1/dev/traces/" + id, auth.RoleDeveloper, ""},
 		{http.MethodPost, "/api/v1/dev/fixtures", auth.RoleDeveloper, `{}`},
+		{http.MethodGet, "/api/v1/dev/fixtures", auth.RoleDeveloper, ""},
 		{http.MethodPost, "/api/v1/dev/test-runs", auth.RoleDeveloper, `{}`},
 
 		// admin: users, tokens, config

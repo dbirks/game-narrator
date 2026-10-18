@@ -42,8 +42,13 @@ var domainEnums = map[string]string{
 	"GraphNode.properties.attribution_status": "AttributionStatus",
 	"Region.properties.detect_method":         "DetectMethod",
 	"Character.properties.status":             "CharacterStatus",
-	"JobAttempt.properties.outcome":           "AttemptOutcome",
-	"Role":                                    "", // the ladder lives in internal/auth, checked below
+	// The correction labels (ADR-0052): the kind of mistake, the table it
+	// labels and the review state each carry their own vocabulary.
+	"CorrectionKind":                "CorrectionKind",
+	"CorrectionTarget":              "CorrectionTarget",
+	"CorrectionStatus":              "CorrectionStatus",
+	"JobAttempt.properties.outcome": "AttemptOutcome",
+	"Role":                          "", // the ladder lives in internal/auth, checked below
 }
 
 // literalEnums pins the vocabularies that some other package writes without a

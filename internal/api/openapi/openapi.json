@@ -48,6 +48,10 @@
    "description": "The dialogue content of one revision."
   },
   {
+   "name": "corrections",
+   "description": "The user fixes recorded as labels, and the regression fixtures they are (ADR-0052)."
+  },
+  {
    "name": "portability",
    "description": "Import and export of scripts and profiles."
   },
@@ -3042,6 +3046,59 @@
     }
    }
   },
+  "/api/v1/dev/fixtures": {
+   "get": {
+    "operationId": "listFixtures",
+    "tags": [
+     "dev"
+    ],
+    "summary": "Browse the recorded fixtures.",
+    "description": "The developer's view of the correction labels as the re-run inputs (docs/spec/08 \"fixture recording and browsing\", docs/spec/09 \"save a fixture and inspect a test report\"). Same rows and shape as GET /api/v1/corrections; the reading is the difference (ADR-0052).",
+    "x-required-role": "developer",
+    "parameters": [
+     {
+      "name": "profile_id",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      },
+      "description": "Restrict to one revision's labels."
+     },
+     {
+      "name": "kind",
+      "in": "query",
+      "schema": {
+       "$ref": "#/components/schemas/CorrectionKind"
+      },
+      "description": "Restrict to one correction kind. An unknown kind is a 400, not a dropped filter."
+     },
+     {
+      "$ref": "#/components/parameters/CorrectionsLimit"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "The fixtures, newest first.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/CorrectionList"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "503": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   }
+  },
   "/api/v1/dev/traces/{trace_id}": {
    "get": {
     "operationId": "devTrace",
@@ -4370,6 +4427,105 @@
      }
     }
    }
+  },
+  "/api/v1/corrections": {
+   "get": {
+    "operationId": "listCorrections",
+    "tags": [
+     "corrections"
+    ],
+    "summary": "The correction labels, newest first.",
+    "description": "User fixes recorded as labels (docs/spec/08 \"user fixes become labels\"): the dialogue editor records a speech_text correction inside its save (ADR-0052), and explicit recordings arrive through POST. The list is the curation-side reading of the same rows the developer browses as fixtures.",
+    "x-required-role": "curator",
+    "parameters": [
+     {
+      "name": "profile_id",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      },
+      "description": "Restrict to one revision's labels."
+     },
+     {
+      "name": "kind",
+      "in": "query",
+      "schema": {
+       "$ref": "#/components/schemas/CorrectionKind"
+      },
+      "description": "Restrict to one correction kind. An unknown kind is a 400, not a dropped filter."
+     },
+     {
+      "$ref": "#/components/parameters/CorrectionsLimit"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "The labels, newest first.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/CorrectionList"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "503": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   },
+   "post": {
+    "operationId": "createCorrection",
+    "tags": [
+     "corrections"
+    ],
+    "summary": "Record a correction (a label only; it applies no fix).",
+    "description": "The inspector's correction actions and anything else that records a user fix. The label lands as proposed with the caller as actor; a message target must name an existing row of the revision. It never applies the fix \u2014 applying is the corresponding content write (ADR-0052).",
+    "x-required-role": "curator",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/CreateCorrectionRequest"
+       }
+      }
+     }
+    },
+    "responses": {
+     "201": {
+      "description": "Recorded.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/CreateCorrectionResponse"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "404": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "422": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "503": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   }
   }
  },
  "components": {
@@ -4547,6 +4703,17 @@
     "schema": {
      "type": "string"
     }
+   },
+   "CorrectionsLimit": {
+    "name": "limit",
+    "in": "query",
+    "schema": {
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 500,
+     "default": 100
+    },
+    "description": "Hard upper bound 500; omitted means 100. Out-of-range is refused rather than clamped (docs/spec/08 \"hard upper bounds\")."
    }
   },
   "responses": {
@@ -8509,6 +8676,193 @@
      "created_at",
      "updated_at"
     ]
+   },
+   "CorrectionKind": {
+    "type": "string",
+    "description": "What kind of mistake the correction fixed.",
+    "enum": [
+     "speaker",
+     "text",
+     "speech_text",
+     "scene",
+     "region",
+     "classification",
+     "edge",
+     "other"
+    ]
+   },
+   "CorrectionTarget": {
+    "type": "string",
+    "description": "The table the correction names.",
+    "enum": [
+     "message",
+     "message_page",
+     "message_edge",
+     "character",
+     "scene",
+     "region",
+     "other"
+    ]
+   },
+   "CorrectionStatus": {
+    "type": "string",
+    "description": "The review state. A correction is a proposal until a reviewer accepts it; the editor's own save is accepted by the acting curator in the same request (ADR-0052).",
+    "enum": [
+     "proposed",
+     "accepted",
+     "rejected",
+     "superseded"
+    ]
+   },
+   "Correction": {
+    "type": "object",
+    "description": "One correction label \u2014 the regression fixture of its target: what was wrong (before_value), what it should be (after_value, the assertion a re-run checks) and who decided (actor). A correction of a message's speech text is recorded by the dialogue editor's save itself; explicit recordings land as proposed (ADR-0052).",
+    "required": [
+     "id",
+     "profile_id",
+     "kind",
+     "target_type",
+     "target_id",
+     "before_value",
+     "after_value",
+     "evidence",
+     "actor",
+     "status",
+     "created_at"
+    ],
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "profile_id": {
+      "type": "string"
+     },
+     "kind": {
+      "$ref": "#/components/schemas/CorrectionKind"
+     },
+     "target_type": {
+      "$ref": "#/components/schemas/CorrectionTarget"
+     },
+     "target_id": {
+      "type": "string",
+      "description": "Loose pointer to the corrected row; the label outlives the row (0002)."
+     },
+     "message_id": {
+      "type": "string",
+      "description": "Set when the target is a message, so the common lookup is an index seek."
+     },
+     "before_value": {
+      "type": "string",
+      "description": "What was wrong before the fix."
+     },
+     "after_value": {
+      "type": "string",
+      "description": "What it should be \u2014 the assertion a re-run checks. Required for an accepted correction; may be absent on a proposal the reviewer has not settled."
+     },
+     "reason": {
+      "type": "string"
+     },
+     "evidence": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "Frame/observation ids, asset hashes."
+     },
+     "actor": {
+      "type": "string",
+      "description": "Who made the correction (username, or agent:<run id>)."
+     },
+     "status": {
+      "$ref": "#/components/schemas/CorrectionStatus"
+     },
+     "reviewer": {
+      "type": "string",
+      "description": "Present once the correction is accepted or rejected."
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "reviewed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Present once the correction is accepted or rejected."
+     }
+    }
+   },
+   "CorrectionList": {
+    "type": "object",
+    "description": "Correction labels, newest first (created_at, then id). The developer's fixture browsing surface (GET /api/v1/dev/fixtures) serves the same rows: a correction is the regression fixture of its target (ADR-0052).",
+    "required": [
+     "items"
+    ],
+    "properties": {
+     "items": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/Correction"
+      }
+     }
+    }
+   },
+   "CreateCorrectionRequest": {
+    "type": "object",
+    "description": "Record a correction explicitly \u2014 the inspector's \"text incorrect / speaker incorrect\" actions. This records a label only; it never applies a fix. The row lands as proposed with the caller as actor (ADR-0052).",
+    "required": [
+     "profile_id",
+     "kind",
+     "target_type",
+     "target_id",
+     "before_value"
+    ],
+    "properties": {
+     "profile_id": {
+      "type": "string"
+     },
+     "kind": {
+      "$ref": "#/components/schemas/CorrectionKind"
+     },
+     "target_type": {
+      "$ref": "#/components/schemas/CorrectionTarget"
+     },
+     "target_id": {
+      "type": "string",
+      "description": "Required. The row the correction is about."
+     },
+     "message_id": {
+      "type": "string",
+      "description": "For a message target: must equal target_id when present."
+     },
+     "before_value": {
+      "type": "string",
+      "description": "What was wrong."
+     },
+     "after_value": {
+      "type": "string",
+      "description": "What it should be; the proposal's asserted fix."
+     },
+     "reason": {
+      "type": "string"
+     },
+     "evidence": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    }
+   },
+   "CreateCorrectionResponse": {
+    "type": "object",
+    "required": [
+     "correction"
+    ],
+    "properties": {
+     "correction": {
+      "$ref": "#/components/schemas/Correction"
+     }
+    }
    }
   }
  }

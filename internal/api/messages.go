@@ -26,6 +26,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/dbirks/game-narrator/internal/games"
 	"github.com/dbirks/game-narrator/internal/store"
@@ -291,7 +292,62 @@ func (s *Server) handleMessagePatch(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	m, err := s.store.UpdateMessageSpeechText(r.Context(), p.ID, mid, *req.SpeechText, expected)
+	// The correction label (ADR-0052): a speech-text save is a user fix, and
+	// the fix is the regression fixture of its target — what was wrong
+	// (before), what it should be (after, the assertion a re-run checks) and
+	// who decided (actor). The before-value is read here and the write's own
+	// if-match check makes the read consistent with the update: a concurrent
+	// edit moves the row version and the write refuses below. A save that
+	// changes nothing is not a correction, so it records nothing. A save that
+	// clears the rendering is still a valid edit (silence is a rendering
+	// choice, docs/spec/02), but it records no label: an accepted correction
+	// must carry the assertion a re-run checks, and an empty one asserts
+	// nothing.
+	before, _, err := s.store.GetMessage(r.Context(), p.ID, mid)
+	if err != nil {
+		s.storeProblem(w, r, err, "read message", "message")
+		return
+	}
+	var correction *games.Correction
+	if *req.SpeechText != before.SpeechText && *req.SpeechText != "" {
+		identity := IdentityFromContext(r.Context())
+		correction = &games.Correction{
+			ID:          games.NewID(),
+			ProfileID:   p.ID,
+			Kind:        games.CorrectionSpeechText,
+			TargetType:  games.TargetMessage,
+			TargetID:    mid,
+			MessageID:   mid,
+			BeforeValue: before.SpeechText,
+			AfterValue:  *req.SpeechText,
+			Reason:      "speech text corrected in the dialogue editor",
+			Evidence:    json.RawMessage("[]"),
+			Actor:       identity.Username(),
+			Status:      games.CorrectionAccepted, // the fix is applied by this very save
+			Reviewer:    identity.Username(),
+			CreatedAt:   time.Now().UTC().Format(time.RFC3339),
+			ReviewedAt:  time.Now().UTC().Format(time.RFC3339),
+		}
+	}
+	// The message write and the correction record join one transaction: the
+	// store composes on the caller's transaction (the same way import →
+	// publish does), so "the edit landed" and "the fixture landed" are one
+	// fact and a crash between them cannot happen.
+	var updated games.Message
+	err = s.store.InTx(r.Context(), func(tx *store.Tx) error {
+		ctx := store.WithTx(r.Context(), tx)
+		m, err := s.store.UpdateMessageSpeechText(ctx, p.ID, mid, *req.SpeechText, expected)
+		if err != nil {
+			return err
+		}
+		if correction != nil {
+			if err := s.store.PutCorrection(ctx, *correction); err != nil {
+				return err
+			}
+		}
+		updated = m
+		return nil
+	})
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			s.writeCodeProblem(w, r, http.StatusNotFound, "message-not-found", codeNotFound, "Not Found",
@@ -313,11 +369,13 @@ func (s *Server) handleMessagePatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setETag(w, fresh)
-	s.auditCatalogWrite(r, "catalog.message.edit", map[string]any{
-		"profile_id": p.ID, "message_id": m.ID, "revision": m.Revision,
-	})
+	audit := map[string]any{"profile_id": p.ID, "message_id": updated.ID, "revision": updated.Revision}
+	if correction != nil {
+		audit["correction_id"] = correction.ID
+	}
+	s.auditCatalogWrite(r, "catalog.message.edit", audit)
 	writeJSON(w, http.StatusOK, messageDetailResponse{
-		Message: toMessageDTO(m),
+		Message: toMessageDTO(updated),
 		Pages:   []messagePageDTO{},
 	})
 }

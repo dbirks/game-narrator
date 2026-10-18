@@ -29,4 +29,8 @@ export const ports = {
    *  admits the repo's testdata (the preview's fixture), so OCR runs against
    *  the synthetic textbox frame. */
   graphRegions: 18103,
+  /** the packaged binary the correction-labels / regression-fixture walk drives
+   *  (corrections-fixtures.spec.ts): the editor's save records the label, and
+   *  the developer's fixture view reads the same rows (ADR-0052). */
+  corrections: 18104,
 } as const;

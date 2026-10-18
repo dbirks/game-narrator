@@ -442,6 +442,9 @@ func (s *Server) Handler() http.Handler {
 	// under the developer-only /api/v1/dev prefix of the scope table: the
 	// payloads carry raw gameplay text, provider details and captured frames.
 	routes.register(mux, http.MethodGet, "/api/v1/dev/events", s.handleDevEvents)
+	// The developer's browsing of the recorded corrections as the re-run inputs
+	// (docs/spec/08 "fixture recording and browsing", ADR-0052).
+	routes.register(mux, http.MethodGet, "/api/v1/dev/fixtures", s.handleDevFixturesList)
 	routes.register(mux, http.MethodGet, "/api/v1/dev/traces/{trace_id}", s.handleDevTraces)
 	routes.register(mux, http.MethodGet, "/api/v1/dev/assets/{sha256}", s.handleDevAsset)
 
@@ -516,6 +519,12 @@ func (s *Server) Handler() http.Handler {
 	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/messages/search", s.handleMessageSearch)
 	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/messages/{mid}", s.handleMessageGet)
 	routes.register(mux, http.MethodPatch, "/api/v1/profiles/{id}/messages/{mid}", s.handleMessagePatch)
+	// The correction labels: the editor's speech-text save records one inside
+	// the message write (ADR-0052), and this surface is where those labels are
+	// read back and where explicit corrections are recorded (docs/spec/08
+	// "user fixes become labels").
+	routes.register(mux, http.MethodGet, "/api/v1/corrections", s.handleCorrectionsList)
+	routes.register(mux, http.MethodPost, "/api/v1/corrections", s.handleCreateCorrection)
 	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/characters", s.handleProfileCharacters)
 	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/regions", s.handleProfileRegions)
 	routes.register(mux, http.MethodPut, "/api/v1/profiles/{id}/regions", s.handleProfileRegionsPut)

@@ -30,6 +30,7 @@ const onboardingUrl = `http://127.0.0.1:${ports.onboarding}`;
 const voicesUrl = `http://127.0.0.1:${ports.voices}`;
 const playUrl = `http://127.0.0.1:${ports.play}`;
 const graphRegionsUrl = `http://127.0.0.1:${ports.graphRegions}`;
+const correctionsUrl = `http://127.0.0.1:${ports.corrections}`;
 const embeddedBinary = resolve(import.meta.dirname, "..", "bin", "game-narrator");
 // The replay allowlist for the inspector's server: the repo's testdata, named
 // explicitly (ADR-0024 "replay allowlist") rather than relying on the
@@ -79,7 +80,7 @@ export default defineConfig({
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
       testIgnore:
-        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|m5-part1\.spec\.ts|m5-graph-regions\.spec\.ts/,
+        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|m5-part1\.spec\.ts|m5-graph-regions\.spec\.ts|corrections-fixtures\.spec\.ts/,
     },
     {
       name: "embedded",
@@ -137,6 +138,15 @@ export default defineConfig({
       // the synthetic textbox frame (test-on-fixture, ADR-0024).
       testMatch: /m5-graph-regions\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: graphRegionsUrl },
+    },
+    {
+      name: "corrections",
+      // The correction labels and the regression fixtures they are (ADR-0052):
+      // the editor's save records the label on the packaged binary, and the
+      // developer's fixture view reads the same rows. No replay session runs —
+      // the walk is the curation surface, so no replay allowlist is needed.
+      testMatch: /corrections-fixtures\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: correctionsUrl },
     },
   ],
   webServer: [
@@ -286,6 +296,18 @@ export default defineConfig({
       cwd: "..",
       url: `${graphRegionsUrl}/api/v1/health/live`,
       env: { GAME_NARRATOR_REPLAY_ROOTS: replayRoots },
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The correction-labels walk on the packaged binary (ADR-0052): the
+      // seeded profile is the same synthetic one — the walk needs a stored
+      // message row to correct, not a session.
+      command: `node web/e2e/serve.mjs corrections 127.0.0.1:${ports.corrections} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${correctionsUrl}/api/v1/health/live`,
       reuseExistingServer: false,
       timeout: 60_000,
       stdout: "ignore",
