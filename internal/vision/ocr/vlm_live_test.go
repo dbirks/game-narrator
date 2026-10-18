@@ -95,7 +95,10 @@ func TestLiveVLMOCRFallbackHardFontCrop(t *testing.T) {
 	}
 
 	// --- Tesseract's CER on the same crop: the comparison the spec asks for. ---
-	tessRes, tessErr := Tesseract{}.Recognize(context.Background(), img)
+	// The engine's own deadline is scaled for a race-instrumented binary
+	// (ocrTimeoutScale, race_on_test.go) so the comparison read is not killed
+	// by runner load and logged as a 1.0 CER it never earned.
+	tessRes, tessErr := Tesseract{Timeout: DefaultTimeout * ocrTimeoutScale}.Recognize(context.Background(), img)
 	if tessErr != nil {
 		t.Logf("tesseract failed on the noisy crop: %v", tessErr)
 	}
@@ -143,7 +146,7 @@ func TestLiveVLMOCRFallbackHardFontCrop(t *testing.T) {
 	// primary's confidence is high, so the live proof records both readings
 	// and the discrepancy on every run.
 	fb := &FallbackEngine{
-		Primary:   Tesseract{},
+		Primary:   Tesseract{Timeout: DefaultTimeout * ocrTimeoutScale},
 		Secondary: eng,
 		Policy: FallbackPolicy{
 			ConfidenceThreshold: 0.6,

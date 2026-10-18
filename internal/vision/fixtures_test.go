@@ -201,10 +201,16 @@ func mustConfig(t *testing.T, path string) image.Config {
 // through the same crop → preprocess → Tesseract path the runtime will use, and
 // the result is scored with CER against the corpus truth.
 func TestSyntheticFixturesOCR(t *testing.T) {
+	if testing.Short() {
+		t.Skip("NOT RUN: the real-Tesseract fixture gate is skipped under -short; run without -short for the docs/spec/12 OCR evidence")
+	}
 	if _, err := exec.LookPath("tesseract"); err != nil {
 		t.Skipf("NOT RUN: tesseract not installed (%v); see scripts/bootstrap-arch.sh and docs/adr/0012", err)
 	}
-	eng := ocr.Tesseract{PSM: ocr.DefaultPSM, Timeout: 15 * time.Second}
+	// The 15 s budget is the host-load margin measured on the dev host, scaled
+	// for a race-instrumented binary on a 2-core runner (ocrTimeoutScale,
+	// race_on_test.go); the per-call context below it is scaled the same way.
+	eng := ocr.Tesseract{PSM: ocr.DefaultPSM, Timeout: 15 * time.Second * ocrTimeoutScale}
 	steps := DefaultSteps()
 	t.Logf("preprocess recipe %s… (invert=%v scale=%d filter=%v otsu=%v median=%v pad=%d)",
 		steps.Hash()[:12], steps.AutoInvert, steps.Scale, steps.Filter, steps.Otsu, steps.Median3x3, steps.Pad)
@@ -221,7 +227,7 @@ func TestSyntheticFixturesOCR(t *testing.T) {
 			continue
 		}
 		pre := Preprocess(crop, steps)
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second*ocrTimeoutScale)
 		res, err := eng.Recognize(ctx, pre)
 		cancel()
 		if err != nil {
@@ -282,7 +288,7 @@ func BenchmarkPreprocessAndOCR(b *testing.B) {
 	all := loadTruth(b)
 	f := all[0]
 	img := decodePNG(b, filepath.Join(fixtureDir, f.File))
-	eng := ocr.Tesseract{Timeout: 15 * time.Second}
+	eng := ocr.Tesseract{Timeout: 15 * time.Second * ocrTimeoutScale}
 	ctx := context.Background()
 	b.ReportAllocs()
 	b.ResetTimer()

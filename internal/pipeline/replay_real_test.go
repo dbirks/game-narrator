@@ -41,7 +41,20 @@ import (
 // a function of the frames and the engine only, which is also what the three
 // identical-runs assertion below is about: committed message ids, commit
 // capture timestamps and the deterministic counters must not move between runs.
+//
+// "A function of the frames and the engine only" also holds the budgets: the
+// engine's per-call deadline and the retrieval-hold/EOF-grace bound are the
+// production defaults scaled for the test environment (ocrTimeoutScale,
+// race_on_test.go) rather than a fixed wall-clock number. A race-instrumented
+// binary on a 2-core runner makes the same crop take several times longer
+// (CI run 39090252213: the unscaled 4 s default timed out reads mid-run and
+// the run-to-run comparison diverged), so under -race the budgets are 5×
+// wider, and under -short the gate is NOT RUN at all — a fast loop is not
+// what real-OCR evidence is for (same convention as the matcher scale gate).
 func TestSyntheticFrameReplayRealTesseract(t *testing.T) {
+	if testing.Short() {
+		t.Skip("NOT RUN: the real-Tesseract replay gate is skipped under -short; run without -short for the docs/spec/12 frame-replay evidence")
+	}
 	if _, err := exec.LookPath("tesseract"); err != nil {
 		t.Skip("NOT RUN: tesseract not installed")
 	}
@@ -70,16 +83,25 @@ func TestSyntheticFrameReplayRealTesseract(t *testing.T) {
 	// ModeReplay is the code-level form of that: lossless delivery plus
 	// frame-ordered, never-superseded OCR (docs/spec/01 "Parallelism and
 	// deadline contracts", docs/spec/12 "Frame replay").
+	//
+	// Both OCR budgets are the production defaults scaled for the test build
+	// (ocrTimeoutScale): the engine's own per-call deadline first, because that
+	// is the tighter of the two in ModeReplay (the pipeline's per-call budget
+	// is ReplayOCRTimeout, left at its default); OCRTimeout is the
+	// retrieval-hold and EOF-grace bound, and it must outrun the engine's own
+	// deadline or a ranking reply that lands late is refused as stale and the
+	// commit moves to another frame — the machine-speed dependence the
+	// determinism assertion below forbids.
 	cfg := pipeline.Config{
 		SessionID:       "synthsession",
 		ProfileRevision: "1",
 		Regions:         profile.ToRegions(),
-		OCR:             ocr.Tesseract{},
+		OCR:             ocr.Tesseract{Timeout: ocr.DefaultTimeout * ocrTimeoutScale},
 		Index:           idx,
 		Preprocess:      vision.DefaultSteps(),
 		Trace:           true,
 		Mode:            pipeline.ModeReplay,
-		OCRTimeout:      ocr.DefaultTimeout,
+		OCRTimeout:      ocr.DefaultTimeout * ocrTimeoutScale,
 		Tracker: recognition.Config{
 			VoteWindow:   3,
 			StableWindow: 100 * time.Millisecond,
@@ -107,7 +129,11 @@ func TestSyntheticFrameReplayRealTesseract(t *testing.T) {
 		src := &replay.Source{Dir: clipDir, Speed: 0}
 		t.Cleanup(func() { _ = src.Close() })
 
-		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+		// The run context is the outermost net, so it is scaled by the same
+		// factor as the budgets it contains: a net narrower than the stage
+		// budgets would become the effective OCR budget the replay retry policy
+		// is meant to own.
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second*ocrTimeoutScale)
 		defer cancel()
 		if err := runner.Run(ctx, src, hub); err != nil {
 			t.Fatalf("pipeline run %d: %v", run, err)
