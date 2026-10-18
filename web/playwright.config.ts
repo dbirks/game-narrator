@@ -85,7 +85,7 @@ export default defineConfig({
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
       testIgnore:
-        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|m5-part1\.spec\.ts|m5-graph-regions\.spec\.ts|corrections-fixtures\.spec\.ts/,
+        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|voices-qa\.spec\.ts|m5-part1\.spec\.ts|m5-graph-regions\.spec\.ts|corrections-fixtures\.spec\.ts/,
     },
     {
       name: "embedded",
@@ -122,9 +122,11 @@ export default defineConfig({
       name: "voices",
       // The voice setup workflow (docs/spec/07): the packaged binary with the
       // speech roles and the registry pointed at the scripted TTS instance
-      // (web/e2e/fake-tts.mjs), so auditions, approval, registration and the
-      // preview cache-hit are driven through the real binary with no model.
-      testMatch: /voices\.spec\.ts/,
+      // (web/e2e/fake-tts.mjs), and the speech_asr role at the scripted ASR
+      // instance (web/e2e/fake-asr.mjs), so auditions, the ASR QA badges,
+      // approval, registration and the preview cache-hit are driven through
+      // the real binary with no model (ADR 0061).
+      testMatch: /voices.*\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: voicesUrl },
     },
     {
@@ -309,6 +311,28 @@ export default defineConfig({
       stderr: "pipe",
     },
     {
+      // The scripted ASR instance (web/e2e/fake-asr.mjs): the transcription
+      // wire the speech_asr role speaks, with a synthetic stub transcript
+      // (ADR 0061). Started before the voices server so the role URL it is
+      // given is already listening.
+      command: `node web/e2e/fake-asr.mjs ${ports.fakeASR}`,
+      cwd: "..",
+      url: `http://127.0.0.1:${ports.fakeASR}/healthz`,
+      env: {
+        // The brief the specs use when they create auditions: the stub
+        // recovers the spoken line from the tone's frequency, and the seed
+        // couples line + brief + model, so a mismatch would make every
+        // audition unreadable. FAKE_ASR_FAIL_LINE is the planted mishearing
+        // the QA badge spec asserts (the flagged audition).
+        FAKE_ASR_BRIEF: "A calm harbor voice, unhurried, with a slight salt air in it.",
+        FAKE_ASR_FAIL_LINE: "3",
+      },
+      reuseExistingServer: false,
+      timeout: 30_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
       // The voice workflow on the packaged binary: the speech roles speak to
       // the scripted instance, and the registry is the direct Base service —
       // the same instance, which is exactly how the port-forwarded deployment
@@ -322,6 +346,11 @@ export default defineConfig({
         GAME_NARRATOR_ROLE_VOICE_DESIGN_MODEL: "fake-voicedesign",
         GAME_NARRATOR_ROLE_VOICE_CLONE_MODEL: "fake-base",
         GAME_NARRATOR_TTS_BASE_DIRECT_URL: `http://127.0.0.1:${ports.fakeTTS}/v1`,
+        // The ASR QA loop (FR-10, ADR 0061): the speech_asr role speaks to
+        // the scripted ASR instance on its own URL — the dedicated-endpoint
+        // path, so the gateway token is not (and must not be) needed.
+        GAME_NARRATOR_ROLE_SPEECH_ASR_MODEL: "fake-asr",
+        GAME_NARRATOR_ROLE_SPEECH_ASR_URL: `http://127.0.0.1:${ports.fakeASR}/v1`,
       },
       reuseExistingServer: false,
       timeout: 60_000,

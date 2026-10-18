@@ -339,3 +339,114 @@ func mustAuditionID(t *testing.T, svc *Service, character string) string {
 	t.Fatalf("no approved revision for %s", character)
 	return ""
 }
+
+// fakeASR is a scripted ASR read-back (synthetic stub, AGENTS.md rule 3): it
+// returns whatever the test queued, so the audition QA gate's pass/fail and
+// not-run decisions are testable without a gateway.
+type fakeASR struct {
+	mu      sync.Mutex
+	calls   int
+	results []speech.Transcription
+	err     error
+}
+
+func (f *fakeASR) TranscribeText(_ context.Context, _ []byte, _ string) (speech.Transcription, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.err != nil {
+		return speech.Transcription{}, f.err
+	}
+	if len(f.results) == 0 {
+		return speech.Transcription{}, errors.New("fakeASR: script exhausted")
+	}
+	r := f.results[0]
+	f.results = f.results[1:]
+	if r.Model == "" {
+		r.Model = "fake-asr"
+	}
+	if r.RequestID == "" {
+		r.RequestID = "fake-asr-" + strconv.Itoa(f.calls)
+	}
+	return r, nil
+}
+
+// TestAuditionQAPassedApproves: the transcript matches (modulo the endpoint's
+// own normalization — case and punctuation) within the bound, so the audition
+// records QAPassed and approval goes through.
+func TestAuditionQAPassedApproves(t *testing.T) {
+	svc, _, _, _ := newTestService(t)
+	asr := &fakeASR{results: []speech.Transcription{
+		{Text: "hello there let me tell you a little about today"},
+		{Text: "The morning was calm and the road ahead was long"},
+		{Text: "i would like to ask you a small question if that is all right"},
+	}}
+	svc.ASR = asr
+	ctx := ctx(t)
+	rev, auditions, err := svc.CreateAuditions(ctx, "char-qa-pass", "a calm narrator", 3)
+	if err != nil {
+		t.Fatalf("CreateAuditions: %v", err)
+	}
+	for i, a := range auditions {
+		if a.AsrState != store.VoiceAuditionQAPassed {
+			t.Fatalf("audition %d asr_state = %d, want passed (wer=%g transcript=%q)", i+1, a.AsrState, a.AsrWER, a.AsrTranscript)
+		}
+		if a.AsrModel == "" || a.AsrRequestID == "" || a.AsrCheckedAt == nil {
+			t.Fatalf("audition %d QA evidence incomplete: %+v", i+1, a)
+		}
+	}
+	if _, err := svc.Approve(ctx, rev.ID, auditions[0].ID, "original_synthetic_design (unit test)", "curator-1"); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+}
+
+// TestAuditionQAFailedBlocksApproval: the transcript diverges beyond the bound
+// on one line, so that audition is flagged and Approve refuses it with
+// ErrAuditionFlagged — while the passing sibling stays approvable.
+func TestAuditionQAFailedBlocksApproval(t *testing.T) {
+	svc, _, _, _ := newTestService(t)
+	asr := &fakeASR{results: []speech.Transcription{
+		{Text: "hello there let me tell you a little about today"},
+		{Text: "completely different words that share nothing with the line"},
+		{Text: "i would like to ask you a small question if that is all right"},
+	}}
+	svc.ASR = asr
+	ctx := ctx(t)
+	rev, auditions, err := svc.CreateAuditions(ctx, "char-qa-fail", "a calm narrator", 3)
+	if err != nil {
+		t.Fatalf("CreateAuditions: %v", err)
+	}
+	if auditions[1].AsrState != store.VoiceAuditionQAFailed || auditions[1].AsrWER == 0 {
+		t.Fatalf("audition 2 asr = state %d wer %g, want failed with evidence (transcript=%q)",
+			auditions[1].AsrState, auditions[1].AsrWER, auditions[1].AsrTranscript)
+	}
+	_, err = svc.Approve(ctx, rev.ID, auditions[1].ID, "consent", "curator-1")
+	if !errors.Is(err, ErrAuditionFlagged) {
+		t.Fatalf("Approve(flagged) = %v, want ErrAuditionFlagged", err)
+	}
+	// The passing sibling is unaffected: the gate is per-audition.
+	if _, err := svc.Approve(ctx, rev.ID, auditions[0].ID, "consent", "curator-1"); err != nil {
+		t.Fatalf("Approve(passing sibling) = %v", err)
+	}
+}
+
+// TestAuditionQAASRDownIsNotRun: the ASR endpoint fails, so the audition is
+// left as "not run" and approval still goes through — the degraded mode
+// (ADR 0061) must never block a voice on ASR.
+func TestAuditionQAASRDownIsNotRun(t *testing.T) {
+	svc, _, _, _ := newTestService(t)
+	svc.ASR = &fakeASR{err: errors.New("fakeASR: endpoint down")}
+	ctx := ctx(t)
+	rev, auditions, err := svc.CreateAuditions(ctx, "char-qa-down", "a calm narrator", 3)
+	if err != nil {
+		t.Fatalf("CreateAuditions: %v", err)
+	}
+	for i, a := range auditions {
+		if a.AsrState != store.VoiceAuditionQAUnknown || a.AsrWER != 0 {
+			t.Fatalf("audition %d asr = state %d wer %g, want not-run/unknown", i+1, a.AsrState, a.AsrWER)
+		}
+	}
+	if _, err := svc.Approve(ctx, rev.ID, auditions[0].ID, "consent", "curator-1"); err != nil {
+		t.Fatalf("Approve with ASR down = %v, want success (degraded mode)", err)
+	}
+}

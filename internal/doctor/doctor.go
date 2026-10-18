@@ -184,6 +184,9 @@ type Options struct {
 	// VoiceProbe overrides the TTS probe for the voice_design and voice_clone
 	// roles (tests); nil uses the real tts client and registry.
 	VoiceProbe VoiceProbe
+	// ASRProbe overrides the transcription probe for the speech_asr role
+	// (tests); nil uses the real asr client.
+	ASRProbe ASRProbe
 
 	// OCRImage overrides the embedded controlled image.
 	OCRImage []byte

@@ -55,6 +55,10 @@ export const ports = {
   /** the scripted System One / Clef-Omni instance (web/e2e/fake-clef.mjs) the
    *  developer-decision walk configures as the decision role. */
   fakeClef: 18109,
+  /** the scripted ASR instance (web/e2e/fake-asr.mjs) the voices walk points
+   *  the speech_asr role at, so the audition QA badges run against the
+   *  transcription wire with a synthetic stub (ADR 0061). */
+  fakeASR: 18111,
   /** the packaged binary the developer-decision walk drives (developer-decision.spec.ts):
    *  the inspector's replay with the ambiguous ranking sent to the scripted
    *  Clef instance and the endpoint-down degraded case. */

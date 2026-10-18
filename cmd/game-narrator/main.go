@@ -44,6 +44,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/jobs"
 	"github.com/dbirks/game-narrator/internal/pipeline"
 	"github.com/dbirks/game-narrator/internal/providers"
+	"github.com/dbirks/game-narrator/internal/providers/asr"
 	"github.com/dbirks/game-narrator/internal/providers/openai"
 	"github.com/dbirks/game-narrator/internal/providers/router"
 	"github.com/dbirks/game-narrator/internal/providers/tts"
@@ -837,6 +838,25 @@ func newVoiceWiring(st *store.Store, assetStore *assets.Local, log *slog.Logger)
 		InstanceID:    voices.DefaultInstanceID,
 		BaseModelID:   cloneCfg.Model,
 		BackendDigest: previewBackendDigest(cloneCfg.Model),
+	}
+	// ASR QA (FR-10, ADR 0061): the speech_asr role is independent of the
+	// voice roles. Configured, the audition read-back and the generated-line
+	// QA-on-insert run; unconfigured, both degrade to "not run" — neither
+	// playback nor approval ever blocks on ASR.
+	if asrCfg := roles[providers.RoleSpeechASR]; asrCfg.Configured() {
+		asrClient, err := asr.NewFromRole(asrCfg)
+		if err != nil {
+			return nil, nil, fmt.Errorf("speech_asr client: %w", err)
+		}
+		svc.ASR = asrClient
+		qa := speech.NewQAEngine(svc.Speech, asrClient)
+		qa.Log = func(format string, args ...any) {
+			log.Info(format, append([]any{"qa", "speech_asr"}, args...)...)
+		}
+		svc.QA = qa
+		log.Info("speech_asr QA wired", "asr_model", asrCfg.Model, "wer_bound", speech.WERBound())
+	} else {
+		log.Info("speech_asr QA not wired: the role is not configured; the ASR checks degrade to not-run (ADR 0061)")
 	}
 	if err := voices.New(svc); err != nil {
 		return nil, nil, fmt.Errorf("voice service: %w", err)

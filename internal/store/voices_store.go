@@ -62,6 +62,24 @@ type VoiceProfile struct {
 }
 
 // VoiceAudition is one design candidate of a revision (voice_auditions row).
+// VoiceAuditionQAState mirrors the speech cache's QA states (0 unknown /
+// not-run, 1 passed, 2 failed) for the audition approval gate (ADR 0061).
+type VoiceAuditionQAState int
+
+const (
+	// VoiceAuditionQAUnknown: the clip was not ASR-checked (the role is not
+	// configured, or the check could not run) — approval is offered, and the
+	// UI says QA was not run.
+	VoiceAuditionQAUnknown VoiceAuditionQAState = 0
+	// VoiceAuditionQAPassed: the transcript matched the reference within the
+	// bound — approval is offered.
+	VoiceAuditionQAPassed VoiceAuditionQAState = 1
+	// VoiceAuditionQAFailed: the transcript diverged beyond the bound — the
+	// audition is flagged (WER + transcript are the review evidence) and the
+	// approve action is not offered.
+	VoiceAuditionQAFailed VoiceAuditionQAState = 2
+)
+
 type VoiceAudition struct {
 	ID             string
 	VoiceProfileID string
@@ -78,6 +96,15 @@ type VoiceAudition struct {
 	LatencyMS      int64
 	Seed           *int
 	CreatedAt      time.Time
+	// ASR quality check of the clip against its reference text (FR-10,
+	// ADR 0061); the zero value is the "not run" state.
+	AsrModel      string
+	AsrState      VoiceAuditionQAState
+	AsrWER        float64
+	AsrCER        float64
+	AsrTranscript string
+	AsrRequestID  string
+	AsrCheckedAt  *time.Time
 }
 
 // VoiceRegistration is one row of voice_registrations: the state of one
@@ -99,7 +126,8 @@ const voiceProfileCols = `id, character, revision, state, design_instruction,
 
 const voiceAuditionCols = `id, voice_profile_id, "index", brief, model_id, sample_text,
 		transcript, asset_sha256, duration_ms, sample_rate, origin, request_id,
-		latency_ms, seed, created_at`
+		latency_ms, seed, created_at,
+		asr_model, asr_state, asr_wer, asr_cer, asr_transcript, asr_request_id, asr_checked_at`
 
 const voiceRegistrationCols = `voice_profile_id, provider_instance_id, registered_name,
 		remote_digest, last_verified_at, state, error`
@@ -375,11 +403,15 @@ func (s *Store) AddAuditions(ctx context.Context, voiceProfileID string, auditio
 			if strings.TrimSpace(a.SampleText) == "" || strings.TrimSpace(a.AssetSHA256) == "" {
 				return fmt.Errorf("store: %s: audition %s needs sample text and asset", op, a.ID)
 			}
+			n := strings.Count(voiceAuditionCols, ",") + 1
+			pcs := strings.TrimRight(strings.Repeat("?,", n), ",")
 			_, err := tx.exec(ctx, op,
-				"INSERT INTO voice_auditions ("+voiceAuditionCols+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+				"INSERT INTO voice_auditions ("+voiceAuditionCols+") VALUES ("+pcs+")",
 				a.ID, a.VoiceProfileID, a.Index, a.Brief, a.ModelID, a.SampleText,
 				a.Transcript, a.AssetSHA256, a.DurationMS, a.SampleRate, a.Origin,
-				a.RequestID, a.LatencyMS, a.Seed, stampMS(a.CreatedAt))
+				a.RequestID, a.LatencyMS, a.Seed, stampMS(a.CreatedAt),
+				a.AsrModel, int(a.AsrState), a.AsrWER, a.AsrCER, a.AsrTranscript,
+				a.AsrRequestID, voiceStamp(a.AsrCheckedAt))
 			if err != nil {
 				return mapWriteError(op, err)
 			}
@@ -408,13 +440,17 @@ func scanVoiceAudition(op string, row interface {
 	Scan(dest ...any) error
 }) (VoiceAudition, error) {
 	var (
-		a       VoiceAudition
-		seed    sql.NullInt64
-		created string
+		a          VoiceAudition
+		seed       sql.NullInt64
+		created    string
+		asrState   int
+		asrChecked sql.NullString
 	)
 	if err := row.Scan(&a.ID, &a.VoiceProfileID, &a.Index, &a.Brief, &a.ModelID,
 		&a.SampleText, &a.Transcript, &a.AssetSHA256, &a.DurationMS,
-		&a.SampleRate, &a.Origin, &a.RequestID, &a.LatencyMS, &seed, &created); err != nil {
+		&a.SampleRate, &a.Origin, &a.RequestID, &a.LatencyMS, &seed, &created,
+		&a.AsrModel, &asrState, &a.AsrWER, &a.AsrCER, &a.AsrTranscript,
+		&a.AsrRequestID, &asrChecked); err != nil {
 		return a, err
 	}
 	if seed.Valid {
@@ -424,6 +460,12 @@ func scanVoiceAudition(op string, row interface {
 	var err error
 	if a.CreatedAt, err = parseStamp(created); err != nil {
 		return a, mapReadError(op, err)
+	}
+	a.AsrState = VoiceAuditionQAState(asrState)
+	if asrChecked.Valid {
+		if t, err := parseStamp(asrChecked.String); err == nil {
+			a.AsrCheckedAt = &t
+		}
 	}
 	return a, nil
 }

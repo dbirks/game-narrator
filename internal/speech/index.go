@@ -49,6 +49,16 @@ type Entry struct {
 	Duration   int64   `json:"duration_ns"`
 	SampleRate int     `json:"sample_rate"`
 	QA         QAState `json:"qa_state"`
+	// QAWER/QACER are the ASR verdict measured on normalized text (0..1+);
+	// QATranscript is the recognised text verbatim; QAModel the ASR model id.
+	// Empty/zero when the check did not run (ADR 0061). Persisted by the
+	// store-backed index (migration 0012) so a flagged line survives a
+	// restart with its evidence.
+	QAWER        float64 `json:"qa_wer"`
+	QACER        float64 `json:"qa_cer"`
+	QATranscript string  `json:"qa_transcript"`
+	QAModel      string  `json:"qa_model"`
+	QACheckedAt  string  `json:"qa_checked_at"`
 	// FromCache is filled by lookups, not persisted.
 	FromCache bool `json:"-"`
 }

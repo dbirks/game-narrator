@@ -33,6 +33,7 @@ func buildDoctor(ctx context.Context, o Options) ([]byte, string, error) {
 		opts.Probe = off
 		opts.DecisionProbe = off
 		opts.VoiceProbe = off
+		opts.ASRProbe = off
 		note = offlineNote
 	} else {
 		mode = DoctorModeProbe
@@ -47,8 +48,8 @@ func buildDoctor(ctx context.Context, o Options) ([]byte, string, error) {
 }
 
 // offlineProbe answers every model probe with the skip note instead of
-// dialing a gateway. It implements all three probe interfaces the doctor
-// accepts (OpenAI provider, decision, voice), so a bundle build is
+// dialing a gateway. It implements all the probe interfaces the doctor
+// accepts (OpenAI provider, decision, voice, ASR), so a bundle build is
 // network-free by construction, not by convention.
 type offlineProbe struct{ note string }
 
@@ -86,4 +87,8 @@ func (p offlineProbe) ListVoices(context.Context, providers.RoleConfig, string) 
 
 func (p offlineProbe) ProbeReference(context.Context, providers.RoleConfig) (tts.ReferenceProbe, error) {
 	return tts.ReferenceProbe{}, p.skip()
+}
+
+func (p offlineProbe) Transcribe(context.Context, providers.RoleConfig, []byte) (doctor.ASRResult, error) {
+	return doctor.ASRResult{}, p.skip()
 }

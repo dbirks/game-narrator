@@ -23,11 +23,11 @@ matrix in [docs/status/ui-coverage.md](docs/status/ui-coverage.md).
 | M0 environment and infrastructure | **Done** — bootstrap, skeleton, gates and ADRs committed; the no-secrets gate scans tracked files and commit history (`make secret-scan`). |
 | M1 foundation and portability | **Done** — profile revisions, jobs/events, auth/sessions, REST+OpenAPI, asset store, `.gnprofile` export/import and online backup/restore committed and acceptance-verified. |
 | M2 video and recognition | **Done** — frame sources, OCR with the VLM fallback, dialogue state machine, candidate matcher and the developer inspector; real-Tesseract replay and the captured-Dolphin holdout pass (`make bench`). |
-| M3 models and knowledge agent | **Partial** — router with circuit breakers, the Clef client and the onboarding chain (research → characters → voice briefs → auditions) are proven live; the ASR client is **BLOCKED** on a second GPU. |
-| M4 voice and playback | **Partial** — TTS (atomic + streamed with real mid-stream cancel), the voice registry, cache + fenced playback and the live play path (Dolphin frames → OCR → match → Clef → speech) are proven; the ASR QA read-back is **BLOCKED** on a second GPU. |
+| M3 models and knowledge agent | **Partial** — router with circuit breakers, the Clef client and the onboarding chain (research → characters → voice briefs → auditions) are proven live; the ASR client is wired and verified live (`qwen3-asr-1-7b`, ADR 0061). |
+| M4 voice and playback | **Partial** — TTS (atomic + streamed with real mid-stream cancel), the voice registry, cache + fenced playback and the live play path (Dolphin frames → OCR → match → Clef → speech) are proven; the ASR QA read-back runs live (`qwen3-asr-1-7b`, WER 0.000 on the live line, ADR 0061). |
 | M5 React product | **Done** — every route covered by visible-state Playwright plus the axe a11y gate; settings/tests pages, corrections → regression fixtures, SSE reconnect, voice preview and the UI-only curation walk with manifest re-import. |
 | M6 Dolphin driver and fixture factory | **Done** — drive-to-dialogue, savestates over XTest hotkeys, the fixture recorder and 16 committed scenarios (14 pass, 2 blocked with unblock steps) with the linked HTML report; the two blocked rows stay reported, never passed. |
-| M7 live-model and adverse-condition validation | **Partial** — live Clef/TTS decisions, the streamed-cancel fault scenario and the captured-frame benchmark are committed (its 50% recall is reported as not met, ADR 0058); the hours-long soak passed (1 h replay +5.4% RSS, 2 h chaos +1.1% RSS, 6223 faults, 0 panics); the ASR read-back is **BLOCKED** on a second GPU. |
+| M7 live-model and adverse-condition validation | **Partial** — live Clef/TTS decisions, the streamed-cancel fault scenario and the captured-frame benchmark are committed (its 50% recall is reported as not met, ADR 0058); the hours-long soak passed (1 h replay +5.4% RSS, 2 h chaos +1.1% RSS, 6223 faults, 0 panics); the ASR read-back runs live and the evidence manifest carries the ASR model id + WER when ASR is enabled (ADR 0061). |
 | M8 UNO Q and distributable release | **Partial** — `.deb`/Arch/OCI packaging with cosign-signed GHCR images + SPDX SBOM attestations, and the on-device `.deb` lifecycle (install/upgrade/rollback/purge) are proven; UNO Q capture/audio is **BLOCKED** on the appliance. |
 
 The four live gates (`test-replay`, `test-dolphin`, `test-models`,
@@ -180,18 +180,20 @@ Copy `.env.example` and fill it in — every value there is a placeholder on a
 somebody else's server. Model **roles** are configured by environment
 variables (`GAME_NARRATOR_ROLE_*`), not raw URLs in a config file; a role is
 enabled only when its model is set, and preflight reports the rest as `NOT
-CONFIGURED` while the service keeps running. In this build every role except
-`speech_asr` has an adapter: `agent_reasoning`, `fast_reasoning` and
+CONFIGURED` while the service keeps running. In this build every role has an
+adapter: `agent_reasoning`, `fast_reasoning` and
 `vision_ocr_fallback` use the OpenAI-compatible chat client
 (`internal/providers/openai`), `decision` uses the System One / Clef-Omni
-client (`internal/providers/systemone`, ADR 0021) and
+client (`internal/providers/systemone`, ADR 0021),
 `voice_design`/`voice_clone` use the Qwen3-TTS client
-(`internal/providers/tts`, ADR 0022). `speech_asr` has no adapter and no ASR
-endpoint yet — it is BLOCKED on hardware. Deployment is separate from the
-code: the gateway serves the chat roles, and `decision` and
+(`internal/providers/tts`, ADR 0022) and `speech_asr` uses the
+OpenAI-compatible `/audio/transcriptions` client
+(`internal/providers/asr`, ADR 0061) for the ASR QA loop. Deployment is
+separate from the code: the gateway serves the chat roles, and `decision` and
 `voice_design`/`voice_clone` have live endpoints, exercised by the live
 provider tests (ADRs 0021, 0022 and 0030); `vision_ocr_fallback` has an
-adapter but no vision model configured, and `speech_asr` is BLOCKED — so
+adapter but no vision model configured, and `speech_asr` is deployed
+(`qwen3-asr-1-7b`, verified live 2026-10-18) — so
 preflight reports the missing ones `NOT CONFIGURED` while the service keeps
 running. `examples/config/` holds the illustrative YAML/env samples from the
 spec kit. Never commit `.env` — it is gitignored, and so is any real token.

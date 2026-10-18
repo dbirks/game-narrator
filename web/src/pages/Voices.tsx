@@ -497,6 +497,36 @@ function AuditionCard({
         <Loading label="Loading clip…" />
       )}
       <p data-testid={`audition-transcript-${index}`}>{audition.transcript}</p>
+      {/* ASR QA verdict (FR-10, ADR 0061): the failed state is the flag —
+          the badge shows the WER and the recognised transcript as the review
+          evidence, and the backend refuses approval until a human has looked. */}
+      {audition.qa_state === "failed" ? (
+        <p className="muted">
+          <span className="badge badge-failed" data-testid={`qa-flag-${index}`}>
+            QA flagged · wer {audition.qa_wer?.toFixed(2) ?? "—"}
+          </span>{" "}
+          {audition.qa_model ? (
+            <code data-testid={`qa-model-${index}`}>{audition.qa_model}</code>
+          ) : null}
+        </p>
+      ) : audition.qa_state === "passed" ? (
+        <p className="muted">
+          <span className="badge badge-published" data-testid={`qa-pass-${index}`}>
+            QA passed · wer {audition.qa_wer?.toFixed(2) ?? "—"}
+          </span>
+        </p>
+      ) : (
+        <p className="muted">
+          <span className="badge badge-draft" data-testid={`qa-notrun-${index}`}>
+            QA not run
+          </span>
+        </p>
+      )}
+      {audition.qa_state === "failed" && audition.qa_transcript ? (
+        <p className="muted" data-testid={`qa-transcript-${index}`}>
+          <span className="muted">ASR heard</span> “{audition.qa_transcript}”
+        </p>
+      ) : null}
       <button
         type="button"
         onClick={onSelect}

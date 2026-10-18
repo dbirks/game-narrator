@@ -353,3 +353,15 @@ sentinel) restores the old "bad_schema on empty message" behaviour if a
 future gateway makes the case unreachable. The composed instruction merges
 two system hints into one message; if a future deployment misbehaves with
 combined instructions, the flags still degrade independently per capability.
+
+## speech_asr deployment (2026-10-18 amendment)
+
+The "four are not deployed" statement above is amended: `speech_asr` is now
+deployed and has an adapter. The endpoint (`qwen3-asr-1-7b`, the
+OpenAI-compatible `POST /v1/audio/transcriptions` wire) was provisioned and
+measured live on 2026-10-18; the `internal/providers/asr` client (taxonomy,
+client-minted `X-Request-Id`, idempotent-only retry policy at the caller) and
+the QA loop (normalized WER/CER, the ≤0.2 bound, the regenerate-once policy,
+the audition approval gate, migration 0012) are ADR 0061. Of the seven roles,
+three remain undeployed in this build: `decision`, `voice_design`,
+`voice_clone`.

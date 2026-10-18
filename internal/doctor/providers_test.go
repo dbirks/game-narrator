@@ -78,30 +78,27 @@ func TestUnconfiguredRolesAreNotConfigured(t *testing.T) {
 	}
 }
 
-func TestUndeployedRolesAreDegradedEvenWhenConfigured(t *testing.T) {
+func TestConfiguredRoleWithUnreachableASREndpointFails(t *testing.T) {
 	h := newFakeHost(t)
 	h.withEnv("GAME_NARRATOR_GATEWAY_URL", "http://gateway.invalid/v1")
-	// The decision role has a real client (ADR-0021) and the voice roles have
-	// real probes (ADR-0022); they are covered by the probe tests, not by
-	// this list. Only speech_asr still has no adapter in this build.
-	for _, role := range []providers.Role{
-		providers.RoleSpeechASR,
-	} {
-		modelEnv, _, _, _ := providers.RoleEnvVars(role)
-		h.withEnv(modelEnv, "some-checkpoint")
-	}
+	// speech_asr now has a real probe (ADR 0061): a configured-but-unreachable
+	// endpoint is a FAIL with the unavailable kind — the honest request
+	// failure every other role reports — not the old DEGRADED "not
+	// implemented" row. The probe is scripted so the test stays network-free.
+	modelEnv, _, _, _ := providers.RoleEnvVars(providers.RoleSpeechASR)
+	h.withEnv(modelEnv, "some-checkpoint")
+	h.opts.ASRProbe = &scriptedASRProbe{err: providers.NewError(providers.KindUnavailable, 0, "unavailable model=some-checkpoint: endpoint unreachable")}
 	rep := h.run()
-	for _, role := range []providers.Role{
-		providers.RoleSpeechASR,
-	} {
-		c := h.check(rep, "providers."+string(role))
-		mustStatus(t, c, StatusDegraded)
-		if c.Summary != "client not implemented yet (M4)" {
-			t.Fatalf("%s: summary = %q, want the documented wording", role, c.Summary)
-		}
-		if !strings.Contains(c.Detail, "some-checkpoint") {
-			t.Errorf("%s: detail = %q, want the configured model recorded", role, c.Detail)
-		}
+	c := h.check(rep, "providers.speech_asr")
+	mustStatus(t, c, StatusFail)
+	if !strings.Contains(c.Summary, "unavailable") || !strings.Contains(c.Summary, "speech_asr") {
+		t.Fatalf("summary = %q, want the unavailable kind and the role", c.Summary)
+	}
+	if !strings.Contains(c.Detail, "some-checkpoint") {
+		t.Errorf("detail = %q, want the configured model recorded", c.Detail)
+	}
+	if !strings.Contains(c.Remedy, modelEnv) {
+		t.Errorf("remedy = %q, want it to name %s", c.Remedy, modelEnv)
 	}
 }
 

@@ -568,6 +568,16 @@ func (w *speechWiring) speak(u *utteranceInfo) {
 		w.finishEnded(u, "failed", providerErrorKind(err))
 		return
 	}
+	if !res.FromCache {
+		// QA on insert (FR-10, ADR 0061): the freshly committed line is read
+		// back; an over-bound transcript regenerates once and the verdict
+		// (with WER + transcript) persists on the entry. Cache hits keep
+		// their stored verdict. QA never blocks playback: when it cannot run
+		// the entry stays "not run" and the line plays.
+		res, _ = w.voices.QA.QAInsert(synthCtx, key, u.text, res, func(ctx context.Context) (tts.Audio, error) {
+			return rv.generate(ctx, u.text)
+		})
+	}
 	if res.FromCache {
 		w.mu.Lock()
 		w.cacheHits++

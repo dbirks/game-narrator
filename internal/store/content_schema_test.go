@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/dbirks/game-narrator/internal/games"
 	"github.com/dbirks/game-narrator/internal/speech"
 )
 
@@ -416,8 +418,33 @@ func TestNewTablesSurviveBackupRoundTrip(t *testing.T) {
 	if err := NewSpeechCacheIndex(s).Put(speechTestKey(0), speech.Entry{
 		SHA256: "aa" + tail62('a'), Size: 4096, Duration: 1_000_000,
 		SampleRate: 16000, QA: speech.QAPassed,
+		QAWER: 0.08, QACER: 0.04, QATranscript: "the road ahead is clear",
+		QAModel: "qwen3-asr-1-7b", QACheckedAt: time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
 	}); err != nil {
 		t.Fatalf("seed speech_cache: %v", err)
+	}
+
+	// An audition row carrying its ASR verdict (migration 0012) goes through
+	// the voice write path: the approval gate (ADR 0061) reads these fields
+	// back, so the round trip must carry them too.
+	draft := testVoiceRevision(t, "char-qa", 1, VoiceStateDraft)
+	if err := s.CreateVoiceRevision(ctx, draft); err != nil {
+		t.Fatalf("create draft: %v", err)
+	}
+	checkedAt := time.Now().UTC().Truncate(time.Millisecond)
+	au := VoiceAudition{
+		ID: games.NewID(), VoiceProfileID: draft.ID, Index: 1,
+		Brief: draft.DesignInstruction, ModelID: "qwen3-tts-voicedesign",
+		SampleText: "Hello there.", Transcript: "Hello there.",
+		AssetSHA256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		DurationMS:  1200, SampleRate: 24000, Origin: "voice_design (test)",
+		LatencyMS: 42, CreatedAt: checkedAt,
+		AsrModel: "qwen3-asr-1-7b", AsrState: VoiceAuditionQAPassed,
+		AsrWER: 0.08, AsrCER: 0.04, AsrTranscript: "hello there",
+		AsrRequestID: games.NewID(), AsrCheckedAt: &checkedAt,
+	}
+	if err := s.AddAuditions(ctx, draft.ID, []string{au.ID}, []VoiceAudition{au}); err != nil {
+		t.Fatalf("seed voice_auditions: %v", err)
 	}
 
 	dest := DBPath(t.TempDir())
@@ -437,14 +464,31 @@ func TestNewTablesSurviveBackupRoundTrip(t *testing.T) {
 	if n := countRows(t, backup.db, "speech_cache"); n != 1 {
 		t.Fatalf("backup speech_cache = %d, want 1", n)
 	}
+	if n := countRows(t, backup.db, "voice_auditions"); n != 1 {
+		t.Fatalf("backup voice_auditions = %d, want 1", n)
+	}
+	// The migration 0012 QA evidence survives the round trip, not just the
+	// row counts: the flagged/passed verdicts are what the UI and the
+	// approval gate read back after a restart.
+	list, err := backup.ListAuditions(ctx, draft.ID)
+	if err != nil || len(list) != 1 {
+		t.Fatalf("backup ListAuditions = %v, %v; want 1 row", list, err)
+	}
+	a := list[0]
+	if a.AsrState != VoiceAuditionQAPassed || a.AsrModel != "qwen3-asr-1-7b" ||
+		a.AsrTranscript != "hello there" || a.AsrWER != 0.08 || a.AsrCheckedAt == nil {
+		t.Fatalf("backup audition QA = %+v, want the seeded verdict", a)
+	}
 	// Restoring the backup reproduces a usable index, not just a row count:
 	// a fresh index over the backup LoadAlls the seeded entry.
 	loaded, err := NewSpeechCacheIndex(backup).LoadAll(ctx)
 	if err != nil {
 		t.Fatalf("LoadAll on the backup: %v", err)
 	}
-	if e, ok := loaded[speechTestKey(0)]; !ok || e.QA != speech.QAPassed {
-		t.Fatalf("backup LoadAll entry = %+v ok=%v, want the QA-passed row", e, ok)
+	e, ok := loaded[speechTestKey(0)]
+	if !ok || e.QA != speech.QAPassed || e.QATranscript != "the road ahead is clear" ||
+		e.QAModel != "qwen3-asr-1-7b" || e.QACheckedAt == "" {
+		t.Fatalf("backup LoadAll entry = %+v ok=%v, want the QA-passed row with evidence", e, ok)
 	}
 }
 

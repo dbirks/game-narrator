@@ -86,6 +86,10 @@ var literalEnums = map[string][]string{
 	// per-instance registration states the registry reconciliation writes.
 	"VoiceRevision.properties.state":     {store.VoiceStateDraft, store.VoiceStateAuditioning, store.VoiceStateApproved, store.VoiceStateRetired},
 	"VoiceRegistration.properties.state": {store.VoiceRegPending, store.VoiceRegReady, store.VoiceRegInvalid},
+	// The audition ASR QA verdict (FR-10, ADR 0061): internal/api/voices.go's
+	// auditionQAStateName writes exactly these three words; "unknown" is the
+	// not-run state of the documented degraded mode.
+	"VoiceAudition.properties.qa_state": {"unknown", "passed", "failed"},
 	// The dev-only Dolphin bridge (docs/spec/11) writes these lifecycle states
 	// in internal/dolphin/state.go; the dev API serves them verbatim in the
 	// status route, so the vocabulary is pinned here like the other

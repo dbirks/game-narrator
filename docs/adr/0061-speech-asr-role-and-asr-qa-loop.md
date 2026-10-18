@@ -1,0 +1,95 @@
+# ADR-0061: The speech_asr role, the ASR QA loop, and the audition approval gate
+
+Date: 2026-10-18
+Status: accepted
+Owners: agent worker
+Related requirements/tests: docs/spec/07 ("ASR loop", FR-10), docs/spec/12 ("UI", "retain diagnostic evidence", "Contract" mode), docs/spec/13 (bounded retry, graceful degradation), docs/spec/16 (M3 acceptance "real TTS+ASR tests when configured", M7 evidence bundle "resulting audio WAV and ASR evaluation"), ADR 0009 (provider roles and the OpenAI-compatible client), ADR 0022 (TTS contract), ADR 0057 (streamed TTS; no seed on the current Base wire), `internal/providers/asr/` (client, taxonomy, request id, live test), `internal/speech/qa.go` (QA engine, metrics), `internal/store/migrations/0012_asr_qa.sql`, `web/e2e/fake-asr.mjs` + `web/e2e/voices-qa.spec.ts`
+
+## Context and constraints
+
+FR-10 asks the app to prove "the audio actually heard was the intended line": read a freshly synthesized clip back through an ASR endpoint, compare the transcript against the intended text, and act on the verdict. Until now `speech_asr` was a declared-but-inert role (protocol `probe_required`, no adapter) and the register listed it as BLOCKED (no endpoint).
+
+On 2026-10-18 the endpoint was provisioned and measured live:
+
+- **Model/endpoint:** `qwen3-asr-1-7b` answers `POST /v1/audio/transcriptions` (the OpenAI-compatible transcriptions wire, reached through the same gateway base URL and token as the other OpenAI-compatible roles).
+- **Wire (measured):** multipart form with `model`, `file` (the WAV), `response_format`, and an optional `language`. `response_format=json` returns `{"text": …}`; `verbose_json` returns `{"task","language","duration","text"}`. A 2 s WAV round-trips in ~0.5–0.8 s.
+- **The endpoint normalizes spelling on its way out** ("harbour" → "harbor", verified by probe). Comparing raw text would therefore fail a clip whose only divergence is the endpoint's own normalization.
+- **The endpoint sends no request-id header.** Correlation must come from the client, the way `internal/providers/tts/requestid.go` already does: mint a ULID, send it as `X-Request-Id`, and record which side supplied the id.
+
+Constraints carried in from the rest of the system:
+
+- **Bounded autonomous troubleshooting (docs/spec/13, AGENTS.md rule 11):** retry only idempotent operations, with a maximum attempt count. A transcription is a pure function of the bytes, so it is idempotent and safe to retry; anything else (auth, payload size, unsupported capability) is terminal.
+- **Graceful degraded modes (AGENTS.md rule 7):** ASR down or not configured must never block audio. QA is evidence, not a gate on playback.
+- **Retain diagnostic evidence (docs/spec/12):** a verdict without its evidence (the WER, the recognized transcript, the model id, the request correlation) is not debuggable and cannot go into an evidence bundle.
+- **Schema discipline (AGENTS.md rule 10):** the verdict and its evidence must survive a restart (a flagged line is a review artifact, not a transient), and every migration needs the forward + backup/restore proof.
+- **No simulation theater (AGENTS.md rule 3):** the UI test of the QA loop must exercise the real transcription wire end to end, with the model scripted at the provider boundary — never a fake that bypasses the client.
+
+## Decision
+
+**The role.** `speech_asr` becomes a deployed role on the `openai_transcriptions` protocol (default timeout 30 s), configured by `GAME_NARRATOR_ROLE_SPEECH_ASR_MODEL` (plus the usual `_URL`/`_PROTOCOL`/`_TIMEOUT` overrides; the shared gateway token is reused). `doctor` probes it: one real transcription of the 0.25 s probe tone, classified through the same taxonomy. OK is a **wire-level** verdict — the request reached the model named by the role and answered with the transcription schema — because the tone carries no speech and the deployed endpoint transcribes it to an empty transcript (measured): the row says so explicitly ("the probe tone transcribed to an empty transcript — expected for non-speech audio"), and every transport/auth/timeout/rate-limit/schema failure fails through the client's taxonomy.
+
+**The client** (`internal/providers/asr`):
+
+- `Transcribe` sends one multipart request (`verbose_json`, so the result carries language/duration) and classifies every failure as a `*providers.Error` — `KindTimeout` (deadline), `KindUnavailable` (transport/5xx), `KindRateLimited` (429), `KindAuth` (401/403), `KindPayloadTooLarge` (413), `KindUnsupportedCapability` (400 on the model), `KindCancelled` (context). A retryable kind is exactly `{KindRateLimited, KindUnavailable, KindTimeout}`.
+- **The client itself never retries.** The idempotent-only retry policy lives with the caller (the QA engine), which retries a transcription at most once, only on a retryable kind. Keeping the policy out of the client keeps every caller's attempt count explicit and testable.
+- **Client-minted correlation.** Because the endpoint returns no request-id header, the client mints a ULID, sends it as `X-Request-Id`, and reports `RequestIDSource = "client"` (vs `endpoint` where the header is honored). No log line ever carries a URL or token (AGENTS.md rule 5).
+- **An empty transcript is a valid result, and the policy belongs to the caller.** The client is a faithful wire adapter: a 200 whose body decodes as a transcription object is a result, whether or not it carries text (the deployed `qwen3-asr-1-7b` transcribes the doctor's probe tone to exactly `""`, measured 2026-10-18). Only a body that is not a transcription object fails as a decode error (malformed JSON; not an object; or — for the verbose_json the client requests by default — an object missing the `task` field, which is schema drift, a different service answering). The two callers then apply opposite policies to the same wire fact: the **QA loop** scores an empty transcript against a line expected to carry speech as WER 1.0 (over the bound → regenerate once → flagged with the evidence — docs/spec/07: silent audio is a QA signal), and the **doctor probe** treats it as a verified route (the request reached the named model and the protocol/credential are proven).
+- **Live test.** `go test -run Live ./internal/providers/asr/...` synthesizes a known line with the real TTS role, transcribes it with the real ASR role, and prints `wer=… cer=… within_bound=… request_id=…`. It SKIPs with `NOT RUN` when the gateway URL or model is absent, so `go test ./...` stays green offline. `make test-models` picks the live ASR case up alongside the TTS live case.
+
+**Normalization and metrics** (`internal/speech/qa_metrics.go`). Both sides of the comparison are reduced with the same function before measuring: lowercase; every non-letter/non-digit run collapsed to a single space (the endpoint drops punctuation entirely, so punctuation must never count as an edit); the contraction apostrophe removed (the endpoint turns "Let's" into "lets"); and a deliberately small British/American spelling map applied symmetrically (the divergences the endpoint applies — `harbour`/`harbor`, `colour`/`color`, …). An open thesaurus would swallow real divergences the loop exists to catch. WER is the classic edit distance over the normalized token sequences (a number in [0, 1]); CER is the same over characters, reported for the bundle. **The pass bound is WER ≤ 0.2** (`speech.WERBound()`), the documented bound from the FR-10 acceptance text.
+
+**The QA engine** (`internal/speech/qa.go`) runs on **cache INSERT** (a freshly committed line), never over a cache hit — the verdict persists on the entry, and re-checking bytes that already carry a verdict would spend ASR budget proving nothing. The policy:
+
+1. Transcribe, retrying once on a retryable kind only.
+2. WER ≤ bound → `QAPassed`.
+3. WER > bound → **regenerate once** and re-check the same way. The current Base wire carries no seed (ADR 0057), so the regeneration is the same key; the moment the checkpoint exposes a seed, the policy is the same regenerate-once bound under a new key. The second verdict is the entry's: pass → `QAPassed`; fail → `QAFailed` **with the WER and transcript**.
+4. ASR down or not configured after both attempts → `QAUnknown` ("not run").
+
+In every case **the line still plays**: QA never blocks playback (docs/spec/13 "ASR down"; the graceful-degradation rule). The first-attempt WER (when a regeneration runs) and the ASR error (when the check could not run) go to the structured log as retained diagnostic evidence.
+
+**The approval gate** (voice auditions, FR-10's first consumer). Each audition clip is read back the same way when the voice enters the auditioning state: the audition's `asr_state` is `passed`, `failed` (with WER/CER, transcript, model id, request id, checked-at), or `unknown` (not run). **Approve requires every audition to be passed or not-run; an audition that failed QA makes the voice un-approvable** — `POST …/approve` returns 409 `AUDITION_FLAGGED` and the UI shows the flag with the WER and the "ASR heard …" evidence as the review material. A voice whose QA was not run (role not configured) stays approvable: the degraded mode is documented, not silent.
+
+**Persistence.** Migration 0012 adds the evidence columns to `voice_auditions` (`asr_model`, `asr_state`, `asr_wer`, `asr_cer`, `asr_transcript`, `asr_request_id`, `asr_checked_at`) and to `speech_cache` (`qa_wer`, `qa_cer`, `qa_transcript`, `qa_model`, `qa_checked_at`; `qa_state` already existed from 0011). Every column is additive with a default: zero data movement, backward compatible by construction, a row without a check reads as "not run". The backup/restore round trip covers the new columns (`content_schema_test.go`).
+
+**The UI** (docs/spec/12 "UI", first-class). The voices page renders the verdict on each audition card — a "QA passed (wer …)" badge, or a "QA flagged (wer …)" badge with the recognized transcript — and the approve action follows the gate above. The e2e proof is `web/e2e/voices-qa.spec.ts` against the packaged binary with the speech roles pointed at the scripted TTS instance (`fake-tts.mjs`) and the `speech_asr` role at the scripted ASR instance (`fake-asr.mjs`) — the real `/audio/transcriptions` wire through the real client, the real job queue and the real store, with the model scripted at the provider boundary (a synthetic stub in the sense of AGENTS.md rule 3, exactly the boundary the TTS e2e already draws). The stub recovers the spoken line from the tone's frequency (the fake TTS's seed is a function of line+brief+model) and answers the line's text — or a planted mishearing for the designated line, the flagged case the spec asserts, including the 409 and the badge.
+
+**The M7 evidence manifest.** When the M7 evidence bundle runs with ASR enabled, it records the ASR model id and the measured WER (from `make test-models`'s live ASR case and the QA engine's structured log); the register's unblock criterion for `speech_asr` is met and the row moves to Cleared (docs/status/blocked.md, 2026-10-18).
+
+## Options considered
+
+- **Compare raw text (no normalization).** Simplest, and it would catch the endpoint's spelling normalization as a "divergence" — but the endpoint *is* the reference for what was heard, and its normalization is part of that contract. Raw comparison would flag clean clips and teach the operator to ignore the flag. Rejected.
+- **A full thesaurus / synonym layer in the comparison.** Would absorb genuine mispronunciations (synonyms, paraphrase) the loop exists to catch — a QA loop that passes paraphrase is not checking that the line was heard. Rejected; the map stays a measured list of the endpoint's own spelling normalizations.
+- **Retry inside the client.** Puts the attempt count out of the caller's control and makes the idempotency argument per-client instead of per-operation. The policy is one line at the single call site; it is more honest there. Rejected.
+- **Block playback on a failed verdict.** A failed audition QA blocks *approval* (the human gate), but a generated-line QA that fails would, if fatal, hold the whole session on an ASR timeout — exactly the adverse condition docs/spec/13 says must degrade. The line plays, the flag is retained and surfaced. Rejected as a gate on audio; kept as a gate on approval, where a human reviews the evidence.
+- **NFKC normalization of both sides.** The Go toolchain (1.27.2) has `unicode/norm` removed from the standard library, so the comparison is case/punctuation/whitespace/spelling-mapped only. If full-width or ligature forms ever reach the comparison (they have not in the probes), the bound is re-tuned and the folding revisited with a measured case, per this ADR's amendment path.
+- **Treat an empty transcript as a client-side decode error (the original design).** It made the QA loop see "failure to verify" (not "verified empty") and the doctor fail on the tone — but the deployed endpoint transcribes the probe tone to an empty transcript by contract (measured 2026-10-18), so that design made the doctor report a healthy endpoint as broken and turned silent TTS output into a QAUnknown ("not run") instead of a flagged line. The client now reports the wire fact and the callers apply the policy: the ADR's empty-transcript paragraph above. Rejected.
+
+## Tradeoffs
+
+- **WER ≤ 0.2 is a chosen constant**, not a measured optimum: the live probes (synthetic line, real TTS + real ASR) measured WER 0.000, so the bound is not yet stress-tested against the endpoint's real drift. It is exported (`speech.WERBound()`) and the bound is recorded on every verdict, so a re-tune is a one-line change with the evidence to justify it; the ADR is amended with the measurement.
+- **Client-minted ULIDs** mean the correlation id on the wire and in the evidence is not independently verifiable by the endpoint (it returns nothing). The client still records `RequestIDSource`, and the endpoint *does* accept the header, so a future endpoint that echoes ids is picked up without a client change.
+- **Regenerate-once is one extra TTS synthesis per flagged line** — bounded, and spent only on lines that already failed QA. With no seed on the current wire it is the same key re-rolled by the model; the policy explicitly anticipates the seed-bearing form.
+- **The audition gate is all-or-nothing per voice**: one flagged audition blocks approval. That matches FR-10's "the audition transcript within the bound or the audition is flagged" and keeps the human review to the one flagged candidate rather than every candidate.
+
+## Verification
+
+- **Client unit tests** (`internal/providers/asr/client_test.go`, httptest): the multipart shape, `json`/`verbose_json` decoding, every taxonomy branch, the client-minted `X-Request-Id` and `RequestIDSource`, the retryable-kind set, the empty-transcript-as-valid-result rule (including the `task`-field schema-drift guard on verbose_json), and decode errors.
+- **Live probe and live test:** `qwen3-asr-1-7b` measured on 2026-10-18 (verbose_json, ~0.5–0.8 s, spelling normalization observed); `go test -race -run Live ./internal/providers/asr/...` runs the real TTS→ASR round trip and reported `wer=0.000 cer=0.000 within_bound=true` with the request id (2026-10-18). Offline it SKIPs with `NOT RUN`.
+- **QA engine tests** (`internal/speech/qa_test.go`): pass/fail/unknown, the regenerate-once path, the retry-once-on-retryable-kind path, normalization symmetry (spelling map, punctuation, contractions), and WER/CER on known pairs.
+- **Schema:** migration 0012 applies forward; the backup/restore round trip passes with the new columns (`content_schema_test.go`).
+- **Roles/doctor:** `TestLoadRolesDefaultsEveryRoleUnconfigured` updated to the deployed defaults (`openai_transcriptions`, 30 s, deployed); `doctor` reports the role `OK` with the model id when configured (asr_test.go), and the packaged binary's `doctor` reported `OK providers.speech_asr — model qwen3-asr-1-7b answered the transcription probe in 301ms` against the live gateway on 2026-10-18 (overall 8 OK / 0 FAIL).
+- **UI:** `pnpm typecheck` / `test` green; `web/e2e/voices-qa.spec.ts` passes against the packaged binary (two passed badges with WER, one flagged badge with the planted mishearing, the 409 `AUDITION_FLAGGED` on the flagged audition, a passing audition still approvable), as does the pre-existing `voices.spec.ts` walk.
+- **Command gates:** `gofmt -l` clean; `go vet ./...` clean; `go test -race` green over `internal/providers`, `internal/voices`, `internal/speech`, `internal/doctor`, `internal/api`, `internal/store`; `make build` green.
+
+## Consequences
+
+- `speech_asr` is a real role: configurable, probed by doctor, tested live, and blocking in the register (Cleared 2026-10-18).
+- Every fresh utterance carries a persisted, evidenced QA verdict (or the explicit "not run"), and every voice approval is backed by the audition read-backs or is refused with the evidence.
+- The ASR budget is bounded by construction: one transcription per insert, at most one retry, at most one regeneration — and QA costs nothing on a cache hit.
+- The bound and the normalization are the two tunable constants of the loop; both are recorded on every verdict so a re-tune is a measured change, not a guess.
+
+## Reversal plan
+
+- **Revert the bound or normalization:** one-line (`WERBound`) / one-file (`qa_metrics.go`) change; no schema impact (verdicts already store the raw WER/CER and transcript).
+- **Un-deploy the role:** set its protocol back to `probe_required` (or unset the model); the QA engine's nil-ASR path is the documented degraded mode and every gate degrades to "not run" — approval and playback are unaffected, which is exactly the pre-ADR behaviour.
+- **Schema reversal:** the 0012 columns are additive with defaults; a forward migration that drops them (with the standard backup taken per AGENTS.md rule 10) restores the pre-0012 layout. No other migration depends on them.

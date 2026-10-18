@@ -70,6 +70,20 @@ type Service struct {
 	// at 500 characters; <= 0 uses DesignInstructionCap, so a struct-literal
 	// Service behaves like one built with defaults.
 	InstructionCap int
+	// ASR runs the audition QA read-back (FR-10, ADR 0061): each audition
+	// clip is transcribed and compared against the line it was synthesised
+	// from, and the verdict (WER/CER, transcript, model, request id) is
+	// persisted on the audition row. Nil is a supported degraded
+	// configuration (the speech_asr role is not configured): the check is
+	// simply not run, the UI reports QA as not-run, and neither playback nor
+	// approval ever blocks on ASR.
+	ASR speech.ASRClient
+	// QA runs the generated-line QA on cache insert (ADR 0061): a freshly
+	// committed line is read back, and an over-bound transcript regenerates
+	// once before the entry is flagged. Nil (the role not configured) means
+	// the check simply does not run; the runtime never blocks playback on
+	// either check.
+	QA *speech.QAEngine
 }
 
 // New validates the wiring.
@@ -205,6 +219,30 @@ func (s *Service) fillDraft(ctx context.Context, rev store.VoiceProfile, n int) 
 			LatencyMS: int64(audio.Latency.Milliseconds()), Seed: audio.Seed,
 			CreatedAt: now,
 		}
+		// QA read-back (FR-10, ADR 0061): the clip is transcribed and compared
+		// to the line it was synthesised from. The verdict is recorded on the
+		// row so the UI can flag it and the approval gate (below) can refuse
+		// it. A transcription error is NOT a fail: with the ASR endpoint down
+		// the audition is left as "not run", and a voice must remain approvable
+		// in the documented degraded mode.
+		if s.ASR != nil {
+			if tr, err := s.ASR.TranscribeText(ctx, audio.WAV, s.Language); err == nil {
+				rec := speech.Evaluate(line, tr.Text)
+				a.AsrModel = tr.Model
+				a.AsrWER, a.AsrCER = rec.WER, rec.CER
+				a.AsrTranscript = tr.Text
+				a.AsrRequestID = tr.RequestID
+				if rec.Pass {
+					a.AsrState = store.VoiceAuditionQAPassed
+				} else {
+					a.AsrState = store.VoiceAuditionQAFailed
+				}
+			} else {
+				a.AsrState = store.VoiceAuditionQAUnknown
+			}
+			checked := time.Now().UTC()
+			a.AsrCheckedAt = &checked
+		}
 		auditions = append(auditions, a)
 		ids = append(ids, a.ID)
 	}
@@ -251,6 +289,15 @@ func (s *Service) Approve(ctx context.Context, revisionID, auditionID, consent, 
 	}
 	if au.VoiceProfileID != revisionID {
 		return store.VoiceProfile{}, fmt.Errorf("%w: %s belongs to another revision", ErrAuditionNotFound, auditionID)
+	}
+	// ASR QA gate (FR-10, ADR 0061): an audition whose transcript diverged
+	// from the line beyond the bound is flagged, and a flagged audition is
+	// not approvable until a human has reviewed the evidence. "Not run"
+	// (ASR not configured or the endpoint down) is NOT a gate: the degraded
+	// mode keeps the voice approvable and the UI says QA was not run.
+	if au.AsrState == store.VoiceAuditionQAFailed {
+		return store.VoiceProfile{}, fmt.Errorf("%w: audition %s (wer=%g cer=%g; transcript %q)",
+			ErrAuditionFlagged, auditionID, au.AsrWER, au.AsrCER, au.AsrTranscript)
 	}
 
 	ref, err := s.loadReference(ctx, au.AssetSHA256)

@@ -82,6 +82,9 @@ func roleProbeRequests(cfg providers.RoleConfig) int {
 		return 1
 	case providers.ProtocolVLLMOmniSpeech:
 		return 2
+	case providers.ProtocolOpenAITranscriptions:
+		// The ASR probe is one transcription of the probe tone.
+		return 1
 	default: // openai_chat and any future chat-like protocol
 		return 3
 	}
@@ -130,16 +133,22 @@ func (r *runner) checkRole(ctx context.Context, role providers.Role, cfg provide
 		// real TTS probes (ADR-0022) instead of the chat/vision probe path below.
 		return r.checkVoiceRole(ctx, role, cfg)
 	}
+	if role == providers.RoleSpeechASR {
+		// The speech_asr role speaks the OpenAI transcription wire: it gets the
+		// real transcription probe (ADR 0061) instead of the chat/vision probe
+		// path below.
+		return r.checkASRRole(ctx, role, cfg)
+	}
 	if !providers.ProtocolImplemented(cfg.Protocol) {
-		// A model id alone is not proof of a working route: the ASR client lands
-		// in M4, and claiming OK now would be the simulation theatre
-		// docs/spec/12 forbids.
+		// A model id alone is not proof of a working route: claiming OK for an
+		// unimplemented protocol would be the simulation theatre docs/spec/12
+		// forbids.
 		return Check{
 			Status:  StatusDegraded,
-			Summary: "client not implemented yet (M4)",
+			Summary: "client not implemented yet",
 			Detail: fmt.Sprintf("role %s is configured with model %s over protocol %q, which has no adapter in this build",
 				role, cfg.Model, cfg.Protocol),
-			Remedy: "the endpoint is not deployed in M0 (docs/spec/16); no request was sent, so nothing is proven",
+			Remedy: "wire the role's protocol in the provider layer (docs/spec/16); no request was sent, so nothing is proven",
 		}
 	}
 

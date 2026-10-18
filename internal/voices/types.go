@@ -45,4 +45,9 @@ var (
 	ErrAuditionNotFound = errors.New("voices: audition not found on this revision")
 	// ErrReferenceMissing: the canonical reference asset is gone or corrupt.
 	ErrReferenceMissing = errors.New("voices: canonical reference asset is missing or unreadable")
+	// ErrAuditionFlagged: the audition failed its ASR QA read-back (FR-10,
+	// ADR 0061) — the transcript diverged from the line beyond the bound, so
+	// approval is refused until a human reviews the flagged evidence (the
+	// audition's WER/CER and transcript are on the row).
+	ErrAuditionFlagged = errors.New("voices: the audition failed ASR QA and is flagged; review its transcript before approving")
 )

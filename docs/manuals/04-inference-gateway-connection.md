@@ -31,14 +31,14 @@ when its `_MODEL` is set:
 | --- | --- |
 | `_MODEL` | model id; empty = role disabled → `NOT CONFIGURED` |
 | `_URL` | dedicated endpoint for this role (it then uses its own credential path) |
-| `_PROTOCOL` | `openai_chat`, `openai_chat_vision`, `systemone`, `vllm_omni_speech`, `probe_required` |
+| `_PROTOCOL` | `openai_chat`, `openai_chat_vision`, `systemone`, `vllm_omni_speech`, `openai_transcriptions`, `probe_required` |
 | `_TIMEOUT` | Go duration bounding one request (defaults: agent_reasoning 30s, fast_reasoning 10s, vision_ocr_fallback 10s, decision 1500ms, voice_design/voice_clone 120s, speech_asr 30s) |
 | `_REASONING_EFFORT` | `none` \| `low` \| `medium` \| `high`; empty omits the field. Role defaults: fast_reasoning `none`, vision_ocr_fallback `none`, agent_reasoning `low`, others omitted |
 
 Roles: `agent_reasoning`, `fast_reasoning`, `vision_ocr_fallback`
 (OpenAI-compatible chat), `decision` (System One / Clef-Omni, ADR 0021),
-`voice_design`/`voice_clone` (Qwen3-TTS, ADR 0022). `speech_asr` has no
-adapter and no endpoint yet — it is BLOCKED (docs/status/blocked.md).
+`voice_design`/`voice_clone` (Qwen3-TTS, ADR 0022), `speech_asr`
+(OpenAI-compatible `/audio/transcriptions`, ADR 0061).
 
 ## Capability findings
 

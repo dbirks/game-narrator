@@ -35,8 +35,11 @@ const (
 	RoleVoiceDesign Role = "voice_design"
 	// RoleVoiceClone is the vLLM-Omni Base checkpoint. Not deployed in M0.
 	RoleVoiceClone Role = "voice_clone"
-	// RoleSpeechASR is the ASR endpoint used by voice acceptance tests. Not
-	// deployed in M0.
+	// RoleSpeechASR is the ASR endpoint the QA loop reads played audio back
+	// with (docs/spec/07 "ASR loop", FR-10) and that the voice acceptance
+	// tests exercise. It speaks the OpenAI-compatible /audio/transcriptions
+	// wire (verified against the deployed qwen3-asr endpoint, ADR 0061) and
+	// reports NOT CONFIGURED when no model is set.
 	RoleSpeechASR Role = "speech_asr"
 )
 
@@ -79,15 +82,22 @@ type Protocol string
 const (
 	ProtocolOpenAIChat       Protocol = "openai_chat"
 	ProtocolOpenAIChatVision Protocol = "openai_chat_vision"
-	ProtocolSystemOne        Protocol = "systemone"
-	ProtocolVLLMOmniSpeech   Protocol = "vllm_omni_speech"
-	ProtocolProbeRequired    Protocol = "probe_required"
+	// ProtocolOpenAITranscriptions is the OpenAI-compatible audio
+	// transcription wire (POST /v1/audio/transcriptions, multipart) the
+	// qwen3-asr checkpoint serves (ADR 0061: the route was probed against
+	// the collective gateway 2026-10-18, so the speech_asr role names it
+	// directly instead of probing).
+	ProtocolOpenAITranscriptions Protocol = "openai_transcriptions"
+	ProtocolSystemOne            Protocol = "systemone"
+	ProtocolVLLMOmniSpeech       Protocol = "vllm_omni_speech"
+	ProtocolProbeRequired        Protocol = "probe_required"
 )
 
 // Provider protocols that have an adapter implemented in this build.
 var implementedProtocols = map[Protocol]bool{
-	ProtocolOpenAIChat:       true,
-	ProtocolOpenAIChatVision: true,
+	ProtocolOpenAIChat:           true,
+	ProtocolOpenAIChatVision:     true,
+	ProtocolOpenAITranscriptions: true,
 }
 
 // Environment variable names. A shared gateway is configured once; individual
@@ -164,8 +174,8 @@ var roleSpecs = map[Role]roleSpec{
 		note: "vLLM-Omni Base endpoint is not deployed yet",
 	},
 	RoleSpeechASR: {
-		protocol: ProtocolProbeRequired, timeout: 30 * time.Second,
-		note: "ASR endpoint route must be probed and is not deployed yet",
+		protocol: ProtocolOpenAITranscriptions, timeout: 30 * time.Second, deployed: true,
+		note: "OpenAI-compatible /audio/transcriptions endpoint for the ASR QA loop (ADR 0061)",
 	},
 }
 
@@ -291,7 +301,7 @@ func (c RoleConfig) LogValue() any {
 //
 // Precedence per role: role-specific override env var > shared gateway env var
 // > documented default. A role is only enabled when its model is set, which
-// keeps undeployed roles (decision, TTS, ASR) representable but inert.
+// keeps undeployed roles (decision, TTS) representable but inert.
 func LoadRoles(lookup func(string) (string, bool)) (map[Role]RoleConfig, error) {
 	if lookup == nil {
 		lookup = envLookup
@@ -420,7 +430,7 @@ func knownProtocols() []string {
 			out = append(out, string(spec.protocol))
 		}
 	}
-	for _, p := range []Protocol{ProtocolOpenAIChat, ProtocolOpenAIChatVision, ProtocolSystemOne, ProtocolVLLMOmniSpeech, ProtocolProbeRequired} {
+	for _, p := range []Protocol{ProtocolOpenAIChat, ProtocolOpenAIChatVision, ProtocolSystemOne, ProtocolVLLMOmniSpeech, ProtocolProbeRequired, ProtocolOpenAITranscriptions} {
 		if !seen[p] {
 			out = append(out, string(p))
 		}

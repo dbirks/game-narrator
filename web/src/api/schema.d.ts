@@ -2408,7 +2408,7 @@ export interface components {
       /** @description Present on the detail view: the per-instance registration state. */
       registrations?: components["schemas"]["VoiceRegistration"][];
     };
-    /** @description One audition clip: a VoiceDesign candidate on a fixed synthetic line (never game text, docs/spec/03). */
+    /** @description One audition clip: a VoiceDesign candidate on a fixed synthetic line (never game text, docs/spec/03). qa_state is the ASR QA verdict (FR-10, ADR 0061): unknown = not run (role unconfigured or endpoint down), passed, or failed = flagged; approval is refused while an audition is failed until a human reviews its qa_wer/qa_transcript evidence. */
     VoiceAudition: {
       id: string;
       index: number;
@@ -2425,6 +2425,26 @@ export interface components {
       request_id?: string;
       /** Format: date-time */
       created_at: string;
+      /**
+       * @description The ASR QA verdict: unknown (not run — the degraded mode keeps the voice approvable), passed (transcript within the WER bound), or failed (flagged beyond the bound).
+       * @enum {string}
+       */
+      qa_state: "unknown" | "passed" | "failed";
+      /** @description Word error rate of the read-back against the line, measured on normalized text (0..1+). Present when the check ran. */
+      qa_wer?: number;
+      /** @description Character error rate of the read-back against the line, measured on normalized text (0..1+). Present when the check ran. */
+      qa_cer?: number;
+      /** @description The recognised transcript verbatim from the ASR endpoint; the review evidence on a flagged audition. */
+      qa_transcript?: string;
+      /** @description The ASR model id that produced the verdict. */
+      qa_model?: string;
+      /** @description Correlation id of the ASR request (client-minted when the endpoint returns none). */
+      qa_request_id?: string;
+      /**
+       * Format: date-time
+       * @description When the read-back ran.
+       */
+      qa_checked_at?: string;
     };
     /** @description The full state of one revision: the revision, its audition rows and its registrations. */
     VoiceDetail: components["schemas"]["VoiceRevision"] & {

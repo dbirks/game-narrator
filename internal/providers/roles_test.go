@@ -37,7 +37,7 @@ func TestLoadRolesDefaultsEveryRoleUnconfigured(t *testing.T) {
 		RoleDecision:          {ProtocolSystemOne, 1500 * time.Millisecond, false},
 		RoleVoiceDesign:       {ProtocolVLLMOmniSpeech, 120 * time.Second, false},
 		RoleVoiceClone:        {ProtocolVLLMOmniSpeech, 120 * time.Second, false},
-		RoleSpeechASR:         {ProtocolProbeRequired, 30 * time.Second, false},
+		RoleSpeechASR:         {ProtocolOpenAITranscriptions, 30 * time.Second, true},
 	}
 	for _, role := range AllRoles {
 		cfg, ok := roles[role]

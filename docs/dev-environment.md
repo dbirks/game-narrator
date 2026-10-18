@@ -112,12 +112,18 @@ RUN) or the printed summary table, not make's own exit code.
    (Dolphin frames → OCR → match → Clef → speech) is proven by `internal/e2e`
    `TestLiveDolphin` (docs/status/acceptance.md). Playback on the UNO Q
    appliance remains **NOT VERIFIED** (gap 4).
-3. **ASR endpoint not deployed — BLOCKED.** The gateway chat/vision/decision
+3. **ASR QA loop (deployed 2026-10-18).** The gateway chat/vision/decision
    roles and the Qwen3-TTS VoiceDesign/Base endpoints are deployed and
    exercised by `make test-models` (docs/status/acceptance.md, M3/M4 rows).
-   The Qwen3-ASR checkpoint is the exception: it needs the second GPU, which
-   is not provisioned yet, so the `speech_asr` role stays BLOCKED and the
-   ASR QA read-back cannot run (docs/status/blocked.md).
+   The Qwen3-ASR checkpoint (`qwen3-asr-1-7b`, `POST /v1/audio/transcriptions`)
+   was provisioned and verified live on 2026-10-18 (ADR 0061): the
+   `speech_asr` role is deployed (protocol `openai_transcriptions`), the
+   `internal/providers/asr` client and the QA loop (normalized WER/CER, the
+   ≤0.2 bound, regenerate-once, the audition approval gate, migration 0012)
+   are wired, and `make test-models` runs the live ASR case
+   (`TestLiveTranscribeKnownLine`). The blocked.md row moved to Cleared.
+   With the role not configured, QA degrades to "not run" and neither
+   playback nor approval is affected (the documented degraded mode).
 4. **UNO Q hardware not connected — BLOCKED.** No UNO Q, no UVC capture device
    (`/dev/video*` absent), no USB DAC identified. `make test-hardware` is `NOT RUN`.
 5. **LLM and vision roles** will use an OpenAI-compatible gateway selected through

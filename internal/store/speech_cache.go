@@ -73,7 +73,8 @@ func (i *SpeechCacheIndex) Lookup(key speech.CacheKey) (speech.Entry, bool) {
 	var e speech.Entry
 	err := i.st.inRead(ctx, func(_ context.Context, q queryable) error {
 		row := q.queryRow(ctx, op,
-			`SELECT sha256, size_bytes, duration_ns, sample_rate, qa_state
+			`SELECT sha256, size_bytes, duration_ns, sample_rate, qa_state,
+			        qa_wer, qa_cer, qa_transcript, qa_model, qa_checked_at
 			   FROM speech_cache WHERE key = ?`, string(key))
 		return scanSpeechCacheEntry(op, row, &e)
 	})
@@ -89,17 +90,25 @@ func (i *SpeechCacheIndex) Put(key speech.CacheKey, e speech.Entry) error {
 	const op = "upsert speech cache entry"
 	return i.st.inWrite(context.Background(), func(_ context.Context, tx *Tx) error {
 		_, err := tx.exec(context.Background(), op,
-			`INSERT INTO speech_cache (key, sha256, size_bytes, duration_ns, sample_rate, qa_state, key_version, created_at, accessed_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`INSERT INTO speech_cache (key, sha256, size_bytes, duration_ns, sample_rate, qa_state,
+			   qa_wer, qa_cer, qa_transcript, qa_model, qa_checked_at,
+			   key_version, created_at, accessed_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			 ON CONFLICT (key) DO UPDATE SET
-			     sha256      = excluded.sha256,
-			     size_bytes  = excluded.size_bytes,
-			     duration_ns = excluded.duration_ns,
-			     sample_rate = excluded.sample_rate,
-			     qa_state    = excluded.qa_state,
-			     key_version = excluded.key_version,
-			     accessed_at = excluded.accessed_at`,
+			     sha256        = excluded.sha256,
+			     size_bytes    = excluded.size_bytes,
+			     duration_ns   = excluded.duration_ns,
+			     sample_rate   = excluded.sample_rate,
+			     qa_state      = excluded.qa_state,
+			     qa_wer        = excluded.qa_wer,
+			     qa_cer        = excluded.qa_cer,
+			     qa_transcript = excluded.qa_transcript,
+			     qa_model      = excluded.qa_model,
+			     qa_checked_at = excluded.qa_checked_at,
+			     key_version   = excluded.key_version,
+			     accessed_at   = excluded.accessed_at`,
 			string(key), e.SHA256, e.Size, e.Duration, e.SampleRate, int(e.QA),
+			e.QAWER, e.QACER, e.QATranscript, e.QAModel, e.QACheckedAt,
 			speech.KeyVersion(), stampMS(time.Now().UTC()), stampMS(time.Now().UTC()))
 		if err != nil {
 			return mapWriteError(op, err)
@@ -131,7 +140,8 @@ func (i *SpeechCacheIndex) loadLocked(ctx context.Context) (map[speech.CacheKey]
 	out := make(map[speech.CacheKey]speech.Entry)
 	err := i.st.inRead(ctx, func(_ context.Context, q queryable) error {
 		rows, err := q.query(ctx, op,
-			`SELECT key, sha256, size_bytes, duration_ns, sample_rate, qa_state
+			`SELECT key, sha256, size_bytes, duration_ns, sample_rate, qa_state,
+			        qa_wer, qa_cer, qa_transcript, qa_model, qa_checked_at
 			   FROM speech_cache`)
 		if err != nil {
 			return mapReadError(op, err)
@@ -139,14 +149,19 @@ func (i *SpeechCacheIndex) loadLocked(ctx context.Context) (map[speech.CacheKey]
 		defer rows.Close()
 		for rows.Next() {
 			var (
-				e       speech.Entry
-				key     string
-				qaState int
+				e         speech.Entry
+				key       string
+				qaState   int
+				checkedAt sql.NullString
 			)
-			if err := rows.Scan(&key, &e.SHA256, &e.Size, &e.Duration, &e.SampleRate, &qaState); err != nil {
+			if err := rows.Scan(&key, &e.SHA256, &e.Size, &e.Duration, &e.SampleRate, &qaState,
+				&e.QAWER, &e.QACER, &e.QATranscript, &e.QAModel, &checkedAt); err != nil {
 				return mapReadError(op, fmt.Errorf("scan: %w", err))
 			}
 			e.QA = speech.QAState(qaState)
+			if checkedAt.Valid {
+				e.QACheckedAt = checkedAt.String
+			}
 			out[speech.CacheKey(key)] = e
 		}
 		return mapReadError(op, rows.Err())
@@ -162,13 +177,20 @@ func (i *SpeechCacheIndex) loadLocked(ctx context.Context) (map[speech.CacheKey]
 func scanSpeechCacheEntry(op string, row interface {
 	Scan(dest ...any) error
 }, e *speech.Entry) error {
-	var qaState int
-	if err := row.Scan(&e.SHA256, &e.Size, &e.Duration, &e.SampleRate, &qaState); err != nil {
+	var (
+		qaState   int
+		checkedAt sql.NullString
+	)
+	if err := row.Scan(&e.SHA256, &e.Size, &e.Duration, &e.SampleRate, &qaState,
+		&e.QAWER, &e.QACER, &e.QATranscript, &e.QAModel, &checkedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
 		return mapReadError(op, fmt.Errorf("scan: %w", err))
 	}
 	e.QA = speech.QAState(qaState)
+	if checkedAt.Valid {
+		e.QACheckedAt = checkedAt.String
+	}
 	return nil
 }

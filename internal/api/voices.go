@@ -93,6 +93,17 @@ type voiceAuditionDTO struct {
 	Origin     string `json:"origin,omitempty"`
 	RequestID  string `json:"request_id,omitempty"`
 	CreatedAt  string `json:"created_at"`
+	// ASR QA verdict (FR-10, ADR 0061). qa_state is "unknown" (not run — the
+	// role is unconfigured or the endpoint was down), "passed", or "failed"
+	// (flagged: the UI shows the badge with qa_wer and qa_transcript as the
+	// review evidence, and approval is refused until a human reviews).
+	QAState      string  `json:"qa_state"`
+	QAWER        float64 `json:"qa_wer,omitempty"`
+	QACER        float64 `json:"qa_cer,omitempty"`
+	QATranscript string  `json:"qa_transcript,omitempty"`
+	QAModel      string  `json:"qa_model,omitempty"`
+	QARequestID  string  `json:"qa_request_id,omitempty"`
+	QACheckedAt  string  `json:"qa_checked_at,omitempty"`
 }
 
 type voiceRegistrationDTO struct {
@@ -171,14 +182,35 @@ func toVoiceRevisionDTO(p store.VoiceProfile, regs []store.VoiceRegistration) vo
 func toVoiceAuditionDTOs(auds []store.VoiceAudition) []voiceAuditionDTO {
 	out := make([]voiceAuditionDTO, 0, len(auds))
 	for _, a := range auds {
-		out = append(out, voiceAuditionDTO{
+		dto := voiceAuditionDTO{
 			ID: a.ID, Index: a.Index, Transcript: a.Transcript,
 			ModelID: a.ModelID, SHA256: a.AssetSHA256,
 			DurationMS: a.DurationMS, LatencyMS: a.LatencyMS,
 			Origin: a.Origin, RequestID: a.RequestID, CreatedAt: fmtTime(a.CreatedAt),
-		})
+			QAState: auditionQAStateName(a.AsrState),
+			QAWER:   a.AsrWER, QACER: a.AsrCER,
+			QATranscript: a.AsrTranscript, QAModel: a.AsrModel,
+			QARequestID: a.AsrRequestID,
+		}
+		if a.AsrCheckedAt != nil {
+			dto.QACheckedAt = fmtTime(*a.AsrCheckedAt)
+		}
+		out = append(out, dto)
 	}
 	return out
+}
+
+// auditionQAStateName renders the audition's QA state for the API; "unknown"
+// is the not-run state (ADR 0061's degraded mode).
+func auditionQAStateName(s store.VoiceAuditionQAState) string {
+	switch s {
+	case store.VoiceAuditionQAPassed:
+		return "passed"
+	case store.VoiceAuditionQAFailed:
+		return "failed"
+	default:
+		return "unknown"
+	}
 }
 
 func toVoiceRegistrationDTOs(regs []store.VoiceRegistration) []voiceRegistrationDTO {
@@ -495,6 +527,11 @@ func (s *Server) voiceProblem(w http.ResponseWriter, r *http.Request, err error)
 	case errors.Is(err, voices.ErrAuditionNotFound), errors.Is(err, voices.ErrReferenceMissing):
 		s.writeCodeProblem(w, r, http.StatusNotFound, "not-found", codeNotFound,
 			"Not Found", "the named voice resource is not present")
+	case errors.Is(err, voices.ErrAuditionFlagged):
+		// FR-10 / ADR 0061: a flagged audition (ASR transcript beyond the
+		// bound) is refused until a human reviews the evidence on the row.
+		s.writeCodeProblem(w, r, http.StatusConflict, "audition-flagged", "AUDITION_FLAGGED",
+			"Conflict", err.Error())
 	default:
 		s.storeProblem(w, r, err, "voice operation", "voice")
 	}
