@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -100,6 +101,14 @@ func (f *fakeDolphinBridge) WaitForGameFrame(ctx context.Context, timeout time.D
 
 func (f *fakeDolphinBridge) ProveInput(ctx context.Context) (dolphin.Evidence, error) {
 	return dolphin.Evidence{}, nil
+}
+
+func (f *fakeDolphinBridge) SaveState(ctx context.Context, slot int) (string, error) {
+	return "savestates/fake-slot-" + fmt.Sprint(slot) + ".png", nil
+}
+
+func (f *fakeDolphinBridge) LoadState(ctx context.Context, slot int) error {
+	return nil
 }
 
 func (f *fakeDolphinBridge) State() dolphin.Status {

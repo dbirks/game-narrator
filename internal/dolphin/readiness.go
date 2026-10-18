@@ -481,11 +481,12 @@ func (b *bridge) sampleWindow(ctx context.Context, display string, n int, cadenc
 //     sample AND letterboxed with rendered pixels — a single transition
 //     frame cannot fake it (input.sh's acceptance rule);
 //   - a different SETTLED full-frame screen: two consecutive samples that
-//     are a rendered full-frame scene stable against their predecessor.
-//     The title's camera orbit never settles (it moves >= crossStepMax per
-//     sample — the measured 0.10-0.40), so a settled stretch after the
-//     press is a new scene even when it sits close in RMSE to the title:
-//     the save-file prompt is displayed over the same sky and measures
+//     are a rendered full-frame screen (non-letterboxed bands + content,
+//     isSettledScene) stable against their predecessor. The title's camera
+//     orbit never settles (it moves >= crossStepMax per sample — the
+//     measured 0.10-0.40), so a settled stretch after the press is a new
+//     scene even when it sits close in RMSE to the title: the save-file
+//     prompt is displayed over the same sky and measures
 //     ~0.20 against the control window's nearest framing (which ends 1 s
 //     before the press), while the spike's retained-framing reference
 //     measured 0.345 from a different orbit phase. The settle case does
@@ -512,7 +513,7 @@ func classifyWindow(win, ctrl []sceneProbe, sceneTH float64) (bool, float64) {
 		}
 		far := d > sceneTH
 		letter := win[i].lb < letterboxMovieMax && win[i].ent > sceneEntropyMin
-		settled := win[i].lb > letterboxTitleMin && win[i].ent > sceneEntropyMin && win[i].step < crossStepMax
+		settled := isSettledScene(win[i])
 		win[i].crossed = (prevFar && far && letter) || (prevSettled && settled)
 		prevFar = far
 		prevSettled = settled
@@ -523,14 +524,37 @@ func classifyWindow(win, ctrl []sceneProbe, sceneTH float64) (bool, float64) {
 	return bothCrossed, maxDist
 }
 
+// isSettledScene reports whether a sample is a SETTLED full-frame rendered
+// screen — a new scene the press produced: rendered content (a pure-black
+// fade has none), NON-LETTERBOXED frame bands (the opening movie's bands
+// are black, measured 0.000), and stable against the previous 1 s sample
+// (the title's camera orbit moves >= crossStepMax per sample — measured
+// 0.10-0.40 — and never settles; the no-input control window verifies that
+// per episode with hasSettledStretch, which uses this same predicate).
+//
+// The band clause excludes the MOVIE shape; it is NOT a sky test. The
+// post-START screen on this image is the dark memory-card dialog, whose
+// frame bands measure 0.166-0.212 (the dialog's dark-gray frame over the
+// scene) — below the title's sky/sea bands (0.32-0.56). The original
+// sky-band floor (letterboxTitleMin) was calibrated on the unit double's
+// bright full-frame scene and rejected the measured real screen: the
+// 2026-10-18 real run pressed START, the prompt settled at lb 0.166 /
+// d 0.29 / step 0.02, and the input was not proven.
+func isSettledScene(p sceneProbe) bool {
+	return p.lb >= letterboxMovieMax && p.ent > sceneEntropyMin && p.step < crossStepMax
+}
+
 // hasSettledStretch reports whether the window contains two consecutive
 // samples that are a stable rendered full-frame screen — the shape of a NEW
 // scene, which the title's orbit must never produce while no input is sent
-// (the no-input baseline the settled crossing rule relies on).
+// (the no-input baseline the settled crossing rule relies on). The SAME
+// predicate as classifyWindow's settled mode (isSettledScene): a screen the
+// input window would accept as the press's result must also invalidate the
+// episode when it appears without input.
 func hasSettledStretch(win []sceneProbe) bool {
 	prev := false
 	for i := range win {
-		s := win[i].lb > letterboxTitleMin && win[i].ent > sceneEntropyMin && win[i].step < crossStepMax
+		s := isSettledScene(win[i])
 		if prev && s {
 			return true
 		}

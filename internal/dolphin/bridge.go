@@ -45,6 +45,7 @@ type bridge struct {
 	launched     bool // a Launch attempt has finished (running or failed)
 	spec         LaunchSpec
 	pipe         *pipeFIFO
+	hotkeyPipe   *pipeFIFO // the second FIFO: savestate hotkeys (opt-in, ADR-0043)
 	stopDolphin  func() error
 	stopXvfb     func() error
 	xvfbOwned    bool
@@ -143,10 +144,19 @@ func (b *bridge) launch(ctx context.Context, spec LaunchSpec) (err error) {
 	}
 
 	// 3. The config the spike proved: BackgroundInput mandatory, the Pipes
-	//    pad bound, file logging on.
-	if err := writeUserConfig(userDir, spec.Backend); err != nil {
-		return err
+	//    pad bound to the MEASURED device string (raw readdir order), file
+	//    logging on, and — only when the launch opts in (ADR-0043) — the
+	//    hotkey FIFO's config. The measured indices are recorded here (state
+	//    + log) because they are the one fact the exit-rewrite comparison at
+	//    Stop re-verifies: if Dolphin's enumeration ever differs from this
+	//    measurement, that is the mismatch to find first (START ignored =
+	//    wrong device index).
+	gcpadDev, hotkeyDev, werr := writeUserConfig(userDir, spec.Backend, spec.Hotkeys)
+	if werr != nil {
+		return werr
 	}
+	b.log.Info("dolphin: Pipes device indices resolved from the raw directory order",
+		"gcpad_device", gcpadDev, "hotkey_device", hotkeyDev)
 
 	// 4. The private display. A caller-supplied Display is the caller's
 	//    problem to own; the default is a Xvfb this bridge started and stops.
@@ -195,8 +205,19 @@ func (b *bridge) launch(ctx context.Context, spec LaunchSpec) (err error) {
 	}
 	b.mu.Lock()
 	b.pipe = pipe
+	if spec.Hotkeys {
+		// The hotkey FIFO's persistent writer (opt-in, ADR-0043): the same
+		// open contract as the game pad's pipe — Dolphin opens BOTH read
+		// ends at boot; the FIFO file itself was created by writeUserConfig.
+		// The default single-pipe path has no second FIFO and no hotkey pipe
+		// at all.
+		b.hotkeyPipe = &pipeFIFO{path: filepath.Join(userDir, "Pipes", hotkeyPipeFile)}
+	}
 	b.mu.Unlock()
 	pipe.connect(ctx)
+	if b.hotkeyPipe != nil {
+		b.hotkeyPipe.connect(ctx)
+	}
 
 	// 7. The emulator itself.
 	logPath := filepath.Join(userDir, "bridge-emu.log")
@@ -218,7 +239,9 @@ func (b *bridge) launch(ctx context.Context, spec LaunchSpec) (err error) {
 	b.st.UserDir = userDir
 	b.st.ImageSHA = sha
 	b.st.ImageSize = size
-	b.st.PipeDevice = pipeDevice
+	b.st.PipeDevice = gcpadDev
+	b.st.HotkeyPipeDevice = hotkeyDev
+	b.st.MemcardPath = memcardAPath(userDir)
 	b.mu.Unlock()
 	// The image path is masked in every logged form of the argv (task rule:
 	// never logged; the hash is the provenance).
@@ -516,9 +539,9 @@ func (b *bridge) FrameSource(fps int) (capture.Source, error) {
 }
 
 // SaveSnapshot implements Bridge.Snapshot: a labelled PNG of the current
-// render window under <userDir>/snapshots. Savestates are NOT SUPPORTED on
-// this host (ADR-0031: no dolphin-tool, no proven hotkey into an unfocused
-// Xvfb window), and the ADR records that rather than pretending.
+// render window under <userDir>/snapshots. Savestate capture runs over the
+// hotkey pipe instead (SaveState, ADR-0043, opt-in); the snapshot is the
+// picture half of any savestate round-trip evidence.
 func (b *bridge) SaveSnapshot(label string) (string, error) {
 	if !snapshotLabelRE.MatchString(label) {
 		return "", ErrSnapshotLabel
@@ -574,16 +597,21 @@ func (b *bridge) Stop() {
 	watcher := b.stopWatcher
 	b.stopWatcher = nil
 	pipe := b.pipe
+	hotkeyPipe := b.hotkeyPipe
 	stopDolphin := b.stopDolphin
 	stopXvfb := b.stopXvfb
 	xvfbOwned := b.xvfbOwned
 	logF := b.emuLogF
 	display := b.st.Display
+	userDir := b.st.UserDir
+	gcpadDev := b.st.PipeDevice
+	hotkeyDev := b.st.HotkeyPipeDevice
 	b.stopDolphin = nil
 	b.stopXvfb = nil
 	b.xvfbOwned = false
 	b.emuLogF = nil
 	b.pipe = nil
+	b.hotkeyPipe = nil
 	b.baseline = nil
 	b.baselineHash = ""
 	b.mu.Unlock()
@@ -594,10 +622,23 @@ func (b *bridge) Stop() {
 	if pipe != nil {
 		pipe.close()
 	}
+	if hotkeyPipe != nil {
+		hotkeyPipe.close()
+	}
 	if stopDolphin != nil {
 		if err := stopDolphin(); err != nil {
 			b.log.Warn("dolphin: stopping the emulator", "error", err)
 		}
+	}
+	// A clean exit rewrites Config/GCPadNew.ini and Config/Hotkeys.ini with
+	// the device strings the parser RESOLVED (an unresolvable device line is
+	// dropped). If the rewritten line no longer matches the measured
+	// string, the pre-boot index did not survive Dolphin's enumeration —
+	// log it loudly: that is the wrong-device-index failure mode (START
+	// the wrong-device-index failure mode (START silently ignored,
+	// ADR-0043).
+	if stopDolphin != nil && userDir != "" {
+		b.checkExitRewrite(userDir, gcpadDev, hotkeyDev)
 	}
 	if xvfbOwned && stopXvfb != nil {
 		if err := stopXvfb(); err != nil {
@@ -625,6 +666,41 @@ func (b *bridge) Stop() {
 // most once per failed attempt.
 func (b *bridge) teardown() {
 	b.Stop()
+}
+
+// checkExitRewrite re-verifies, after Dolphin's clean exit, that the config
+// files still carry the MEASURED device strings. It is the structural
+// counterpart of the pre-boot measurement: two facts that should agree
+// (my readdir order, Dolphin's enumeration) are compared and a mismatch is
+// an error-level log with the full rewritten file, not a silent drift.
+// A missing file (the exit was not clean, or the section was never
+// written) is a warn, not an error: there is nothing to compare yet.
+func (b *bridge) checkExitRewrite(userDir, gcpadDev, hotkeyDev string) {
+	if gcpadDev != "" {
+		b.checkDeviceLine(filepath.Join(userDir, "Config", "GCPadNew.ini"), gcpadDev)
+	}
+	if hotkeyDev != "" && !strings.Contains(hotkeyDev, "suppressed") {
+		b.checkDeviceLine(filepath.Join(userDir, "Config", "Hotkeys.ini"), hotkeyDev)
+	}
+}
+
+// checkDeviceLine reads one rewritten config and compares its Device line
+// against the measured string; the mismatch is logged at error level with
+// the file content (the human-readable half of the evidence bundle).
+func (b *bridge) checkDeviceLine(path, want string) {
+	got, err := os.ReadFile(path)
+	if err != nil {
+		b.log.Warn("dolphin: exit rewrite unreadable (no clean exit?); device comparison skipped",
+			"file", filepath.Base(path), "error", err)
+		return
+	}
+	if !strings.Contains(string(got), "Device = "+want+"\n") {
+		b.log.Error("dolphin: EXIT-REWRITE MISMATCH — the measured device string is gone or changed; the pre-boot Pipes index did not match Dolphin's enumeration (inputs may have been silently dropped)",
+			"file", filepath.Base(path), "measured", want, "rewritten", string(got))
+		return
+	}
+	b.log.Info("dolphin: exit rewrite matches the measured device string",
+		"file", filepath.Base(path), "device", want)
 }
 
 // setStateLocked writes the state and (when non-empty) its failure text.

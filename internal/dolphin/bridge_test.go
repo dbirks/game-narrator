@@ -184,24 +184,44 @@ func TestLaunchConfigFilesAndIsolation(t *testing.T) {
 		t.Fatalf("the bridge touched the real Dolphin dir: %s", st.UserDir)
 	}
 
-	// Dolphin.ini: the proven config, BackgroundInput mandatory.
+	// Dolphin.ini: the proven config, BackgroundInput mandatory, and the Slot
+	// A raw memory card bound to a file inside the isolated user dir
+	// (ADR-0043 amendment 2: with the 2609 GCI-folder defaults the measured
+	// new-game save failed — the explicit card is the fix).
 	dini, err := os.ReadFile(filepath.Join(st.UserDir, "Config", "Dolphin.ini"))
 	if err != nil {
 		t.Fatalf("read Dolphin.ini: %v", err)
 	}
-	for _, want := range []string{"[Core]", "GFXBackend = OGL", "[Input]", "BackgroundInput = True", "Fullscreen = False"} {
+	for _, want := range []string{"[Core]", "GFXBackend = OGL", "SlotA = 1", "MemcardAPath = " + st.MemcardPath, "[Input]", "BackgroundInput = True", "Fullscreen = False"} {
 		if !strings.Contains(string(dini), want) {
 			t.Errorf("Dolphin.ini missing %q:\n%s", want, dini)
 		}
 	}
+	if st.MemcardPath == "" {
+		t.Errorf("the status records no memcard path")
+	} else if !strings.HasPrefix(st.MemcardPath, st.UserDir) {
+		t.Errorf("the memcard path %s is not inside the isolated user dir %s", st.MemcardPath, st.UserDir)
+	}
+	// The card file's PARENT dir exists before launch (the file itself is
+	// created by Dolphin on first save — the real test's exit check asserts
+	// its non-zero size as the use proof).
+	if fi, err := os.Stat(filepath.Dir(st.MemcardPath)); err != nil || !fi.IsDir() {
+		t.Errorf("the memcard parent dir %s was not created: %v", filepath.Dir(st.MemcardPath), err)
+	}
 
-	// GCPadNew.ini: the Pipes pad with the proven mapping.
+	// GCPadNew.ini: the Pipes pad with the proven mapping. The device line
+	// carries the MEASURED index (the raw readdir order of <user>/Pipes —
+	// 2609 numbers devices by enumeration position, ADR-0043), not an
+	// assumed one.
+	if st.PipeDevice == "" {
+		t.Fatalf("the status records no gcpad device string")
+	}
 	gc, err := os.ReadFile(filepath.Join(st.UserDir, "Config", "GCPadNew.ini"))
 	if err != nil {
 		t.Fatalf("read GCPadNew.ini: %v", err)
 	}
 	for _, want := range []string{
-		"[GCPad1]", "Device = Pipe/0/pipe1",
+		"[GCPad1]", "Device = " + st.PipeDevice,
 		"Buttons/A = `Button A`", "Buttons/Start = `Button START`",
 		"Main Stick/Up = `Axis MAIN Y +`",
 		"Triggers/L = `Axis L +`", "D-Pad/Up = `Button D_UP`",
@@ -217,10 +237,24 @@ func TestLaunchConfigFilesAndIsolation(t *testing.T) {
 		t.Errorf("Logger.ini missing or lacks WriteToFile = True: %v", err)
 	}
 
-	// The FIFO exists and is a FIFO.
+	// The FIFO (ADR-0043: the default launch is the proven single-pipe path —
+	// the game pad's pipe1 only; the hotkey FIFO exists only when the launch
+	// opts in, which TestLaunchHotkeysOptIn covers).
 	fi, err := os.Lstat(filepath.Join(st.UserDir, "Pipes", "pipe1"))
 	if err != nil || fi.Mode()&os.ModeNamedPipe == 0 {
 		t.Fatalf("Pipes/pipe1 is not a FIFO: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(st.UserDir, "Pipes", "hotkeys")); !os.IsNotExist(err) {
+		t.Errorf("Pipes/hotkeys must not exist on the default path (err %v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(st.UserDir, "Config", "Hotkeys.ini")); !os.IsNotExist(err) {
+		t.Errorf("Config/Hotkeys.ini must not exist on the default path (err %v)", err)
+	}
+	if strings.Contains(string(dini), "HotkeysRequireFocus") {
+		t.Errorf("Dolphin.ini must not carry the hotkey focus gate on the default path:\n%s", dini)
+	}
+	if st.HotkeyPipeDevice != "" {
+		t.Errorf("the status records a hotkey device string on the default path: %q", st.HotkeyPipeDevice)
 	}
 
 	// The image is recorded by hash + size, not by path.
@@ -254,6 +288,42 @@ func TestLaunchConfigFilesAndIsolation(t *testing.T) {
 	}
 	if st.WindowID != "0x1234" || st.Region != (Region{X: 10, Y: 20, W: 640, H: 480}) {
 		t.Errorf("window/region = %s %+v", st.WindowID, st.Region)
+	}
+
+	env.b.Stop()
+}
+
+// TestLaunchHotkeysOptIn: LaunchSpec.Hotkeys=true opts in to the second
+// Pipes FIFO (ADR-0043) — both FIFOs exist, the hotkey device string is
+// measured from the raw directory order, Hotkeys.ini carries it, and
+// Dolphin.ini gains the [General] HotkeysRequireFocus gate.
+func TestLaunchHotkeysOptIn(t *testing.T) {
+	env := newTestBridge(t, nil)
+	mustLaunch(t, env, LaunchSpec{Hotkeys: true})
+	st := env.b.State()
+
+	for _, name := range []string{"pipe1", "hotkeys"} {
+		fi, err := os.Lstat(filepath.Join(st.UserDir, "Pipes", name))
+		if err != nil || fi.Mode()&os.ModeNamedPipe == 0 {
+			t.Fatalf("Pipes/%s is not a FIFO: %v", name, err)
+		}
+	}
+	if st.HotkeyPipeDevice == "" || !strings.HasPrefix(st.HotkeyPipeDevice, "Pipe/") {
+		t.Fatalf("the status records no measured hotkey device string: %q", st.HotkeyPipeDevice)
+	}
+	hk, err := os.ReadFile(filepath.Join(st.UserDir, "Config", "Hotkeys.ini"))
+	if err != nil {
+		t.Fatalf("read Hotkeys.ini: %v", err)
+	}
+	if !strings.Contains(string(hk), "Device = "+st.HotkeyPipeDevice+"\n") {
+		t.Errorf("Hotkeys.ini missing the measured device line %q:\n%s", st.HotkeyPipeDevice, hk)
+	}
+	dini, err := os.ReadFile(filepath.Join(st.UserDir, "Config", "Dolphin.ini"))
+	if err != nil {
+		t.Fatalf("read Dolphin.ini: %v", err)
+	}
+	if !strings.Contains(string(dini), "[General]\nHotkeysRequireFocus = False\n") {
+		t.Errorf("Dolphin.ini (hotkeys on) missing the focus gate:\n%s", dini)
 	}
 
 	env.b.Stop()

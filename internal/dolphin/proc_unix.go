@@ -12,8 +12,10 @@ import (
 	"runtime"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/dbirks/game-narrator/internal/capture"
+	"golang.org/x/sys/unix"
 )
 
 // The unix production seams. The whole bridge is a dev-host tool (Xvfb,
@@ -200,4 +202,55 @@ func procAlive(pid int) bool {
 // mkFIFO creates the named pipe (the os package has no Mkfifo).
 func mkFIFO(path string, mode uint32) error {
 	return syscall.Mkfifo(path, mode)
+}
+
+// rawReaddir returns the directory's entries in kernel readdir order minus
+// "." and ".." — the enumeration 2609's Pipes::PopulateDevices indexes the
+// device numbers with (ScanDirectoryTree over std::filesystem's
+// directory_iterator is unsorted and excludes dot entries; Go's os.ReadDir
+// sorts by name and would not be that order). Used to compute the
+// "Pipe/<i>/<name>" strings before boot (ADR-0043).
+func rawReaddir(dir string) ([]string, error) {
+	d, err := unix.Open(dir, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, fmt.Errorf("dolphin: open %s: %w", dir, err)
+	}
+	defer unix.Close(d)
+	// struct dirent: d_ino + d_off + d_reclen + d_type, then d_name
+	// (NUL-terminated, 4-aligned); d_reclen spans entry to entry. The on-disk
+	// struct has no length field — the name runs to its NUL.
+	var probe unix.Dirent
+	nameOff := int(unsafe.Offsetof(probe.Name))
+	var out []string
+	buf := make([]byte, 64*1024)
+	for {
+		n, gerr := unix.Getdents(d, buf)
+		if n == 0 {
+			break // end of directory (Getdents reports EOF as 0, nil)
+		}
+		off := 0
+		for off < n {
+			ent := (*unix.Dirent)(unsafe.Pointer(&buf[off]))
+			nameEnd := off + int(ent.Reclen)
+			name := ""
+			for i := off + nameOff; i < nameEnd; i++ {
+				if buf[i] == 0 {
+					break
+				}
+				name += string(buf[i])
+			}
+			if name != "." && name != ".." {
+				out = append(out, name)
+			}
+			off = nameEnd
+		}
+		if gerr == nil {
+			continue
+		}
+		if errors.Is(gerr, unix.EINVAL) {
+			break
+		}
+		return nil, fmt.Errorf("dolphin: getdents %s: %w", dir, gerr)
+	}
+	return out, nil
 }

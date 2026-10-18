@@ -28,6 +28,13 @@ type LaunchSpec struct {
 	Height    int
 	SaveState string // optional savestate to load
 	Movie     string // optional movie file to run
+	// Hotkeys opts in to the SECOND Pipes FIFO (Pipes/hotkeys +
+	// Config/Hotkeys.ini) that carries the savestate hotkeys (ADR-0043).
+	// False (the default) is the proven single-pipe path: one FIFO
+	// (Pipes/pipe1), no Hotkeys.ini, no [General] HotkeysRequireFocus —
+	// exactly the d8394f3 config ProveInput was proven on. When false,
+	// SaveState/LoadState refuse with ErrHotkeysDisabled.
+	Hotkeys bool
 	// Lifetime bounds the whole run, not just the launch: when it is
 	// cancelled (for any reason) the bridge runs a full Stop — the process
 	// group is signalled, the FIFO removed — and the children die with the
@@ -75,8 +82,24 @@ type Bridge interface {
 	WaitForGameFrame(ctx context.Context, timeout time.Duration) (Evidence, error)
 	// ProveInput runs the title-screen START control-vs-input test.
 	ProveInput(ctx context.Context) (Evidence, error)
+	// SaveState triggers a savestate save of slot over the hotkey pipe and
+	// waits for the state file on disk; it returns the file path (the value
+	// a --save_state boot takes). Savestates ride the second Pipes device
+	// (Pipes/hotkeys + Config/Hotkeys.ini, ADR-0043) and refuse with
+	// ErrHotkeysDisabled when the launch did not opt in (Hotkeys false is
+	// the default).
+	SaveState(ctx context.Context, slot int) (string, error)
+
+	// LoadState triggers a savestate load of slot over the hotkey pipe and
+	// waits the settle floor. The perceptual round trip (save X, advance to
+	// Y, load, X again) is assembled by callers out of SaveState, Inject and
+	// Screenshot. Refuses with ErrHotkeysDisabled when the launch did not
+	// opt in.
+	LoadState(ctx context.Context, slot int) error
+
 	// State reports a consistent snapshot of the bridge lifecycle and geometry.
 	State() Status
-	// Stop kills Dolphin + Xvfb and removes the FIFO. Idempotent.
+	// Stop kills Dolphin + Xvfb and removes the FIFOs (the game pad's AND the
+	// hotkey's). Idempotent.
 	Stop()
 }

@@ -53,19 +53,21 @@ type Region struct {
 // (user_dir, evidence files) and never the game image path — that is
 // recorded as image_sha256 plus its size.
 type Status struct {
-	State      State     `json:"state"`
-	Display    string    `json:"display,omitempty"`
-	DolphinPID int       `json:"dolphin_pid,omitempty"`
-	XvfbPID    int       `json:"xvfb_pid,omitempty"`
-	WindowID   string    `json:"render_window,omitempty"`
-	Region     Region    `json:"region,omitempty"`
-	PipeDevice string    `json:"pipe_device,omitempty"`
-	PipeConn   bool      `json:"pipe_connected"`
-	UserDir    string    `json:"user_dir,omitempty"`
-	ImageSHA   string    `json:"image_sha256,omitempty"`
-	ImageSize  int64     `json:"image_size,omitempty"`
-	FirstFrame time.Time `json:"first_game_frame_at,omitempty"`
-	LastError  string    `json:"last_error,omitempty"`
+	State            State     `json:"state"`
+	Display          string    `json:"display,omitempty"`
+	DolphinPID       int       `json:"dolphin_pid,omitempty"`
+	XvfbPID          int       `json:"xvfb_pid,omitempty"`
+	WindowID         string    `json:"render_window,omitempty"`
+	Region           Region    `json:"region,omitempty"`
+	PipeDevice       string    `json:"pipe_device,omitempty"`
+	HotkeyPipeDevice string    `json:"hotkey_pipe_device,omitempty"`
+	PipeConn         bool      `json:"pipe_connected"`
+	UserDir          string    `json:"user_dir,omitempty"`
+	MemcardPath      string    `json:"memcard_path,omitempty"` // the Slot A raw card file (ADR-0043 amendment 2)
+	ImageSHA         string    `json:"image_sha256,omitempty"`
+	ImageSize        int64     `json:"image_size,omitempty"`
+	FirstFrame       time.Time `json:"first_game_frame_at,omitempty"`
+	LastError        string    `json:"last_error,omitempty"`
 }
 
 // Sentinel errors, each one a distinct operator condition rather than a
@@ -88,4 +90,9 @@ var (
 	ErrNotRunning = errors.New("dolphin: the bridge is not in the running state")
 	// ErrSnapshotLabel: the label is not a safe file name.
 	ErrSnapshotLabel = errors.New("dolphin: snapshot label must be 1-32 characters of [A-Za-z0-9._-]")
+	// ErrHotkeysDisabled: SaveState/LoadState were called on a launch that
+	// did not opt in to the second Pipes FIFO (LaunchSpec.Hotkeys is false,
+	// the default — ADR-0043: savestates are opt-in and unproven, the
+	// single-pipe path is the proven one).
+	ErrHotkeysDisabled = errors.New("dolphin: savestate hotkeys are disabled (launch with LaunchSpec.Hotkeys=true)")
 )

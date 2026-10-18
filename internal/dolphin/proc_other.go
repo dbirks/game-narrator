@@ -28,3 +28,7 @@ func procAlive(pid int) bool { return false }
 func mkFIFO(path string, mode uint32) error {
 	return errors.New("dolphin: mkfifo is unix-only")
 }
+
+func rawReaddir(_ string) ([]string, error) {
+	return nil, errors.New("dolphin: raw readdir is unix-only (dev host tool)")
+}
