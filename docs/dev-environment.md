@@ -10,8 +10,8 @@ recorded here — model roles are configured through environment variables only
 
 `make test-full` runs the gate targets in order — `test-unit`, `test-ui`,
 `diagnostics`, `release-snapshot`, `bench`, `test-replay`, `test-dolphin`,
-`test-models`, `test-hardware` — continues past failures, and prints a final
-table (`gate | result | detail`). It exits 0 only if every gate passed, 1 if
+`test-models`, `test-hardware`, `secret-scan` — continues past failures,
+and prints a final table (`gate | result | detail`). It exits 0 only if every gate passed, 1 if
 any gate FAILed, and 2 if nothing failed but at least one gate is NOT RUN.
 Per-gate logs and the JUnit XML summaries land in `artifacts/gates/`
 (gitignored).
@@ -29,12 +29,13 @@ A gate whose capabilities are not configured is never green, and
 | `test-ui` | frontend typecheck/lint/format/tests, embedded build, Playwright e2e | — |
 | `diagnostics` | `game-narrator doctor --dev` on a fresh build | — |
 | `release-snapshot` | GoReleaser snapshot pipeline (no publishing) | `goreleaser` on PATH; docker optional |
-| `bench` | benchmark holdout split through the real pipeline | `tesseract` and `magick` on PATH |
+| `bench` | the synthetic holdout split through the real pipeline (real Tesseract, real matcher) plus the captured-Dolphin holdout (class b) from the external fixtures and the calibration fit, each reported separately | `tesseract` and `magick` on PATH; the captured part also needs `$GAME_NARRATOR_FIXTURE_DIR` (the `windwaker-newgame` and/or `windwaker-legend-dense` fixtures) and `GAME_NARRATOR_GAME_IMAGE_PATH` — absent, it reports NOT RUN with setup steps, never a pass or a failure of the synthetic part |
 | `test-replay` | synthetic scenario suite (fault injection; BLOCKED reported, never passed) plus pipeline replay tests, `-race` | `tesseract` on PATH, else the replay test reports NOT RUN |
-| `test-dolphin` | real Dolphin tests (`-run Real`), one emulator at a time (`-p 1`, 20m timeout) | `GAME_NARRATOR_GAME_IMAGE_PATH`; `dolphin-emu`, `Xvfb`, `ffmpeg`, `x11-utils`, `xdotool` (savestate hotkeys, ADR 0043 am7) on PATH |
+| `test-dolphin` | real Dolphin tests (`-run Real`, one emulator at a time: `-p 1`, 45m timeout) plus the committed Dolphin scenarios replayed through the real recognition/runtime path (`TestDolphinScenarios`, 30m), writing the HTML report to `artifacts/scenarios/<run-id>/index.html` | `GAME_NARRATOR_GAME_IMAGE_PATH`; `dolphin-emu`, `Xvfb`, `ffmpeg`, `x11-utils`, `tesseract` and `xdotool` (savestate hotkeys, ADR 0043 am7) on PATH; the scenario phase also needs the external fixtures under `$GAME_NARRATOR_FIXTURE_DIR` (default `artifacts/fixtures/`) — absent or unverified fixtures report NOT RUN per scenario, never a pass |
 | `test-models` | live provider contract tests (`-run Live`), sequential (`-p 1`) | `GAME_NARRATOR_GATEWAY_URL` plus the token env (default `GAME_NARRATOR_GATEWAY_TOKEN`, name overridable via `GAME_NARRATOR_GATEWAY_TOKEN_ENV`); the vision tests run by default (the `GAME_NARRATOR_LIVE_VISION` opt-in was removed, ADR 0040); TTS registry tests `GAME_NARRATOR_TTS_BASE_DIRECT_URL` (or `GAME_NARRATOR_ROLE_VOICE_CLONE_REGISTRY_URL`) |
-| `test-hardware` | UNO Q hardware smoke — no hardware tests exist yet, so the gate itself reports NOT RUN | attach a UNO Q; see `docs/status/blocked.md` |
+| `test-hardware` | UNO Q hardware smoke (`internal/hwsmoke`, `TestHW*`): V4L2 capture grab through the app's FFmpeg path, consented audio-sink tone, controlled-image OCR, RAM/CPU/temperature/storage preflight + 60 s serve-session RSS budget, platform report — every absent capability is NOT RUN with the attach/configure instruction, never a vacuous pass | attach a UNO Q with capture source + audio sink (13-uno-q-hardware-smoke.md); `GAME_NARRATOR_HW_AUDIO_CONSENT=1` for the audio tone; `GAME_NARRATOR_CAPTURE_DEVICE` / `GAME_NARRATOR_AUDIO_DEVICE` to choose the node/sink |
 | `soak` | the long soak pair (1h replay + 2h chaos, docs/spec/12; `TestSoakLong` budgets with explicit `-timeout`, ADR-0045) — hours-long, so it is not part of `test-full`; reports under `artifacts/soak/<run-id>/` | — |
+| `secret-scan` | `scripts/gates/secret-scan.sh --history` — every tracked file plus the added lines of every commit, for tokens/keys, private endpoint URLs and bare RFC 1918 hosts, `/home/` paths, game-data magic/extension and unallowlisted large binaries; matched values are never printed (masked, length only) | git; documented false positives are suppressed by `scripts/gates/secret-scan.allow` with a reason (the one real historical leak is allowlisted to that commit only) |
 
 The go-test gates (`test-replay`, `test-dolphin`, `test-models`) run through
 `scripts/gates/run-go-gate.sh`, which parses `go test -json`, prints one
@@ -80,6 +81,9 @@ RUN) or the printed summary table, not make's own exit code.
 | GPU | `00:02.0 VGA compatible controller: Intel Corporation Kaby Lake-S GT2 [HD Graphics 630] (rev 04)` | `lspci \| grep -iE 'vga\|3d'` |
 | Session type | `tty` | `echo $XDG_SESSION_TYPE` |
 | Other bootstrap packages | all present: `make 4.4.1-3`, `gcc 16.2.1+r23+gd564253eb6c8-1`, `syft 1.54.1-1`, `cosign 3.1.3-1`, `docker-buildx 0.38.0-1`, `xorg-server-xvfb 21.1.25-2`, `xorg-xwininfo 1.1.7-1`, `xdotool 4.20260303.1-1`, `mesa-utils 9.0.0-7`, `vulkan-tools 1.4.363.0-1`, `jq 1.8.2-1`, `go-yq 4.54.1-1`, `github-cli 2.102.0-1`, `imagemagick 7.1.2.34-1`, `kitty-terminfo 0.49.2-1`, `tesseract-data-eng 2:4.1.0-5` | `pacman -Q <pkg>` |
+| xdotool | `4.20260303.1-1` | `pacman -Q xdotool` — XTest key injection into the Xvfb display for the Dolphin savestate hotkeys (bootstrap group "virtual display and input automation"; ADR 0043 amendment 7, docs/manuals/16-dolphin-savestates.md) |
+| crane | `NOT CHECKED` (not on PATH) | `crane version` — dev-only tool for daemonless image-layer inspection, used in ADR 0033's scanner validation (`crane export`/`crane append` on the pinned base; the pacman package is `crane` in extra). Not required by any `make` gate |
+| @axe-core/playwright (web devDependency) | `4.13.0` | `node -p "require('./web/node_modules/@axe-core/playwright/package.json').version"` — the axe (WCAG 2.1 A/AA) e2e gate over every route (`web/e2e/a11y.spec.ts`); dev-only, never bundled into the shipped binary (docs/status/ui-coverage.md) |
 | Docker service state | `docker.service` active + enabled; `docker:x:966:david` — the user is now a `docker` group member, but the live session still reports `david wheel`, so existing shells must be re-launched for the group to take effect | `systemctl is-active/-enabled docker.service`, `getent group docker`, `groups` |
 | Fonts | 679 fonts installed; `fc-match sans-serif` → `NotoSans-Regular.ttf: "Noto Sans" "Regular"` | `fc-list \| wc -l`, `fc-match sans-serif` |
 | Chromium system libraries | 5 of 5 sonames resolvable via the system loader (`libatk-1.0.so.0`, `libatk-bridge-2.0.so.0`, `libatspi.so.0`, `libXcomposite.so.1`, `libXdamage.so.1`) — packages `at-spi2-core 2.62.1-1`, `libxcomposite 0.4.7-1`, `libxdamage 1.1.7-1`, `nss 3.131-1`, `libxkbcommon 1.13.2-1`, `libxrandr 1.5.5-1`, `alsa-lib 1.2.16.1-1` | `ldconfig -p \| grep -cE 'libatk-1.0.so.0\|libatk-bridge-2.0.so.0\|libatspi.so.0\|libXcomposite.so.1\|libXdamage.so.1'`, `pacman -Q …` |
@@ -101,13 +105,19 @@ RUN) or the printed summary table, not make's own exit code.
    document, or in any evidence bundle — only its hash is (AGENTS.md rule 5).
    `.gitignore` blocks `*.iso`, `*.gcm`, `*.rvz`, `*.ciso`, `*.7z`, `*.gcz`,
    `*.wbfs`, `*.wia` and `*.nkit.iso`. The Wind Waker adapter and real fixture
-   authoring can therefore run against a lawful image; the `make test-dolphin`
-   gate itself is still unimplemented, so end-to-end GameCube playback:
-   **NOT VERIFIED**.
-3. **Model endpoints not deployed — BLOCKED.** Clef-Omni decision model, Qwen3-TTS
-   VoiceDesign and Qwen3-ASR endpoints are not present on this host and were not
-   probed. `make test-models` and live decision/TTS/ASR gates stay blocked until
-   the gateway and its endpoints exist.
+   authoring therefore run against a lawful image. The `make test-dolphin`
+   gate is implemented and runs real Dolphin against this image (the real-
+   Dolphin tests, the fixture recorder and the scenario-replay phase —
+   docs/manuals/15-dolphin-fixture-recorder.md), and the live play path
+   (Dolphin frames → OCR → match → Clef → speech) is proven by `internal/e2e`
+   `TestLiveDolphin` (docs/status/acceptance.md). Playback on the UNO Q
+   appliance remains **NOT VERIFIED** (gap 4).
+3. **ASR endpoint not deployed — BLOCKED.** The gateway chat/vision/decision
+   roles and the Qwen3-TTS VoiceDesign/Base endpoints are deployed and
+   exercised by `make test-models` (docs/status/acceptance.md, M3/M4 rows).
+   The Qwen3-ASR checkpoint is the exception: it needs the second GPU, which
+   is not provisioned yet, so the `speech_asr` role stays BLOCKED and the
+   ASR QA read-back cannot run (docs/status/blocked.md).
 4. **UNO Q hardware not connected — BLOCKED.** No UNO Q, no UVC capture device
    (`/dev/video*` absent), no USB DAC identified. `make test-hardware` is `NOT RUN`.
 5. **LLM and vision roles** will use an OpenAI-compatible gateway selected through
@@ -163,6 +173,8 @@ goreleaser --version; docker --version; docker buildx version
 dolphin-emu --version; dolphin-emu-nogui --version; pacman -Q dolphin-emu
 xvfb-run -a dolphin-emu --version
 Xvfb -help 2>&1 | head -1
+pacman -Q xdotool; crane version
+node -p "require('./web/node_modules/@axe-core/playwright/package.json').version"
 pacman -Q mesa vulkan-intel pipewire wireplumber alsa-utils
 lspci | grep -iE 'vga|3d'; echo "$XDG_SESSION_TYPE"
 fc-list | wc -l; fc-match sans-serif

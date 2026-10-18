@@ -14,19 +14,21 @@ development host, with no UNO Q involved.
 Work proceeds through the milestones in
 [docs/spec/16](docs/spec/16-implementation-and-acceptance.md); only committed
 work is claimed, and hardware or private-resource gates are marked NOT
-VERIFIED / blocked rather than passed.
+VERIFIED / blocked rather than passed. Per-requirement evidence is in
+[docs/status/acceptance.md](docs/status/acceptance.md) and the UI route
+matrix in [docs/status/ui-coverage.md](docs/status/ui-coverage.md).
 
-| Milestone | Scope (see [docs/spec/16](docs/spec/16-implementation-and-acceptance.md)) | Status |
-| --------- | ------------------------------------------------------------------------- | ----------- |
-| M0        | Environment/discovery and executable infrastructure                       | Done — closed out in the commit log; decisions recorded in ADRs 0001–0014 |
-| M1        | Full foundation and portability                                           | In progress — schema, profile revisions/atomic publish, job queue + event store, auth/sessions, REST+OpenAPI, asset store and `.gnprofile` export/import are committed (ADRs 0014–0017); storage resilience (online backup/restore at the CLI) is in progress; acceptance pass not yet recorded |
-| M2        | Video + recognition engine                                                | In progress — frame sources (replay/FFmpeg/V4L2), OCR engine, dialogue state machine, candidate matcher, pipeline runner and the vision-model OCR fallback (unresolved-only policy, ADR 0040) are committed; the first frame-replay run used real Tesseract |
-| M3        | Model integration and knowledge agent                                     | In progress — router with circuit breakers (ADR 0019), Clef-Omni System One client (ADR 0021), onboarding agent core/tools/API (ADRs 0025–0028), honest capability fallback (JSON mode / `tool_choice=required`, ADR 0009 amendment) and per-role reasoning effort are committed; the ASR client is still blocked |
-| M4        | Complete voice and playback pipeline                                      | In progress — Qwen3-TTS client + voice registry (ADR 0022), speech cache + fenced playback scheduler (ADR 0023) and the voice workflow (ADR 0030) are committed; speech in runtime sessions is in progress; ASR QA is blocked on an endpoint |
-| M5        | Complete React product                                                    | In progress — catalog UI, onboarding chat, `/developer` inspector, player view, characters, publish review and the voices pages are committed; the graph/region/settings pages and their tests are in progress |
-| M6        | Dolphin live driver and fixture factory                                   | In progress — the dev-only Dolphin bridge (isolated launch, X11 frame source, Pipes controller input, proven readiness, ADR 0034) is committed; drive-to-dialogue and savestates are in progress; the fixture factory is not built |
-| M7        | Full live-model and adverse-condition validation                          | In progress — scenario fault injection with five adverse-condition scenarios and the BLOCKED register (ADR 0037), the benchmark harness with a generated synthetic ground-truth set (ADR 0038) and matcher temperature calibration (ADR 0035) are committed; full live-model validation is pending |
-| M8        | UNO Q and distributable release                                           | Snapshot pipeline verified locally (ADR 0033); UNO Q install NOT VERIFIED |
+| Milestone (scope in [docs/spec/16](docs/spec/16-implementation-and-acceptance.md)) | Status |
+| --- | --- |
+| M0 environment and infrastructure | **Done** — bootstrap, skeleton, gates and ADRs committed; the no-secrets gate scans tracked files and commit history (`make secret-scan`). |
+| M1 foundation and portability | **Done** — profile revisions, jobs/events, auth/sessions, REST+OpenAPI, asset store, `.gnprofile` export/import and online backup/restore committed and acceptance-verified. |
+| M2 video and recognition | **Done** — frame sources, OCR with the VLM fallback, dialogue state machine, candidate matcher and the developer inspector; real-Tesseract replay and the captured-Dolphin holdout pass (`make bench`). |
+| M3 models and knowledge agent | **Partial** — router with circuit breakers, the Clef client and the onboarding chain (research → characters → voice briefs → auditions) are proven live; the ASR client is **BLOCKED** on a second GPU. |
+| M4 voice and playback | **Partial** — TTS (atomic + streamed with real mid-stream cancel), the voice registry, cache + fenced playback and the live play path (Dolphin frames → OCR → match → Clef → speech) are proven; the ASR QA read-back is **BLOCKED** on a second GPU. |
+| M5 React product | **Done** — every route covered by visible-state Playwright plus the axe a11y gate; settings/tests pages, corrections → regression fixtures, SSE reconnect, voice preview and the UI-only curation walk with manifest re-import. |
+| M6 Dolphin driver and fixture factory | **Done** — drive-to-dialogue, savestates over XTest hotkeys, the fixture recorder and 16 committed scenarios (14 pass, 2 blocked with unblock steps) with the linked HTML report; the two blocked rows stay reported, never passed. |
+| M7 live-model and adverse-condition validation | **Partial** — live Clef/TTS decisions, the streamed-cancel fault scenario and the captured-frame benchmark are committed (its 50% recall is reported as not met, ADR 0058); the hours-long soak passed (1 h replay +5.4% RSS, 2 h chaos +1.1% RSS, 6223 faults, 0 panics); the ASR read-back is **BLOCKED** on a second GPU. |
+| M8 UNO Q and distributable release | **Partial** — `.deb`/Arch/OCI packaging with cosign-signed GHCR images + SPDX SBOM attestations, and the on-device `.deb` lifecycle (install/upgrade/rollback/purge) are proven; UNO Q capture/audio is **BLOCKED** on the appliance. |
 
 The four live gates (`test-replay`, `test-dolphin`, `test-models`,
 `test-hardware`) run real tests and report per-test `NOT RUN: ...` when
@@ -35,14 +37,17 @@ success without the work, and `make test-full` exits non-zero while any
 gate remains NOT RUN. Blocked items and their unblock steps are tracked in
 [docs/status/blocked.md](docs/status/blocked.md); operational runbooks
 (first boot, gateway connection, recovery, resets, troubleshooting and
-more) live in [docs/manuals/](docs/manuals/README.md).
+more) live in [docs/manuals/](docs/manuals/README.md), and the release
+runbook is [docs/release.md](docs/release.md).
 
 ## How it works
 
 Every runtime path shares this pipeline. It is the design from
 [`docs/spec/05`](docs/spec/05-runtime-recognition.md) and
-[`docs/spec/07`](docs/spec/07-voice-audio.md), built in M2–M4 — none of it runs
-yet.
+[`docs/spec/07`](docs/spec/07-voice-audio.md), built in M2–M4 and proven end
+to end on real Dolphin frames in M6/M7 — the live play path runs
+frame → OCR → match → Clef → speech with one correlated trace per line in
+the developer API (docs/status/acceptance.md, M6/M7 rows).
 
 1. Capture a frame: a UVC HDMI dongle on the UNO Q, Dolphin on a dev host, or a
    recorded fixture in CI.
@@ -68,7 +73,40 @@ Recognition and audio work happen on the device; model inference (vision
 fallback, speaker decision, speech synthesis, ASR quality checks) runs on a
 separate GPU gateway reachable over HTTP, not on the UNO Q.
 
-## Quickstart (Arch Linux dev host)
+## Quickstart
+
+### Install a release
+
+Every release ships a Debian `.deb`, an Arch `*.pkg.tar.zst` and a
+multi-arch OCI image in GHCR (docs/spec/15; artifact semantics in
+[docs/release.md](docs/release.md)). Published images are signed **keyless**
+(Sigstore identity bound to the publish workflow — there are no keys to
+manage) and carry an SPDX SBOM attestation. Verify **before** you pull or
+run (docs/release.md §2.4):
+
+```sh
+cosign verify \
+  ghcr.io/dbirks/game-narrator:edge \
+  --certificate-identity-regexp 'https://github.com/dbirks/game-narrator/.github/workflows/publish.yml@.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+cosign verify-attestation --type spdxjson ghcr.io/dbirks/game-narrator:edge
+```
+
+Then install from the artifact you have (checksummed in `dist/checksums.txt`
+for local builds):
+
+- **OCI image** — `docker pull ghcr.io/dbirks/game-narrator:edge` (or the
+  immutable `:sha-<short>` tag), then recreate the container with your data
+  volume (docs/release.md §3, container path).
+- **Debian `.deb`** (UNO Q / Debian arm64) —
+  `apt-get install ./game-narrator_<version>_linux_arm64.deb`; upgrade,
+  rollback and purge semantics are docs/release.md §3–§6 and the smoke
+  runbook is
+  [docs/manuals/13-uno-q-hardware-smoke.md](docs/manuals/13-uno-q-hardware-smoke.md).
+- **Arch `*.pkg.tar.zst`** — `sudo pacman -U --noconfirm <pkg>`; pacman
+  resolves the declared Arch dependencies (docs/release.md §8).
+
+### Develop on the Arch dev host
 
 Arch Linux with `sudo` is enough to start: the bootstrap script installs Go,
 Node/pnpm, make and the rest.
@@ -106,14 +144,20 @@ Vite listens on `127.0.0.1:5173` and proxies `/api` to `127.0.0.1:8080`, so you
 open <http://127.0.0.1:5173/diagnostics> while the Go server keeps running on
 8080 (set `GAME_NARRATOR_API` if the API is on another port).
 
-Verification gates that exist today:
+Verification gates that exist today (`make help` lists them all):
 
 ```sh
-make test-unit    # go vet + go test -race ./...
-make test-ui      # frontend checks, then Playwright against a real embedded binary
-make lint         # gofmt/vet + oxlint + oxfmt --check
-make diagnostics  # build, then bin/game-narrator doctor --dev
-make test-full    # runs the gates above, exits non-zero while others are NOT RUN
+make test-unit      # go vet + go test -race ./...
+make test-ui        # frontend checks, then Playwright against a real embedded binary (incl. the axe a11y gate)
+make bench          # synthetic + captured-Dolphin holdouts through the real pipeline
+make lint           # gofmt/vet + oxlint + oxfmt --check + secret scan (tree mode)
+make diagnostics    # build, then bin/game-narrator doctor --dev
+make test-replay    # synthetic scenario suite + pipeline replay (real Tesseract)
+make test-dolphin   # real Dolphin tests + committed scenario replay (HTML report)
+make test-models    # live provider contract tests against the configured gateway
+make test-hardware  # UNO Q hardware smoke (NOT RUN without the appliance)
+make secret-scan    # secrets / private endpoints / game data, files + history
+make test-full      # runs every gate above; exits non-zero while any is NOT RUN
 ```
 
 `go test ./...` stays green with no network access: live provider tests skip
@@ -163,7 +207,8 @@ do not commit them, and do not commit screenshots that show copyrighted visuals.
 ## Repository layout
 
 ```
-cmd/game-narrator/      CLI entry point (serve | migrate | doctor | version)
+cmd/game-narrator/      CLI (serve | migrate | admin | doctor | bench |
+                          import-disc | support-bundle | version)
 internal/api/           HTTP handlers, middleware, static SPA serving
 internal/bootstrap/     config, server lifecycle, build/version info
 internal/providers/     model-role registry + OpenAI-compatible chat adapter

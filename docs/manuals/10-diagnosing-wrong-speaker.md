@@ -42,13 +42,28 @@ candidates → Clef decision → commit → voice → speech.
      collapsed (text, prefix coverage, scene, edge prior, visibility, text
      kind, …) and the margin; a small margin means calibration/weights, a
      zero bar usually means the profile graph is wrong.
-4. **Read the Clef decision** (`decision.requested` → `decision.resolved`
-   on the same trace): the choice (`confirmed` vs `unknown`), the model,
-   `accepted`/`applied` and the reason. Probabilities are raw signals, not
-   reliability guarantees (docs/spec/06); a resolved `unknown` means Clef
-   abstained and the runtime proceeded without it. `applied=false` with a
-   reason names a fenced/late reply (stale generation) — that is timing,
-   not a misclassification.
+4. **Read the Clef decision** — the detail panel's **decision block** on
+   the pinned occurrence (same data: `decision.resolved` on the trace):
+   provider and model, the **request id** (the id to search the provider's
+   logs by) and **which side issued it** — `client` or `provider`
+   (`request_id_source`), the call's **latency**, the **outcome** and the
+   **generation** it was applied to. The three outcomes the fences report:
+   - `accepted` — the commit carries the model's candidate (commit reason
+     `CLEF_DISAMBIGUATED`);
+   - `abstain` — the model judged none of the candidates matched; the
+     commit stands on the local evidence (message_id unknown,
+     `speech_eligible` false);
+   - `late-discarded (<reason>)` — the reply arrived after the page
+     turned; the fence names itself. That is timing, not
+     misclassification.
+
+   In **live sessions** Clef is consulted only when the ranking is
+   ambiguous (at most one adjudication in flight per session, bounded by
+   the role timeout); with no decision role configured or the endpoint
+   down, the row shows `local commit (decision unavailable: <reason>)` —
+   the commit ran on the local evidence in degraded mode, and the event
+   carries the reason the wiring recorded. Probabilities are raw signals,
+   not reliability guarantees (docs/spec/06).
 5. **Check the voice** for the committed message: the voice workflow's
    revision for that character (05-voice-registry-maintenance) — a stale
    registration on this instance makes a *correct* commit sound wrong.

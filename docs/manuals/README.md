@@ -2,7 +2,9 @@
 
 The twelve runbooks required by [docs/spec/13](../spec/13-observability-and-resilience.md),
 "Operational manuals required", plus the UNO Q hardware-smoke runbook (M8,
-docs/spec/16). Each file states its purpose, preconditions,
+docs/spec/16) and the workflow manuals for the corrections/Tests page,
+the Dolphin fixture recorder and savestates, and verifying published
+artifacts. Each file states its purpose, preconditions,
 steps (real commands), verification, and what NOT to do. Anything that depends
 on a feature that is not committed yet is marked `NOT YET IMPLEMENTED` with the
 tracking item, and hardware-dependent claims are marked `NOT VERIFIED` per
@@ -23,6 +25,10 @@ AGENTS.md rule 12.
 | Purging redacted support bundles | [11-purging-support-bundles.md](11-purging-support-bundles.md) |
 | Rollback after failed release | [12-rollback-after-failed-release.md](12-rollback-after-failed-release.md) |
 | UNO Q hardware smoke (M8) | [13-uno-q-hardware-smoke.md](13-uno-q-hardware-smoke.md) |
+| Corrections and the Tests page (operator) | [14-corrections-and-tests-page.md](14-corrections-and-tests-page.md) |
+| Dolphin fixture recorder and the test-dolphin gate (developer) | [15-dolphin-fixture-recorder.md](15-dolphin-fixture-recorder.md) |
+| Dolphin savestates and their dev dependencies (developer) | [16-dolphin-savestates.md](16-dolphin-savestates.md) |
+| Verifying published artifacts (release) | [17-verifying-published-artifacts.md](17-verifying-published-artifacts.md) |
 
 Blocked items these manuals point at are tracked in
 [docs/status/blocked.md](../status/blocked.md); the release runbook is
