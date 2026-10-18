@@ -80,7 +80,7 @@ func RunBench(ctx context.Context, setDir, split, outDir string) (*Report, error
 			defer wg.Done()
 			for i := range jobs {
 				s := kept[i]
-				out, err := runSample(ctx, dirs[s.ID], s, idx, regions)
+				out, err := runSample(ctx, dirs[s.ID], "", s, idx, regions)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "bench: sample %s NOT RUN: %v\n", s.ID, err)
 					continue
@@ -116,6 +116,7 @@ func RunBench(ctx context.Context, setDir, split, outDir string) (*Report, error
 		Set:           ts.Set,
 		Split:         split,
 		Origin:        ts.Origin,
+		Class:         ClassSynthetic,
 		Samples:       len(outcomes),
 		Metrics:       metrics,
 		Diagnostics: Diagnostics{
@@ -177,6 +178,7 @@ func manifestOf(rep *Report) map[string]any {
 		"set":                 rep.Set,
 		"split":               rep.Split,
 		"origin":              rep.Origin,
+		"class":               rep.Class,
 		"matcher_calibration": rep.Diagnostics.MatcherCalibration,
 	}
 }
@@ -196,7 +198,7 @@ func gitSHA() string {
 func RenderMarkdown(rep *Report, outcomes []sampleOutcomes) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Benchmark report — %s (%s)\n\n", rep.Set, rep.Split)
-	fmt.Fprintf(&b, "- origin: **%s** (synthetic-only; real game frames arrive with the Dolphin fixture factory — ADR-0038)\n", rep.Origin)
+	fmt.Fprintf(&b, "- origin: **%s** (%s)\n", rep.Origin, classNote(rep.Class))
 	fmt.Fprintf(&b, "- run: %s · %d samples · %s · tesseract %s\n", rep.RunID, rep.Samples, rep.GeneratedAt, rep.Diagnostics.Tesseract)
 	fmt.Fprintf(&b, "- duration %.1fs (frame generation + replay) · process CPU %.1fs · peak RSS %.0f MB (bench process only; tesseract/magick are subprocesses)\n\n",
 		rep.Diagnostics.DurationSecs, rep.Diagnostics.CPUTimeSecs, rep.Diagnostics.PeakRSSMB)
@@ -253,6 +255,15 @@ func RenderMarkdown(rep *Report, outcomes []sampleOutcomes) string {
 	b.WriteString("\n## Manifest\n\n")
 	fmt.Fprintf(&b, "go %s · os %s · seed %d · set hash `%s`\n", d.GoVersion, d.OS, d.SeedBase, d.SetHash)
 	return b.String()
+}
+
+func classNote(class string) string {
+	switch class {
+	case ClassCaptured:
+		return "class (b) captured-frame replay: frames from the external Dolphin fixture (verified against the manifest's per-frame SHA-256), truth from the fixture's oracle, script imported at run time from the user's game image — never stored, never committed (AGENTS.md rule 5)"
+	default:
+		return "class (a) synthetic stub; real game frames arrive with the Dolphin fixture factory — ADR-0038"
+	}
 }
 
 func noiseTag(noise float64) string {

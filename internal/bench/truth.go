@@ -37,6 +37,12 @@ const SpeakerUnknown = "unknown"
 type Frame struct {
 	File string `json:"file"`
 	TsNS int64  `json:"ts_ns"`
+	// Absent marks a frame whose pixels exist but, per the set's oracle, carry
+	// no textbox (the captured-Dolphin fixtures record the drive's measured
+	// screen class per frame; synthetic sets leave it false, and their
+	// boxless "absent.png" frames are named as such). The sidecar feeds it as
+	// a region-absent observation; the pipeline still reads the real pixels.
+	Absent bool `json:"absent,omitempty"`
 }
 
 // Variant labels how a sample's frame was rendered; it is a breakdown axis in

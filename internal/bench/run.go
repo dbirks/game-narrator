@@ -99,7 +99,10 @@ type truthSample struct {
 // real Tesseract, real matcher) and then drives the speech sidecar over the
 // pipeline's own per-frame readings. Deterministic: same frames, same engine,
 // same answer — the property the M2 replay test asserts across three runs.
-func runSample(ctx context.Context, framesDir string, s Sample, idx *matcher.Index, regions []games.Region) (sampleOutcomes, error) {
+// timestampsFile is the replay source's manifest override ("" = the default
+// <dir>/timestamps.json); the captured holdout points it at a per-sample
+// segment of the fixture's frame manifest without touching the fixture.
+func runSample(ctx context.Context, framesDir, timestampsFile string, s Sample, idx *matcher.Index, regions []games.Region) (sampleOutcomes, error) {
 	cfg := pipeline.Config{
 		SessionID:       benchSessionID,
 		ProfileRevision: benchRevision,
@@ -118,7 +121,7 @@ func runSample(ctx context.Context, framesDir string, s Sample, idx *matcher.Ind
 	}
 	mem := events.NewMemStore()
 	hub := events.New(events.WithStore(mem))
-	src := &replay.Source{Dir: framesDir, Speed: 0}
+	src := &replay.Source{Dir: framesDir, Speed: 0, TimestampsFile: timestampsFile}
 	rctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 	if err := runner.Run(rctx, src, hub); err != nil {
@@ -248,8 +251,89 @@ func runSidecar(ctx context.Context, idx *matcher.Index, regionID string, s Samp
 		return session.Header{SessionID: benchSessionID, Seq: next, Generation: gen, ProfileRevision: benchRevision}
 	}
 	lastKey := ""
+	var speech []speechEvent
+	var firstSpeaker string
+	firstKnown := false
+	processed := 0 // commits already answered (index into the publisher's list)
+	// answer walks every commit the session has emitted that has not been
+	// answered yet and applies the scripted decision + immediate TTS-ready +
+	// start — at the moment the commit fires, while the region still stands
+	// behind the occurrence. The session's speech lifecycle rejects a start
+	// whose occurrence no longer stands (a dismissed box), so answering after
+	// the replay would leave a captured sample that shows its advance frame
+	// with a committed line unable to speak at all (its region is dismissed
+	// before the batched answer lands). In the product the decision provider
+	// and the TTS worker run concurrently with the capture; this is that,
+	// scripted.
+	answer := func() error {
+		commits := pub.byName(events.MessageCommitted)
+		for _, e := range commits[processed:] {
+			var p struct {
+				MessageID  string `json:"message_id"`
+				Occurrence string `json:"dialogue_occurrence_id"`
+				Generation int64  `json:"generation"`
+				RegionID   string `json:"region_id"`
+			}
+			if err := json.Unmarshal(e.Data, &p); err != nil {
+				continue
+			}
+			spk, known, eligible := scriptSpeaker(p.MessageID)
+			if firstSpeaker == "" {
+				firstSpeaker, firstKnown = spk, known
+			}
+			obsSeq := int64(0)
+			if st := sess.State(); len(st.Regions) > 0 {
+				obsSeq = st.Regions[0].ObservationSeq
+			}
+			dm := session.DecisionMsg{
+				Header:         header(p.Generation),
+				RegionID:       p.RegionID,
+				ObservationSeq: obsSeq,
+				MessageID:      p.MessageID,
+				SpeakerID:      spk,
+				SpeakerKnown:   known,
+				SpeechEligible: eligible,
+				Accepted:       true,
+				Provider:       "scripted-synthetic",
+				Model:          "scripted-synthetic",
+			}
+			if _, err := sess.Apply(ctx, dm); err != nil {
+				return fmt.Errorf("sidecar decision: %v", err)
+			}
+			if !eligible {
+				continue // not in the script: silence, never a forced speaker
+			}
+			if _, err := sess.Apply(ctx, session.SpeechMsg{
+				Header: header(p.Generation), RegionID: p.RegionID,
+				OccurrenceID: p.Occurrence, Kind: session.SpeechReady, VoiceID: benchVoice,
+			}); err != nil {
+				return fmt.Errorf("sidecar ready: %v", err)
+			}
+			res, err := sess.Apply(ctx, session.SpeechMsg{
+				Header: header(p.Generation), RegionID: p.RegionID,
+				OccurrenceID: p.Occurrence, Kind: session.SpeechStarted, VoiceID: benchVoice,
+			})
+			if err != nil {
+				return fmt.Errorf("sidecar started: %v", err)
+			}
+			for _, ev := range res.Events {
+				if ev.Name != events.SpeechStarted {
+					continue
+				}
+				var sp struct {
+					Occurrence string `json:"dialogue_occurrence_id"`
+					MessageID  string `json:"message_id"`
+					Generation int64  `json:"generation"`
+				}
+				_ = json.Unmarshal(ev.Data, &sp)
+				speech = append(speech, speechEvent{occurrenceID: sp.Occurrence, messageID: sp.MessageID, generation: sp.Generation})
+			}
+		}
+		processed = len(commits)
+		return nil
+	}
 	for i, f := range s.Frames {
-		present := f.File != ""
+		present := f.File != "" && !f.Absent
 		text := ""
 		if present && s.TextKind == "dialogue" {
 			text = s.SourceText
@@ -290,73 +374,14 @@ func runSidecar(ctx context.Context, idx *matcher.Index, regionID string, s Samp
 		}); err != nil {
 			return nil, 0, "", false, fmt.Errorf("sidecar rank %d: %v", i, err)
 		}
+		// The ranking is what commits: answer every new commit now, while the
+		// region still stands behind its occurrence.
+		if err := answer(); err != nil {
+			return nil, 0, "", false, err
+		}
 	}
+	_ = answer() // a commit fired on a final observation is answered before the return
 
-	var speech []speechEvent
-	var firstSpeaker string
-	firstKnown := false
-	for _, e := range pub.byName(events.MessageCommitted) {
-		var p struct {
-			MessageID  string `json:"message_id"`
-			Occurrence string `json:"dialogue_occurrence_id"`
-			Generation int64  `json:"generation"`
-			RegionID   string `json:"region_id"`
-		}
-		if err := json.Unmarshal(e.Data, &p); err != nil {
-			continue
-		}
-		spk, known, eligible := scriptSpeaker(p.MessageID)
-		if firstSpeaker == "" {
-			firstSpeaker, firstKnown = spk, known
-		}
-		obsSeq := int64(0)
-		if st := sess.State(); len(st.Regions) > 0 {
-			obsSeq = st.Regions[0].ObservationSeq
-		}
-		dm := session.DecisionMsg{
-			Header:         header(p.Generation),
-			RegionID:       p.RegionID,
-			ObservationSeq: obsSeq,
-			MessageID:      p.MessageID,
-			SpeakerID:      spk,
-			SpeakerKnown:   known,
-			SpeechEligible: eligible,
-			Accepted:       true,
-			Provider:       "scripted-synthetic",
-			Model:          "scripted-synthetic",
-		}
-		if _, err := sess.Apply(ctx, dm); err != nil {
-			return nil, 0, "", false, fmt.Errorf("sidecar decision: %v", err)
-		}
-		if !eligible {
-			continue // not in the script: silence, never a forced speaker
-		}
-		if _, err := sess.Apply(ctx, session.SpeechMsg{
-			Header: header(p.Generation), RegionID: p.RegionID,
-			OccurrenceID: p.Occurrence, Kind: session.SpeechReady, VoiceID: benchVoice,
-		}); err != nil {
-			return nil, 0, "", false, fmt.Errorf("sidecar ready: %v", err)
-		}
-		res, err := sess.Apply(ctx, session.SpeechMsg{
-			Header: header(p.Generation), RegionID: p.RegionID,
-			OccurrenceID: p.Occurrence, Kind: session.SpeechStarted, VoiceID: benchVoice,
-		})
-		if err != nil {
-			return nil, 0, "", false, fmt.Errorf("sidecar started: %v", err)
-		}
-		for _, ev := range res.Events {
-			if ev.Name != events.SpeechStarted {
-				continue
-			}
-			var sp struct {
-				Occurrence string `json:"dialogue_occurrence_id"`
-				MessageID  string `json:"message_id"`
-				Generation int64  `json:"generation"`
-			}
-			_ = json.Unmarshal(ev.Data, &sp)
-			speech = append(speech, speechEvent{occurrenceID: sp.Occurrence, messageID: sp.MessageID, generation: sp.Generation})
-		}
-	}
 	return speech, len(pub.byName(events.SpeechCancelled)), firstSpeaker, firstKnown, nil
 }
 
@@ -386,9 +411,12 @@ func sidecarOCR(text string) *ocr.Result {
 }
 
 func truthSampleFrom(s Sample) truthSample {
+	// The sample's first text frame: the synthetic set names it "text.png";
+	// a captured segment is the first frame the oracle does not mark absent.
+	// It is the latency origin (the frame the box's text first appears on).
 	var first int64
 	for _, f := range s.Frames {
-		if f.File == "text.png" {
+		if f.File == "text.png" || (f.File != "" && f.File != "absent.png" && !f.Absent) {
 			first = f.TsNS
 			break
 		}

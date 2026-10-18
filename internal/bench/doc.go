@@ -13,17 +13,29 @@ package bench
 // SchemaVersion is the only report/truth schema this package understands.
 const SchemaVersion = 1
 
+// The AGENTS.md rule-3 provenance classes a bench run can be in. They are
+// reported, never pooled: a synthetic-stub number and a captured-frame
+// number are different measurements of different systems.
+const (
+	ClassSynthetic = "a" // class (a): synthetic stub
+	ClassCaptured  = "b" // class (b): captured-frame replay
+)
+
 // Report is one benchmark run's machine-readable result (report.json).
 type Report struct {
-	SchemaVersion int         `json:"schema_version"`
-	RunID         string      `json:"run_id"`
-	Set           string      `json:"set"`
-	Split         string      `json:"split"` // tuning | holdout | all
-	Origin        string      `json:"origin"`
-	Samples       int         `json:"samples"`
-	Metrics       []Metric    `json:"metrics"`
-	Diagnostics   Diagnostics `json:"diagnostics"`
-	GeneratedAt   string      `json:"generated_at"`
+	SchemaVersion int    `json:"schema_version"`
+	RunID         string `json:"run_id"`
+	Set           string `json:"set"`
+	Split         string `json:"split"` // tuning | holdout | all
+	Origin        string `json:"origin"`
+	// Class is the AGENTS.md rule-3 provenance class of the run's frames:
+	// "a" synthetic stub, "b" captured-frame replay (docs/spec/11 "Fixture
+	// origins"). The two holdouts are reported separately and never pooled.
+	Class       string      `json:"class"`
+	Samples     int         `json:"samples"`
+	Metrics     []Metric    `json:"metrics"`
+	Diagnostics Diagnostics `json:"diagnostics"`
+	GeneratedAt string      `json:"generated_at"`
 }
 
 // Metric is one report row: value, sample count, kind, the provisional
