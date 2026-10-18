@@ -127,6 +127,29 @@ func shrinkAttemptWindow(t *testing.T) {
 	t.Cleanup(func() { attemptWindowMin = old })
 }
 
+// evalCost measures one full runner-sample (signature + checkpoint) on the
+// test's own frames, the way pollWindow does it. The runner's deadline is
+// wall clock, so the deadline budget must be sized in units of the MEASURED
+// per-sample cost, not a fixed millisecond count (a fixed 200 ms deadline
+// fit only one evaluation on the throttled 2-core CI runner, which is not
+// the property under test): a deadline of K*(cost+poll) deterministically
+// fits K sample cycles on the calibrated host, and a host slower than the
+// calibration only makes the generous upper bounds slack, never tight.
+func evalCost(t *testing.T, cp Checkpoint, frames ...image.Image) time.Duration {
+	t.Helper()
+	if len(frames) == 0 {
+		frames = []image.Image{solid(320, 240, 50)}
+	}
+	ctx := context.Background()
+	t0 := time.Now()
+	for i := 0; i < 3; i++ {
+		img := frames[i%len(frames)]
+		_ = ScreenSigOf(img)
+		_, _ = cp(ctx, img, img) // the calibration wants the cost, not the verdict
+	}
+	return time.Since(t0) / 3
+}
+
 // TestRunScriptStepOrderAndWire: three steps (wait, press, stick) run in
 // order, the trace records the wire bytes, and the run reports OK.
 //
@@ -205,19 +228,34 @@ func TestRunScriptStepOrderAndWire(t *testing.T) {
 // TestRunScriptRepeatCap: a press step whose checkpoint never holds
 // re-injects exactly MaxRepeats extra times, then fails the run (the later
 // step never runs) — the repeat cap, not the timeout, ends the step.
+//
+// The deadline is sized against the measured per-sample cost (a fixed
+// wall-clock deadline on a loaded host can otherwise expire inside the
+// attempt loop and truncate the attempt count — machine speed is not the
+// property under test), so at least six attempt cycles always fit inside
+// it and the cap, not the deadline, ends the step.
 func TestRunScriptRepeatCap(t *testing.T) {
 	shrinkAttemptWindow(t)
-	fb := &fakeBridge{shots: []image.Image{solid(320, 240, 50)}} // never changes
+	shot := solid(320, 240, 50) // never changes
+	fb := &fakeBridge{shots: []image.Image{shot}}
+	cost := evalCost(t, SceneChanged(0.99), shot)
+	const poll = 2 * time.Millisecond
+	timeout := 1 * time.Second
+	// Six attempt cycles (three are the budget; the rest is margin for the
+	// pre-satisfaction eval and the finalise grab) must fit inside the
+	// deadline: the cap, not the timeout, ends the step.
+	if minFit := 6 * (cost + poll); timeout < minFit {
+		timeout = minFit
+	}
 	s := Script{
-		// 2 ms cadence: three windows of 8 ms keep the nominal wall clock
-		// (~25 ms of sleeps) so loaded hosts (another worker running
-		// emulators) cannot inflate the poll sleeps past the elapsed bound
-		// below — the repeat cap is asserted by the ATTEMPT COUNT, the
-		// timing only guards that the deadline is not the thing that ran out.
-		Poll: 2 * time.Millisecond,
+		// 2 ms cadence: three windows of 8 ms keep the attempt budget a few
+		// tens of ms of sleeps; the repeat cap is asserted by the ATTEMPT
+		// COUNT, the timing only guards that the deadline is not the thing
+		// that ran out.
+		Poll: poll,
 		Steps: []Step{
 			{Name: "never-advances", Press: []Button{ButtonA}, Hold: 2 * time.Millisecond,
-				Until: ckp(SceneChanged(0.99)), Timeout: 1 * time.Second, MaxRepeats: 2},
+				Until: ckp(SceneChanged(0.99)), Timeout: timeout, MaxRepeats: 2},
 			{Name: "must-not-run", Press: []Button{ButtonB}, Hold: 2 * time.Millisecond, Until: nil},
 		},
 	}
@@ -241,14 +279,14 @@ func TestRunScriptRepeatCap(t *testing.T) {
 		t.Errorf("fake saw %d injects, want 3", len(fb.injects))
 	}
 	// The cap (3 attempts of an 8ms window) is what bound the INPUT, not the
-	// 1 s deadline: with 1 s and an 8 ms window a hundred attempts would
-	// have fit, yet exactly three happened. The deadline is kept
-	// load-tolerant: a tight deadline on a loaded host can end the step
-	// before the cap, which would make the attempts assertion vacuous.
-	// (The runner waits out the rest of the deadline after the attempt
-	// budget is spent, so elapsed lands just above the deadline.)
-	if elapsed > 1500*time.Millisecond {
-		t.Errorf("step took %s, want just over the 1s deadline, not more (the cap, not the timeout, ends it)", elapsed)
+	// deadline: the deadline fits at least six attempt cycles (three of them
+	// are the budget), yet exactly three attempts happened. It is sized from
+	// the measured evaluation cost so a slow host cannot expire it inside
+	// the attempt loop (which would make the attempts assertion flake). The
+	// runner waits out the rest of the deadline after the attempt budget is
+	// spent, so elapsed lands just above the deadline.
+	if elapsed > timeout+5*(cost+poll)+200*time.Millisecond {
+		t.Errorf("step took %s, want just over the %s deadline, not more (the cap, not the timeout, ends it)", elapsed, timeout)
 	}
 	if st.FinalHash == "" || st.RefHash == "" {
 		t.Errorf("failed step must hand back screenshot hashes (ref=%q final=%q)", st.RefHash, st.FinalHash)
@@ -261,13 +299,31 @@ func TestRunScriptRepeatCap(t *testing.T) {
 
 // TestRunScriptTimeout: a wait-only step whose checkpoint never holds fails
 // at its deadline, with the per-evaluation details retained.
+//
+// Machine speed is not the property under test, so the deadline budget is
+// sized in units of the MEASURED per-sample cost (the runner's deadline is
+// wall clock: on the throttled 2-core CI runner a fixed 200 ms deadline fit
+// only ONE evaluation — screenshot + classifier — which made the
+// "evaluated repeatedly" assertion flake). The deadline scales UP with the
+// calibrated cost (never below the nominal 200 ms step timeout), so at
+// least four sample cycles always fit inside it. The deadline-bounded
+// elapsed assertion keeps a generous upper bound (the budget plus one
+// in-flight sample and the finalise grab, with margin for a host that
+// drifts slower mid-test).
 func TestRunScriptTimeout(t *testing.T) {
 	shrinkAttemptWindow(t)
-	fb := &fakeBridge{shots: []image.Image{solid(320, 240, 50)}} // never a scene
+	shot := solid(320, 240, 50) // never a scene
+	fb := &fakeBridge{shots: []image.Image{shot}}
+	cost := evalCost(t, FullFrameScene(), shot)
+	const poll = 10 * time.Millisecond
+	timeout := 200 * time.Millisecond
+	if minFit := 4 * (cost + poll); timeout < minFit {
+		timeout = minFit
+	}
 	s := Script{
-		Poll: 10 * time.Millisecond,
+		Poll: poll,
 		Steps: []Step{
-			{Name: "never-settles", Until: ckp(FullFrameScene()), Timeout: 200 * time.Millisecond},
+			{Name: "never-settles", Until: ckp(FullFrameScene()), Timeout: timeout},
 		},
 	}
 	start := time.Now()
@@ -276,8 +332,14 @@ func TestRunScriptTimeout(t *testing.T) {
 	if err == nil || tr.OK {
 		t.Fatalf("run should fail at the step deadline; tr=%+v err=%v", tr, err)
 	}
-	if elapsed < 150*time.Millisecond || elapsed > 5*time.Second {
-		t.Errorf("step ran %s, want ~200ms (deadline-bounded)", elapsed)
+	// The step cannot end before its deadline (the checkpoint never holds,
+	// the dark frame arms no loop guard, and a wait-only step has no repeat
+	// cap), so elapsed lands just above the budget — and, at the calibrated
+	// cost, never much above it (one in-flight sample plus the finalise
+	// grab, with margin for a host that drifts slower mid-test).
+	if elapsed < timeout-100*time.Millisecond ||
+		elapsed > timeout+5*(cost+poll)+200*time.Millisecond {
+		t.Errorf("step ran %s, want ~%s (deadline-bounded)", elapsed, timeout)
 	}
 	if len(tr.Steps[0].Details) < 2 {
 		t.Errorf("details = %v, want at least two evaluations", tr.Steps[0].Details)
@@ -395,11 +457,21 @@ func TestRunScriptContinueLoopFailsFast(t *testing.T) {
 	// ref = the continue dialog (cursor on No), and every poll returns the
 	// SAME dialog: the A press selected No (or did nothing) — a loop.
 	fb := &fakeBridge{shots: []image.Image{contNo, contNo, contNo, contNo, contNo}}
+	// The guard fires after three samples; size the deadline from the
+	// measured sample cost so the guard deterministically beats the
+	// deadline on any host — the fail-fast ordering is the property,
+	// machine speed is not.
+	const poll = 10 * time.Millisecond
+	cost := evalCost(t, ScreenIsClass(ClassBox), contNo)
+	timeout := 5 * time.Second
+	if minFit := 8 * (cost + poll); timeout < minFit {
+		timeout = minFit
+	}
 	s := Script{
-		Poll: 10 * time.Millisecond,
+		Poll: poll,
 		Steps: []Step{
 			{Name: "confirm-continue-anyway", Press: []Button{ButtonA}, Hold: 2 * time.Millisecond,
-				Until: ckp(ScreenIsClass(ClassBox)), Timeout: 5 * time.Second, MaxRepeats: 3},
+				Until: ckp(ScreenIsClass(ClassBox)), Timeout: timeout, MaxRepeats: 3},
 		},
 	}
 	start := time.Now()
@@ -411,7 +483,10 @@ func TestRunScriptContinueLoopFailsFast(t *testing.T) {
 	if !strings.Contains(strings.ToLower(tr.LastError), "loop detected") {
 		t.Fatalf("the failure must say loop detected, got: %s", tr.LastError)
 	}
-	if elapsed > 1500*time.Millisecond {
+	// The error text proves the guard (not the deadline) ended the step;
+	// the elapsed bound keeps the guard from being unreasonably slow at the
+	// calibrated cost.
+	if elapsed > timeout+5*(cost+poll)+200*time.Millisecond {
 		t.Errorf("step took %s, want fast (the loop guard, not the deadline, must end it)", elapsed)
 	}
 	if st := tr.Steps[0]; st.FinalSig != "continue:no" {
@@ -552,11 +627,19 @@ func TestRunScriptPromptLoopFailsFast(t *testing.T) {
 	// ref = prompt, then every poll returns the SAME prompt (the press did
 	// not move the cursor / did not advance): a loop.
 	fb := &fakeBridge{shots: []image.Image{p, p, p, p, p, p}}
+	// See TestRunScriptContinueLoopFailsFast: the deadline is sized from the
+	// measured sample cost so the guard deterministically beats it.
+	const poll = 10 * time.Millisecond
+	cost := evalCost(t, ScreenIsClass(ClassBox), p)
+	timeout := 5 * time.Second
+	if minFit := 8 * (cost + poll); timeout < minFit {
+		timeout = minFit
+	}
 	s := Script{
-		Poll: 10 * time.Millisecond,
+		Poll: poll,
 		Steps: []Step{
 			{Name: "confirm-yes", Press: []Button{ButtonA}, Hold: 2 * time.Millisecond,
-				Until: ckp(ScreenIsClass(ClassBox)), Timeout: 5 * time.Second, MaxRepeats: 3},
+				Until: ckp(ScreenIsClass(ClassBox)), Timeout: timeout, MaxRepeats: 3},
 		},
 	}
 	start := time.Now()
@@ -568,9 +651,9 @@ func TestRunScriptPromptLoopFailsFast(t *testing.T) {
 	if !strings.Contains(strings.ToLower(tr.LastError), "loop detected") {
 		t.Fatalf("the failure must say loop detected, got: %s", tr.LastError)
 	}
-	// It must fail FAST (well under the 5 s deadline): the loop guard, not
-	// the timeout, ends the step.
-	if elapsed > 1500*time.Millisecond {
+	// It must fail FAST (well under the deadline): the loop guard, not the
+	// timeout, ends the step.
+	if elapsed > timeout+5*(cost+poll)+200*time.Millisecond {
 		t.Errorf("step took %s, want fast (the loop guard, not the deadline, must end it)", elapsed)
 	}
 	if st := tr.Steps[0]; st.FinalSig != "prompt:-" {
@@ -615,11 +698,19 @@ func TestRunScriptFileSelLoopFailsFast(t *testing.T) {
 	t.Cleanup(func() { attemptWindowMin = old })
 	fs := synthFileSel(320, 240)
 	fb := &fakeBridge{shots: []image.Image{fs, fs, fs, fs, fs, fs}}
+	// See TestRunScriptContinueLoopFailsFast: the deadline is sized from the
+	// measured sample cost so the guard deterministically beats it.
+	const poll = 10 * time.Millisecond
+	cost := evalCost(t, ScreenIsClass(ClassNameEnt), fs)
+	timeout := 5 * time.Second
+	if minFit := 8 * (cost + poll); timeout < minFit {
+		timeout = minFit
+	}
 	s := Script{
-		Poll: 10 * time.Millisecond,
+		Poll: poll,
 		Steps: []Step{
 			{Name: "choose-file", Press: []Button{ButtonA, ButtonStart}, Hold: 2 * time.Millisecond,
-				Until: ckp(ScreenIsClass(ClassNameEnt)), Timeout: 5 * time.Second, MaxRepeats: 3},
+				Until: ckp(ScreenIsClass(ClassNameEnt)), Timeout: timeout, MaxRepeats: 3},
 		},
 	}
 	start := time.Now()
@@ -631,7 +722,7 @@ func TestRunScriptFileSelLoopFailsFast(t *testing.T) {
 	if !strings.Contains(strings.ToLower(tr.LastError), "loop detected") {
 		t.Fatalf("the failure must say loop detected, got: %s", tr.LastError)
 	}
-	if elapsed > 1500*time.Millisecond {
+	if elapsed > timeout+5*(cost+poll)+200*time.Millisecond {
 		t.Errorf("step took %s, want fast (the loop guard, not the deadline, must end it)", elapsed)
 	}
 	if st := tr.Steps[0]; st.FinalSig != "filesel" {
