@@ -93,27 +93,24 @@ func TestScenarios(t *testing.T) {
 
 // TestBlockedScenariosAreReportedNotPassed pins the ADR-0037 rule at the
 // runner level: a status: blocked scenario loads, reports BLOCKED with its
-// reason, and is never counted as a pass.
+// reason, and is never counted as a pass. Every blocked scenario found in
+// the register is exercised; when the register is empty (all scenarios
+// unblocked) the rule is exercised on a synthetic blocked YAML written to a
+// temp dir, so the "blocked ≠ pass" contract is tested either way.
 func TestBlockedScenariosAreReportedNotPassed(t *testing.T) {
 	root := repoRootFor(t)
 	dir := filepath.Join(root, "testdata", "scenarios", "synthetic")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("read scenarios dir: %v", err)
+	var paths []string
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
+				continue
+			}
+			paths = append(paths, filepath.Join(dir, e.Name()))
+		}
 	}
-	found := 0
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
-			continue
-		}
-		sc, err := Load(filepath.Join(dir, e.Name()))
-		if err != nil {
-			t.Fatalf("%s: load: %v", e.Name(), err)
-		}
-		if sc.Status != StatusBlocked {
-			continue
-		}
-		found++
+	check := func(t *testing.T, sc *Scenario) {
+		t.Helper()
 		res, err := RunScenario(context.Background(), root, sc)
 		if err != nil {
 			t.Fatalf("%s: run: %v", sc.ID, err)
@@ -131,8 +128,48 @@ func TestBlockedScenariosAreReportedNotPassed(t *testing.T) {
 			t.Fatalf("%s: summary %q does not start with BLOCKED:", sc.ID, got)
 		}
 	}
+
+	found := 0
+	for _, path := range paths {
+		sc, err := Load(path)
+		if err != nil {
+			t.Fatalf("%s: load: %v", filepath.Base(path), err)
+		}
+		if sc.Status != StatusBlocked {
+			continue
+		}
+		found++
+		t.Run(sc.ID, func(t *testing.T) { check(t, sc) })
+	}
 	if found == 0 {
-		t.Fatal("no blocked scenario found under testdata/scenarios/synthetic: the register rule is untested")
+		// The register is empty: prove the rule on a synthetic blocked
+		// scenario so the contract is never left untested by a good day.
+		t.Run("synthetic-blocked", func(t *testing.T) {
+			tmp := t.TempDir()
+			path := filepath.Join(tmp, "blocked-probe.yaml")
+			content := `schema_version: 1
+id: synthetic/probe-blocked
+origin: generated_synthetic
+profile: dialogue-advance-001
+mode: frame_replay
+status: blocked
+reason: "probe: blocked ≠ pass (ADR-0037)"
+input:
+  frames_dir: testdata/synthetic/replay/dialogue-advance-001
+  timestamps: timestamps.json
+inference:
+  decision: none
+  tts: none
+`
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+				t.Fatalf("write probe: %v", err)
+			}
+			sc, err := Load(path)
+			if err != nil {
+				t.Fatalf("load probe: %v", err)
+			}
+			check(t, sc)
+		})
 	}
 }
 

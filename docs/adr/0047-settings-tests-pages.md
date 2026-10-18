@@ -81,4 +81,4 @@ No schema, migration or data change: the new routes are additive, the scope-tabl
 
 - Wire `api.WithTestHarness(repoRoot)` and `api.WithListen(listen)` in `cmd/game-narrator` (process owner) so the packaged binary reports its bound address and an explicit harness root instead of the env/cwd fallback.
 - Expose `openai.Capabilities()` findings on the settings page once the API layer holds a live client (the field is already `capabilities` and currently null with the reason).
-- A streamed/cancellable TTS endpoint would unblock GN-T047 (the blocked scenario the page now renders with its reason).
+- A streamed/cancellable TTS endpoint would unblock GN-T047 (the blocked scenario the page now renders with its reason). — **Unblocked 2026-10-18 by ADR-0057**: the TTS contract carries the streamed/cancellable synthesis endpoint, the scenario runs over the real streaming wire (the fault drops the SSE connection mid-stream), and the catalog lists the row as runnable; `web/e2e/m5-settings-tests.spec.ts` asserts both states (a still-blocked row with its reason, and GN-T047 runnable).

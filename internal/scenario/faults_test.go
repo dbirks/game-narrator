@@ -280,7 +280,7 @@ func TestFaultVoiceMissingFiresAtConfiguredTime(t *testing.T) {
 			t.Errorf("fault kind = %q, want %q", kind, FaultVoiceMissingReplica)
 		}
 	})
-	gw := newTTSGateway("tts-fake", "gone-voice", inj, 0)
+	gw := newTTSGateway("tts-fake", "gone-voice", inj, 0, 0, 0)
 	t.Cleanup(gw.Close)
 	client, err := tts.New(gw.url(), "test-token", "tts-fake")
 	if err != nil {
@@ -413,7 +413,7 @@ func TestFaultTTSEndpointDownViaWrapper(t *testing.T) {
 			t.Errorf("fault = %q/%q, want %q/%q", kind, role, FaultEndpointDown, RoleTTS)
 		}
 	})
-	gw := newTTSGateway("tts-fake", "", inj, -1)
+	gw := newTTSGateway("tts-fake", "", inj, -1, 0, 0)
 	t.Cleanup(gw.Close)
 	client, err := tts.New(gw.url(), "test-token", "tts-fake")
 	if err != nil {

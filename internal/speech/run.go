@@ -51,6 +51,18 @@ loop:
 			case <-ctx.Done():
 				if active != nil {
 					active.handle.Stop(s.stopFade)
+					// Join the terminal result before the loop exits: a
+					// shutdown must not return while a delivery is still in
+					// flight — the sink writes its evidence artifact on
+					// finish, and the playback would otherwise never get
+					// its speech.ended event. A sink that does not finish
+					// a stopped playback within the bound is a pathological
+					// shutdown; the loop exits without the result.
+					select {
+					case res := <-activeDone:
+						s.finishActive(active, res)
+					case <-time.After(stopJoinBudget):
+					}
 				}
 				break loop
 			}

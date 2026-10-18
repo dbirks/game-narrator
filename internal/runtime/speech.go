@@ -209,6 +209,11 @@ type speechWiring struct {
 	// byGeneration maps a generation to its occurrence for the scheduler's
 	// cancel events, which carry no utterance id.
 	byGeneration map[int64]string
+	// genCancel holds the cancellable context of a synthesis still in flight
+	// for a generation: a fence that moves while a line is being
+	// synthesised cancels the read at the source (ADR-0057) and the client
+	// discards whatever partial the stream had delivered.
+	genCancel map[int64]*synthSlot
 	// local counts the events this wiring emitted itself: the terminal
 	// events (skips, mutes, worker failures) and the cache hits. The
 	// scheduler counts its own starts/cancels/ends.
@@ -239,6 +244,14 @@ type utteranceInfo struct {
 	voiceID    string // the voice profile spoken ("" until resolved)
 }
 
+// synthSlot is one in-flight synthesis's cancellable scope, registered
+// against the utterance's generation: the fence cancels it on a new commit
+// and the worker deregisters it when the synthesis settles. A pointer, so
+// the fence and the worker compare the registration by identity.
+type synthSlot struct {
+	cancel context.CancelFunc
+}
+
 // newSpeechWiring builds the per-session speech pipeline. It returns nil
 // (with a warning already logged) when the sink cannot be built — the
 // documented degradation: the session runs silent rather than failing the
@@ -255,6 +268,7 @@ func (m *Manager) newSpeechWiring(id string, speakerByMessage map[string]string,
 		sem:              make(chan struct{}, speechWorkerSlots),
 		utterances:       map[string]*utteranceInfo{},
 		byGeneration:     map[int64]string{},
+		genCancel:        map[int64]*synthSlot{},
 		volume:           1.0,
 	}
 	endCtx, endCancel := context.WithCancel(runCtx)
@@ -375,13 +389,24 @@ func (w *speechWiring) stop() {
 func (w *speechWiring) fenceAndCancel(generation int64) {
 	w.mu.Lock()
 	stale := make([]int64, 0, 4)
+	var staleSynth []*synthSlot
 	for g := range w.byGeneration {
 		if g < generation {
 			stale = append(stale, g)
+			if s, ok := w.genCancel[g]; ok {
+				staleSynth = append(staleSynth, s)
+				delete(w.genCancel, g)
+			}
 		}
 	}
 	w.fence.set(generation)
 	w.mu.Unlock()
+	for _, s := range staleSynth {
+		// The in-flight synthesis of a stale generation stops now: the
+		// stream's partial is discarded, the utterance ends failed, and the
+		// phase fence keeps it from starting later.
+		s.cancel()
+	}
 	for _, g := range stale {
 		w.sched.Cancel(g, "new_commit")
 	}
@@ -511,10 +536,28 @@ func (w *speechWiring) speak(u *utteranceInfo) {
 	}
 
 	pctx, cancel := context.WithTimeout(ctx, speechTTSTimeout)
-	res, err := w.voices.Speech.GetOrGenerate(pctx, key, speech.PriorityCurrent, func(ctx context.Context) (tts.Audio, error) {
+	defer cancel()
+	// The synthesis context is the utterance's own cancellable scope, on top
+	// of the deadline: a fence that moves while this line is still being
+	// synthesised cancels it at the source (the stream's partial is
+	// discarded, the utterance ends failed) instead of after it has started
+	// (ADR-0057; docs/spec/12 "TTS partly streams before cancellation").
+	synthCtx, synthCancel := context.WithCancel(pctx)
+	slot := &synthSlot{cancel: synthCancel}
+	w.mu.Lock()
+	w.genCancel[u.generation] = slot
+	w.mu.Unlock()
+	defer func() {
+		w.mu.Lock()
+		if w.genCancel[u.generation] == slot {
+			delete(w.genCancel, u.generation)
+		}
+		w.mu.Unlock()
+		slot.cancel()
+	}()
+	res, err := w.voices.Speech.GetOrGenerate(synthCtx, key, speech.PriorityCurrent, func(ctx context.Context) (tts.Audio, error) {
 		return rv.generate(ctx, u.text)
 	})
-	cancel()
 	if err != nil {
 		if ctx.Err() != nil {
 			// The session ended while this line was still synthesising: it
@@ -683,10 +726,23 @@ type resolvedVoice struct {
 }
 
 // generate is the cache's GenerationFunc: the provider call with its
-// negotiated identity (registered name, or inline reference).
+// negotiated identity (registered name, or inline reference). A client that
+// carries the streaming seam (ADR-0057) synthesises the registered-voice
+// path over the streaming wire — the ctx passed in is the utterance's
+// cancellable context, so a fence that moves mid-synthesis stops the read
+// and the partial is discarded; a client without it (the test fakes) stays
+// on the atomic wire. The reference path stays atomic: the inline
+// reference's identity is the GenerateWithReference contract.
+type streamingSynthesis interface {
+	GenerateStream(ctx context.Context, req tts.GenerateRequest) (tts.Audio, error)
+}
+
 func (rv *resolvedVoice) generate(ctx context.Context, text string) (tts.Audio, error) {
 	req := tts.GenerateRequest{Text: text, Voice: rv.name, Language: rv.profile.Language}
 	if rv.ready {
+		if sg, ok := rv.client.(streamingSynthesis); ok {
+			return sg.GenerateStream(ctx, req)
+		}
 		return rv.client.Generate(ctx, req)
 	}
 	return rv.client.GenerateWithReference(ctx, req, rv.refWAV, rv.refText)

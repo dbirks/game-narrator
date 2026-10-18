@@ -35,6 +35,7 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -51,6 +52,8 @@ import (
 	"github.com/dbirks/game-narrator/internal/providers/tts"
 	"github.com/dbirks/game-narrator/internal/recognition"
 	"github.com/dbirks/game-narrator/internal/session"
+	"github.com/dbirks/game-narrator/internal/speech"
+	"github.com/dbirks/game-narrator/internal/speech/filesink"
 	"github.com/dbirks/game-narrator/internal/vision"
 )
 
@@ -113,6 +116,15 @@ type RunResult struct {
 	// bytes the TTS layer produced for it (empty when the scenario runs
 	// without TTS or nothing was spoken).
 	AudioByOccurrence map[string][]byte
+	// AudioDir is the per-run filesink directory of the harness's real
+	// playback half (TTS scenarios): one evidence WAV per started playback,
+	// the delivered prefix when a stop landed mid-playback. Empty when the
+	// scenario runs without TTS.
+	AudioDir string
+	// SchedulerStats is the harness scheduler's decision counters (TTS
+	// scenarios): drops by reason are the timeline-side proof that a stale
+	// or cancelled utterance never reached the sink.
+	SchedulerStats speech.Stats
 	// Fixture is the provenance for dolphin-origin scenarios: the fixture the
 	// frames came from and the slice the scenario replayed (nil otherwise).
 	Fixture *DolphinFixtureInfo
@@ -226,6 +238,16 @@ func runScenarioCore(ctx context.Context, repoRoot string, sc *Scenario, framesD
 		return RunResult{}, fmt.Errorf("scenario %s: read events: %v", sc.ID, err)
 	}
 	report := sc.Evaluate(evs, run.pipelineStats, run.truth)
+	// The implicit check against the playback half (TTS scenarios): the
+	// sink's directory carries exactly one evidence WAV per started
+	// utterance and no temporary file. It is appended like
+	// replay_not_degraded, not authorable.
+	if res, ok := run.audioEvidenceCheck(); ok {
+		report.Results = append(report.Results, res)
+		if !res.Passed {
+			report.Passed = false
+		}
+	}
 	status := "passed"
 	if !report.Passed {
 		status = "failed"
@@ -240,6 +262,8 @@ func runScenarioCore(ctx context.Context, repoRoot string, sc *Scenario, framesD
 		Faults:            sc.Faults,
 		Timeline:          evs,
 		AudioByOccurrence: run.audio,
+		AudioDir:          run.audioDir,
+		SchedulerStats:    run.schedulerStats(),
 	}, nil
 }
 
@@ -312,6 +336,13 @@ type run struct {
 	ttsWrap   *faultedTTS
 	gwDec     *decisionGateway
 	gwTTS     *ttsGateway
+	// the playback half (TTS scenarios): the real scheduler over the
+	// filesink under a per-run temp dir — the audio evidence the assertions
+	// and report read (one WAV per started playback, the delivered prefix
+	// when a stop landed mid-playback).
+	sched    *speech.Scheduler
+	sink     *filesink.Sink
+	audioDir string
 	// pipelineErr is the pipeline layer's error, captured from its goroutine.
 	pipelineErr error
 
@@ -378,15 +409,79 @@ func (r *run) buildGateways() {
 		voiceMissing = f.Voice
 		r.idxVoice = i
 	}
-	r.gwTTS = newTTSGateway(ttsModel, voiceMissing, r.injector, r.idxVoice)
+	ttsDownFrom, ttsDownTo := 0, 0
+	if f, i := findFault(r.sc.Faults, FaultEndpointDown); i >= 0 && f.Role == RoleTTS {
+		ttsDownFrom, ttsDownTo = f.FromMS, f.ToMS
+	}
+	r.gwTTS = newTTSGateway(ttsModel, voiceMissing, r.injector, r.idxVoice, ttsDownFrom, ttsDownTo)
 	ttsClient, err := tts.New(r.gwTTS.url(), "scenario-token", ttsModel)
 	if err != nil {
 		panic(fmt.Sprintf("scenario: tts client: %v", err))
 	}
 	if f, i := findFault(r.sc.Faults, FaultEndpointDown); i >= 0 && f.Role == RoleTTS {
-		r.ttsWrap = &faultedTTS{client: ttsClient, fromMS: f.FromMS, toMS: f.ToMS, injector: r.injector, idx: i}
+		r.ttsWrap = &faultedTTS{client: ttsClient, gw: r.gwTTS, fromMS: f.FromMS, toMS: f.ToMS, injector: r.injector, idx: i}
 	} else {
-		r.ttsWrap = &faultedTTS{client: ttsClient, fromMS: 0, toMS: 0, injector: r.injector, idx: -1}
+		r.ttsWrap = &faultedTTS{client: ttsClient, gw: r.gwTTS, fromMS: 0, toMS: 0, injector: r.injector, idx: -1}
+	}
+}
+
+// buildAudioPipeline starts the run's playback half (TTS scenarios only):
+// the real generation-fenced scheduler over a filesink under a per-run temp
+// dir. The filesink writes one evidence WAV per started playback (the
+// delivered prefix when a stop lands mid-playback), which is what makes
+// "no stale audio starts" and "no temporary file left behind" assertable
+// against the sink's own directory rather than the event log alone.
+// The scheduler's publisher is a discarding stub: the sidecar session is
+// the event recorder of record for the merged timeline, and duplicating
+// the scheduler's playback events would double-count every start.
+func (r *run) buildAudioPipeline(ctx context.Context) error {
+	dir, err := os.MkdirTemp("", "gn-scenario-audio-*")
+	if err != nil {
+		return fmt.Errorf("audio dir: %w", err)
+	}
+	r.audioDir = dir
+	sink, err := filesink.New(dir)
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return fmt.Errorf("filesink: %w", err)
+	}
+	r.sink = sink
+	r.sched = speech.NewScheduler(sink, r, discardingPub{}, speech.Options{})
+	r.sched.Start(ctx)
+	return nil
+}
+
+// IsCurrent is the harness's playback fence: the session's commit
+// generation is the only generation the scheduler may start (the same rule
+// the runtime's fence applies, docs/spec/01 invariant 2).
+func (r *run) IsCurrent(g int64) bool { return r.session.Generation() == g }
+
+// discardingPub swallows the scheduler's playback events: the sidecar
+// session is the publisher of record for the merged timeline.
+type discardingPub struct{}
+
+func (discardingPub) Publish(context.Context, events.Envelope) (events.Envelope, error) {
+	return events.Envelope{}, nil
+}
+
+// advanceFence mirrors the runtime's fenceAndCancel at the harness level:
+// every commit cancels every older generation still queued or playing, so
+// a commit that lands while an older utterance is synthesising or playing
+// stops that audio at the source (docs/spec/12 "zero stale audio starts").
+func (r *run) advanceFence(generation int64) {
+	r.mu.Lock()
+	var stale []int64
+	for _, gen := range r.started {
+		if gen < generation {
+			stale = append(stale, gen)
+		}
+	}
+	r.mu.Unlock()
+	if r.sched == nil {
+		return
+	}
+	for _, g := range stale {
+		r.sched.Cancel(g, "new_commit")
 	}
 }
 
@@ -394,6 +489,11 @@ func (r *run) buildGateways() {
 func (r *run) run(ctx context.Context) error {
 	r.buildEvents()
 	r.buildGateways()
+	if r.sc.Inference.TTS != InferenceNone {
+		if err := r.buildAudioPipeline(ctx); err != nil {
+			return err
+		}
+	}
 
 	// --- layer A: the pipeline over the frames -----------------------------
 	engine, err := newTruthEngine(r.framesDir, r.profile, r.truth)
@@ -477,9 +577,73 @@ func (r *run) run(ctx context.Context) error {
 		return fmt.Errorf("scenario %s: provider work did not drain within %s", r.sc.ID, providerTimeout)
 	}
 	r.finishUtterances(ctx)
+	r.closeAudio()
 
 	r.pipelineStats = r.runner.Stats()
 	return nil
+}
+
+// closeAudio stops the playback half: the scheduler stops any active
+// playback (the filesink writes the delivered prefix as the evidence WAV)
+// and drains its loop, bounded. The sink itself is closed by close(); the
+// directory is kept as the run's audio evidence.
+func (r *run) closeAudio() {
+	if r.sched != nil {
+		_ = r.sched.Stop()
+	}
+}
+
+// schedulerStats copies the scheduler's decision counters (nil-safe).
+func (r *run) schedulerStats() speech.Stats {
+	if r.sched == nil {
+		return speech.Stats{}
+	}
+	return r.sched.Stats()
+}
+
+// audioEvidenceCheck is the playback-half half of "no stale audio": the
+// sink's directory must carry exactly one evidence WAV per started
+// utterance — a file for an utterance that never started is stale audio
+// that reached the sink, a missing file for a started one is lost evidence
+// — and no temporary file may remain (the filesink stages each evidence
+// WAV as a .tmp file and renames it on finish; a leftover .tmp is an
+// unfinished or abandoned write).
+func (r *run) audioEvidenceCheck() (Result, bool) {
+	if r.audioDir == "" {
+		return Result{}, false
+	}
+	r.mu.Lock()
+	started := make(map[string]int64, len(r.started))
+	for occ, gen := range r.started {
+		started[occ] = gen
+	}
+	r.mu.Unlock()
+
+	entries, err := os.ReadDir(r.audioDir)
+	if err != nil {
+		return Result{Type: "audio_evidence_clean", Passed: false, Detail: fmt.Sprintf("read sink dir: %v", err)}, true
+	}
+	var offenders []string
+	files := 0
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasSuffix(name, ".tmp") {
+			offenders = append(offenders, fmt.Sprintf("temporary file %s left in the sink dir", name))
+			continue
+		}
+		if !strings.HasSuffix(name, ".wav") {
+			continue
+		}
+		files++
+	}
+	if len(offenders) == 0 && files != len(started) {
+		offenders = append(offenders, fmt.Sprintf("%d evidence WAV(s) in the sink dir for %d started utterance(s): every started utterance must leave exactly one, and no other utterance may leave one", files, len(started)))
+	}
+	detail := fmt.Sprintf("sink dir %s: %d evidence WAV(s) for %d started utterance(s), no temporary file", r.audioDir, files, len(started))
+	if len(offenders) > 0 {
+		return Result{Type: "audio_evidence_clean", Passed: false, Detail: strings.Join(offenders, "; ")}, true
+	}
+	return Result{Type: "audio_evidence_clean", Passed: true, Detail: detail}, true
 }
 
 // runSidecar is layer B: the paced truth feed plus the decision/TTS work it
@@ -606,6 +770,10 @@ func (r *run) parseCommit(e events.Envelope, obsSeq int64) (commitInfo, bool) {
 // the answer is applied, request the voice.
 func (r *run) handleCommit(ctx context.Context, c commitInfo) {
 	defer r.decWG.Done()
+	// The fence advances on EVERY commit, the way the runtime's commit
+	// watcher does: an older utterance still queued or playing is cancelled
+	// at the source, not after it has started.
+	r.advanceFence(c.generation)
 	if r.sc.Inference.Decision == InferenceNone {
 		// Local-chain-only mode: the matcher's commitment is the commitment,
 		// and the voice is requested without a decision gate (the M2 shape).
@@ -782,10 +950,12 @@ func (r *run) speak(ctx context.Context, c commitInfo) {
 	pctx, cancel := context.WithTimeout(ctx, providerTimeout)
 	defer cancel()
 	r.ttsWrap.stampMS = c.tsMS
-	audio, err := r.ttsWrap.Generate(pctx, tts.GenerateRequest{Text: c.text, Voice: r.voice})
+	audio, err := r.ttsWrap.GenerateStream(pctx, tts.GenerateRequest{Text: c.text, Voice: r.voice})
 	if err != nil {
 		// Silence with a reason: the failure carries the voice that was
-		// requested, never a substitute.
+		// requested, never a substitute. A mid-synthesis endpoint death is
+		// the same terminal step: the utterance ends failed, and the phase
+		// fence keeps it failed — a started is refused after a failed.
 		r.applySpeech(ctx, c, session.SpeechFailed, providerErrorKind(err))
 		return
 	}
@@ -819,6 +989,20 @@ func (r *run) speak(ctx context.Context, c commitInfo) {
 	r.mu.Lock()
 	r.started[c.occurrence] = c.generation
 	r.mu.Unlock()
+	// The playback half: the real scheduler, fenced on the session's commit
+	// generation, plays the utterance through the filesink. A generation the
+	// fence no longer approves is dropped before it can start ("zero stale
+	// audio starts"), and a cancelled generation is dropped with the reason.
+	if r.sched != nil {
+		r.sched.Submit(speech.UtteranceReady{
+			SessionID:        sessionID,
+			Generation:       c.generation,
+			UtteranceID:      c.occurrence,
+			Priority:         speech.PriorityCurrent,
+			WAV:              audio.WAV,
+			ExpectedDuration: audio.Duration,
+		})
+	}
 }
 
 // applySpeech pushes one lifecycle step through the session's speech fence.
@@ -916,6 +1100,12 @@ func (r *run) publishFault(index int, kind string, timeMS int64, role string, de
 
 // close releases every resource the run holds.
 func (r *run) close() {
+	if r.sched != nil {
+		_ = r.sched.Stop()
+	}
+	if r.sink != nil {
+		_ = r.sink.Close()
+	}
 	if r.gwDec != nil {
 		r.gwDec.Close()
 	}

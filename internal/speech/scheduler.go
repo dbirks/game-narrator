@@ -47,6 +47,12 @@ const (
 	DefaultFencePeriod  = 100 * time.Millisecond // "at every chunk boundary" ≈ 100 ms
 	DefaultStopFade     = 50 * time.Millisecond  // well inside the 200 ms budget
 	DefaultMaxChunkWait = 5 * time.Second        // a stalled TTS stream is a failure, not a wait
+
+	// stopJoinBudget bounds how long shutdown joins the active playback's
+	// terminal result (see the loop's ctx.Done branch): a stopped sink must
+	// finish its final delivery — the filesink's evidence write included —
+	// well inside the bound.
+	stopJoinBudget = 2 * time.Second
 )
 
 // Scheduler is the generation-fenced audio scheduler. It owns exactly one
@@ -170,7 +176,9 @@ func (s *Scheduler) Start(ctx context.Context) {
 }
 
 // Stop shuts the scheduler down: cancels the loop, stops active playback with
-// the stop fade, and waits (bounded) for the loop to exit.
+// the stop fade, and waits (bounded: the loop exit plus stopJoinBudget for the
+// active playback's terminal result) for the loop to exit. When Stop returns
+// nil no delivery is in flight and the sink's terminal artifacts are on disk.
 func (s *Scheduler) Stop() error {
 	s.mu.Lock()
 	if !s.started.get() {
@@ -183,7 +191,7 @@ func (s *Scheduler) Stop() error {
 	select {
 	case <-stopped:
 		return nil
-	case <-time.After(2 * time.Second):
+	case <-time.After(2*time.Second + stopJoinBudget):
 		return context.DeadlineExceeded
 	}
 }

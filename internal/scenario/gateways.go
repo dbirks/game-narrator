@@ -31,6 +31,7 @@ package scenario
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -224,7 +225,17 @@ func mustJSON(v any) string {
 	return string(b)
 }
 
-// ttsGateway is the fake /audio/speech endpoint for one scenario run.
+// ttsGateway is the fake /audio/speech endpoint for one scenario run. It
+// speaks both wires the real client knows: the atomic answer (200 audio/
+// wav) and the measured streaming wire (200 text/event-stream, the
+// speech.audio.delta / speech.audio.done frames, ADR-0057), so the real
+// tts.Client's wire parsing and validation run on the harness exactly as
+// in production. The tts endpoint_down window rides the capture clock the
+// harness stamps on the gateway (setStampMS) before each call — the
+// synthesis payload carries no capture clock — and applies at the wire: a
+// streaming request stamped inside the window gets its connection dropped
+// after half the audio, with no terminal event: the endpoint death the
+// fault names.
 type ttsGateway struct {
 	srv *httptest.Server
 	// model is the deployment's voice model; the gateway ignores it, the
@@ -233,6 +244,10 @@ type ttsGateway struct {
 	// missingVoice is the voice this replica cannot resolve; the gateway
 	// answers the unknown-voice error for it.
 	missingVoice string
+	// The endpoint_down window on the capture clock; zero switches the
+	// fault off. stampMS is the capture time of the request in flight.
+	downFromMS, downToMS int
+	stampMS              int64
 
 	mu       sync.Mutex
 	injector *faultInjector
@@ -240,11 +255,12 @@ type ttsGateway struct {
 	fired    bool
 	hits     int
 	missing  int
+	streams  int
 }
 
 // newTTSGateway starts the endpoint; Close stops it.
-func newTTSGateway(model, missingVoice string, injector *faultInjector, idx int) *ttsGateway {
-	g := &ttsGateway{model: model, missingVoice: missingVoice, injector: injector, idx: idx}
+func newTTSGateway(model, missingVoice string, injector *faultInjector, idx, downFromMS, downToMS int) *ttsGateway {
+	g := &ttsGateway{model: model, missingVoice: missingVoice, injector: injector, idx: idx, downFromMS: downFromMS, downToMS: downToMS}
 	g.srv = httptest.NewServer(http.HandlerFunc(g.handle))
 	return g
 }
@@ -269,10 +285,26 @@ func (g *ttsGateway) Missing() int {
 	return g.missing
 }
 
+// setStampMS records the capture time of the synthesis request about to be
+// issued; the endpoint_down window is applied against it at the wire.
+func (g *ttsGateway) setStampMS(ms int64) {
+	g.mu.Lock()
+	g.stampMS = ms
+	g.mu.Unlock()
+}
+
+// Streams counts the streaming (SSE) requests the gateway served.
+func (g *ttsGateway) Streams() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.streams
+}
+
 // wireSynthesis is the slice of the synthesis payload the gateway inspects.
 type wireSynthesis struct {
-	Input string `json:"input"`
-	Voice string `json:"voice"`
+	Input  string `json:"input"`
+	Voice  string `json:"voice"`
+	Stream bool   `json:"stream"`
 }
 
 func (g *ttsGateway) handle(w http.ResponseWriter, r *http.Request) {
@@ -312,27 +344,96 @@ func (g *ttsGateway) handle(w http.ResponseWriter, r *http.Request) {
 	// real bytes. One tenth of a second at 24 kHz: a playable utterance,
 	// too short to matter in the 2.4 s scenario budget.
 	wav := speech.MakeToneWAV(440, 0.1, 24000)
-	w.Header().Set("Content-Type", "audio/wav")
+	if !req.Stream {
+		// The atomic wire: one validated WAV answer.
+		w.Header().Set("Content-Type", "audio/wav")
+		w.Header().Set("X-Request-Id", "req-fake-tts")
+		_, _ = w.Write(wav)
+		return
+	}
+	g.serveStream(w, wav)
+}
+
+// serveStream answers a streaming request on the measured SSE wire
+// (ADR-0057). When the request's capture stamp falls inside the
+// endpoint_down window the connection is dropped after half the audio — no
+// further frame, no terminal event: the endpoint dies mid-synthesis and
+// the real client sees the mid-stream EOF.
+func (g *ttsGateway) serveStream(w http.ResponseWriter, wav []byte) {
+	g.mu.Lock()
+	g.streams++
+	down := g.downToMS > 0 && inFaultWindow(g.downFromMS, g.downToMS, int(g.stampMS))
+	first := !g.fired
+	if down {
+		g.fired = true
+	}
+	stamp := g.stampMS
+	g.mu.Unlock()
+	if down && first && g.injector != nil {
+		g.injector.fire(g.idx, Fault{Type: FaultEndpointDown, Role: RoleTTS, FromMS: g.downFromMS, ToMS: g.downToMS}, stamp,
+			fmt.Sprintf("tts endpoint died mid-stream in window %d..%d ms (SSE connection dropped after half the audio)", g.downFromMS, g.downToMS))
+	}
+	fl, _ := w.(http.Flusher)
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("X-Request-Id", "req-fake-tts")
-	_, _ = w.Write(wav)
+	w.WriteHeader(http.StatusOK)
+	parts := splitBytes(wav, 4)
+	for i, p := range parts {
+		f, _ := json.Marshal(map[string]any{"type": "speech.audio.delta", "audio": base64.StdEncoding.EncodeToString(p), "response_format": "wav"})
+		fmt.Fprintf(w, "event: speech.audio.delta\ndata: %s\n\n", f)
+		if fl != nil {
+			fl.Flush()
+		}
+		if down && i == len(parts)/2-1 {
+			return // the endpoint dies: the handler returns, the connection closes
+		}
+	}
+	d, _ := json.Marshal(map[string]any{"type": "speech.audio.done", "usage": map[string]int{"input_tokens": 6, "output_tokens": 3}})
+	fmt.Fprintf(w, "event: speech.audio.done\ndata: %s\n\n", d)
+	if fl != nil {
+		fl.Flush()
+	}
+}
+
+// splitBytes cuts b into n contiguous pieces (n >= 1).
+func splitBytes(b []byte, n int) [][]byte {
+	if n <= 0 {
+		n = 1
+	}
+	step := (len(b) + n - 1) / n
+	var out [][]byte
+	for i := 0; i < len(b); i += step {
+		end := i + step
+		if end > len(b) {
+			end = len(b)
+		}
+		out = append(out, b[i:end])
+	}
+	return out
 }
 
 // ttsClient is the slice of the real TTS client the harness drives; the
 // interface keeps the wrapper unit-testable without a network.
 type ttsClient interface {
 	Generate(ctx context.Context, req tts.GenerateRequest) (tts.Audio, error)
+	GenerateStream(ctx context.Context, req tts.GenerateRequest) (tts.Audio, error)
 }
 
 // faultedTTS wraps the real tts.Client with the endpoint_down window for the
-// tts role. The window cannot ride the synthesis wire (the payload carries no
-// capture clock), so it is enforced here with the typed error the client
-// would classify a 503 into.
+// tts role. The window cannot ride the synthesis wire (the payload carries
+// no capture clock), so the wrapper stamps the request's capture time on
+// the gateway before the call; the gateway then applies the window at the
+// wire — a streaming request inside the window is dropped mid-stream (the
+// real client classifies the mid-stream EOF as the endpoint-down failure),
+// and an atomic request inside the window is refused with the typed error
+// a 503 classifies to.
 type faultedTTS struct {
 	client ttsClient
+	gw     *ttsGateway
 	fromMS int
 	toMS   int
 	// stampMS is the capture time of the request about to be issued; the
-	// harness sets it before every Generate call.
+	// harness sets it before every call.
 	stampMS int64
 
 	injector *faultInjector
@@ -342,7 +443,18 @@ type faultedTTS struct {
 	blocked  int
 }
 
-// Generate enforces the window, then hands to the real client.
+// GenerateStream stamps the gateway with the request's capture time and
+// hands to the real client: the endpoint_down window applies at the wire
+// (the connection is dropped mid-stream inside it), not before the request.
+func (f *faultedTTS) GenerateStream(ctx context.Context, req tts.GenerateRequest) (tts.Audio, error) {
+	if f.gw != nil {
+		f.gw.setStampMS(f.stampMS)
+	}
+	return f.client.GenerateStream(ctx, req)
+}
+
+// Generate enforces the window on the atomic wire (the fallback path: a
+// deployment that refused the stream flag), then hands to the real client.
 func (f *faultedTTS) Generate(ctx context.Context, req tts.GenerateRequest) (tts.Audio, error) {
 	if f.toMS > 0 && inFaultWindow(f.fromMS, f.toMS, int(f.stampMS)) {
 		f.mu.Lock()

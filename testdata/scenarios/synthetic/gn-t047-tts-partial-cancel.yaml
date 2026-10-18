@@ -1,28 +1,33 @@
-# GN-T047 (mode S) — TTS stream partial / cancel. BLOCKED.
+# GN-T047 (mode S) — TTS stream partial / cancel.
 # Catalog: docs/test-plan/scenario-catalog.md GN-T047 "TTS stream partial/
 # cancel — S,L — no stale audio, temporary file cleanup".
 #
-# This scenario is status: blocked, and the runner must report it as
-# BLOCKED — never as a pass (ADR-0037 "blocked ≠ pass"). It is listed in
-# docs/status/blocked.md with its unblock steps.
+# This scenario was status: blocked while the TTS contract was atomic
+# (ADR-0037 "blocked ≠ pass"); ADR-0057 gave the contract the streamed /
+# cancellable synthesis endpoint it names, and the fault below is the one
+# drafted for the unblock: the TTS endpoint dies while the second line is
+# being synthesised.
 #
-# Why it is blocked: the scenario's fault (the TTS endpoint dying while an
-# utterance is being synthesized) has no honest expression in today's
-# provider contract. The TTS wire is one atomic request/response —
-# Generate returns a validated WAV or an error — so a stream has no partial
-# to be interrupted, and the session's speech lifecycle has no "synthesis
-# aborted mid-stream" phase to fence against. Running the scenario against
-# the atomic contract would exercise a property the product does not have,
-# and a test that asserts on behaviour the runtime lacks is simulation
-# theater (AGENTS.md "No simulation theater").
+# How the fault is honest: the harness drives the real tts.Client over the
+# real streaming wire (the fake TTS gateway speaks the measured SSE shape,
+# speech.audio.delta / speech.audio.done). The endpoint_down window is on
+# the capture clock the harness stamps before each call; a streaming
+# request stamped inside it gets its SSE connection dropped after half the
+# audio — no terminal event. The real client classifies the mid-stream EOF
+# as the endpoint-down failure, the partial is discarded, and the utterance
+# ends in the session's terminal failed phase, fenced closed to a start.
+# The run's playback half is the real generation-fenced scheduler over a
+# filesink: the implicit audio_evidence_clean check asserts the sink's dir
+# carries exactly one evidence WAV per started utterance and no temporary
+# file.
+# Every frame and sentence here is generated (docs/spec/11 "Fixture
+# origins"); the origin field carries that claim.
 schema_version: 1
 catalog: GN-T047
 id: synthetic/gn-t047-tts-partial-cancel
 origin: generated_synthetic
 profile: dialogue-advance-001
 mode: frame_replay
-status: blocked
-reason: "The TTS provider contract is atomic (Generate returns a full validated WAV or an error): there is no partial stream to interrupt mid-utterance, and the session speech lifecycle has no synthesis-aborted phase to fence against. Asserting 'no stale audio, temporary file cleanup' on a stream the product does not stream would test a property the runtime lacks. Unblock when the TTS contract carries a streamed/cancellable synthesis endpoint (or the session adds a synthesis-failed-mid-playback phase); then express the fault as a tts-role endpoint_down window inside one utterance and run the assertions below."
 input:
   frames_dir: testdata/synthetic/replay/dialogue-advance-001
   timestamps: timestamps.json
@@ -31,13 +36,15 @@ inference:
   tts: recorded
   voice: synthetic-narrator
 faults:
-  # The intended fault, documented so the unblock is a mechanical edit:
-  # the TTS endpoint dies while the second line is being synthesized.
+  # The intended fault: the TTS endpoint dies while the second line is
+  # being synthesised. The line's commit stamps the request at capture
+  # 2200 ms (the matcher commits the second page on its fourth full frame);
+  # this window covers that stamp and nothing earlier — the first line
+  # commits at capture 1500 ms and synthesises untouched.
   - kind: endpoint_down
     role: tts
-    from_ms: 1900
-    to_ms: 2100
-# What the scenario will assert once unblocked.
+    from_ms: 2000
+    to_ms: 2400
 assertions:
   - type: fault_count
     kind: endpoint_down

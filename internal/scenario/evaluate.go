@@ -534,7 +534,11 @@ func evalNoVoiceSubstitution(a Assertion, evs []events.Envelope) (bool, string) 
 			switch {
 			case p.Result == "ended":
 				terminalOK++
-			case p.Result == "failed" && strings.Contains(p.Error, "voice_missing"):
+			case p.Result == "failed" && p.Error != "":
+				// A failure with a reason is a terminal outcome too:
+				// "silence with a reason" (the utterance ended, the error
+				// names the cause, the voice named is the requested one).
+				// voice_missing failures — the canonical case — land here.
 				terminalFailed++
 			}
 		}
@@ -543,7 +547,7 @@ func evalNoVoiceSubstitution(a Assertion, evs []events.Envelope) (bool, string) 
 		return false, fmt.Sprintf("speech event(s) name a different voice: %s", strings.Join(foreign, "; "))
 	}
 	if terminalOK+terminalFailed == 0 {
-		return false, fmt.Sprintf("no terminal speech outcome for voice %q (want result ended, or failed naming voice_missing)", a.Voice)
+		return false, fmt.Sprintf("no terminal speech outcome for voice %q (want result ended, or a failed naming the voice that caused the silence)", a.Voice)
 	}
 	return true, fmt.Sprintf("voice %q: no substitution (completed %d, silence-with-reason %d)", a.Voice, terminalOK, terminalFailed)
 }

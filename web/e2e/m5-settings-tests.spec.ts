@@ -21,15 +21,21 @@ import { ports } from "./support/ports";
  *      boolean, the endpoint is the "<configured>" marker, and the
  *      operator's real env values are asserted absent); the backup download
  *      is a real SQLite file (its 16-byte header is asserted on the bytes);
- *   2. /tests (developer via the admin role): the catalog lists the blocked
- *      GN-T047 scenario with its reason, running
+ *   2. /tests (developer via the admin role): the catalog lists a blocked
+ *      scenario with its reason and the unblocked GN-T047 as runnable, running
  *      synthetic/dialogue-advance-001 enqueues the durable job and the
  *      in-process worker reports PASS, and the report opens in the
  *      sandboxed iframe (sandbox="" — no scripts, no same-origin access).
  */
 
 const ADMIN = { username: "m5st-admin", password: "steady as the tide" };
-const BLOCKED_ID = "synthetic/gn-t047-tts-partial-cancel";
+// Blocked by its own fixture data (`status: blocked` + reason): the catalog
+// must show the row and its reason, not hide it (ADR-0037).
+const STILL_BLOCKED_ID = "dolphin/first-gameplay-dialogue";
+// GN-T047 was blocked while the TTS contract was atomic; the streamed /
+// cancellable endpoint unblocked it (see the fixture's header), so the
+// catalog now lists it as runnable — the unblock is asserted too.
+const UNBLOCKED_ID = "synthetic/gn-t047-tts-partial-cancel";
 const RUN_ID = "synthetic/dialogue-advance-001";
 
 test("m5: the settings page and the test harness page", async ({ page }, testInfo) => {
@@ -155,12 +161,19 @@ test("m5: the settings page and the test harness page", async ({ page }, testInf
   await expect(page.getByRole("heading", { name: "Tests" })).toBeVisible();
   await expect(page.getByTestId("scenario-catalog")).toBeVisible();
 
-  // The blocked scenario is listed with its reason (ADR-0037: blocked is a
-  // row that says why, not a row that is hidden).
-  const blockedRow = page.getByTestId(`scenario-${BLOCKED_ID}`);
-  await expect(blockedRow).toContainText("GN-T047");
+  // A blocked scenario is a row that says why, not a row that is hidden
+  // (ADR-0037): the fixture's `status: blocked` renders the pill and the
+  // reason, and its Run button is disabled. The synthetic GN-T047 scenario
+  // was blocked while the TTS contract was atomic; the streamed / cancellable
+  // endpoint unblocked it, and the catalog now lists it as runnable — both
+  // states are asserted, so a fixture edit that moves either is visible.
+  const blockedRow = page.getByTestId(`scenario-${STILL_BLOCKED_ID}`);
   await expect(blockedRow).toContainText("blocked");
-  await expect(blockedRow).toContainText("TTS provider contract is atomic");
+  await expect(blockedRow).toContainText("unreachable today");
+  await expect(blockedRow.getByRole("button", { name: "Run" })).toBeDisabled();
+  const unblockedRow = page.getByTestId(`scenario-${UNBLOCKED_ID}`);
+  await expect(unblockedRow).toContainText("GN-T047");
+  await expect(unblockedRow).toContainText("runnable");
   await expect(page.getByTestId("gate-results")).toBeVisible();
   await expect(page.getByTestId("dolphin-readiness")).toBeVisible();
   await expect(page.getByTestId("provider-readiness")).toBeVisible();

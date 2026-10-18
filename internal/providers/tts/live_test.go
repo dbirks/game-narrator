@@ -43,6 +43,9 @@ const (
 	liveDesignInstr   = "A calm narrator voice with a steady, unhurried cadence."
 	liveGenDefault    = "A second line for the same speaker."
 	liveGenRegistered = "The fog lifts just enough to see the beacon."
+	// liveGenLong is the mid-stream cancel's line: long enough that the
+	// cancel lands with deltas still in flight, never on the last one.
+	liveGenLong = "The fog lifts just enough to see the beacon, and beyond it the river bends where the map glows faintly. The harbour bell rang twice before anyone looked up, and nobody in the village had seen that boat before. By the time the lanterns were lit along the quay, the water had already carried the last of the fog out to sea, where it thinned to nothing at all."
 )
 
 // liveGatewayConfig resolves the speech route through the normal role

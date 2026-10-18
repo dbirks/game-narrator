@@ -125,6 +125,14 @@ type Client struct {
 	seedUnsupported bool // server rejected the seed field once
 	refAudioProbe   ReferenceProbe
 	refAudioProbed  bool
+	// Streaming negotiation (ADR-0057): the deployment's answer to the
+	// first stream request decides which wire it serves; cached like the
+	// task_type and ref_audio probes. streamNote keeps the deployment's own
+	// refusal text for diagnostics (one line, truncated).
+	streamUnsupported bool
+	streamIgnored     bool
+	streamServed      bool
+	streamNote        string
 }
 
 // New returns a client for a base URL (the gateway or a dedicated endpoint,
