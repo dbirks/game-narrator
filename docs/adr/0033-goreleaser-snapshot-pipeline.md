@@ -103,3 +103,78 @@ finding). `GITHUB_ACTIONS=true scripts/gates/secret-scan.sh` emits 0
 **Reversal.** Revert `scripts/release/scan-artifacts.sh` (image phase) and
 the `scripts/gates/secret-scan.sh` annotation changes; no schema, protocol
 or packaging impact.
+
+## Amendment (2026-10-18): merged-filesystem image scan — no digest matching
+
+Supersedes the digest-based base-layer exclusion of the previous amendment
+(the rest of that amendment stands). This amendment supersedes it because
+the previous design **failed on the real CI runner**.
+
+**Context.** The first CI run of the previous design (publish run on
+d7fd016) failed with `image-no-owned-files` on both per-arch images. Root
+cause, reproduced daemonless with crane on the pinned base:
+
+- The CI runner's Docker 2x uses the **containerd image store**, so
+  `docker save` emits an **OCI layout**: index.json → manifest →
+  blobs/sha256/\<digest\>, where the blob file name is the manifest's
+  **compressed** layer digest, while the image config's `rootfs.diff_ids`
+  hold **uncompressed** digests — different digest kinds.
+- The old extraction resolved each layer as `blobs/<digest>` keeping the
+  literal `sha256:` colon (the real path is `blobs/sha256/<hex>`). On the
+  real layout **no layer blob resolved at all** → nothing extracted →
+  `image-no-owned-files` on every image, on every run. The previous
+  self-test built hand-rolled layer trees and never exercised
+  `extract_image` on a real layout, so the bug shipped.
+- A second latent false-positive surfaced while reproducing: the
+  `ca-certificates` package's postinst creates ~140 `*.pem` files under
+  `/etc/ssl/certs/` at image build time (the .deb ships only `.crt`), so
+  the whole-image `*.pem` name rule would have failed every release image
+  on distribution content once extraction worked.
+
+**Decision.** `scripts/release/scan-artifacts.sh` image phase:
+
+- **No digest is matched, in any layout.** Layout parsing (OCI
+  index/manifest and classic manifest.json) consumes only **ordered local
+  blob paths** and the config blob path; the `docker manifest inspect`
+  base-classification machinery is removed.
+- **Merged filesystem:** every layer blob (gzip/zstd/plain tar, magic-byte
+  detected) is extracted in manifest order into one merged tree, applying
+  whiteouts (`.wh.<name>` deletes a path, `.wh..wh..opq` makes the dir
+  opaque); later layers overwrite earlier ones. Extraction failure is a
+  loud `image-extract` finding, never a silent skip.
+- **Rule split unchanged in intent, now applied to the merged tree:**
+  whole-image rules (`forbidden-name`, `game-data`, `big-binary`) over
+  every file; content rules only over the Dockerfile `COPY` destination
+  paths (the base never writes them) plus the image config blob.
+- **`*.pem` refinement:** a `*.pem` matches `forbidden-name` only when its
+  content carries a PEM private-key marker (`BEGIN … PRIVATE KEY`) —
+  public certs (the ca-certificates bundle) are not credentials; every PEM
+  private key carries the marker, so secret coverage is unchanged.
+- **`image-no-owned-files` kept** as the safety check: a file must exist
+  at a `COPY` destination in the merged filesystem.
+- **Self-test now exercises extraction on real layout shapes** in both
+  kinds (OCI and classic), with compressed-digest vs uncompressed-diff_id
+  split, gzip/zstd/plain blobs, whiteouts and opaque dirs; opt-in
+  `GN_SCAN_SELFTEST_REAL=OCI_DIR[:CLASSIC_TAR]` additionally scans
+  externally built crane layouts (dev-only; the default self-test stays
+  offline and network-free).
+
+**Validation.** (2026-10-18, daemonless, crane v0.20.2 on the pinned base
+`debian@sha256:7c7b2c96…`): old blob lookup `blobs/sha256:<hex>` resolves 0
+of 3 layer blobs on the real layout (reproduces the CI failure); new lookup
+resolves all. Real-base + crane-appended apt/app layers (true containerd
+shape: manifest digests = compressed blob digests, diff_ids =
+uncompressed): clean image **passes** in both layout kinds (0 findings;
+Debian `/home/<name>/` strings in base/apt files not flagged); leaky app
+layer **fails** with exactly one `content-home-path` at the COPY
+destination (both layouts). `scan-artifacts.sh --self-test` (11 image
+cases, both layouts, all blob kinds, whiteouts) and `secret-scan.sh
+--self-test` pass; shellcheck clean; `GITHUB_ACTIONS=true secret-scan.sh`
+emits 0 `::error` lines (allowlisted items are `::notice`). Whole-image
+rule counts on the real base (3265 files): 0; on the apt-style layer:
+content rules fire on 3 Debian files (why the content rule is scoped to
+the COPY destinations), whole-image rules 0.
+
+**Reversal.** Revert the image-scan section and self-test of
+`scripts/release/scan-artifacts.sh` to the previous amendment's state;
+no schema, protocol or packaging impact.

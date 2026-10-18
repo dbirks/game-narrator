@@ -151,35 +151,49 @@ For a tagged release replace `:edge` with the tag (e.g. `:v1.2.3`);
 not change that — arm64 artifacts are cross-compiled and file-verified only,
 and the arm64 image layer builds under QEMU but was not executed on real ARM.
 
-### 2.5 Artifact scan: image phase and annotations (ADR 0033 amendment)
+### 2.5 Artifact scan: image phase and annotations (ADR 0033 amendments)
 
 The release image mixes product files with distribution content: the pinned
 `debian@sha256:…` base **plus** the apt layer that `packaging/Dockerfile`
-installs. The scanner applies two rule classes with different scope
-(`scripts/release/scan-artifacts.sh`):
+installs. The scanner first rebuilds the image's **merged filesystem**
+(`scripts/release/scan-artifacts.sh`): `docker save`, then every layer blob
+(gzip, zstd, or plain tar, detected by magic bytes) extracted in manifest
+order, whiteouts (`.wh.<name>` deletes, `.wh..wh..opq` opaque dirs) applied,
+so the rules judge the final filesystem. Both `docker save` layout kinds are
+handled — the OCI layout of the Docker 2x containerd image store
+(index.json → manifest → blobs/sha256/\<digest\>) and the classic layout
+(manifest.json + \<id\>/layer.tar). **No digest is ever matched**: the OCI
+layout keys layer blobs by the manifest's *compressed* layer digest while
+the image config's `rootfs.diff_ids` hold *uncompressed* digests, and
+digest-matching across kinds misclassified layers on real runners — only
+ordered local blob paths are consumed.
 
-- **Whole-image rules** — `forbidden-name` (game/voice/private file names),
-  `game-data` (game-image extensions + CISO/RARC/Yaz0/CD001 magic, catches
-  dumps hidden under innocent names), `big-binary` (non-text ≥ 256 MiB;
-  the largest legitimate file in the pinned base + pinned apt closure is
-  libLLVM-15.so.1 at ~112 MiB) — run over **every file in every layer**.
-  Verified clean on the crane-exported pinned base (3265 files) and the
-  apt closure of the six pinned packages (223 packages).
+Two rule classes have different scope over the merged filesystem:
+
+- **Whole-image rules** — `forbidden-name` (game/voice/private file names;
+  a `*.pem` without a PEM private-key marker is public-cert material, not a
+  credential — the ca-certificates package installs ~140
+  `/etc/ssl/certs/*.pem` files at build time), `game-data` (game-image
+  extensions + CISO/RARC/Yaz0/CD001 magic, catches dumps hidden under
+  innocent names), `big-binary` (non-text ≥ 256 MiB; the largest
+  legitimate file in the pinned base + pinned apt closure is
+  libLLVM-15.so.1 at ~112 MiB) — run over **every file** of the merged
+  filesystem. Verified clean on the crane-exported pinned base (3265
+  files), the six pinned apt packages' file lists, and a crane-built
+  layout of the pinned base with the app layer appended (2026-10-18).
 - **Content rules** (home paths, gateway hostname/token) — run **only over
-  the files our Dockerfile adds**: the binary at the `COPY` destination(s)
-  and the image config blob (labels/env/entrypoint). This restriction is
-  what stops the real false-positives: the pinned base is 100% clean, but
-  the apt layer ships four Debian files with literal `/home/<name>/`
-  strings (OpenAL/ALSA sample configs, xkb symbols), and those live in
-  "ours" layers. An apt file is never at a path the product `COPY`s, so it
-  is never content-scanned. The owned set is derived from the Dockerfile,
-  **not** a hand-written Debian allowlist: base layers are additionally
-  excluded by digest (pinned base ref parsed from `packaging/Dockerfile`,
-  layer digests via `docker manifest inspect`; fallbacks: local base layer
-  count, then "unknown" — where the `COPY`-destination restriction alone
-  decides), and an image with no file at a `COPY` destination in a
-  non-base layer **fails** (`image-no-owned-files`) instead of silently
-  passing.
+  the files our Dockerfile adds**: the paths the `COPY` places files at
+  (parsed from `packaging/Dockerfile`, WORKDIR-aware) in the merged
+  filesystem, plus the image config blob (labels/env/entrypoint). The base
+  distribution never writes those paths, so a base or apt file can never
+  be content-scanned — this restriction (not base-digest exclusion, not a
+  hand-written Debian allowlist) is what stops the real false-positives:
+  the pinned base is 100% clean, but the apt layer ships four Debian files
+  with literal `/home/<name>/` strings (OpenAL/ALSA sample configs, xkb
+  symbols), and those live in layers the product builds. An image with no
+  file at a `COPY` destination in the merged filesystem **fails**
+  (`image-no-owned-files`) instead of silently passing — the app binary is
+  required, not optional.
 
 **Annotations.** Under `GITHUB_ACTIONS=true` both scanner gates emit
 workflow commands (escaping mirrors `scripts/gates/annotate-go.sh`):
