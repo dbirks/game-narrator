@@ -248,10 +248,17 @@ func msg(id, text string) games.Message {
 // is a hostile provider, not a well-behaved one, and it is the case
 // docs/spec/12's "delayed/duplicated model responses" failure injection names: the
 // pipeline must survive an engine that answers after being told not to.
+//
+// gate, when non-nil, holds every Recognize call — ignoring the call's context —
+// until it is closed. That is a test hook for the queue tests: it lets a run
+// stall at the recognition stage while the source is observed to have delivered
+// the whole clip, so a drop count the test asserts on no longer depends on which
+// side of a wall-clock race the machine happened to be on.
 type fakeOCR struct {
 	script     map[string]string
 	delay      func(text string) time.Duration
 	respectCtx bool
+	gate       chan struct{}
 
 	calls    atomic.Int64
 	misses   atomic.Int64
@@ -271,6 +278,21 @@ func (f *fakeOCR) Recognize(ctx context.Context, img image.Image) (ocr.Result, e
 	text, ok := f.script[key]
 	if !ok {
 		f.misses.Add(1)
+	}
+	if f.gate != nil {
+		// The gate is a test hook for a provider wedged mid-read: it holds the
+		// call even when the job's context dies. That deliberate hostility is the
+		// point — the ROI stage's bounded-queue eviction cancels its oldest
+		// unresolved job, and a gated call that answered that cancellation
+		// instantly would free a worker fast enough for the frame loop to keep
+		// chasing the source, which is the machine-speed race the queue tests
+		// exist to remove. The hold is bounded by the test's own release, never
+		// by the job's deadline; a job whose context died in the meantime
+		// reports the cancellation on the way out instead of answering.
+		<-f.gate
+		if err := ctx.Err(); err != nil {
+			return ocr.Result{}, &ocr.Failure{Kind: ocr.ErrCancelled, Engine: "fake", Err: err}
+		}
 	}
 	if f.delay != nil {
 		if d := f.delay(text); d > 0 {

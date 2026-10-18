@@ -149,15 +149,36 @@ func TestDeterminism(t *testing.T) {
 // single-slot latest-frame means — and the count must appear rather than the frames
 // simply going missing from the report (docs/spec/01's capture loop exists to make
 // staleness visible instead of silent).
+//
+// The drop is forced instead of raced: the fake OCR engine holds every call on a
+// gate until the capture loop is observed to have received every frame the clip
+// holds (the pipeline's own FramesDelivered counter — not a wall clock), and only
+// then releases. Gating *every* call, not just the first, is what makes it
+// deterministic: the live ROI loop never waits for its in-flight reads — it only
+// stalls when the bounded jobs channel and worker pool are full — so a single held
+// call leaves the second worker free to chase the producer on a fast machine,
+// which is exactly the machine-speed dependence this test must not depend on.
 func TestLatestQueueDropsAreCounted(t *testing.T) {
-	eng := &fakeOCR{script: ocrScript(t), delay: lateScript, respectCtx: true}
+	const total = 24 // frames in the synthetic corpus
+	gate := make(chan struct{})
+	eng := &fakeOCR{script: ocrScript(t), delay: lateScript, respectCtx: true, gate: gate}
 	h := newHarness(t, eng, func(c *pipeline.Config) { c.Queue = pipeline.QueueLatest })
+	go func() {
+		defer close(gate) // single owner; even a timed-out release frees the workers
+		deadline := time.Now().Add(10 * time.Second)
+		for h.runner.Stats().FramesDelivered < total {
+			if time.Now().After(deadline) {
+				return // the assertions below report a run that never delivered
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
 	st, _, err := h.run(t, h.source(0, false))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if st.FramesDelivered != 24 {
-		t.Errorf("frames delivered = %d, want 24", st.FramesDelivered)
+	if st.FramesDelivered != total {
+		t.Errorf("frames delivered = %d, want %d", st.FramesDelivered, total)
 	}
 	if st.FramesDropped == 0 {
 		t.Errorf("no frames dropped through a single-slot queue at unlimited replay speed: FramesProcessed=%d", st.FramesProcessed)
