@@ -202,6 +202,18 @@ echo "$CONTENTS" | grep -q '/lib/systemd/system/game-narrator.service' || { echo
 echo "$CONTENTS" | grep -q '/etc/game-narrator/config.yaml'            || { echo "config missing from .deb"; exit 1; }
 echo "$CONTENTS" | grep -q '/usr/bin/game-narrator'                    || { echo "binary missing from .deb"; exit 1; }
 ok ".deb contents: binary, systemd unit and config present"
+
+# Static data-dir mode contract (ADR 0063): the shipped unit and tmpfiles must
+# create /var/lib/game-narrator at 0700. `game-narrator doctor` DEGRADEDs on
+# 0750, so a package that shipped 0750 would install its own failure state —
+# assert the contract from the package itself, not from the source tree.
+mkdir -p "$WORK/deb-meta"
+dpkg-deb --fsys-tarfile "$AMD_DEB" | tar -x -C "$WORK/deb-meta" ./lib/systemd/system/game-narrator.service ./usr/lib/tmpfiles.d/game-narrator.conf
+grep -q '^StateDirectoryMode=0700$' "$WORK/deb-meta/lib/systemd/system/game-narrator.service" \
+  || { echo "shipped unit does not pin StateDirectoryMode=0700"; exit 1; }
+grep -Eq '^d /var/lib/game-narrator 0700 game-narrator:game-narrator -' "$WORK/deb-meta/usr/lib/tmpfiles.d/game-narrator.conf" \
+  || { echo "shipped tmpfiles line is not 0700 for /var/lib/game-narrator"; exit 1; }
+ok ".deb ships the 0700 data-dir contract (unit StateDirectoryMode + tmpfiles)"
 [ -n "$ARM_DEB" ] && { dpkg-deb --info "$ARM_DEB" >/dev/null; ok "arm64 .deb is a valid package ($(basename "$ARM_DEB"))"; }
 
 # ---------------------------------------------------------------------------
@@ -213,6 +225,7 @@ if ! have_docker; then
 else
   step "install .deb in debian:bookworm-slim container"
   d pull debian:bookworm-slim >/dev/null
+  # shellcheck disable=SC2016 # $(...) and the $-anchored grep must expand in the CONTAINER shell, not on the host; no host variable may leak in
   d run --rm \
       -v "$PWD/$AMD_DEB:/pkg.deb:ro" \
       debian:bookworm-slim \
@@ -224,11 +237,16 @@ else
         game-narrator version
         game-narrator migrate --data-dir /var/lib/game-narrator
         ls -ld /var/lib/game-narrator
+        # Data-dir mode contract (ADR 0063): a clean install must be 0700,
+        # the same mode `game-narrator doctor` requires, so the package
+        # cannot install its own DEGRADED state on the real device.
+        DMODE="$(stat -c "%-a %U" /var/lib/game-narrator)"
+        [ "$DMODE" = "700 game-narrator" ] || { echo "data dir stat: $DMODE, want 700 game-narrator"; exit 1; }
         # Static unit check (the container has no systemd): the shipped unit
         # must pin GAME_NARRATOR_DATA_DIR to the StateDirectory, otherwise the
         # binary would fall back to $HOME/.local/share/game-narrator.
         grep -q "^Environment=GAME_NARRATOR_DATA_DIR=/var/lib/game-narrator$" /lib/systemd/system/game-narrator.service'
-  ok ".deb installed in bookworm container; version + migrate + unit data-dir pin (static) succeeded"
+  ok ".deb installed in bookworm container; version + migrate + 0700 data dir + unit data-dir pin (static) succeeded"
 
   step "image runtime smoke (game-narrator:$TAG-amd64)"
   if ! d image inspect "game-narrator:$TAG-amd64" >/dev/null 2>&1; then
@@ -286,5 +304,4 @@ echo "smoke: $pass step(s) passed, $notrun step(s) NOT RUN"
 if [ "$notrun" -gt 0 ]; then
   echo "smoke: NOT RUN steps above are reported, not passed (AGENTS.md: no fake greens)"
 fi
-ok_count=$pass
 exit 0

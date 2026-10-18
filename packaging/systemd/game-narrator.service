@@ -30,7 +30,9 @@ ExecStart=/usr/bin/game-narrator serve
 # directory; systemd creates them at service start if missing. The data
 # directory is user data: the package never deletes it (docs/spec/15).
 StateDirectory=game-narrator
-StateDirectoryMode=0750
+# 0700 per docs/spec/02 "Asset store contract" and ADR 0014 (catalogue,
+# voice references, speech cache): the doctor check fails DEGRADED on 0750.
+StateDirectoryMode=0700
 ConfigurationDirectory=game-narrator
 
 Restart=on-failure

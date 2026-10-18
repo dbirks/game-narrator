@@ -39,8 +39,12 @@ if ! getent passwd game-narrator >/dev/null 2>&1; then
     fi
 fi
 
-# Durable data directory: created/owned for the service user.
-install -d -o game-narrator -g game-narrator -m 0750 /var/lib/game-narrator
+# Durable data directory: created/owned for the service user. Mode 0700 per
+# docs/spec/02 "Asset store contract" ("Directory 0700 for sensitive assets")
+# and ADR 0014 (catalogue, voice references, speech cache — no group/other
+# read). `install -d` re-applies the mode on an existing directory without
+# touching its contents (upgrade path, ADR 0063).
+install -d -o game-narrator -g game-narrator -m 0700 /var/lib/game-narrator
 
 # Configuration directory: root-owned, group-readable by the service user so
 # the admin can edit /etc/game-narrator/config.yaml without touching state.

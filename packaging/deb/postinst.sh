@@ -13,10 +13,15 @@ if ! getent passwd game-narrator >/dev/null 2>&1; then
         game-narrator
 fi
 
-# Durable data directory: created/owned for the service user.
+# Durable data directory: created/owned for the service user. Mode 0700 per
+# docs/spec/02 "Asset store contract" ("Directory 0700 for sensitive assets")
+# and ADR 0014: it holds the SQLite catalogue, voice references and the
+# speech cache, so group/other read access is a leak, not a convenience.
 # The package NEVER deletes /var/lib/game-narrator (user data;
 # docs/spec/15 "Debian/systemd package" — purge semantics in docs/release.md).
-install -d -o game-narrator -g game-narrator -m 0750 /var/lib/game-narrator
+# On upgrade `install -d` re-applies owner/mode to the existing directory
+# without touching its contents (verified: contents survive the chmod).
+install -d -o game-narrator -g game-narrator -m 0700 /var/lib/game-narrator
 
 # Configuration directory: root-owned, group-readable by the service user so
 # the admin can edit /etc/game-narrator/config.yaml without touching state.

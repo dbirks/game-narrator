@@ -467,6 +467,33 @@ func TestDataDirWorldReadableIsDegraded(t *testing.T) {
 	}
 }
 
+// TestDataDirGroupReadableIsDegraded pins the legacy packaging mode: the
+// .deb postinst and Arch hooks once installed the data dir at 0750 (fixed by
+// ADR 0063), and a pre-fix install leaves exactly this state on the device.
+// The check must call it DEGRADED with the documented remedy — and must NOT
+// silently self-heal: doctor reports, the admin (or the package upgrade)
+// chmods.
+func TestDataDirGroupReadableIsDegraded(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o750); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	h := newFakeHost(t)
+	h.opts.DataDir = dir
+	c := h.check(h.run(), "storage.data_dir")
+	mustStatus(t, c, StatusDegraded)
+	if !strings.Contains(c.Summary, "readable by group or other") {
+		t.Fatalf("summary = %q, want the group/other readability wording", c.Summary)
+	}
+	if !strings.Contains(c.Remedy, "chmod 700") {
+		t.Fatalf("remedy = %q, want the actionable chmod", c.Remedy)
+	}
+	info, err := os.Stat(dir)
+	if err != nil || info.Mode().Perm() != 0o750 {
+		t.Fatalf("doctor rewrote the directory (mode %v, stat err %v); it must report, not self-heal", info.Mode().Perm(), err)
+	}
+}
+
 func TestDataDirUnderAFileFails(t *testing.T) {
 	blocker := filepath.Join(t.TempDir(), "blocker")
 	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {

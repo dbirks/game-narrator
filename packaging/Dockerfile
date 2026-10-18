@@ -41,8 +41,9 @@ RUN groupadd --system game-narrator \
 COPY linux/${TARGETARCH}/game-narrator /usr/local/bin/game-narrator
 RUN chmod 0755 /usr/local/bin/game-narrator
 
-# Durable state (SQLite + content-addressed assets).
-RUN install -d -o game-narrator -g game-narrator -m 0750 /var/lib/game-narrator
+# Durable state (SQLite + content-addressed assets). 0700 per docs/spec/02
+# "Asset store contract" and ADR 0014 (ADR 0063).
+RUN install -d -o game-narrator -g game-narrator -m 0700 /var/lib/game-narrator
 VOLUME /var/lib/game-narrator
 
 # The container listens on all interfaces by design (the systemd unit path

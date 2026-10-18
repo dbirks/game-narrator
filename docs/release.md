@@ -376,7 +376,7 @@ declared Arch dependencies (`ffmpeg`, `tesseract`, `tesseract-data-eng`,
 `v4l-utils`, `ca-certificates`) from core/extra, and the `post_install` hook
 creates the `game-narrator` sysuser (from the shipped sysusers.d file via
 `systemd-sysusers`, `useradd` fallback), the data/config directories with the
-.deb's ownership/modes (`/var/lib/game-narrator` 0750 game-narrator,
+.deb's ownership/modes (`/var/lib/game-narrator` 0700 game-narrator,
 `/etc/game-narrator` 0750 root:game-narrator, config.yaml 0640) and reloads
 systemd.
 

@@ -40,7 +40,9 @@ if ! getent passwd game-narrator >/dev/null 2>&1; then
             game-narrator
     fi
 fi
-install -d -o game-narrator -g game-narrator -m 0750 /var/lib/game-narrator
+# 0700 per docs/spec/02 + ADR 0014; re-applied to the existing directory on
+# upgrade without touching its contents (ADR 0063).
+install -d -o game-narrator -g game-narrator -m 0700 /var/lib/game-narrator
 install -d -o root -g game-narrator -m 0750 /etc/game-narrator
 if [ -f /etc/game-narrator/config.yaml ]; then
     chown root:game-narrator /etc/game-narrator/config.yaml
