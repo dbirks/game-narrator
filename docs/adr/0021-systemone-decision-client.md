@@ -204,6 +204,7 @@ All in-repo and reproducible; live tests SKIP with `NOT RUN: …` offline.
 
 ## Follow-ups
 
+- **Request correlation id (completed 2026-10-18).** The live gateway returns no request-id response header on `/systemone` (the first live Dolphin E2E left `decision.requested`/`decision.resolved` with an empty `request_id`), so every request now carries a client-minted ULID as `X-Request-Id` and the effective id — the provider's when present, otherwise the client's, `RequestIDSource` = `provider`/`client` (`RecordRequestID`) — is surfaced on `Decision`/`Adjudication` and on every classified `*providers.Error` (mirroring the TTS fix, ADR-0050; tests `TestDecisionSendsClientRequestID`, `TestDecisionPrefersProviderRequestID`, `TestDecisionRequestIDUniquePerRequest`, `TestDecisionRequestIDRetryRecordsSuccessfulAttempt`).
 - Record a live `score` round-trip (or drop the type) and close the
   spec-only gap; update this ADR with the observed wire shape.
 - Probe and record the gateway's negotiated limits (max images/options/payload)

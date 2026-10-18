@@ -14,39 +14,47 @@ import (
 	"github.com/dbirks/game-narrator/internal/providers"
 )
 
-// doRaw issues one POST and returns the response body plus provenance. Every
-// failure is a *providers.Error classified the way the openai adapter does.
-func (c *Client) doRaw(ctx context.Context, raw []byte) (time.Duration, http.Header, []byte, error) {
+// doRaw issues one POST and returns the response body plus provenance, with
+// the effective request id and its source. Every request carries a
+// client-minted ULID as X-Request-Id: the live gateway returns no request-id
+// header on the /systemone route (ADR-0021 amendment), so the id we sent is
+// what makes the provider-side logs searchable when it answers none of its
+// own. Every failure is a *providers.Error classified the way the openai
+// adapter does and carries the same effective id.
+func (c *Client) doRaw(ctx context.Context, raw []byte) (time.Duration, http.Header, []byte, string, string, error) {
+	clientID := newRequestID()
 	endpoint, err := c.endpoint()
 	if err != nil {
-		return 0, nil, nil, err
+		return 0, nil, nil, "", "", c.transportError(err, 0, clientID)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
 	if err != nil {
-		return 0, nil, nil, c.transportError(err, 0)
+		return 0, nil, nil, "", "", c.transportError(err, 0, clientID)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "game-narrator/0.0 m3-systemone")
+	req.Header.Set("X-Request-Id", clientID)
 	if c.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}
 	start := time.Now()
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
-		return time.Since(start), nil, nil, c.transportError(err, 0)
+		return time.Since(start), nil, nil, "", "", c.transportError(err, 0, clientID)
 	}
 	defer func() { io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16)) }()
 	respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	latency := time.Since(start)
 	header := resp.Header
+	reqID, reqIDSource := RecordRequestID(requestID(header), clientID)
 	if readErr != nil {
-		return latency, header, nil, c.transportError(readErr, resp.StatusCode)
+		return latency, header, nil, reqID, reqIDSource, c.transportError(readErr, resp.StatusCode, reqID)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return latency, header, nil, c.httpError(resp.StatusCode, respBody, requestID(header))
+		return latency, header, nil, reqID, reqIDSource, c.httpError(resp.StatusCode, respBody, reqID)
 	}
-	return latency, header, respBody, nil
+	return latency, header, respBody, reqID, reqIDSource, nil
 }
 
 const maxResponseBytes = 8 << 20
@@ -62,7 +70,10 @@ func requestID(h http.Header) string {
 
 // transportError classifies a transport-level failure, distinguishing caller
 // cancellation from an expired deadline from an unreachable endpoint.
-func (c *Client) transportError(err error, status int) *providers.Error {
+// reqID is the correlation id to attach (the client-minted X-Request-Id, or
+// the effective id once the response headers are known); it is recorded on
+// the error so even a dead request stays searchable in provider logs.
+func (c *Client) transportError(err error, status int, reqID string) *providers.Error {
 	// A transport that has already classified its own failure into the shared
 	// taxonomy (for example a recorded-cassette miss) is respected rather than
 	// flattened into a generic transport failure.
@@ -71,6 +82,9 @@ func (c *Client) transportError(err error, status int) *providers.Error {
 		out := *classified
 		if out.Model == "" {
 			out.Model = c.Model
+		}
+		if out.RequestID == "" {
+			out.RequestID = reqID
 		}
 		if _, isTaxonomy := err.(*providers.Error); !isTaxonomy {
 			out.Err = err
@@ -102,6 +116,9 @@ func (c *Client) transportError(err error, status int) *providers.Error {
 		e.Err = err
 	}
 	e.Model = c.Model
+	if e.RequestID == "" {
+		e.RequestID = reqID
+	}
 	e.Retryable = e.Kind.RetryableByDefault()
 	return e
 }

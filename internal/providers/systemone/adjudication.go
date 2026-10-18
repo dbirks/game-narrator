@@ -160,10 +160,11 @@ func BuildAdjudication(obs Context, candidates []Candidate, speakers []Speaker) 
 // applied anywhere here.
 type Adjudication struct {
 	// Model and provenance of the underlying decision.
-	Model     string
-	Latency   time.Duration
-	RequestID string
-	Origin    string
+	Model           string
+	Latency         time.Duration
+	RequestID       string
+	RequestIDSource string
+	Origin          string
 	// IsTextbox is the raw noul signal for is_textbox.
 	IsTextbox *float64
 	// TextKind and Speaker are the chosen option ids.
@@ -190,6 +191,7 @@ func Interpret(d Decision, candidates []Candidate) Adjudication {
 		Model:                  d.Model,
 		Latency:                d.Latency,
 		RequestID:              d.RequestID,
+		RequestIDSource:        d.RequestIDSource,
 		Origin:                 d.Origin,
 		CandidateProbabilities: map[string]float64{},
 	}

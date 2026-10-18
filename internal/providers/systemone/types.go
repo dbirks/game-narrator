@@ -365,6 +365,13 @@ type Decision struct {
 	Usage     Usage
 	Latency   time.Duration
 	RequestID string
+	// RequestIDSource records which side issued RequestID ("provider" when
+	// the gateway returned a request-id response header, "client" when the id
+	// the client minted and sent as X-Request-Id is all that exists — the
+	// collective gateway's /systemone route returns no such header, verified
+	// live 2026-10-18). Empty on values that never went through the client's
+	// request path.
+	RequestIDSource string
 	// Origin is the recorded-transport provenance label: "live" or
 	// "recorded" (internal/providers/recorded). A response with no label came
 	// straight from the network and is reported as live.

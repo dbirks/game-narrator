@@ -293,18 +293,18 @@ func (c *Client) Decide(ctx context.Context, req Request) (Decision, error) {
 	if err != nil {
 		return Decision{}, err
 	}
-	latency, header, respBody, callErr := c.doRaw(ctx, raw)
+	latency, header, respBody, reqID, reqIDSource, callErr := c.doRaw(ctx, raw)
 	if callErr != nil {
 		return Decision{}, callErr
 	}
 	var payload responsePayload
 	if err := json.Unmarshal(respBody, &payload); err != nil {
 		e := providers.NewError(providers.KindBadSchema, http.StatusOK, "systemone: response is not valid JSON")
-		e.Err, e.RequestID, e.Model = err, requestID(header), model
+		e.Err, e.RequestID, e.Model = err, reqID, model
 		e.Retryable = false
 		return Decision{}, e
 	}
-	d, err := payload.toDecision(model, req, header, latency)
+	d, err := payload.toDecision(model, req, header, latency, reqID, reqIDSource)
 	if err != nil {
 		return Decision{}, err
 	}

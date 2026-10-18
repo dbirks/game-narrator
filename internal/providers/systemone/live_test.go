@@ -153,10 +153,11 @@ func TestLiveDecisionBundleAdjudication(t *testing.T) {
 	if decision.Latency <= 0 {
 		t.Error("Latency = 0, want a measured duration")
 	}
-	// Log the evidence: model, latency, usage and the raw probability
-	// signals. No URL or token.
-	t.Logf("live bundle: model=%s latency=%s usage=%d/%d origin=%s",
-		decision.Model, decision.Latency.Round(time.Millisecond),
+	// Log the evidence: model, the correlation id (and which side issued it),
+	// latency, usage and the raw probability signals. No URL or token.
+	t.Logf("live bundle: model=%s request_id=%s request_id_source=%s latency=%s usage=%d/%d origin=%s",
+		decision.Model, decision.RequestID, decision.RequestIDSource,
+		decision.Latency.Round(time.Millisecond),
 		decision.Usage.Input, decision.Usage.Output, decision.Origin)
 	for _, id := range []string{QTextKind, QCandidate, QSpeaker} {
 		a := decision.Answers[id]
@@ -206,8 +207,8 @@ func TestLiveDecisionAcceptsImage(t *testing.T) {
 	if !declared[kind.Choice] {
 		t.Fatalf("%s choice = %q, want a declared option", QTextKind, kind.Choice)
 	}
-	t.Logf("live image: model=%s image_bytes=%d latency=%s usage=%d/%d text_kind=%s",
-		decision.Model, len(img), decision.Latency.Round(time.Millisecond),
+	t.Logf("live image: model=%s request_id=%s request_id_source=%s image_bytes=%d latency=%s usage=%d/%d text_kind=%s",
+		decision.Model, decision.RequestID, decision.RequestIDSource, len(img), decision.Latency.Round(time.Millisecond),
 		decision.Usage.Input, decision.Usage.Output, kind.Choice)
 }
 
@@ -223,7 +224,7 @@ func TestLiveDecisionMissingStateIsBadSchema(t *testing.T) {
 
 	// {"model":"..."} — model present, state absent.
 	raw := []byte(`{"model":"` + client.Model + `"}`)
-	_, header, _, err := client.doRaw(ctx, raw)
+	_, header, _, _, _, err := client.doRaw(ctx, raw)
 	_ = header
 	if err == nil {
 		t.Skip("live gateway accepted a stateless request; the documented 422 contract does not hold here")
@@ -238,6 +239,6 @@ func TestLiveDecisionMissingStateIsBadSchema(t *testing.T) {
 	if pe.Status != http.StatusUnprocessableEntity {
 		t.Fatalf("Status = %d, want 422 (err=%s)", pe.Status, pe)
 	}
-	t.Logf("live missing-state probe: model=%s status=%d kind=%s detail=%q",
-		client.Model, pe.Status, pe.Kind, pe.Msg)
+	t.Logf("live missing-state probe: model=%s status=%d kind=%s request_id=%s detail=%q",
+		client.Model, pe.Status, pe.Kind, pe.RequestID, pe.Msg)
 }

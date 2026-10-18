@@ -255,7 +255,11 @@ func decideForTest(t *testing.T, req Request, answers map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &p); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
-	return p.toDecision(req.Model, req, http.Header{}, 5*time.Millisecond)
+	// The synthetic header carries no provider id, so the effective id is the
+	// client-minted one, exactly as doRaw would resolve it.
+	clientID := newRequestID()
+	reqID, reqIDSource := RecordRequestID("", clientID)
+	return p.toDecision(req.Model, req, http.Header{}, 5*time.Millisecond, reqID, reqIDSource)
 }
 
 var responseValidationCases = []struct {

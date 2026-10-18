@@ -41,7 +41,7 @@ const (
 // (docs/spec/06: "Response parser validates declared IDs, finite probability
 // [0,1], complete choice sets and schema version; rejects unknown answer
 // types and model mismatch") and normalises it.
-func (p responsePayload) toDecision(requestedModel string, req Request, header http.Header, latency time.Duration) (Decision, error) {
+func (p responsePayload) toDecision(requestedModel string, req Request, header http.Header, latency time.Duration, reqID, reqIDSource string) (Decision, error) {
 	model := p.Model
 	if model == "" {
 		model = requestedModel
@@ -50,7 +50,7 @@ func (p responsePayload) toDecision(requestedModel string, req Request, header h
 		e := providers.NewError(providers.KindWrongCheckpoint, http.StatusOK,
 			fmt.Sprintf("systemone: response model %q does not match requested model %q", p.Model, requestedModel))
 		e.Model = p.Model
-		e.RequestID = requestID(header)
+		e.RequestID = reqID
 		e.Retryable = false
 		return Decision{}, e
 	}
@@ -59,7 +59,7 @@ func (p responsePayload) toDecision(requestedModel string, req Request, header h
 		asked[q.ID] = true
 	}
 	if len(p.Answers) == 0 {
-		return Decision{}, p.schemaError("response carries no answers", requestedModel, requestID(header))
+		return Decision{}, p.schemaError("response carries no answers", requestedModel, reqID)
 	}
 	var problems []string
 	answers := make(map[string]Answer, len(p.Answers))
@@ -87,7 +87,7 @@ func (p responsePayload) toDecision(requestedModel string, req Request, header h
 	}
 	if len(problems) > 0 {
 		sort.Strings(problems)
-		return Decision{}, p.schemaError(strings.Join(problems, "; "), model, requestID(header))
+		return Decision{}, p.schemaError(strings.Join(problems, "; "), model, reqID)
 	}
 	origin := recorded.OriginFromHeader(header)
 	if origin == recorded.OriginUnknown {
@@ -95,12 +95,13 @@ func (p responsePayload) toDecision(requestedModel string, req Request, header h
 		origin = recorded.OriginLive
 	}
 	return Decision{
-		Model:     model,
-		Answers:   answers,
-		Usage:     p.Usage,
-		Latency:   latency,
-		RequestID: requestID(header),
-		Origin:    origin,
+		Model:           model,
+		Answers:         answers,
+		Usage:           p.Usage,
+		Latency:         latency,
+		RequestID:       reqID,
+		RequestIDSource: reqIDSource,
+		Origin:          origin,
 	}, nil
 }
 
