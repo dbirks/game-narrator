@@ -34,9 +34,9 @@ func TestRealDolphinBridge(t *testing.T) {
 	if img == "" {
 		t.Skipf("NOT RUN: %s is not set — point it at the user-supplied game image (dev-only, the image is never logged)", EnvGameImage)
 	}
-	for _, bin := range []string{"dolphin-emu", "Xvfb", "ffmpeg", "xwininfo"} {
+	for _, bin := range []string{"dolphin-emu", "Xvfb", "ffmpeg", "xwininfo", "xdotool"} {
 		if _, err := exec.LookPath(bin); err != nil {
-			t.Skipf("NOT RUN: %s is not on PATH (dev host dependencies: dolphin-emu, xorg-server-xvfb, ffmpeg, x11-utils): %v", bin, err)
+			t.Skipf("NOT RUN: %s is not on PATH (dev host dependencies: dolphin-emu, xorg-server-xvfb, ffmpeg, x11-utils, xdotool): %v", bin, err)
 		}
 	}
 	if err := strayDolphinProcesses(); err != nil {
@@ -51,10 +51,15 @@ func TestRealDolphinBridge(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
-	// Launch: isolated user dir, private display, the proven config. The
-	// window-wait budget is raised for llvmpipe hosts (the frame itself is
-	// WaitForGameFrame's job, not the window's).
-	if err := b.Launch(ctx, LaunchSpec{}); err != nil {
+	// Launch: isolated user dir, private display, the proven config — WITH
+	// the savestate keyboard hotkeys opted in (ADR-0043 am7, approach D):
+	// the SAME single-pipe layout plus Hotkeys.ini (slot 1 save/load on the
+	// X11 keyboard device) + the focus gate, so this test is the proof that
+	// the hotkey configuration is present and the proven path (game frame,
+	// ProveInput START, live frames) still carries it. The XTest key
+	// injection itself (SaveState/LoadState) is proven by the round trip in
+	// TestRealDriveToFirstDialogue.
+	if err := b.Launch(ctx, LaunchSpec{Hotkeys: true}); err != nil {
 		t.Fatalf("Launch (real): %v", err)
 	}
 	// Synchronous teardown on any later failure: the ctx-cancel watcher tears
@@ -63,8 +68,8 @@ func TestRealDolphinBridge(t *testing.T) {
 	defer b.Stop()
 	st := b.State()
 	// The image is proven by hash only; the path itself is never reported.
-	t.Logf("launched: display=%s dolphin_pid=%d user_dir=%s image_sha256=%s image_size=%d",
-		st.Display, st.DolphinPID, st.UserDir, st.ImageSHA, st.ImageSize)
+	t.Logf("launched: display=%s dolphin_pid=%d user_dir=%s hotkey_device=%s image_sha256=%s image_size=%d",
+		st.Display, st.DolphinPID, st.UserDir, st.HotkeyDevice, st.ImageSHA, st.ImageSize)
 
 	// Readiness 1: a real game frame (the predicate, not "the process exists").
 	ev, err := b.WaitForGameFrame(ctx, 5*time.Minute)

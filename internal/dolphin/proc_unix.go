@@ -3,6 +3,7 @@
 package dolphin
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -188,6 +189,33 @@ func realStartDolphin(bin string) func(display string, args []string, logf io.Wr
 		}
 		stop = func() error { return stopProcessGroup(pid, 15*time.Second, done) }
 		return pid, stop, nil
+	}
+}
+
+// realSendKey is the production Options.SendKey seam (approach D, ADR-0043
+// am7): one XTest key event into the display via xdotool — keydown, the
+// hold (spanning many of the hotkey scheduler's 5 ms samples), keyup. XTest
+// fake input lands in the X server's key state, which the scheduler polls;
+// no window focus is involved and the controller FIFO is never touched.
+func realSendKey(bin string) func(display, key string, hold time.Duration) error {
+	return func(display, key string, hold time.Duration) error {
+		path, err := exec.LookPath(bin)
+		if err != nil {
+			return fmt.Errorf("dolphin: xdotool not on PATH (dev dependency: xdotool): %w", err)
+		}
+		env := append(os.Environ(), "DISPLAY="+display)
+		down := exec.Command(path, "keydown", key)
+		down.Env = env
+		if out, derr := down.CombinedOutput(); derr != nil {
+			return fmt.Errorf("dolphin: xdotool keydown %s on %s: %v: %s", key, display, derr, bytes.TrimSpace(out))
+		}
+		time.Sleep(hold)
+		up := exec.Command(path, "keyup", key)
+		up.Env = env
+		if out, uerr := up.CombinedOutput(); uerr != nil {
+			return fmt.Errorf("dolphin: xdotool keyup %s on %s: %v: %s", key, display, uerr, bytes.TrimSpace(out))
+		}
+		return nil
 	}
 }
 

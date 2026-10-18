@@ -9,24 +9,42 @@ import (
 	"time"
 )
 
-// Savestate hotkeys ride the SECOND Pipes device (Pipes/hotkeys,
-// ADR-0043) and are OPT-IN: the launch must set LaunchSpec.Hotkeys=true, or
-// SaveState/LoadState refuse with ErrHotkeysDisabled (the default
-// single-pipe path is the proven one). Slots 1-4 are bound to pipe buttons;
-// save and load live in distinct groups so one device carries both. The 2609
-// HotkeyManager labels (groups "Save State"/"Load State", keys
-// "Save State Slot N", HotkeyManager.cpp s_hotkey_labels) are the schema
-// Config/Hotkeys.ini parses; a bare "`Button X`" control is a single-button
-// binding (the default GBA hotkeys use the same backtick-wrapped single-control
-// form).
+// Savestate hotkeys ride the KEYBOARD device (approach D, ADR-0043 am7) and
+// are OPT-IN: the launch must set LaunchSpec.Hotkeys=true, or SaveState/
+// LoadState refuse with ErrHotkeysDisabled. Hotkeys.ini binds slot 1's
+// save/load to two X11 keysyms on the X11 keyboard device
+// (hotkeyKeyboardDevice, "XInput2/0/Virtual core pointer" — the device 2609's
+// XInput2 backend resolves keyboard input to, measured from the
+// exit-rewritten spike user dir), and SaveState/LoadState fire the keys with
+// XTest fake input (xdotool keydown/keyup, the Options.SendKey seam), which
+// the hotkey scheduler's own polling thread samples.
+//
+// Why the keyboard, not the pipe (the measured approach-B failure): with the
+// chords bound to the controller pipe, the FIFO had TWO readers — Dolphin's
+// SI polling thread (~120 Hz) and the HotkeyScheduler both open and read the
+// same FIFO, so a chord byte was consumed by whichever thread read first and
+// the hotkeys fired nondeterministically. The X11 keyboard device is polled
+// by exactly one thread (the hotkey scheduler), and XTest fake input updates
+// the X server's key state that thread samples — no shared buffer, no
+// contention, and the controller FIFO keeps a single consumer. The drive's
+// input alphabet is pipe buttons and axes only; a keyboard key can never
+// disturb the game state the round trip measures.
+//
+// Config: [Hotkeys] Device = <keyboard device> plus the group/label keys
+// ("Save State/Save State Slot 1", "Load State/Load State Slot 1" —
+// HotkeyManager.cpp s_hotkey_labels, groups "Save State"/"Load State"),
+// single-key bindings in 2609's hotkey-expression syntax (backtick-wrapped
+// control name; the X11 backend's control names are X11 keysym names, the
+// same spelling the exit-rewritten keyboard controller configs carry).
+// [General] HotkeysRequireFocus = False is written on the opt-in path
+// (Dolphin.ini, config.go) because the 2609 default (True) focus-gates the
+// Load/Save State groups and the unfocused Xvfb render window never gets
+// focus.
+
 const (
 	saveSlotMin = 1
 	saveSlotMax = 4
 
-	// hotkeyConnectWait bounds the wait for the hotkey FIFO's connect edge
-	// (Dolphin opens every file under <user>/Pipes at boot, same as the
-	// game pad's pipe; the 30 s bound is pipeConnectWait's).
-	hotkeyConnectWait = pipeConnectWait
 	// hotkeySaveTimeout bounds the wait for the state file to appear
 	// (a GameCube save dumps the whole core; generous at llvmpipe speed).
 	hotkeySaveTimeout = 30 * time.Second
@@ -35,50 +53,54 @@ const (
 	// the caller's (it screenshots around the call); this is a floor.
 	hotkeyLoadSettle  = 3 * time.Second
 	statePollInterval = 250 * time.Millisecond
-	hotkeyHold        = 150 * time.Millisecond // the scheduler samples at 5 ms
+	// hotkeyHold is the keydown→keyup hold: the hotkey scheduler samples at
+	// 5 ms (HotkeyScheduler::ProcessThread), so a single press spans many
+	// samples and cannot be missed.
+	hotkeyHold = 150 * time.Millisecond
 )
 
-// hotkeyButtonFor maps a savestate slot to the pipe button bound to it.
-// Save slots ride A/B/X/Y, load slots Z/L/R/START. The two pipes are
-// separate devices, so the hotkey START does not touch the game pad's
-// START binding.
-func hotkeyButtonFor(slot int, save bool) (Button, error) {
+// hotkeyKeyFor maps a savestate slot to the X11 keysym bound to it in
+// Hotkeys.ini. Only slot 1 is bound (the drive test and the fixture
+// recorder use it); slots 2-4 are unbound.
+func hotkeyKeyFor(slot int, save bool) (string, error) {
 	if slot < saveSlotMin || slot > saveSlotMax {
 		return "", fmt.Errorf("dolphin: savestate slot %d out of range %d..%d", slot, saveSlotMin, saveSlotMax)
 	}
-	var tokens [saveSlotMax - saveSlotMin + 1]Button
-	if save {
-		tokens = [saveSlotMax - saveSlotMin + 1]Button{ButtonA, ButtonB, ButtonX, ButtonY}
-	} else {
-		tokens = [saveSlotMax - saveSlotMin + 1]Button{ButtonZ, ButtonL, ButtonR, ButtonStart}
+	if slot != saveSlotMin {
+		return "", fmt.Errorf("dolphin: savestate slot %d is not bound in the keyboard layout (only slot %d)", slot, saveSlotMin)
 	}
-	return tokens[slot-saveSlotMin], nil
+	if save {
+		return saveHotkeyKey, nil
+	}
+	return loadHotkeyKey, nil
 }
 
-// hotkeysIni is the <user>/Config/Hotkeys.ini content for one measured
-// device string ("Pipe/<i>/hotkeys" from the raw readdir order — ADR-0043).
-// A device name that does not exist is ignored by the parser, so the index
-// is measured from the directory rather than assumed; the real test
-// re-verifies it against the exit rewrite of this same file.
+// hotkeysIni is the <user>/Config/Hotkeys.ini content for the keyboard
+// device (approach D, ADR-0043 am7): Device = the X11 keyboard device the
+// 2609 XInput2 backend resolves keyboard input to (hotkeyKeyboardDevice —
+// measured from the exit-rewritten spike user dir, where every keyboard
+// controller's Device line carries exactly this string), plus the slot-1
+// save/load KEY bindings. The control names are X11 keysyms (the same
+// spelling the exit-rewritten keyboard controller configs use: Keys/A = A,
+// Keys/PGUP = Prior — the backtick-wrapped single-key form 2609's hotkey
+// parser accepts). An unresolvable Device line is dropped silently by the
+// parser, so the exit rewrite of this file (checkExitRewrite at Stop) is
+// the structural check that the device string resolved.
 func hotkeysIni(dev string) string {
 	var b strings.Builder
 	b.WriteString("[Hotkeys]\n")
 	b.WriteString("Device = " + dev + "\n")
-	for slot := saveSlotMin; slot <= saveSlotMax; slot++ {
-		btn, _ := hotkeyButtonFor(slot, true)
-		fmt.Fprintf(&b, "Save State/Save State Slot %d = `Button %s`\n", slot, btn)
-	}
-	for slot := saveSlotMin; slot <= saveSlotMax; slot++ {
-		btn, _ := hotkeyButtonFor(slot, false)
-		fmt.Fprintf(&b, "Load State/Load State Slot %d = `Button %s`\n", slot, btn)
-	}
+	b.WriteString("Save State/Save State Slot 1 = `" + saveHotkeyKey + "`\n")
+	b.WriteString("Load State/Load State Slot 1 = `" + loadHotkeyKey + "`\n")
 	return b.String()
 }
 
-// stateSlotPath returns the state file for slot (".../states/<GAMEID>.sNN")
-// if present. The glob tolerates the title's GAMEID prefix: the bridge does
-// not know the image's ID before boot (2609 MakeStateFilename uses the
-// booted game's GameID field).
+// stateSlotPath returns the state file for slot (".../StateSaves/
+// <GAMEID>.sNN") if present. The glob tolerates the title's GAMEID prefix:
+// the bridge does not know the image's ID before boot (2609 MakeStateFilename
+// uses the booted game's GameID field). The folder is stateSavesDir —
+// measured from 2609's own user dir on this host, not the legacy "states"
+// spelling.
 func (b *bridge) stateSlotPath(slot int) (string, error) {
 	b.mu.Lock()
 	userDir := b.st.UserDir
@@ -89,7 +111,7 @@ func (b *bridge) stateSlotPath(slot int) (string, error) {
 	if slot < saveSlotMin || slot > saveSlotMax {
 		return "", fmt.Errorf("dolphin: savestate slot %d out of range %d..%d", slot, saveSlotMin, saveSlotMax)
 	}
-	matches, err := filepath.Glob(filepath.Join(userDir, "states", fmt.Sprintf("*.s%02d", slot)))
+	matches, err := filepath.Glob(filepath.Join(userDir, stateSavesDir, fmt.Sprintf("*.s%02d", slot)))
 	if err != nil {
 		return "", err
 	}
@@ -115,77 +137,59 @@ func (b *bridge) stateSlotPath(slot int) (string, error) {
 	return path, nil
 }
 
-// hotkeyOK reports the running state + a connected hotkey pipe, reading the
-// bridge exactly like Inject does.
+// hotkeyOK reports the running state required to fire a hotkey key: the
+// launch is running (the scheduler polls only while the core is up), on the
+// opt-in path (Hotkeys.ini exists), on a display this bridge can address,
+// with the SendKey seam wired (real xdotool or a test fake).
 func (b *bridge) hotkeyOK() error {
 	b.mu.Lock()
 	state := b.st.State
-	hk := b.hotkeyPipe
+	display := b.st.Display
+	sendKey := b.opts.SendKey
 	b.mu.Unlock()
 	if state != StateRunning {
 		return ErrNotRunning
 	}
-	if hk == nil {
-		return fmt.Errorf("dolphin: hotkey pipe not opened: %w", ErrPipeNotConnected)
+	if sendKey == nil {
+		return fmt.Errorf("dolphin: no SendKey seam wired (xdotool?) for the savestate hotkeys: %w", ErrHotkeysDisabled)
 	}
-	if !hk.connected.Load() {
-		return fmt.Errorf("dolphin: hotkey pipe %s not connected yet: %w", hotkeyPipeFile, ErrPipeNotConnected)
-	}
-	return nil
-}
-
-// waitHotkeyPipe bounds the wait for the hotkey FIFO's connect edge (the
-// same contract as the game pad's pipe; the emulator opens both at boot).
-func (b *bridge) waitHotkeyPipe(ctx context.Context) error {
-	if err := b.hotkeyOK(); err != nil {
-		// A not-connected pipe is the only transient condition worth waiting on.
-		if err != ErrPipeNotConnected && !isPipeErr(err) {
-			return err
-		}
-	}
-	b.mu.Lock()
-	hk := b.hotkeyPipe
-	b.mu.Unlock()
-	if hk == nil {
-		return fmt.Errorf("dolphin: hotkey pipe not opened: %w", ErrPipeNotConnected)
-	}
-	if !hk.waitConnected(ctx, hotkeyConnectWait) {
-		return fmt.Errorf("dolphin: hotkey pipe %s not connected within %s", hotkeyPipeFile, hotkeyConnectWait)
+	if display == "" {
+		return fmt.Errorf("dolphin: no display recorded; cannot inject the hotkey key: %w", ErrNotRunning)
 	}
 	return nil
 }
 
-// isPipeErr reports a wrapped pipe-not-connected error.
-func isPipeErr(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "not connected")
-}
-
-// injectHotkey presses (and releases) one button on the hotkey pipe. The
-// hold (150 ms) spans many of the scheduler's 5 ms samples (2609
-// HotkeyScheduler::ProcessThread), so a single press is not missed.
-func (b *bridge) injectHotkey(ctx context.Context, btn Button, hold time.Duration) error {
+// injectHotkeyKey presses (and releases) one X11 key into the display with
+// XTest fake input (Options.SendKey — real xdotool in production). The hold
+// (hotkeyHold) spans many of the scheduler's 5 ms samples, so a single press
+// is not missed. The controller FIFO is untouched: the key event lands in
+// the X server's key state, which the hotkey scheduler's own thread polls
+// (approach D, ADR-0043 am7 — the single-consumer controller pipe is
+// preserved by construction).
+func (b *bridge) injectHotkeyKey(ctx context.Context, key string) error {
 	if err := b.hotkeyOK(); err != nil {
 		return err
 	}
 	b.mu.Lock()
-	hk := b.hotkeyPipe
+	display := b.st.Display
+	sendKey := b.opts.SendKey
 	b.mu.Unlock()
-	if err := hk.writeLine(ctx, "PRESS "+string(btn)); err != nil {
-		return fmt.Errorf("dolphin: hotkey press %s: %w", btn, err)
-	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-time.After(hold):
+	default:
 	}
-	if err := hk.writeLine(ctx, "RELEASE "+string(btn)); err != nil {
-		return fmt.Errorf("dolphin: hotkey release %s: %w", btn, err)
+	b.log.Info("dolphin: injecting savestate hotkey key", "key", key, "display", display, "hold", hotkeyHold)
+	if err := sendKey(display, key, hotkeyHold); err != nil {
+		return fmt.Errorf("dolphin: hotkey key %s: %w", key, err)
 	}
 	return nil
 }
 
 // hotkeyEnabled reads whether the running launch opted in to the savestate
-// hotkey FIFO (ADR-0043: the default single-pipe launch has none).
+// hotkeys (ADR-0043): only an opt-in launch writes Hotkeys.ini and binds the
+// keyboard keys; the default launch's keys are unbound and SaveState/
+// LoadState refuse with ErrHotkeysDisabled.
 func (b *bridge) hotkeyEnabled() bool {
 	b.mu.Lock()
 	enabled := b.spec.Hotkeys
@@ -193,20 +197,17 @@ func (b *bridge) hotkeyEnabled() bool {
 	return enabled
 }
 
-// SaveState triggers a savestate save of slot over the hotkey pipe and
-// waits for the state file on disk, returning its path (the value a
-// --save_state boot takes). Freshness is verified against the mtime seen
-// before the hotkey — that is the "the save actually happened" half of the
-// round trip; the perceptual half is the caller's (LoadState + frames).
-// Refuses with ErrHotkeysDisabled when the launch did not opt in.
+// SaveState triggers a savestate save of slot over the keyboard hotkey (F1,
+// XTest-injected) and waits for the state file on disk, returning its path
+// (the value a --save_state boot takes). Freshness is verified against the
+// mtime seen before the hotkey — that is the "the save actually happened"
+// half of the round trip; the perceptual half is the caller's (LoadState +
+// frames). Refuses with ErrHotkeysDisabled when the launch did not opt in.
 func (b *bridge) SaveState(ctx context.Context, slot int) (string, error) {
 	if !b.hotkeyEnabled() {
 		return "", ErrHotkeysDisabled
 	}
-	if err := b.waitHotkeyPipe(ctx); err != nil {
-		return "", err
-	}
-	btn, err := hotkeyButtonFor(slot, true)
+	key, err := hotkeyKeyFor(slot, true)
 	if err != nil {
 		return "", err
 	}
@@ -217,7 +218,7 @@ func (b *bridge) SaveState(ctx context.Context, slot int) (string, error) {
 			preMtime = st.ModTime()
 		}
 	}
-	if err := b.injectHotkey(ctx, btn, hotkeyHold); err != nil {
+	if err := b.injectHotkeyKey(ctx, key); err != nil {
 		return "", err
 	}
 	deadline := time.Now().Add(hotkeySaveTimeout)
@@ -230,12 +231,12 @@ func (b *bridge) SaveState(ctx context.Context, slot int) (string, error) {
 			}
 		}
 		if time.Now().After(deadline) {
-			// Evidence for the trace: what the states dir holds, if anything.
+			// Evidence for the trace: what the StateSaves dir holds, if anything.
 			b.mu.Lock()
 			userDir := b.st.UserDir
 			b.mu.Unlock()
-			entries, _ := filepath.Glob(filepath.Join(userDir, "states", "*"))
-			return "", fmt.Errorf("dolphin: savestate slot %d not written within %s (states dir: %v)",
+			entries, _ := filepath.Glob(filepath.Join(userDir, stateSavesDir, "*"))
+			return "", fmt.Errorf("dolphin: savestate slot %d not written within %s (StateSaves dir: %v)",
 				slot, hotkeySaveTimeout, entries)
 		}
 		select {
@@ -246,23 +247,20 @@ func (b *bridge) SaveState(ctx context.Context, slot int) (string, error) {
 	}
 }
 
-// LoadState triggers a savestate load of slot over the hotkey pipe and
-// waits the settle floor. The round-trip proof (screen X before, advance to
-// Y, load, screen X again) is assembled by callers out of SaveState,
-// Inject and Screenshot — this method only fires the hotkey and paces it.
-// Refuses with ErrHotkeysDisabled when the launch did not opt in.
+// LoadState triggers a savestate load of slot over the keyboard hotkey (F2,
+// XTest-injected) and waits the settle floor. The round-trip proof (screen X
+// before, advance to Y, load, screen X again) is assembled by callers out of
+// SaveState, Inject and Screenshot — this method only fires the hotkey and
+// paces it. Refuses with ErrHotkeysDisabled when the launch did not opt in.
 func (b *bridge) LoadState(ctx context.Context, slot int) error {
 	if !b.hotkeyEnabled() {
 		return ErrHotkeysDisabled
 	}
-	if err := b.waitHotkeyPipe(ctx); err != nil {
-		return err
-	}
-	btn, err := hotkeyButtonFor(slot, false)
+	key, err := hotkeyKeyFor(slot, false)
 	if err != nil {
 		return err
 	}
-	if err := b.injectHotkey(ctx, btn, hotkeyHold); err != nil {
+	if err := b.injectHotkeyKey(ctx, key); err != nil {
 		return err
 	}
 	b.log.Info("dolphin: savestate load triggered", "slot", slot)

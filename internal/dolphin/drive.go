@@ -144,9 +144,19 @@ func (t DriveTrace) TransitionLog() string {
 
 // The drive's defaults (measured on this host, llvmpipe: a fade settles in
 // 1-2 s of emulation; the drive must never out-run the screens).
+//
+// defaultDriveIterations is the iteration BACKSTOP, not the expected length:
+// the 2026-10-18 slow-START boot (the title's dim "press START" phase did
+// not register the press for ~54 iterations — a measured ~2.5 min of title
+// before the prompt appeared) still needs to reach the legend, and the loop
+// detector (the same screen with no visible change >= 4 iterations) already
+// fails fast on a screen that is truly dead. The 15-minute time budget is
+// the true limit; the cap only bounds a pathological no-op loop the loop
+// detector would miss (a screen that keeps "changing" while ignoring the
+// input, like the orbiting title).
 const (
 	defaultDriveDeadline     = 15 * time.Minute
-	defaultDriveIterations   = 90
+	defaultDriveIterations   = 200
 	defaultDriveSettle       = 2 * time.Second
 	driveScreenshotRetryWait = 1 * time.Second
 	driveScreenshotRetries   = 3

@@ -5,6 +5,7 @@ package dolphin
 import (
 	"errors"
 	"io"
+	"time"
 )
 
 // Non-unix stubs: the production bridge needs Xvfb, process-group signals
@@ -31,4 +32,10 @@ func mkFIFO(path string, mode uint32) error {
 
 func rawReaddir(_ string) ([]string, error) {
 	return nil, errors.New("dolphin: raw readdir is unix-only (dev host tool)")
+}
+
+func realSendKey(_ string) func(display, key string, hold time.Duration) error {
+	return func(display, key string, hold time.Duration) error {
+		return errors.New("dolphin: XTest key injection is unix-only (dev host tool); wire a fake SendKey seam for tests")
+	}
 }

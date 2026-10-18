@@ -3,40 +3,75 @@
 package dolphin
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 // TestHotkeysIni: the [Hotkeys] section content the bridge writes — the
-// device line (the measured second-FIFO Pipes path) and the slot bindings
-// for both the save and load groups.
+// keyboard device line (approach D, ADR-0043 am7: the X11 keyboard device
+// 2609's XInput2 backend resolves keyboard input to, measured from the
+// exit-rewritten spike user dir) and the slot-1 save/load KEY bindings in
+// 2609's single-key hotkey-expression syntax (backtick-wrapped X11 keysym
+// names — the same spelling the exit-rewritten keyboard controller configs
+// carry). Save and load are DISJOINT single keys: no chord, no timing race,
+// and neither key is in the game pad's button alphabet.
 func TestHotkeysIni(t *testing.T) {
-	ini := hotkeysIni("Pipe/1/hotkeys")
+	ini := hotkeysIni(hotkeyKeyboardDevice)
 	if !strings.HasPrefix(ini, "[Hotkeys]\n") {
 		t.Fatalf("Hotkeys.ini must open with the [Hotkeys] section:\n%s", ini)
 	}
-	if !strings.Contains(ini, "Device = Pipe/1/hotkeys\n") {
-		t.Errorf("missing the device binding:\n%s", ini)
+	if !strings.Contains(ini, "Device = "+hotkeyKeyboardDevice+"\n") {
+		t.Errorf("missing the keyboard device binding:\n%s", ini)
 	}
-	// Every save and load slot bound to a distinct pipe button.
 	want := map[string]string{
-		"Save State/Save State Slot 1": "Button A",
-		"Save State/Save State Slot 2": "Button B",
-		"Save State/Save State Slot 3": "Button X",
-		"Save State/Save State Slot 4": "Button Y",
-		"Load State/Load State Slot 1": "Button Z",
-		"Load State/Load State Slot 2": "Button L",
-		"Load State/Load State Slot 3": "Button R",
-		"Load State/Load State Slot 4": "Button START",
+		"Save State/Save State Slot 1": "`" + saveHotkeyKey + "`\n",
+		"Load State/Load State Slot 1": "`" + loadHotkeyKey + "`\n",
 	}
 	for k, v := range want {
-		line := k + " = `" + v + "`\n"
+		line := k + " = " + v
 		if !strings.Contains(ini, line) {
 			t.Errorf("missing binding %q:\n%s", line, ini)
+		}
+	}
+	// Single keys, not chords: no chord-expression syntax in the bindings.
+	if strings.Contains(ini, "@(") {
+		t.Errorf("the keyboard layout binds single keys, not chords:\n%s", ini)
+	}
+	// The save and load keys are disjoint (a shared key would fire both).
+	if saveHotkeyKey == loadHotkeyKey {
+		t.Errorf("the save and load keys must differ: %q", saveHotkeyKey)
+	}
+	// Slot 1 is the only bound slot: no other slot lines.
+	if strings.Contains(ini, "Slot 2") || strings.Contains(ini, "Slot 3") || strings.Contains(ini, "Slot 4") {
+		t.Errorf("slots 2-4 must stay unbound in the keyboard layout:\n%s", ini)
+	}
+}
+
+// TestHotkeyKeyFor: the slot→key mapping (slot 1 only; the others refuse),
+// and the save/load keys come from the same constants Hotkeys.ini is
+// written with (the bridge and the config can never disagree).
+func TestHotkeyKeyFor(t *testing.T) {
+	save, err := hotkeyKeyFor(1, true)
+	if err != nil || save != saveHotkeyKey {
+		t.Errorf("hotkeyKeyFor(1, save) = %q, %v; want %q", save, err, saveHotkeyKey)
+	}
+	load, err := hotkeyKeyFor(1, false)
+	if err != nil || load != loadHotkeyKey {
+		t.Errorf("hotkeyKeyFor(1, load) = %q, %v; want %q", load, err, loadHotkeyKey)
+	}
+	if save == load {
+		t.Errorf("save and load must not share a key: %q", save)
+	}
+	for _, slot := range []int{0, 2, 3, 4, 5} {
+		if _, err := hotkeyKeyFor(slot, true); err == nil {
+			t.Errorf("slot %d must be refused (only slot 1 is bound)", slot)
 		}
 	}
 }
@@ -116,41 +151,44 @@ func TestWriteUserConfigMemcardDir(t *testing.T) {
 	}
 }
 
-// TestWriteUserConfigHotkeyFIFO: a fresh user dir with the opt-in flag gets
-// BOTH Pipes FIFOs and the Hotkeys.ini; both device strings are computed
-// from the directory's raw readdir order (2609 numbers devices by
-// enumeration position, so the index is measured, never assumed — ADR-0043),
-// and both ini files carry the measured strings.
-func TestWriteUserConfigHotkeyFIFO(t *testing.T) {
+// TestWriteUserConfigHotkeyKeys: a fresh user dir with the opt-in flag
+// gets the SAME single-pipe layout as the default plus Hotkeys.ini (the
+// approach-D unblock, ADR-0043 am7): exactly one FIFO (Pipes/pipe1, the
+// single-consumer controller path), NO second FIFO, and Hotkeys.ini bound
+// to the X11 KEYBOARD device (hotkeyKeyboardDevice — not the game pad's
+// pipe device, whose FIFO must stay single-consumer) with the slot-1
+// key bindings present.
+func TestWriteUserConfigHotkeyKeys(t *testing.T) {
 	dir := t.TempDir()
 	gcpadDev, hotkeyDev, err := writeUserConfig(dir, "OGL", true)
 	if err != nil {
 		t.Fatalf("writeUserConfig: %v", err)
 	}
-	for _, p := range []string{
-		filepath.Join(dir, "Pipes", pipeFileName),
-		filepath.Join(dir, "Pipes", hotkeyPipeFile),
-		filepath.Join(dir, "Config", "Hotkeys.ini"),
-	} {
-		fi, err := os.Stat(p)
-		if err != nil {
-			t.Errorf("missing %s: %v", p, err)
-			continue
-		}
-		if strings.Contains(p, "Pipes") && fi.Mode()&os.ModeNamedPipe == 0 {
-			t.Errorf("%s is not a FIFO (mode %v)", p, fi.Mode())
-		}
+	fi, err := os.Lstat(filepath.Join(dir, "Pipes", pipeFileName))
+	if err != nil || fi.Mode()&os.ModeNamedPipe == 0 {
+		t.Fatalf("Pipes/pipe1 is not a FIFO: %v", err)
 	}
-	if !strings.HasSuffix(hotkeyDev, "/hotkeys") || !strings.HasSuffix(gcpadDev, "/pipe1") {
-		t.Errorf("device strings do not name their FIFOs: gcpad=%q hotkey=%q", gcpadDev, hotkeyDev)
+	// NO second FIFO on the keyboard path (it never existed since the
+	// original two-pipe attempt was abandoned).
+	if _, err := os.Lstat(filepath.Join(dir, "Pipes", hotkeyPipeFile)); !os.IsNotExist(err) {
+		t.Errorf("Pipes/%s must not exist on the keyboard path (err %v)", hotkeyPipeFile, err)
 	}
-	if gcpadDev == hotkeyDev {
-		t.Errorf("the two FIFOs must not share a device: %q", gcpadDev)
+	// The hotkey device is the KEYBOARD device, distinct from the game pad's
+	// pipe device (one reader per input source: the scheduler polls the
+	// keyboard, the game pad's input polling reads the pipe).
+	if hotkeyDev != hotkeyKeyboardDevice {
+		t.Errorf("hotkey device = %q, want the keyboard device %q", hotkeyDev, hotkeyKeyboardDevice)
+	}
+	if hotkeyDev == gcpadDev {
+		t.Errorf("the hotkey device must not ride the game pad's pipe (single-consumer FIFO): %q", hotkeyDev)
+	}
+	if gcpadDev != "Pipe/0/pipe1" {
+		t.Errorf("gcpad device = %q, want Pipe/0/pipe1 (pipe1 is the only FIFO)", gcpadDev)
 	}
 	if got, err := os.ReadFile(filepath.Join(dir, "Config", "Hotkeys.ini")); err != nil {
 		t.Errorf("read Hotkeys.ini: %v", err)
-	} else if string(got) != hotkeysIni(hotkeyDev) {
-		t.Errorf("Hotkeys.ini on disk differs from hotkeysIni(%s):\n%s", hotkeyDev, got)
+	} else if string(got) != hotkeysIni(hotkeyKeyboardDevice) {
+		t.Errorf("Hotkeys.ini on disk differs from hotkeysIni(%s):\n%s", hotkeyKeyboardDevice, got)
 	}
 	if got, err := os.ReadFile(filepath.Join(dir, "Config", "GCPadNew.ini")); err != nil {
 		t.Errorf("read GCPadNew.ini: %v", err)
@@ -267,12 +305,115 @@ func TestPipesDeviceOrder(t *testing.T) {
 	}
 }
 
-// TestStateSlotPath: the state-file glob (slot 1 → *.s01 under <user>/states)
-// finds the file the hotkey save produces, and the newest wins when a stale
-// one lingers.
+// TestSaveLoadStateKeyboardKeys: the SaveState/LoadState contract over the
+// fake SendKey seam (test category (a): a synthetic stub — no emulator, no
+// X server; the stub stands in for both xdotool and Dolphin's reaction). A
+// default launch refuses with ErrHotkeysDisabled and injects NOTHING; an
+// opt-in launch injects exactly the save key (F1) into the launch's display
+// with the scheduler-spanning hold, the stub's "emulator" writes the state
+// file on that press, and SaveState returns its path with a fresh mtime;
+// LoadState injects exactly the load key (F2). The controller FIFO is never
+// touched by either call (the single-consumer invariant, approach D).
+func TestSaveLoadStateKeyboardKeys(t *testing.T) {
+	type keyPress struct {
+		display, key string
+		hold         time.Duration
+	}
+	var mu sync.Mutex
+	var presses []keyPress
+
+	// Default launch: refused, nothing injected.
+	def := newTestBridge(t, nil)
+	mustLaunch(t, def, LaunchSpec{})
+	if _, err := def.b.SaveState(context.Background(), 1); !errors.Is(err, ErrHotkeysDisabled) {
+		t.Errorf("default path SaveState = %v, want ErrHotkeysDisabled", err)
+	}
+	if err := def.b.LoadState(context.Background(), 1); !errors.Is(err, ErrHotkeysDisabled) {
+		t.Errorf("default path LoadState = %v, want ErrHotkeysDisabled", err)
+	}
+	def.b.Stop()
+
+	// Opt-in launch with the stubbed SendKey seam (declared before the
+	// closure so the stub can reach the bridge it records).
+	var env *testEnv
+	env = newTestBridge(t, nil, func(o *Options) {
+		o.SendKey = func(display, key string, hold time.Duration) error {
+			mu.Lock()
+			presses = append(presses, keyPress{display: display, key: key, hold: hold})
+			mu.Unlock()
+			if key == saveHotkeyKey {
+				// The stub emulator: the save key press writes the state file
+				// where 2609 puts savestates (the StateSaves folder).
+				st := env.b.State()
+				dir := filepath.Join(st.UserDir, stateSavesDir)
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Errorf("stub emulator mkdir states: %v", err)
+					return nil
+				}
+				if err := os.WriteFile(filepath.Join(dir, "FAKE01.s01"), []byte("state"), 0o644); err != nil {
+					t.Errorf("stub emulator write state file: %v", err)
+				}
+			}
+			return nil
+		}
+	})
+	mustLaunch(t, env, LaunchSpec{Hotkeys: true})
+	ctx := context.Background()
+
+	// Save: one keydown/keyup of the SAVE key into the launch's display, and
+	// the state file the stub wrote comes back with a fresh mtime.
+	path, err := env.b.SaveState(ctx, 1)
+	if err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	if fi, err := os.Stat(path); err != nil || fi.IsDir() || fi.Size() == 0 {
+		t.Fatalf("the save path %s is not a written file: %v", path, err)
+	}
+	mu.Lock()
+	var savePresses []keyPress
+	for _, p := range presses {
+		if p.key == saveHotkeyKey {
+			savePresses = append(savePresses, p)
+		}
+	}
+	mu.Unlock()
+	if len(savePresses) != 1 {
+		t.Fatalf("the save hotkey was injected %d times, want exactly 1 (presses %v)", len(savePresses), presses)
+	}
+	if want := env.b.State().Display; savePresses[0].display != want || savePresses[0].hold != hotkeyHold {
+		t.Errorf("save press = %+v, want the launch display %q with the %s hold", savePresses[0], want, hotkeyHold)
+	}
+
+	// Unbound slots refuse before any injection.
+	if _, err := env.b.SaveState(ctx, 2); err == nil {
+		t.Error("slot 2 must be refused (only slot 1 is bound)")
+	}
+
+	// Load: one keydown/keyup of the LOAD key, then the settle floor.
+	if err := env.b.LoadState(ctx, 1); err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	mu.Lock()
+	var loadPresses []keyPress
+	for _, p := range presses {
+		if p.key == loadHotkeyKey {
+			loadPresses = append(loadPresses, p)
+		}
+	}
+	mu.Unlock()
+	if len(loadPresses) != 1 {
+		t.Fatalf("the load hotkey was injected %d times, want exactly 1 (presses %v)", len(loadPresses), presses)
+	}
+	env.b.Stop()
+}
+
+// TestStateSlotPath: the state-file glob (slot 1 → *.s01 under <user>/
+// StateSaves — the 2609 folder, not the legacy "states" spelling) finds the
+// file the hotkey save produces, and the newest wins when a stale one
+// lingers.
 func TestStateSlotPath(t *testing.T) {
 	dir := t.TempDir()
-	states := filepath.Join(dir, "states")
+	states := filepath.Join(dir, stateSavesDir)
 	if err := os.MkdirAll(states, 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -779,3 +779,138 @@ frames). Reversal: drop `ClassStorySub` and the `isSettledScene` helper
 back to the amendment-5 shape (success only on `dialogue_box`, the legend
 mislabelled) and the real bridge test falls back to the measured
 ProveInput failure.
+
+## Amendment 7 (2026-10-18): approach D — the hotkeys bind to the keyboard device, the XTest injection, the `StateSaves` dir, and the double-restore round trip
+
+**The consumer contention that killed the two-pipe plan.** The prior
+attempts bound the Save/Load chord to the controller pipe. With the chord
+byte on the controller FIFO, Dolphin's SI polling thread (~120 Hz, reading
+`Pipe/0/pipe1`) and the HotkeyScheduler (reading the same FIFO when a chord
+is bound to it) are TWO consumers of the SAME Pipe FIFO: the byte is
+consumed by whichever thread reads it first, so the chord fires or is eaten
+nondeterministically. A second hotkey FIFO (`Pipes/hotkeys`) does not fix
+this — the scheduler still polls a FIFO the SI path is not designed to
+share, and the two-pipe layout had its own structural problems (the raw
+reorder and the exit-rewrite findings recorded above). **Approach D, which
+works and is what this amendment records: bind the hotkeys to the
+KEYBOARD device instead of any Pipes FIFO.**
+
+**The measured keyboard device string.** 2609's XInput2 backend resolves
+the X11 keyboard device to `XInput2/0/Virtual core pointer` — measured
+from the exit-rewritten spike user dirs (`artifacts/spikes/dolphin/user/Config/`):
+EVERY keyboard controller (the four default mouse/keyboard controllers)
+rewrites its `Device =` line to exactly this string, and a clean exit
+KEEPS it (unlike an unresolvable Pipes line, which is dropped). The
+opt-in `writeUserConfig` now writes, when `Hotkeys: true`:
+
+```ini
+[Hotkeys]
+Device = XInput2/0/Virtual core pointer
+Save State/Save State Slot 1 = `F1`
+Load State/Load State Slot 1 = `F2`
+```
+
+with `HotkeysRequireFocus = False` under `[General]` (amendment 2).
+F1/F2 are outside the game's input vocabulary (the bridge's inject
+vocabulary and the drive's step vocabulary both use keysym names like
+`A`, `R`, `Space`, `Prior`) and outside the controller chord, so nothing
+else consumes them. (The keys are written with a backtick only when the
+key differs from the label — the 2609 format; F1/F2 labels already
+differ, so backticks.)
+
+**The XTest injection.** The keys are fired with XTest on the Xvfb
+display: xdotool `keydown F1` → 150 ms hold → `keyup F1` (the same
+hold duration the chord injector used). `Options.XdotoolBin` defaults to
+`/usr/bin/xdotool` (xdotool 4.20260303.1 on this host; it is a dev-host
+test dependency — docs/dev-environment.md) and the whole send is behind
+the `Options.SendKey` seam (fakeable in unit tests; the NOT-RUN guard
+lists it with the other binaries). No focus or window targeting is
+needed: a plain XTEST event on the display reaches the hotkey scheduler
+regardless of focus (measured — the spike's `xdotool key F1` wrote the
+slot file on the unfocused Xvfb display), and `HotkeysRequireFocus =
+False` keeps the X11 hotkey handler polling. The controller FIFO keeps a
+SINGLE consumer (the SI thread), as it always had on the default path —
+the single-pipe drive behavior is untouched.
+
+**The `StateSaves` dir.** 2609 writes slot files to
+`<user>/StateSaves/GZLE01.sNN` (measured from the spike dirs and the
+live save), NOT `states/`. The first keyboard attempts "failed" the save
+poll because `stateSlotPath` globbed `states/*.s01` — the hotkey had
+fired all along; the file was one directory over. `stateSlotPath` and
+the NOT-RUN evidence listing now use `StateSaves/`.
+
+**The round trip as a double restore.** The drive's success screen is the
+animated opening legend (amendment 6). A pixel comparison of the load
+against X measures the restored timeline's OWN motion, not the load: the
+measured 2026-10-18 run (run-drive3) restored the legend correctly —
+the after-load frame classified `storysub` with the SAME panel art
+(blobs at the same centroids 0.329/0.673, matching mean/std/entropy) —
+yet the 3 s timeline offset alone measured 0.21 RMSE against X (the
+subtitle text and the animating panel art differ at T vs T+3 s on the
+same restored timeline). A no-op load on an animated scene could
+therefore PASS a pixel-vs-X test, and a correct load FAIL it — the
+instrument measured the scene, not the save. The round trip is now
+proven DETERMINISTICALLY (the blocked.md acceptance's "post-load rmse ≤
+crossStepMax" realized at matched offsets):
+
+1. Save slot 1 at the drive's success frame X (fresh `StateSaves/` mtime).
+2. Advance (A 500 ms + stick 1500 ms + 2 s) to Y; assert rmse(Y, X) >
+   0.05 (a no-op advance would make a no-op load indistinguishable).
+3. Load slot 1; settle a FIXED total of 8 s (LoadState's 3 s floor + 5 s);
+   screenshot X1 and classify it.
+4. Advance again with the SAME input; load slot 1 again; settle 8 s;
+   screenshot X2.
+5. Assert rmse(X1, X2) ≤ crossStepMax (0.10) AND class(X1) == class(X).
+
+A no-op load stays on the (different-class) Y screen → the class clause
+fails. A restore of a different state lands on a different timeline
+point → the rmse clause fails. Measured (two consecutive runs, 2026-10-18):
+the advance moved the screen by 0.256 / 0.232 (> 0.05), both restores
+returned to `storysub` with byte-identical signatures, and
+**rmse(X1, X2) = 0.000** — the deterministic restore renders the same
+frame (llvmpipe output is byte-identical for the same state and
+timeline offset).
+
+**The `--save_state` boot check matches the drive's success scene.**
+Phase 3 asserts the fresh boot lands on the scene the drive reached: the
+letterboxed legend (the `storysub` class with the measured bottom-bar
+text clauses — the bright `BoxPresent` band calibration cannot match the
+legend, measured boxband mean 60 < 100) or the dialogue box. Measured in
+both runs: the boot lands on `storysub` with the subtitle text present
+(`subbar bright=0.041 edges=0.105`) within 30 s.
+
+**The drive iteration cap (90 → 200).** Two of the measured 2026-10-18
+drives hit a SLOW-START boot: the title's dim phase does not register
+START for ~54-95 iterations (~2.5-4.5 min), past the old 90 cap (which
+had been sized to the fast boots). The cap is now 200 — the loop
+detector still fails fast on any dead screen (amendments 3/4), so the
+cap only bounds a legitimately progressing but slow boot, and the 15 min
+deadline is the true limit.
+
+**Evidence (2026-10-18, `artifacts/m6-savestate-20261018/`).**
+`TestRealDriveToFirstDialogue` (hotkeys on) passed the round trip twice in
+a row (327 s / 344 s): `savestate: saved slot 1 → …/StateSaves/GZLE01.s01
+(hotkey key F1 over XInput2/0/Virtual core pointer)`; `advance-Y,
+rmse(Y, X) = 0.256` / `0.232`; `after-load-X1, class=storysub` and
+`after-load-X2, class=storysub` (identical signatures); `savestate:
+double restore, rmse(X1, X2) = 0.000 (control threshold 0.10)`;
+`savestate: --save_state boot landed on X (the opening legend (story
+subtitle)) — class=storysub lb=0.000 subbar bright=0.041 edges=0.105`;
+the exit rewrites matched BOTH device strings (`GCPadNew.ini
+device=Pipe/0/pipe1`, `Hotkeys.ini device="XInput2/0/Virtual core
+pointer"`). `TestRealDolphinBridge` passed with the hotkey config present
+(66 s; `hotkey_device=XInput2/0/Virtual core pointer`; input proven over
+the pipe; both exit-rewrite matches). `TestRealAbruptContextKill`
+(default single-pipe path) passed with no leftover processes.
+`go test -race -count=1 -skip Real ./internal/dolphin/` green (80 s).
+
+**Consequences.** Savestates are now PROVEN and remain opt-in
+(`LaunchSpec.Hotkeys=true`): the default launch is the single-pipe
+controller-only path with no `Hotkeys.ini` (the unit tests assert the
+default file is byte-identical to the pre-hotkey shape), and the default
+drive test logs the savestate phases `NOT RUN` on that path. The blocked
+register's "Dolphin savestates" row moved to Cleared (2026-10-18).
+xdotool is a dev-host test dependency. Reversal: drop the `Hotkeys`
+field handling in `writeUserConfig` and the `SaveState`/`LoadState`
+methods — the default path and its unit tests are untouched by this
+amendment.

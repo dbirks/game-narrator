@@ -45,28 +45,83 @@ import (
 //	Config/Logger.ini    WriteToFile so user/Logs/dolphin.log records the
 //	                     booted title and backend — the only place the
 //	                     emulator records them (ADR-0007).
-//	Pipes/pipe1          the game pad's FIFO (always the ONLY FIFO on the
-//	                     default path; any file in <user>/Pipes/ becomes
-//	                     device "Pipe/<i>/<filename>", upstream Pipes::Init).
+//	Pipes/pipe1          the game pad's FIFO — the ONLY FIFO on every path
+//	                     (ADR-0043): any file in <user>/Pipes/ becomes device
+//	                     "Pipe/<i>/<filename>" (upstream Pipes::Init). It is
+//	                     SINGLE-CONSUMER: the only thing that reads it is the
+//	                     game pad's input polling. The savestate hotkeys do
+//	                     NOT ride it (approach D, ADR-0043 am7).
 //	Config/Hotkeys.ini   (opt-in only, LaunchSpec.Hotkeys=true) [Hotkeys]
-//	                     Device = Pipe/<i>/hotkeys with the slot 1-4
-//	                     save/load bindings (ADR-0043).
-//	Pipes/hotkeys        (opt-in only) the second FIFO: savestate hotkeys
-//	                     (ADR-0043).
+//	                     Device = XInput2/0/Virtual core pointer (the X11
+//	                     device 2609's XInput2 backend resolves keyboard
+//	                     input to — the exit-rewritten spike user dir's
+//	                     keyboard controllers all carry exactly this string)
+//	                     with the slot-1 save/load KEY bindings (save = F1,
+//	                     load = F2 — X11 keysym control names, 2609
+//	                     hotkey-expression syntax; ADR-0043 am7). The key
+//	                     events are injected into the Xvfb display with XTest
+//	                     (xdotool), which the hotkey scheduler's own polling
+//	                     thread samples — no second reader touches the
+//	                     controller FIFO, and no keyboard key is ever in the
+//	                     game pad's input alphabet.
 //	GC/MemcardA.USA.raw  the Slot A RAW memory card: the PARENT dir (GC/) is
 //	                     created by writeUserConfig before launch, the card
 //	                     FILE is created by Dolphin on first save — the exit
 //	                     check asserts its non-zero size as the use proof
 //	                     (ADR-0043 amendment 2).
 //
-// Savestates ride the hotkey pipe (SaveState/LoadState, ADR-0043) and are
-// OPT-IN and unproven; the default launch is the single-pipe path ProveInput
-// was proven on. SaveSnapshot remains the picture half of any round-trip
+// Savestates ride the keyboard-device hotkeys (SaveState/LoadState,
+// ADR-0043 am7) and are OPT-IN; the default launch is the single-pipe path
+// ProveInput was proven on, with no Hotkeys.ini and no focus gate.
+// SaveSnapshot remains the picture half of any round-trip
 // evidence.
 const (
-	pipeFileName   = "pipe1"
-	hotkeyPipeFile = "hotkeys" // the second FIFO: savestate hotkeys (opt-in, ADR-0043)
+	pipeFileName = "pipe1"
+	// hotkeyPipeFile is the name the OLD two-pipe layout (ADR-0043 original)
+	// used for a second FIFO. It is gone: on every path it must NOT exist
+	// (the unit tests assert its absence); the constant survives as that
+	// assertion's spelling.
+	hotkeyPipeFile = "hotkeys"
 )
+
+// The savestate hotkey layout (approach D, ADR-0043 am7): the hotkeys are
+// bound to the KEYBOARD device and fired with XTest key events (xdotool),
+// not to the controller pipe. The pipe's FIFO had two readers — Dolphin's
+// SI polling thread (~120 Hz) and the HotkeyScheduler both read the same
+// file, so a chord byte was consumed by whichever read first and fired
+// nondeterministically (the measured approach-B failure). The X11 keyboard
+// device is polled by exactly one thread (the hotkey scheduler), and XTest
+// fake input lands in the server's key state that thread samples.
+//
+// hotkeyKeyboardDevice is the device string 2609's XInput2 backend resolves
+// keyboard input to on X11: the exit-rewritten spike user dir (this host,
+// 2609) carries "XInput2/0/Virtual core pointer" in EVERY keyboard-family
+// controller's Device line (GCKeyNew.ini, WiimoteNew.ini, FreeLook...ini —
+// the resolved strings, not our input). The clean-exit rewrite of THIS
+// bridge's Hotkeys.ini is the standing oracle: if the line does not resolve,
+// the exit rewrite drops it and checkExitRewrite fails loudly.
+const (
+	hotkeyKeyboardDevice = "XInput2/0/Virtual core pointer"
+
+	// saveHotkeyKey / loadHotkeyKey are the X11 keysym control names bound
+	// to slot 1's save/load. F1/F2 are outside the game's input alphabet
+	// (the drive never types) and outside the drive script's button set;
+	// a single key needs no chord timing at all. The exit rewrite of the
+	// first real run is the collision oracle: it re-serializes every label
+	// including the 2609 defaults, so a default hotkey on either key shows
+	// up there (ADR-0043 am7).
+	saveHotkeyKey = "F1"
+	loadHotkeyKey = "F2"
+)
+
+// stateSavesDir is the savestate folder 2609 uses under the user dir:
+// "StateSaves" (the exit-rewritten spike user dir on this host carries the
+// folder — measured, not assumed; the old "states" spelling was never
+// validated because the round trip never completed on this host, and the
+// hotkey save's ground truth — a file appearing there — was watched in the
+// wrong place). The --save_state boot path takes the returned file path
+// verbatim, so no other change is needed.
+const stateSavesDir = "StateSaves"
 
 // The Slot A memory card (ADR-0043 amendment 2): the raw card file inside
 // the isolated user dir, mirroring Dolphin's own default layout
@@ -194,10 +249,12 @@ WriteToWindow = False
 // which keeps a re-run against an existing user dir honest instead of
 // silently diverging from what Dolphin itself would write. hotkeys=false (the
 // default, ADR-0043) writes EXACTLY the d8394f3 single-pipe layout: one FIFO
-// (Pipes/pipe1), no Hotkeys.ini, no [General] HotkeysRequireFocus. The raw-
-// directory-order index resolution is kept for both paths (correct per the
-// measured raw order pipe1,hotkeys) but on the default path the directory
-// holds pipe1 alone, so gcpadDev resolves to Pipe/0/pipe1.
+// (Pipes/pipe1), no Hotkeys.ini, no [General] HotkeysRequireFocus. The
+// hotkey path (ADR-0043 am3, approach B) writes the SAME single-pipe layout
+// plus Hotkeys.ini: no second FIFO is created, and the hotkey device is the
+// game pad's measured device string (Pipe/0/pipe1 with pipe1 the only FIFO),
+// so the raw-directory-order index resolution runs once and both configs
+// agree on the one device the emulator binds both controllers to.
 func writeUserConfig(userDir, backend string, hotkeys bool) (gcpadDev, hotkeyDev string, err error) {
 	cfg := filepath.Join(userDir, "Config")
 	if err := os.MkdirAll(cfg, 0o755); err != nil {
@@ -215,21 +272,16 @@ func writeUserConfig(userDir, backend string, hotkeys bool) (gcpadDev, hotkeyDev
 	if err := os.WriteFile(filepath.Join(filepath.Join(userDir, "Config"), "Logger.ini"), []byte(loggerIni), 0o644); err != nil {
 		return "", "", fmt.Errorf("dolphin: write Logger.ini: %w", err)
 	}
-	// The FIFOs exist before the device strings are computed: the strings are
-	// measured FROM the directory's raw readdir order (the same enumeration
-	// 2609's Pipes::PopulateDevices indexes with ScanDirectoryTree's
-	// unsorted children), so every file must be in place when it is read.
+	// The FIFO exists before the device strings are computed: the strings
+	// are measured FROM the directory's raw readdir order (the same
+	// enumeration 2609's Pipes::PopulateDevices indexes with
+	// ScanDirectoryTree's unsorted children), so the file must be in place
+	// when the order is read. On EVERY path there is exactly this one FIFO,
+	// and it stays single-consumer (approach D, ADR-0043 am7): the savestate
+	// hotkeys do not ride it.
 	pipePath := filepath.Join(userDir, "Pipes", pipeFileName)
 	if err := makeFIFO(pipePath); err != nil {
 		return "", "", fmt.Errorf("dolphin: create controller FIFO %s: %w", pipeFileName, err)
-	}
-	if hotkeys {
-		// The opt-in second FIFO (ADR-0043): savestate hotkeys. Not created
-		// on the default path — the proven single-pipe layout carries no
-		// second device, and no Hotkeys.ini is written (untouched).
-		if err := makeFIFO(filepath.Join(userDir, "Pipes", hotkeyPipeFile)); err != nil {
-			return "", "", fmt.Errorf("dolphin: create hotkey FIFO %s: %w", hotkeyPipeFile, err)
-		}
 	}
 	order, err := rawReaddir(filepath.Join(userDir, "Pipes"))
 	if err != nil {
@@ -247,10 +299,15 @@ func writeUserConfig(userDir, backend string, hotkeys bool) (gcpadDev, hotkeyDev
 		// (SaveState/LoadState refuse with ErrHotkeysDisabled, ADR-0043).
 		return gcpadDev, "", nil
 	}
-	hotkeyDev, err = pipesDeviceAt(order, hotkeyPipeFile)
-	if err != nil {
-		return "", "", err
-	}
+	// The opt-in hotkey path (approach D): NO second FIFO, and the hotkeys
+	// do NOT ride the pipe. The hotkey device is the X11 keyboard device
+	// (hotkeyKeyboardDevice) — 2609's hotkey scheduler polls it on its own
+	// thread, and the key events are injected with XTest (xdotool), so the
+	// controller FIFO keeps exactly one reader (the game pad's input
+	// polling). The device string is the measured one (the exit-rewritten
+	// spike user dir's keyboard controllers all resolve to it); the exit
+	// rewrite of this file is the standing re-verification.
+	hotkeyDev = hotkeyKeyboardDevice
 	if err := os.WriteFile(filepath.Join(cfg, "Hotkeys.ini"), []byte(hotkeysIni(hotkeyDev)), 0o644); err != nil {
 		return "", "", fmt.Errorf("dolphin: write Hotkeys.ini: %w", err)
 	}

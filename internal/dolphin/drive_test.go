@@ -31,9 +31,9 @@ func TestRealDriveToFirstDialogue(t *testing.T) {
 	if img == "" {
 		t.Skipf("NOT RUN: %s is not set — point it at the user-supplied game image (dev-only, the image is never logged)", EnvGameImage)
 	}
-	for _, bin := range []string{"dolphin-emu", "Xvfb", "ffmpeg", "xwininfo"} {
+	for _, bin := range []string{"dolphin-emu", "Xvfb", "ffmpeg", "xwininfo", "xdotool"} {
 		if _, err := exec.LookPath(bin); err != nil {
-			t.Skipf("NOT RUN: %s is not on PATH (dev host dependencies: dolphin-emu, xorg-server-xvfb, ffmpeg, x11-utils): %v", bin, err)
+			t.Skipf("NOT RUN: %s is not on PATH (dev host dependencies: dolphin-emu, xorg-server-xvfb, ffmpeg, x11-utils, xdotool): %v", bin, err)
 		}
 	}
 	if err := strayDolphinProcesses(); err != nil {
@@ -68,23 +68,40 @@ func TestRealDriveToFirstDialogue(t *testing.T) {
 			}
 			copyFileToEvidence(t, userDir, "Config/Dolphin.ini", "config-dolphin-exit.ini", evOut)
 			copyFileToEvidence(t, userDir, "Config/GCPadNew.ini", "config-gcpad-exit.ini", evOut)
+			// The exit-rewritten Hotkeys.ini (opt-in path only): the standing
+			// oracle for the keyboard hotkey layout — the RESOLVED device
+			// line plus the re-serialized bindings (a binding that failed to
+			// parse is absent from the rewrite; ADR-0043 am7).
+			copyFileToEvidence(t, userDir, "Config/Hotkeys.ini", "config-hotkeys-exit.ini", evOut)
 			copyFileToEvidence(t, userDir, "Logs/dolphin.log", "dolphin-exit.log", evOut)
 			copyFileToEvidence(t, userDir, "bridge-emu.log", "bridge-emu-exit.log", evOut)
 			writeUserDirTree(t, userDir, "userdir-tree.txt", evOut)
+			// The StateSaves dir listing after the run (the save files, if any —
+			// names/sizes only, never the bytes; they embed game RAM).
+			if entries, _ := filepath.Glob(filepath.Join(userDir, stateSavesDir, "*")); len(entries) > 0 {
+				for _, e := range entries {
+					if fi, err := os.Stat(e); err == nil {
+						t.Logf("savestate: state file %s size=%d mtime=%s", filepath.Base(e), fi.Size(), fi.ModTime().Format(time.RFC3339))
+					}
+				}
+			}
 		}()
 	}
 	defer b.Stop()
 
 	// Phase 1: the screen-driven drive to the first in-game dialogue box.
-	// The default launch is the proven single-pipe path (ADR-0043): one FIFO,
-	// no savestate hotkeys.
-	spec := LaunchSpec{}
+	// The launch opts in to the savestate keyboard hotkeys (ADR-0043 am7,
+	// approach D): Hotkeys.ini binds slot 1's save/load to F1/F2 on the X11
+	// keyboard device and SaveState/LoadState fire them with XTest (xdotool)
+	// — the controller FIFO stays single-consumer — so the savestate phases
+	// below (2 + 3) run in the same test.
+	spec := LaunchSpec{Hotkeys: true}
 	if err := b.Launch(ctx, spec); err != nil {
 		t.Fatalf("Launch (real): %v", err)
 	}
 	st := b.State()
 	t.Logf("launched: display=%s dolphin_pid=%d gcpad_device=%s hotkey_device=%s image_sha256=%s",
-		st.Display, st.DolphinPID, st.PipeDevice, st.HotkeyPipeDevice, st.ImageSHA)
+		st.Display, st.DolphinPID, st.PipeDevice, st.HotkeyDevice, st.ImageSHA)
 
 	drv, err := RunDrive(ctx, b, DriveOptions{EvidenceDir: evOut}, WindWakerNewGameDrive())
 	// The full transition log, one line per iteration: (screen, action) ->
@@ -171,13 +188,16 @@ func TestRealDriveToFirstDialogue(t *testing.T) {
 	}
 	userDir := st.UserDir
 
-	// Phase 2 + 3: the savestate round trip — OPT-IN only (LaunchSpec.Hotkeys,
-	// ADR-0043). On the proven single-pipe default the hotkey FIFO does not
-	// exist and SaveState/LoadState refuse with ErrHotkeysDisabled; the drive
-	// to the dialogue box (phase 1) is what this test's name promises.
+	// Phase 2 + 3: the savestate round trip over the keyboard hotkeys
+	// (ADR-0043 am7, approach D: F1/F2 XTest-injected into the Xvfb display,
+	// the hotkey scheduler's own thread is the only reader of that key
+	// state). The launch opts in (LaunchSpec.Hotkeys); a launch that does NOT
+	// opt in has no Hotkeys.ini and SaveState/LoadState refuse with
+	// ErrHotkeysDisabled — the drive to the dialogue box (phase 1) is still
+	// what this test's name promises on such a launch.
 	if !spec.Hotkeys {
 		t.Logf("savestate: NOT RUN on the default path (hotkeys off, ADR-0043) — the drive to the first dialogue box above is the proof")
-		checkExitRewriteFiles(t, b, userDir, st.PipeDevice, st.HotkeyPipeDevice)
+		checkExitRewriteFiles(t, b, userDir, st.PipeDevice, st.HotkeyDevice)
 		// The memory-card use proof (ADR-0043 amendment 2): AFTER the stop,
 		// the exit-rewritten Dolphin.ini must still carry the memcard binding
 		// (Dolphin parsed and kept it), and — when the drive's save path ran
@@ -194,54 +214,115 @@ func TestRealDriveToFirstDialogue(t *testing.T) {
 	// name promises.
 	statePath, err := b.SaveState(ctx, 1)
 	if err != nil {
-		logSavestateEvidence(t, userDir, st.HotkeyPipeDevice, "save", err)
+		logSavestateEvidence(t, userDir, st.HotkeyDevice, "save", err)
 		t.Logf("savestate: NOT PROVEN — save failed: %v (phases 2b/3 skipped; see the logged evidence)", err)
 		return
 	}
-	t.Logf("savestate: saved slot 1 → %s (hotkey over %s)", statePath, st.HotkeyPipeDevice)
+	t.Logf("savestate: saved slot 1 → %s (hotkey key %s over %s)", statePath, saveHotkeyKey, st.HotkeyDevice)
 
-	// Advance to a different screen (Y): press A to advance the dialogue,
-	// then the stick to move if the screen allows it.
-	if err := b.Inject(ctx, Buttons{A: true}, Axes{}, 500*time.Millisecond); err != nil {
-		t.Fatalf("advance inject A: %v", err)
+	// advanceToY sends the measured advance (A to advance the dialogue, then
+	// the stick to move if the screen allows it) and screenshots the result.
+	advanceToY := func(tag string) (image.Image, float64, error) {
+		if err := b.Inject(ctx, Buttons{A: true}, Axes{}, 500*time.Millisecond); err != nil {
+			return nil, 0, fmt.Errorf("advance inject A: %w", err)
+		}
+		if err := b.Inject(ctx, Buttons{}, Axes{MainY: -1}, 1500*time.Millisecond); err != nil {
+			return nil, 0, fmt.Errorf("advance inject stick: %w", err)
+		}
+		time.Sleep(2 * time.Second)
+		yImg, err := b.Screenshot(ctx)
+		if err != nil {
+			return nil, 0, fmt.Errorf("post-advance screenshot: %w", err)
+		}
+		if evOut != "" {
+			writeEvidencePNG(t, evOut, tag+".png", yImg)
+		}
+		dist := rmse01(yImg, end, normW, normH)
+		t.Logf("savestate: %s, rmse(Y, X) = %.3f", tag, dist)
+		return yImg, dist, nil
 	}
-	if err := b.Inject(ctx, Buttons{}, Axes{MainY: -1}, 1500*time.Millisecond); err != nil {
-		t.Fatalf("advance inject stick: %v", err)
+	// restoreToX fires the load hotkey and screenshots after a FIXED total
+	// settle (LoadState's 3 s floor + the extra sleep = restoreSettle), so
+	// every restore below lands on the SAME point of the restored timeline —
+	// the double-restore comparison is deterministic only at matched offsets.
+	restoreToX := func(tag string) (image.Image, error) {
+		if err := b.LoadState(ctx, 1); err != nil {
+			return nil, err
+		}
+		time.Sleep(restoreSettle - hotkeyLoadSettle)
+		shot, err := b.Screenshot(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("post-load screenshot: %w", err)
+		}
+		if evOut != "" {
+			writeEvidencePNG(t, evOut, tag+".png", shot)
+		}
+		sig := ScreenSigOf(shot)
+		c, _ := sig.ClassOf()
+		t.Logf("savestate: %s, class=%s | %s", tag, c, sig.SigLine())
+		return shot, nil
 	}
-	time.Sleep(2 * time.Second)
-	yImg, err := b.Screenshot(ctx)
+
+	// Advance to a different screen (Y). The advance must be VISIBLE against
+	// X: a no-op advance would make a no-op load indistinguishable.
+	_, advDist, err := advanceToY("advance-Y")
 	if err != nil {
-		t.Fatalf("post-advance screenshot: %v", err)
+		t.Fatalf("advance: %v", err)
 	}
-	if evOut != "" {
-		writeEvidencePNG(t, evOut, "advance-Y.png", yImg)
-	}
-	advDist := rmse01(yImg, end, normW, normH)
-	t.Logf("savestate: advanced, rmse(Y, X) = %.3f", advDist)
 	if advDist < 0.05 {
-		// The advance did not visibly change the screen: a later load could
-		// be a no-op and the round trip would prove nothing. Record it.
 		t.Logf("savestate: NOT PROVEN — the advance changed the screen by only %.3f (< 0.05); a no-op load is indistinguishable (phases 2b/3 skipped)", advDist)
 		return
 	}
-	if err := b.LoadState(ctx, 1); err != nil {
-		logSavestateEvidence(t, userDir, st.HotkeyPipeDevice, "load", err)
-		t.Fatalf("savestate: load failed: %v", err)
-	}
-	xBack, err := b.Screenshot(ctx)
+
+	// The round trip as a DOUBLE RESTORE. The success screen is the animated
+	// opening legend (or a rendered scene whose box the A-advance dismisses),
+	// so a pixel comparison of the load against X measures the restored
+	// timeline's own motion, not the load: the measured run (2026-10-18
+	// run-drive3) restored the legend correctly — the after-load frame
+	// classified storysub with the SAME panel art (blobs at the same
+	// centroids, matching mean/std/entropy) — yet the 3 s timeline offset
+	// alone measured 0.21 RMSE against X. The proof is therefore
+	// deterministic: restore the SAME state twice, run each restore for the
+	// same settle, and the two X frames must match within the control
+	// threshold. A no-op load stays on the (different-class) Y screen and
+	// the class clause fails; a restore of a different state lands on a
+	// different timeline point and the rmse clause fails.
+	x1, err := restoreToX("after-load-X1")
 	if err != nil {
-		t.Fatalf("post-load screenshot: %v", err)
+		logSavestateEvidence(t, userDir, st.HotkeyDevice, "load-1", err)
+		t.Fatalf("savestate: load 1 failed: %v", err)
 	}
-	if evOut != "" {
-		writeEvidencePNG(t, evOut, "after-load-X.png", xBack)
+	if _, _, err := advanceToY("advance-Y2"); err != nil {
+		t.Fatalf("advance 2: %v", err)
 	}
-	loadDist := rmse01(xBack, end, normW, normH)
-	t.Logf("savestate: round trip, rmse(load-X, X) = %.3f (control threshold %.2f)", loadDist, crossStepMax)
+	x2, err := restoreToX("after-load-X2")
+	if err != nil {
+		logSavestateEvidence(t, userDir, st.HotkeyDevice, "load-2", err)
+		t.Fatalf("savestate: load 2 failed: %v", err)
+	}
+	loadDist := rmse01(x1, x2, normW, normH)
+	t.Logf("savestate: double restore, rmse(X1, X2) = %.3f (control threshold %.2f)", loadDist, crossStepMax)
 	if loadDist > crossStepMax {
-		t.Fatalf("savestate: the loaded screen does not return to X (rmse %.3f > %.2f)", loadDist, crossStepMax)
+		t.Fatalf("savestate: the two restores of the same state differ (rmse %.3f > %.2f) — the load did not restore the saved state", loadDist, crossStepMax)
+	}
+	// The semantic half: the restored scene is X's SCENE CLASS again (a no-op
+	// load would stay on the advance's Y screen).
+	c1, _ := ScreenSigOf(x1).ClassOf()
+	cEnd, _ := ScreenSigOf(end).ClassOf()
+	if c1 != cEnd {
+		t.Fatalf("savestate: the restored scene is class %s, not X's class %s — the load did not return to the saved screen", c1, cEnd)
 	}
 
-	// Phase 3: a fresh boot with --save_state lands on X (textbox within 30 s).
+	// Phase 3: a fresh boot with --save_state lands on the drive's SUCCESS
+	// scene (the saved state is exactly the X frame the drive reached): the
+	// letterboxed legend with its narration subtitle (the story_subtitle
+	// class, measured bottom-bar text) or the dialogue box. The state file
+	// is the measured path from the save hotkey; the boot takes over the
+	// legend's timeline at the save point, so the subtitle text is present
+	// in the first seconds.
+
+	// Phase 3: a fresh boot with --save_state lands on X (the success scene
+	// within 30 s).
 	b.Stop()
 	if err := strayDolphinProcesses(); err != nil {
 		t.Fatalf("after the phase-2 stop: %v", err)
@@ -249,12 +330,35 @@ func TestRealDriveToFirstDialogue(t *testing.T) {
 	if err := b.Launch(ctx, LaunchSpec{SaveState: statePath}); err != nil {
 		t.Fatalf("relaunch with --save_state: %v", err)
 	}
+	// The boot lands on the drive's SUCCESS scene: the letterboxed legend
+	// (story_subtitle — the same measured bottom-bar text clauses the end
+	// assertion uses; BoxPresent's bright-box-band calibration cannot match
+	// the letterboxed legend, measured boxband mean 60 < 100) or the
+	// dialogue box.
+	sceneName := "dialogue box"
+	if drv.SuccessScreen == DriveScreenStorySubtitle {
+		sceneName = "the opening legend (story subtitle)"
+	}
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		shot, serr := b.Screenshot(ctx)
 		if serr == nil {
-			if ok, detail := BoxPresent()(ctx, shot, shot); ok {
-				t.Logf("savestate: --save_state boot landed on X (box band) — %s", detail)
+			var ok bool
+			var detail string
+			if drv.SuccessScreen == DriveScreenStorySubtitle {
+				sig := ScreenSigOf(shot)
+				c, _ := sig.ClassOf()
+				sub := sig.Regions["subbar"]
+				ok = c == ClassStorySub &&
+					sig.Letterbox < classStorySubLbMax &&
+					sub.bright >= classStorySubBrightMin &&
+					sub.edges >= classStorySubEdgesMin
+				detail = fmt.Sprintf("class=%s lb=%.3f subbar bright=%.3f edges=%.3f", c, sig.Letterbox, sub.bright, sub.edges)
+			} else {
+				ok, detail = BoxPresent()(ctx, shot, shot)
+			}
+			if ok {
+				t.Logf("savestate: --save_state boot landed on X (%s) — %s", sceneName, detail)
 				if evOut != "" {
 					writeEvidencePNG(t, evOut, "savestate-boot-X.png", shot)
 				}
@@ -262,7 +366,7 @@ func TestRealDriveToFirstDialogue(t *testing.T) {
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("savestate: no dialogue box within 30 s of the --save_state boot (the state file was %s)", statePath)
+			t.Fatalf("savestate: no %s within 30 s of the --save_state boot (the state file was %s)", sceneName, statePath)
 		}
 		select {
 		case <-ctx.Done():
@@ -274,10 +378,19 @@ func TestRealDriveToFirstDialogue(t *testing.T) {
 	// The exit-rewrite check (the spike's technique, now for every device
 	// line this launch wrote): a clean exit rewrites the config with the
 	// RESOLVED device strings — if a device line did not resolve, the
-	// parser drops it.
+	// parser drops it (the keyboard hotkey device included, approach D).
 	st2 := b.State()
-	checkExitRewriteFiles(t, b, st2.UserDir, st2.PipeDevice, st2.HotkeyPipeDevice)
+	checkExitRewriteFiles(t, b, st2.UserDir, st2.PipeDevice, st2.HotkeyDevice)
 }
+
+// restoreSettle is the fixed total settle after a LoadState in the
+// double-restore round trip: LoadState itself waits hotkeyLoadSettle (3 s),
+// and the test sleeps the remainder. Both restores use the SAME total, so
+// the two X frames are the restored timeline at the SAME offset — the
+// rmse(X1, X2) comparison is deterministic (llvmpipe render noise + a small
+// screenshot jitter, both far below the control threshold; the measured
+// animation rate of the restored legend is ~0.07 RMSE/s, run-drive3).
+const restoreSettle = 8 * time.Second
 
 // driveTookSavePath reports whether the drive's SAVE path ran, from the
 // transition log: true when the blobless save-notice screen (the "A save
@@ -445,8 +558,8 @@ func checkMemcardExit(t *testing.T, userDir string, saveCreated bool) {
 func logSavestateEvidence(t *testing.T, userDir, hotkeyDev, phase string, cause error) {
 	t.Helper()
 	t.Logf("savestate: evidence (%s failed: %v)", phase, cause)
-	entries, _ := filepath.Glob(filepath.Join(userDir, "states", "*"))
-	t.Logf("savestate: states dir: %v", entries)
+	entries, _ := filepath.Glob(filepath.Join(userDir, stateSavesDir, "*"))
+	t.Logf("savestate: StateSaves dir: %v", entries)
 	if hk, err := os.ReadFile(filepath.Join(userDir, "Config", "Hotkeys.ini")); err == nil {
 		t.Logf("savestate: written Hotkeys.ini (device %s):\n%s", hotkeyDev, hk)
 	}

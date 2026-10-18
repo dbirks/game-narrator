@@ -44,8 +44,7 @@ type bridge struct {
 	st           Status
 	launched     bool // a Launch attempt has finished (running or failed)
 	spec         LaunchSpec
-	pipe         *pipeFIFO
-	hotkeyPipe   *pipeFIFO // the second FIFO: savestate hotkeys (opt-in, ADR-0043)
+	pipe         *pipeFIFO // the game pad's controller FIFO — single consumer (approach D: the savestate hotkeys ride the keyboard device, not this pipe)
 	stopDolphin  func() error
 	stopXvfb     func() error
 	xvfbOwned    bool
@@ -198,26 +197,18 @@ func (b *bridge) launch(ctx context.Context, spec LaunchSpec) (err error) {
 	b.mu.Unlock()
 
 	// 6. The controller FIFO, with its persistent writer connecting in the
-	//    background (Dolphin is the one that opens the read end).
+	//    background (Dolphin is the one that opens the read end). It is the
+	//    ONLY FIFO and stays SINGLE-CONSUMER on every path: the savestate
+	//    hotkeys ride the keyboard device (Hotkeys.ini + XTest keys, approach
+	//    D, ADR-0043 am7), never the pipe.
 	pipe, err := openPipe(userDir)
 	if err != nil {
 		return err
 	}
 	b.mu.Lock()
 	b.pipe = pipe
-	if spec.Hotkeys {
-		// The hotkey FIFO's persistent writer (opt-in, ADR-0043): the same
-		// open contract as the game pad's pipe — Dolphin opens BOTH read
-		// ends at boot; the FIFO file itself was created by writeUserConfig.
-		// The default single-pipe path has no second FIFO and no hotkey pipe
-		// at all.
-		b.hotkeyPipe = &pipeFIFO{path: filepath.Join(userDir, "Pipes", hotkeyPipeFile)}
-	}
 	b.mu.Unlock()
 	pipe.connect(ctx)
-	if b.hotkeyPipe != nil {
-		b.hotkeyPipe.connect(ctx)
-	}
 
 	// 7. The emulator itself.
 	logPath := filepath.Join(userDir, "bridge-emu.log")
@@ -240,7 +231,7 @@ func (b *bridge) launch(ctx context.Context, spec LaunchSpec) (err error) {
 	b.st.ImageSHA = sha
 	b.st.ImageSize = size
 	b.st.PipeDevice = gcpadDev
-	b.st.HotkeyPipeDevice = hotkeyDev
+	b.st.HotkeyDevice = hotkeyDev
 	b.st.MemcardPath = memcardAPath(userDir)
 	b.mu.Unlock()
 	// The image path is masked in every logged form of the argv (task rule:
@@ -597,7 +588,6 @@ func (b *bridge) Stop() {
 	watcher := b.stopWatcher
 	b.stopWatcher = nil
 	pipe := b.pipe
-	hotkeyPipe := b.hotkeyPipe
 	stopDolphin := b.stopDolphin
 	stopXvfb := b.stopXvfb
 	xvfbOwned := b.xvfbOwned
@@ -605,13 +595,12 @@ func (b *bridge) Stop() {
 	display := b.st.Display
 	userDir := b.st.UserDir
 	gcpadDev := b.st.PipeDevice
-	hotkeyDev := b.st.HotkeyPipeDevice
+	hotkeyDev := b.st.HotkeyDevice
 	b.stopDolphin = nil
 	b.stopXvfb = nil
 	b.xvfbOwned = false
 	b.emuLogF = nil
 	b.pipe = nil
-	b.hotkeyPipe = nil
 	b.baseline = nil
 	b.baselineHash = ""
 	b.mu.Unlock()
@@ -621,9 +610,6 @@ func (b *bridge) Stop() {
 	}
 	if pipe != nil {
 		pipe.close()
-	}
-	if hotkeyPipe != nil {
-		hotkeyPipe.close()
 	}
 	if stopDolphin != nil {
 		if err := stopDolphin(); err != nil {
@@ -671,7 +657,7 @@ func (b *bridge) teardown() {
 // checkExitRewrite re-verifies, after Dolphin's clean exit, that the config
 // files still carry the MEASURED device strings. It is the structural
 // counterpart of the pre-boot measurement: two facts that should agree
-// (my readdir order, Dolphin's enumeration) are compared and a mismatch is
+// (my device strings, Dolphin's enumeration) are compared and a mismatch is
 // an error-level log with the full rewritten file, not a silent drift.
 // A missing file (the exit was not clean, or the section was never
 // written) is a warn, not an error: there is nothing to compare yet.
@@ -679,7 +665,10 @@ func (b *bridge) checkExitRewrite(userDir, gcpadDev, hotkeyDev string) {
 	if gcpadDev != "" {
 		b.checkDeviceLine(filepath.Join(userDir, "Config", "GCPadNew.ini"), gcpadDev)
 	}
-	if hotkeyDev != "" && !strings.Contains(hotkeyDev, "suppressed") {
+	if hotkeyDev != "" {
+		// The keyboard device string (approach D): an unresolvable Device
+		// line is dropped silently by the parser, so its presence in the
+		// rewrite is the "the hotkey device resolved" proof.
 		b.checkDeviceLine(filepath.Join(userDir, "Config", "Hotkeys.ini"), hotkeyDev)
 	}
 }

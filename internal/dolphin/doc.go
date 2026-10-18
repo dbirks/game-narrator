@@ -28,12 +28,15 @@ type LaunchSpec struct {
 	Height    int
 	SaveState string // optional savestate to load
 	Movie     string // optional movie file to run
-	// Hotkeys opts in to the SECOND Pipes FIFO (Pipes/hotkeys +
-	// Config/Hotkeys.ini) that carries the savestate hotkeys (ADR-0043).
-	// False (the default) is the proven single-pipe path: one FIFO
-	// (Pipes/pipe1), no Hotkeys.ini, no [General] HotkeysRequireFocus —
-	// exactly the d8394f3 config ProveInput was proven on. When false,
-	// SaveState/LoadState refuse with ErrHotkeysDisabled.
+	// Hotkeys opts in to the savestate hotkey chords (ADR-0043 amendment 3,
+	// approach B): Config/Hotkeys.ini binds the slot-1 save/load chords to
+	// the game pad's OWN device (Pipe/0/pipe1 — 2609 binds the Hotkeys
+	// virtual pad to the same PipeDevice the GCPad uses, so the single
+	// FIFO carries both) and Dolphin.ini gains [General]
+	// HotkeysRequireFocus = False. False (the default) is the proven
+	// single-pipe path with no Hotkeys.ini and no focus gate — exactly the
+	// d8394f3 config ProveInput was proven on. When false, SaveState/
+	// LoadState refuse with ErrHotkeysDisabled.
 	Hotkeys bool
 	// Lifetime bounds the whole run, not just the launch: when it is
 	// cancelled (for any reason) the bridge runs a full Stop — the process
@@ -82,24 +85,26 @@ type Bridge interface {
 	WaitForGameFrame(ctx context.Context, timeout time.Duration) (Evidence, error)
 	// ProveInput runs the title-screen START control-vs-input test.
 	ProveInput(ctx context.Context) (Evidence, error)
-	// SaveState triggers a savestate save of slot over the hotkey pipe and
-	// waits for the state file on disk; it returns the file path (the value
-	// a --save_state boot takes). Savestates ride the second Pipes device
-	// (Pipes/hotkeys + Config/Hotkeys.ini, ADR-0043) and refuse with
+	// SaveState triggers a savestate save of the slot over the hotkey chords
+	// (the game pad's own device, ADR-0043 am3) and waits for the state file
+	// on disk; it returns the file path (the value a --save_state boot
+	// takes). Savestate hotkeys are opt-in (LaunchSpec.Hotkeys) and slot 1
+	// is the only bound slot; SaveState/LoadState refuse with
 	// ErrHotkeysDisabled when the launch did not opt in (Hotkeys false is
 	// the default).
 	SaveState(ctx context.Context, slot int) (string, error)
 
-	// LoadState triggers a savestate load of slot over the hotkey pipe and
-	// waits the settle floor. The perceptual round trip (save X, advance to
-	// Y, load, X again) is assembled by callers out of SaveState, Inject and
-	// Screenshot. Refuses with ErrHotkeysDisabled when the launch did not
-	// opt in.
+	// LoadState triggers a savestate load of the slot over the hotkey chords
+	// and waits the settle floor. The perceptual round trip (save X, advance
+	// to Y, load, X again) is assembled by callers out of SaveState, Inject
+	// and Screenshot. Refuses with ErrHotkeysDisabled when the launch did
+	// not opt in.
 	LoadState(ctx context.Context, slot int) error
 
 	// State reports a consistent snapshot of the bridge lifecycle and geometry.
 	State() Status
-	// Stop kills Dolphin + Xvfb and removes the FIFOs (the game pad's AND the
-	// hotkey's). Idempotent.
+	// Stop kills Dolphin + Xvfb and removes the FIFO (the game pad's pipe1;
+	// on the opt-in path the hotkey chords ride it, so there is one FIFO).
+	// Idempotent.
 	Stop()
 }

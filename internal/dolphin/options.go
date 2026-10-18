@@ -31,6 +31,7 @@ type Options struct {
 	DolphinBin string // default "dolphin-emu"
 	XvfbBin    string // default "Xvfb"
 	FFmpegBin  string // default "ffmpeg"
+	XdotoolBin string // default "xdotool" (approach D savestate hotkeys)
 
 	// StartXvfb starts a virtual X server on display (":91") with screen
 	// geometry (e.g. "1280x1024x24"), logging to logf. It returns the server
@@ -55,6 +56,12 @@ type Options struct {
 	// Grab captures one still image of region r on the display (X11 grab).
 	// It returns a fresh image per call; the caller owns it.
 	Grab func(display string, r Region) (image.Image, error)
+
+	// SendKey injects one XTest key event (keydown, hold, keyup) into the
+	// display via xdotool — the savestate hotkey injector (approach D,
+	// ADR-0043 am7). Production is real xdotool on PATH; tests wire a fake
+	// that records the call. Nil → realSendKey(XdotoolBin).
+	SendKey func(display, key string, hold time.Duration) error
 
 	// LaunchTimeout caps how long Launch waits for the render window and its
 	// geometry; 0 = DefaultLaunchTimeout. Slow llvmpipe hosts (the UNO Q
@@ -105,6 +112,9 @@ func New(opts Options) (Bridge, error) {
 	if opts.FFmpegBin == "" {
 		opts.FFmpegBin = "ffmpeg"
 	}
+	if opts.XdotoolBin == "" {
+		opts.XdotoolBin = "xdotool"
+	}
 	if opts.LaunchTimeout <= 0 {
 		opts.LaunchTimeout = DefaultLaunchTimeout
 	}
@@ -113,6 +123,9 @@ func New(opts Options) (Bridge, error) {
 	}
 	if opts.StartDolphin == nil {
 		opts.StartDolphin = realStartDolphin(opts.DolphinBin)
+	}
+	if opts.SendKey == nil {
+		opts.SendKey = realSendKey(opts.XdotoolBin)
 	}
 	if opts.FindWindow == nil {
 		opts.FindWindow = realFindWindow

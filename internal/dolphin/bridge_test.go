@@ -253,8 +253,8 @@ func TestLaunchConfigFilesAndIsolation(t *testing.T) {
 	if strings.Contains(string(dini), "HotkeysRequireFocus") {
 		t.Errorf("Dolphin.ini must not carry the hotkey focus gate on the default path:\n%s", dini)
 	}
-	if st.HotkeyPipeDevice != "" {
-		t.Errorf("the status records a hotkey device string on the default path: %q", st.HotkeyPipeDevice)
+	if st.HotkeyDevice != "" {
+		t.Errorf("the status records a hotkey device string on the default path: %q", st.HotkeyDevice)
 	}
 
 	// The image is recorded by hash + size, not by path.
@@ -293,30 +293,45 @@ func TestLaunchConfigFilesAndIsolation(t *testing.T) {
 	env.b.Stop()
 }
 
-// TestLaunchHotkeysOptIn: LaunchSpec.Hotkeys=true opts in to the second
-// Pipes FIFO (ADR-0043) — both FIFOs exist, the hotkey device string is
-// measured from the raw directory order, Hotkeys.ini carries it, and
-// Dolphin.ini gains the [General] HotkeysRequireFocus gate.
+// TestLaunchHotkeysOptIn: LaunchSpec.Hotkeys=true opts in to the savestate
+// keyboard hotkeys (ADR-0043 am7, approach D) — the launch keeps the proven
+// single-pipe layout (ONE FIFO, Pipes/pipe1, single-consumer; the hotkeys
+// do NOT ride it), Hotkeys.ini is bound to the X11 KEYBOARD device
+// (hotkeyKeyboardDevice) with the slot-1 key bindings, and Dolphin.ini
+// gains the [General] HotkeysRequireFocus gate.
 func TestLaunchHotkeysOptIn(t *testing.T) {
 	env := newTestBridge(t, nil)
 	mustLaunch(t, env, LaunchSpec{Hotkeys: true})
 	st := env.b.State()
 
-	for _, name := range []string{"pipe1", "hotkeys"} {
-		fi, err := os.Lstat(filepath.Join(st.UserDir, "Pipes", name))
-		if err != nil || fi.Mode()&os.ModeNamedPipe == 0 {
-			t.Fatalf("Pipes/%s is not a FIFO: %v", name, err)
-		}
+	fi, err := os.Lstat(filepath.Join(st.UserDir, "Pipes", "pipe1"))
+	if err != nil || fi.Mode()&os.ModeNamedPipe == 0 {
+		t.Fatalf("Pipes/pipe1 is not a FIFO: %v", err)
 	}
-	if st.HotkeyPipeDevice == "" || !strings.HasPrefix(st.HotkeyPipeDevice, "Pipe/") {
-		t.Fatalf("the status records no measured hotkey device string: %q", st.HotkeyPipeDevice)
+	// The keyboard path has NO second FIFO: the status records the hotkey
+	// device as the keyboard device string, distinct from the pipe device.
+	if _, err := os.Lstat(filepath.Join(st.UserDir, "Pipes", "hotkeys")); !os.IsNotExist(err) {
+		t.Errorf("Pipes/hotkeys must not exist on the keyboard path (err %v)", err)
+	}
+	if st.HotkeyDevice == "" {
+		t.Fatalf("the status records no hotkey device string: %q", st.HotkeyDevice)
+	}
+	if st.HotkeyDevice != hotkeyKeyboardDevice {
+		t.Errorf("hotkey device = %q, want the keyboard device %q", st.HotkeyDevice, hotkeyKeyboardDevice)
+	}
+	if st.HotkeyDevice == st.PipeDevice {
+		t.Errorf("the hotkey device %q must not ride the game pad's pipe (single-consumer FIFO)", st.HotkeyDevice)
 	}
 	hk, err := os.ReadFile(filepath.Join(st.UserDir, "Config", "Hotkeys.ini"))
 	if err != nil {
 		t.Fatalf("read Hotkeys.ini: %v", err)
 	}
-	if !strings.Contains(string(hk), "Device = "+st.HotkeyPipeDevice+"\n") {
-		t.Errorf("Hotkeys.ini missing the measured device line %q:\n%s", st.HotkeyPipeDevice, hk)
+	if !strings.Contains(string(hk), "Device = "+st.HotkeyDevice+"\n") {
+		t.Errorf("Hotkeys.ini missing the keyboard device line %q:\n%s", st.HotkeyDevice, hk)
+	}
+	if !strings.Contains(string(hk), "Save State/Save State Slot 1 = `"+saveHotkeyKey+"`\n") ||
+		!strings.Contains(string(hk), "Load State/Load State Slot 1 = `"+loadHotkeyKey+"`\n") {
+		t.Errorf("Hotkeys.ini missing the slot-1 key bindings:\n%s", hk)
 	}
 	dini, err := os.ReadFile(filepath.Join(st.UserDir, "Config", "Dolphin.ini"))
 	if err != nil {
