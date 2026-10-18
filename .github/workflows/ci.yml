@@ -6,6 +6,19 @@
 # in CI (they need private resources and are reported NOT RUN on the dev
 # host — AGENTS.md rule 3/12).
 #
+# Failure visibility: job logs require GitHub authentication, but check-run
+# annotations are public (GET /repos/<owner>/<repo>/check-runs/<id>/
+# annotations). Each test gate therefore runs the test tool with a
+# machine-readable reporter (go test -json, the vitest json reporter), tees
+# the output to a file under artifacts/ci/ (gitignored), and pipes it through
+# scripts/gates/annotate-go.sh / annotate-vitest.sh. The annotators emit one
+# ::error per failing test (file=, title=, first 3 lines of failure output,
+# capped at 20 annotations) and one ::notice with the PASS/FAIL/SKIP totals.
+# They follow the classification and message-extraction conventions of the
+# scripts/gates/junit summariser (which parses go test -json but does not
+# emit annotations). Annotators always exit 0, so each gate's exit code still
+# comes from the test tool itself.
+#
 # Action pins: full commit SHAs resolved 2026-07-20 via the GitHub API
 # (GET /repos/<owner>/<repo>/tags); the version tag is kept in the comment.
 name: ci
@@ -64,11 +77,56 @@ jobs:
       - name: make lint
         run: make lint
 
-      - name: make test-unit (race)
-        run: make test-unit
+      # make test-unit (docs/spec/16) is `go vet ./...` + `go test -race
+      # ./...`. Local behaviour is unchanged; CI invokes the same commands
+      # directly, adding -json to go test so every failing test becomes a
+      # public check-run annotation (job logs need GitHub auth; the
+      # annotations are the public surface). Keep the package set (`./...`)
+      # and flags (`-race`) in sync with the Makefile target when it
+      # changes. set +o pipefail: the step must reach the annotator even
+      # when go test fails (the pipeline's exit code is tee's).
+      - name: make test-unit (race) as go vet + go test -race -json ./...
+        run: |
+          set +o pipefail
+          mkdir -p artifacts/ci
+          if ! go vet ./...; then
+            echo "::error::go vet ./... failed — see the step log (job logs require GitHub auth)"
+            exit 1
+          fi
+          go test -race -json ./... 2>artifacts/ci/test-unit.stderr \
+            | tee artifacts/ci/test-unit.json
+          rc=${PIPESTATUS[0]}
+          scripts/gates/annotate-go.sh artifacts/ci/test-unit.json "go test (unit)"
+          exit "$rc"
 
-      - name: Web checks (check:api, typecheck, lint, fmt:check, test)
-        run: pnpm --dir web check:api typecheck lint fmt:check test
+      - name: Web checks (check:api, typecheck, lint, fmt:check)
+        run: pnpm --dir web check:api typecheck lint fmt:check
 
+      # Web unit tests: `pnpm --dir web test` is `vitest run`
+      # (docs/spec/16). CI adds the built-in json reporter so failures
+      # become public check-run annotations. --outputFile.json=... is the
+      # vitest >= 5 dot-notation form; a plain --outputFile string is
+      # ignored when multiple --reporter flags are given (verified against
+      # vitest 5.0.5 CLI parsing). The default reporter still prints the
+      # human-readable output to the log; the report lands in
+      # artifacts/ci/ (gitignored), relative to the web/ project root.
+      - name: Web unit tests (vitest) with JSON report
+        run: |
+          rc=0
+          pnpm --dir web test \
+            --reporter=default --reporter=json \
+            --outputFile.json=../artifacts/ci/web-test.json || rc=$?
+          scripts/gates/annotate-vitest.sh \
+            artifacts/ci/web-test.json "${GITHUB_WORKSPACE:-.}"
+          exit "$rc"
+
+      # make test-replay runs scripts/gates/run-go-gate.sh, which already
+      # tees the go test -json stream to artifacts/gates/test-replay.json;
+      # the annotator reuses that stream. NOT RUN semantics are preserved
+      # (the gate keeps its own 0/1/2 exit code; the annotator exits 0).
       - name: make test-replay
-        run: make test-replay
+        run: |
+          rc=0
+          make test-replay || rc=$?
+          scripts/gates/annotate-go.sh artifacts/gates/test-replay.json "go test (replay)"
+          exit "$rc"
