@@ -21,10 +21,10 @@ LDFLAGS := -X $(PKG).version=$(VERSION) -X $(PKG).commit=$(COMMIT)
 
 # Gate targets that test-full runs, in order.
 RUN_GATES := test-unit test-ui diagnostics release-snapshot bench \
-             test-replay test-dolphin test-models test-hardware
+             test-replay test-dolphin test-models test-hardware secret-scan
 
 .PHONY: bootstrap dev build web-build test-unit test-replay test-ui test-dolphin test-models \
-        test-hardware test-full lint release-snapshot diagnostics bench soak
+        test-hardware test-full lint release-snapshot diagnostics bench soak secret-scan
 
 ## web-build: build the React UI and stage it for go:embed
 web-build:
@@ -49,7 +49,9 @@ test-unit:
 	go vet ./...
 	go test -race ./...
 
-## lint: Go static checks plus the frontend lint/format gates
+## lint: Go static checks, the frontend lint/format gates and the repo-wide
+## secret scan in tree mode (the history-including run is the dedicated
+## `secret-scan` gate target below and the CI step).
 lint:
 	@unformatted="$$(gofmt -l .)"; \
 	if [ -n "$$unformatted" ]; then \
@@ -58,6 +60,23 @@ lint:
 	go vet ./...
 	pnpm --dir web lint
 	pnpm --dir web fmt:check
+	scripts/gates/secret-scan.sh
+
+## secret-scan: the "no secrets / private endpoints / game data in Git" gate
+## (AGENTS.md rule 5) — scripts/gates/secret-scan.sh scans every tracked
+## file and, with --history, the added lines of every commit, for API
+## keys/tokens, private endpoint URLs, /home/<user>/ paths, game-data
+## magic/extension and unallowlisted large binaries. Matched values are
+## never printed (masked; length only); documented false positives are
+## suppressed via scripts/gates/secret-scan.allow and listed with their
+## reason. Like the go gates it records its exit code in
+## artifacts/gates/secret-scan.rc: 0 clean, 1 findings, 2 NOT RUN.
+## --history scans the added lines of every commit in --all; on a shallow
+## clone it covers the available depth only (CI runs it with fetch-depth 0).
+secret-scan:
+	@mkdir -p artifacts/gates ; \
+	scripts/gates/secret-scan.sh --history ; \
+	rc=$$?; echo $$rc > artifacts/gates/secret-scan.rc ; exit $$rc
 
 ## bootstrap: reproducible development environment setup
 bootstrap:

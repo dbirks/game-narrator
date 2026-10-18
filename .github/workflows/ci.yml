@@ -42,6 +42,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history for the secret-scan history mode (cheap: ~14 MB /
+          # tens of commits, so the default shallow depth buys nothing).
+          fetch-depth: 0
 
       # Needed by the unit/replay tests that exercise real OCR and media
       # decoding (docs/spec/12 replay gate).
@@ -76,6 +80,18 @@ jobs:
 
       - name: make lint
         run: make lint
+
+      # The "no secrets / private endpoints / game data in Git" gate
+      # (AGENTS.md rule 5) in history mode: tracked files plus the added
+      # lines of every commit (the fetch-depth: 0 checkout above makes the
+      # full history available). The self-test proves the scanner still
+      # detects planted synthetic samples on the runner, so a clean result
+      # is evidence, not a vacuous pass. Findings print path:line + rule
+      # only — matched values are never printed (masked).
+      - name: Secret scan (tree + full history) with self-test
+        run: |
+          scripts/gates/secret-scan.sh --self-test
+          scripts/gates/secret-scan.sh --history
 
       # make test-unit (docs/spec/16) is `go vet ./...` + `go test -race
       # ./...`. Local behaviour is unchanged; CI invokes the same commands
