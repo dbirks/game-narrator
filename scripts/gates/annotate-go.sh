@@ -6,10 +6,14 @@
 # for a `go test -json` stream file:
 #
 #   - one  ::error file=<go package path>,title=<TestName>::<message>  per
-#     failing test, where <message> is the first 3 lines of the test's
-#     failure output (bookkeeping "=== RUN" / "--- FAIL" lines and blank
-#     lines excluded — the same message-extraction convention as the
-#     scripts/gates/junit summariser), capped at 20 annotations;
+#     failing test, capped at 20 annotations. <message> puts the lines that
+#     carry the failure first — the output lines naming the failure
+#     (Error / Fatal / want / got / expected / panic:) and the test's last
+#     output line (the t.Fatal message the "--- FAIL" bookkeeping line
+#     stands for) — then a truncated tail of the remaining output, so the
+#     assertion survives GitHub's annotation size limit. Bookkeeping
+#     "=== RUN" / "--- FAIL" lines and blank lines are excluded (the same
+#     convention as the scripts/gates/junit summariser);
 #   - a package that fails at package level without any test-level events
 #     (a build failure) becomes one
 #     ::error file=<pkg>,title=build failed::  annotation carrying the
@@ -53,6 +57,32 @@ exec jq -R -s -r --arg label "$label" '
 		  | select((startswith("===") or startswith("---")) | not)
 		];
 
+	# The failure-carrying lines of the output of one test: the lines that
+	# name the failure (Error / Fatal / want / got / expected / panic:) and
+	# the last line (the t.Fatal reason). They lead the annotation message
+	# so the assertion survives the GitHub annotation size limit — the last
+	# line is always kept, never dropped by the cap — and a truncated tail
+	# of the remaining output follows for context.
+	def failmessage:
+		. as $out
+		| if ($out | length) == 0 then "(no failure output recorded)"
+		  else
+			([ $out[]
+			   | select(test("Error") or test("Fatal") or test("want")
+					  or test("got") or test("expected") or test("panic:")) ]
+			   + $out[-1:])
+			| reduce .[] as $x ([]; if any(.[]; . == $x) then . else . + [$x] end)
+			| . as $all
+			| ($all[0:4] + $all[-1:])
+			| reduce .[] as $x ([]; if any(.[]; . == $x) then . else . + [$x] end)
+			| . as $head
+			| [ $out[] | select(. as $x | ($head | index($x)) | not) ] as $rest
+			| ($head
+			   + (if ($rest | length) > 3 then ["…"] else [] end)
+			   + ($rest | .[-3:]))
+			| join("\n")
+		  end;
+
 	split("\n")
 	| map(select(length > 0) | fromjson?)
 	| . as $evs
@@ -93,9 +123,7 @@ exec jq -R -s -r --arg label "$label" '
 	  ( [ ($tests[] | select(.terminal == "fail" or .terminal == null)
 			| { file: .pkg,
 				title: .test,
-				message: (.out | .[0:3]
-					| if length == 0 then "(no failure output recorded)"
-					 else join("\n") end)
+				message: (.out | failmessage)
 			}),
 		  $buildfails[]
 		]

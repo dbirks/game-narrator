@@ -633,34 +633,60 @@ func TestSpeechNoApprovedVoice(t *testing.T) {
 // volume scales the samples in the sink path — the last asserted on the file
 // sink's own WAV bytes.
 //
-// Timing is driven, not hoped for. The OCR delay paces the replay at two
-// recognitions per ocrDelay (the pipeline's worker pool), so when the second
-// line commits at least one full OCR cycle is still in flight and the
-// lossless replay source cannot reach its end before the delayed utterance
-// starts: the 150 ms delay plus the voice resolution fits inside the
-// guaranteed tail with a wide margin, on any machine (a slow machine slows
-// every cycle; the margin is in cycles, not milliseconds). And once the
-// audio is asserted the test stops the session itself, so the source end
-// never decides the run's fate.
+// Deterministic by construction — the same seam as
+// TestSpeechSessionEndTerminatesPending (docs/spec/12's deterministic
+// delay-injection suite): the session runs on the explicitly-driven manual
+// frame source, so the test pushes the clip's frames at its own pace, waits
+// on the specific events, and holds the source open until every audio
+// assertion has passed; the session's end is the test's own call.
+//
+// The replay-driven form of this test lost a wall-clock race it did not
+// own: with two OCR workers, the clip's tail frames (the region dismissal
+// after line b) are recognised in flight while line b is still in the TTS
+// call and the operator's delay, so the source's EOF — and with it the
+// session's end — landed within milliseconds of the delayed utterance's
+// start. On a loaded runner the margin inverted either way: the utterance
+// ended failed(session_ended) inside the delay and no start ever came (the
+// "delayed second utterance" wait timed out), or the start and the source's
+// end raced inside the file sink's first 10 ms slice and the evidence WAV
+// was a bare header with no data chunk. The evidence timeline (single
+// core, -race): speech.ready(gen 2) at t+7.86s, speech.started(gen 2) at
+// t+8.03s, session.stopped(source_end) at t+8.03s. Which outcome a given
+// machine produces is a scheduling lottery; the contract — mute skips,
+// delay is honoured, volume scales the recorded samples — is not.
 func TestSpeechAudioControls(t *testing.T) {
 	dir := t.TempDir()
-	// 500 ms per OCR recognition (two workers) paces the 24-frame clip at
-	// ~250 ms per frame: ~6 s of run. The last cycle outlives the 150 ms
-	// delay, so the ready→start gap is asserted on the real 150 ms wait —
-	// the assertion is on the gap, not on the delay value.
-	e := newVoiceEnv(t, 500*time.Millisecond, 150*time.Millisecond, true, nil, dir, nil)
-	sid := e.startReplay()
+	src := newManualSource(64)
+	e := newVoiceEnv(t, 500*time.Millisecond, 150*time.Millisecond, true, nil, dir,
+		func() (capture.Source, error) { return src, nil })
+	info, err := e.mgr.Start(e.ctx, runtime.StartRequest{
+		ProfileID:   e.profileID,
+		FrameSource: runtime.FrameSource{Kind: runtime.SourceKindManual},
+		Mode:        runtime.ModeConservative,
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	sid := info.ID
 	defer waitState(t, e.mgr, sid, 90*time.Second)
+	// LIFO: the source closes before waitState runs, so a mid-test failure
+	// still lets the session reach a terminal state instead of outliving
+	// the 90 s wait.
+	defer func() { _ = src.Close() }()
 
-	// Mute as soon as the run is live: every utterance from here on resolves
-	// (the cache fills) but never starts.
-	waitRunning(t, e.mgr, sid)
+	// Mute before the first push: no commit can exist before the first
+	// frame, so every utterance of the run resolves (the cache fills) but
+	// never starts, by construction.
 	if _, err := e.mgr.SetAudio(sid, runtime.AudioSettings{Muted: ptrBool(true)}); err != nil {
 		t.Fatalf("set muted: %v", err)
 	}
 
-	// Commit 1: requested → ready → ended(muted), no start.
-	e.waitEvents(t, sid, "muted utterance", 40*time.Second, func(evs []events.Envelope) bool {
+	// Line a: the clip's frames 4..18 (box appearing, typewriter reveal,
+	// then stable). Muted: requested → ready → ended(muted), no start.
+	for n := 4; n <= 18; n++ {
+		src.push(t, manualClipFrame(t, n))
+	}
+	e.waitEvents(t, sid, "muted utterance", 60*time.Second, func(evs []events.Envelope) bool {
 		for _, ev := range evs {
 			if ev.Name == events.SpeechEnded && payload(t, ev)["result"] == "muted" {
 				return true
@@ -684,7 +710,13 @@ func TestSpeechAudioControls(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("set controls: %v", err)
 	}
-	evs := e.waitEvents(t, sid, "delayed second utterance", 40*time.Second, func(evs []events.Envelope) bool {
+	// Line b: frames 19..22 carry the second line on the same source clock.
+	// The source stays open while the audio assertions run, so the session
+	// cannot end mid-utterance.
+	for n := 19; n <= 22; n++ {
+		src.push(t, manualClipFrame(t, n))
+	}
+	evs := e.waitEvents(t, sid, "delayed second utterance", 60*time.Second, func(evs []events.Envelope) bool {
 		g2, ok := commitGenOf(t, evs, 2)
 		if !ok {
 			return false
@@ -714,27 +746,26 @@ func TestSpeechAudioControls(t *testing.T) {
 	}
 
 	// The snapshot reports the applied controls and the counters.
-	info, ok := e.mgr.Get(sid)
-	if !ok || info.Audio == nil {
+	snap, ok := e.mgr.Get(sid)
+	if !ok || snap.Audio == nil {
 		t.Fatalf("the session snapshot lost its audio half")
 	}
-	if info.Audio.Muted || info.Audio.Volume != 0.5 || info.Audio.SpeechDelayMS != 150 {
+	if snap.Audio.Muted || snap.Audio.Volume != 0.5 || snap.Audio.SpeechDelayMS != 150 {
 		t.Fatalf("snapshot controls = muted=%v volume=%v delay=%d; want false / 0.5 / 150",
-			info.Audio.Muted, info.Audio.Volume, info.Audio.SpeechDelayMS)
+			snap.Audio.Muted, snap.Audio.Volume, snap.Audio.SpeechDelayMS)
 	}
-	if got := info.Audio.Speech.Ready; got < 2 {
+	if got := snap.Audio.Speech.Ready; got < 2 {
 		t.Fatalf("ready counter = %d, want ≥ 2 (both commits resolved)", got)
 	}
-	if got := info.Audio.Speech.Ended; got < 1 {
+	if got := snap.Audio.Speech.Ended; got < 1 {
 		t.Fatalf("ended counter = %d, want ≥ 1 (the muted utterance)", got)
 	}
 
 	// The volume on the samples: the file sink wrote commit 2 at half gain.
-	// The evidence file is written when the playback finishes; it is short
-	// (the 150 ms tone) and lands just after the scheduler's Start returns —
-	// poll for it.
+	// The evidence file is written when the playback finishes: the tone is
+	// short (150 ms, paced in real time by the sink) and the source is
+	// still open, so the run is alive while the file lands — poll for it.
 	var wavPath string
-	var err error
 	by := time.Now().Add(10 * time.Second)
 	for wavPath == "" {
 		wavPath, err = newestWAV(dir)
