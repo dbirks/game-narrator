@@ -146,7 +146,14 @@ report() {
 	local detail
 	detail=$(allowlist_match "$rule" "$ref" "$path" "$value")
 	if [ -n "$detail" ]; then
-		ALLOWED_NOTES="${ALLOWED_NOTES}  - $path: $rule — allowlisted: $detail
+		# Plain-note format constraint (CI, setup-go problem matcher): the
+		# `go` matcher registered by actions/setup-go is
+		# ^\s*(.+\.go):(?:(\d+):(\d+):)? (.*), so any plain line of the
+		# shape `path.go: message` becomes a FAILURE-level check annotation
+		# with no title. The path is therefore never followed by `: ` —
+		# the rule sits in parens instead. Keep it that way (and keep the
+		# allow file's reason fields free of a `file.go:` sequence).
+		ALLOWED_NOTES="${ALLOWED_NOTES}  - $path ($rule) — allowlisted: $detail
 "
 		# allowlisted: ::notice under GHA (never ::error)
 		gha_notice "$path" "secret-scan allowlisted:$rule" "allowlisted: $detail"

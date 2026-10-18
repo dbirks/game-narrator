@@ -128,20 +128,38 @@ test-full:
 ## matcher), graded against the generated ground truth. Prints the holdout
 ## report; artifacts land in artifacts/bench/ (gitignored). Holds under the
 ## five-minute test-full budget (measured ~3 min, 2026-10).
+## The captured-Dolphin holdout (class (b) captured-frame replay, M7) runs the
+## external fixture's frames against the script imported at run time from
+## GAME_NARRATOR_GAME_IMAGE_PATH; it is NOT RUN with setup steps when the
+## fixture dir or the image is absent (never a silent pass, never a failure
+## of the synthetic part).
 bench:
 	@command -v tesseract >/dev/null 2>&1 || { echo "NOT RUN: bench (tesseract not installed; see docs/spec/16)" >&2; exit 1; }
 	@command -v magick >/dev/null 2>&1 || { echo "NOT RUN: bench (ImageMagick not installed; see docs/spec/16)" >&2; exit 1; }
 	@mkdir -p artifacts
 	go run ./cmd/game-narrator bench --set testdata/bench/bench-synthetic-001 --split holdout --out artifacts/bench
 	@cat artifacts/bench/report.md
+	@if [ -n "$$GAME_NARRATOR_FIXTURE_DIR" ] && [ -d "$$GAME_NARRATOR_FIXTURE_DIR/windwaker-newgame" ] && [ -n "$$GAME_NARRATOR_GAME_IMAGE_PATH" ]; then \
+		echo; \
+		go run ./cmd/game-narrator bench captured --fixture "$$GAME_NARRATOR_FIXTURE_DIR/windwaker-newgame" --image "$$GAME_NARRATOR_GAME_IMAGE_PATH" --out artifacts/bench-captured; \
+		cat artifacts/bench-captured/report.md; \
+	else \
+		echo ""; \
+		echo "NOT RUN: bench captured holdout (class b): set GAME_NARRATOR_FIXTURE_DIR (fixture root containing windwaker-newgame, recorded via the dolphin fixture factory, ADR-0054) and GAME_NARRATOR_GAME_IMAGE_PATH (the user's Wind Waker image) — see docs/spec/16 M7" >&2; \
+	fi
 
 ## test-replay: the docs/spec/12 replay gate — the synthetic scenario suite
 ## (fault injection; BLOCKED scenarios are reported, never passed, ADR-0037)
 ## plus the pipeline replay tests (real Tesseract, deterministic
 ## three-identical-runs), race-enabled. BLOCKED and NOT RUN (e.g. tesseract
 ## missing) results are reported per test and never counted as a pass.
+## TestDolphinScenarios lives in internal/scenario but belongs to the
+## test-dolphin gate (it needs the recorded Dolphin fixture under
+## $GAME_NARRATOR_FIXTURE_DIR and is NOT RUN without it); -skip keeps it out
+## of this gate so a fixture-less host (CI) sees a clean 0 instead of a
+## NOT RUN exit 2.
 test-replay:
-	@scripts/gates/run-go-gate.sh test-replay -race -count=1 ./internal/scenario/... ./internal/pipeline/... ; \
+	@scripts/gates/run-go-gate.sh test-replay -race -count=1 -skip TestDolphinScenarios ./internal/scenario/... ./internal/pipeline/... ; \
 	rc=$$?; echo $$rc > artifacts/gates/test-replay.rc ; exit $$rc
 
 ## test-ui: the real UI gate (docs/spec/09, docs/spec/12 "UI") — frontend
