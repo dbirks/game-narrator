@@ -175,9 +175,12 @@ and the arm64 image layer builds under QEMU but was not executed on real ARM.
    docs/spec/02 "Migration and backup acceptance") once exposed at the CLI.
    The data directory (catalogue + content-addressed assets) is one unit:
    restore both or neither.
-2. **Previous binary/package:** reinstall the previous `.deb` (apt keeps
-   history for one prior version) or the previously recorded binary from the
-   release evidence bundle.
+2. **Previous binary/package:** reinstall the previous `.deb` — for
+   snapshot builds the package versions order lexicographically by short
+   SHA, so a rollback can be a *downgrade* in dpkg's eyes; use
+   `apt-get install --allow-downgrades ./game-narrator_<old>...deb`
+   (apt keeps history for one prior version) or the previously recorded
+   binary from the release evidence bundle.
 3. **Previous image:** `docker pull <repo>@<previous-digest>` (digests are
    recorded in `artifacts/<run-id>/manifest`) and recreate the container.
 4. **Schema:** if the new version applied a migration and the old binary
@@ -199,11 +202,67 @@ and the arm64 image layer builds under QEMU but was not executed on real ARM.
   a not-yet-deleted data directory). `userdel game-narrator` after the data
   directory is gone is the admin's call.
 
-## 6. Verification evidence
+## 6. Device lifecycle (clean install / upgrade / rollback / purge)
+
+`scripts/release/lifecycle-on-device.sh` drives the full M8 cycle on a
+running UNO Q (docs/spec/16 "Test clean install/upgrade/rollback,
+signed/checksummed artifacts") and is idempotent: re-running it from any
+intermediate state — including a purged device — repeats the cycle from a
+fresh pre-flight backup. It takes the ssh target and the two arm64 `.deb`
+packages built from clean committed trees (section 1, different package
+versions):
+
+```sh
+git worktree add --detach /tmp/gn-deb-<sha-prev> <prev-commit>
+git worktree add --detach /tmp/gn-deb-<sha-cur>  <cur-commit>
+(cd /tmp/gn-deb-<sha-prev> && goreleaser release --snapshot --clean)
+(cd /tmp/gn-deb-<sha-cur>  && goreleaser release --snapshot --clean)
+(cd /tmp/gn-deb-<sha-prev>/dist && sha256sum -c checksums.txt)
+(cd /tmp/gn-deb-<sha-cur>/dist  && sha256sum -c checksums.txt)
+
+scripts/release/lifecycle-on-device.sh <user>@<uno-q-host> \
+  /tmp/gn-deb-<sha-prev>/dist/game-narrator_*-snapshot-*_linux_arm64.deb \
+  /tmp/gn-deb-<sha-cur>/dist/game-narrator_*-snapshot-*_linux_arm64.deb
+```
+
+The script (a) backs up the data directory to
+`/home/arduino/gn-data.bak-<ts>` and `/etc/game-narrator` to `/tmp/gn-lc`
+(the env file is verified by mode, owner and line count only — never
+printed or copied into logs), (b) installs the "previous" package, replacing
+whatever dirty or old build is installed (`--allow-downgrades` where the
+version string ordering requires it), (c) starts the unit and verifies the
+dpkg version, `/api/v1/health/ready`, `game-narrator doctor` and a test
+game that must survive a service restart, (d) upgrades to "current" (data
+and env preserved; the unit is stopped by `prerm` and started again per
+section 3), (e) rolls back to "previous" per section 4 — recording which
+policy applied (the previous binary starts on the newer data, or the DB
+backup is restored first), (f) re-upgrades to "current", and (g) purges and
+clean-installs "current", verifying that the data directory, the system
+user and the env file survive the purge per section 5. Every step prints
+PASS/FAIL/SKIP; the exit code is 0 only when every step passed and the
+device is left running the "current" package.
+
+The doctor gate is measured against a pre-lifecycle baseline: a check that
+already FAILED before the lifecycle started (device/gateway state, e.g. a
+TTS voice the instance has not been provisioned with) is not a packaging
+regression, while any FAIL that appears after a transition is. When the
+baseline is empty — including the fresh/purged state — every step requires
+doctor 0 FAIL. The first run on the appliance (2026-10-18) left a
+pre-existing `providers.voice_clone` FAIL in the then-installed dirty build
+(`voice_missing` on a fresh instance); the clean build reports 0 FAIL.
+
+2026-10-18 run (HEAD `f9a572e` over `398cad0`): 9/9 steps PASS twice
+(including an idempotent re-run); no maintainer-script bug was found —
+postinst/prerm/postrm behaved per section 5 on every transition, including
+remove/purge.
+
+## 7. Verification evidence
 
 Each snapshot/release run should retain: `goreleaser` log, `dist/` listing +
 `checksums.txt`, scanner output, smoke log (all steps + NOT RUN reasons),
-SBOMs, image digests (`docker image inspect`), and for published images the
-manifest digest plus the `cosign verify` output (sections 2.1/2.2/2.4).
+SBOMs, image digests (`docker image inspect`), the device-lifecycle log
+(section 6, PASS/FAIL per step + the backup paths), and for published
+images the manifest digest plus the `cosign verify` output (sections
+2.1/2.2/2.4).
 `make test-full` output lists every gate and its NOT RUN
 reason (hardware, replay, Dolphin, models — unverified on this host).
