@@ -979,12 +979,28 @@ func storeReadiness(st *store.Store, log *slog.Logger) api.ReadinessFunc {
 			return map[string]any{"database": map[string]any{"status": "fail", "error": "database ping failed"}}, false
 		}
 		if err := st.IntegrityCheck(ctx); err != nil {
-			log.Warn("readiness: database integrity check failed", "error", err)
+			// The one self-repairing damage class: the messages_fts index is
+			// derived entirely from messages (migration 0002's triggers), so
+			// damage confined to it can be rebuilt from the content without
+			// touching a user row. Damage that reaches the content is refused
+			// and stays down: the operator path there is backup/restore.
+			repaired, repairErr := st.RecoverDerivedFTS(ctx)
+			if !repaired {
+				log.Warn("readiness: database integrity check failed", "error", err)
+				if repairErr != nil {
+					log.Error("readiness: integrity damage is not confined to the derived messages_fts index (or the rebuild did not verify); no self-repair applied; restore from the last good backup", "error", repairErr)
+				}
+				return map[string]any{"database": map[string]any{
+					"status":         "fail",
+					"schema_version": version,
+					"error":          "integrity check failed",
+				}}, false
+			}
+			log.Error("readiness: database failed integrity check with damage confined to the derived messages_fts index; the index was rebuilt from messages and re-verified clean — no user rows were touched", "repaired", "messages_fts")
 			return map[string]any{"database": map[string]any{
-				"status":         "fail",
+				"status":         "ok",
 				"schema_version": version,
-				"error":          "integrity check failed",
-			}}, false
+			}}, true
 		}
 		return map[string]any{"database": map[string]any{
 			"status":         "ok",

@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -469,6 +471,299 @@ func TestStoreReadinessTracksTheLiveDatabase(t *testing.T) {
 	if path := fmt.Sprint(checks); strings.Contains(path, "game-narrator.sqlite") {
 		t.Fatalf("readiness payload leaked the database path: %s", path)
 	}
+}
+
+// TestStoreReadinessRepairsOnlyADamagedFTSIndex is the readiness-level proof
+// of the guard behind the field failure: a database that arrives with
+// messages_fts structurally damaged (the content intact) must come up ready
+// after the readiness probe rebuilds the derived index — and a database whose
+// damage reaches the content must stay down with a fail entry, not get
+// rebuilt over.
+func TestStoreReadinessRepairsOnlyADamagedFTSIndex(t *testing.T) {
+	lc := newLogCapture(t)
+	ctx := context.Background()
+
+	seedFTSStore := func(dir string) string {
+		t.Helper()
+		st, err := store.Open(ctx, store.DBPath(dir))
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		if _, err := st.Migrate(ctx); err != nil {
+			t.Fatalf("Migrate: %v", err)
+		}
+		game := games.Game{ID: games.NewID(), Slug: "fts-guard", Title: "FTS Guard",
+			Platform: "gamecube", UserTags: []byte(`["synthetic"]`), CreatedAt: nowStampUTC()}
+		if err := st.CreateGame(ctx, game); err != nil {
+			t.Fatalf("CreateGame: %v", err)
+		}
+		edition := games.Edition{ID: games.NewID(), GameID: game.ID, Region: "US",
+			Language: "en", Revision: "rev0", Locale: "en_US"}
+		if err := st.CreateEdition(ctx, edition); err != nil {
+			t.Fatalf("CreateEdition: %v", err)
+		}
+		prof, err := st.CreateDraftProfile(ctx, edition.ID)
+		if err != nil {
+			t.Fatalf("CreateDraftProfile: %v", err)
+		}
+		msgs := make([]games.Message, 0, 120)
+		for i := 0; i < 120; i++ {
+			text := fmt.Sprintf("line %02d of the harbour light keeper log", i%17)
+			msgs = append(msgs, games.Message{
+				ID: games.NewID(), ProfileID: prof.ID,
+				OriginalText: text, NormalizedText: strings.ToLower(text),
+				SpeechText: text + "!", Language: "en", TextKind: games.TextDialogue,
+				AttributionStatus: games.AttributionUnknown, Revision: 1,
+				CreatedAt: nowStampUTC(), UpdatedAt: nowStampUTC(),
+			})
+		}
+		if err := st.PutMessages(ctx, prof.ID, msgs, nil); err != nil {
+			t.Fatalf("PutMessages: %v", err)
+		}
+		// Settle the index into data pages (the shape that gets checkpointed
+		// and damaged), then close so the file is self-contained.
+		if err := st.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		raw, err := sql.Open("sqlite", store.DBPath(dir)+"?_foreign_keys=1&_journal_mode=WAL&_busy_timeout=5000")
+		if err != nil {
+			t.Fatalf("raw open: %v", err)
+		}
+		if _, err := raw.Exec(`INSERT INTO messages_fts(messages_fts) VALUES('merge')`); err != nil {
+			t.Fatalf("merge: %v", err)
+		}
+		if err := raw.Close(); err != nil {
+			t.Fatalf("raw close: %v", err)
+		}
+		return store.DBPath(dir)
+	}
+
+	// Case 1: index-only damage — the readiness probe rebuilds and reports ok.
+	dbPath := seedFTSStore(t.TempDir())
+	if !corruptOneFTSIndexPage(t, dbPath) {
+		t.Fatalf("the FTS index corruption was not visible to PRAGMA integrity_check")
+	}
+	if !messagesTableIntact(t, dbPath) {
+		t.Fatalf("the corruption helper damaged the content table: the test is invalid")
+	}
+	st, err := store.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ready := storeReadiness(st, lc.log)
+	checks, ok := ready(ctx)
+	if !ok {
+		t.Fatalf("readiness = not ready after a damaged FTS index: the guard should have rebuilt it: %v", checks)
+	}
+	if database, _ := checks["database"].(map[string]any); database == nil || database["status"] != "ok" {
+		t.Fatalf("checks.database = %v, want status ok", checks)
+	}
+	if !lc.contains("repaired", "messages_fts") {
+		t.Fatalf("the recovery did not reach the operator log: %s", lc.buf.String())
+	}
+
+	// Case 2: content damage — the same probe must refuse and stay down.
+	dbPath2 := seedFTSStore(t.TempDir())
+	if !corruptMessagesRootPage(t, dbPath2) {
+		t.Fatalf("the content-page corruption was not visible to PRAGMA integrity_check")
+	}
+	st2, err := store.Open(ctx, dbPath2)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = st2.Close() })
+	ready2 := storeReadiness(st2, lc.log)
+	checks, ok = ready2(ctx)
+	if ok {
+		t.Fatalf("readiness = ready over damaged content: the guard must refuse to repair it: %v", checks)
+	}
+	if database, _ := checks["database"].(map[string]any); database == nil || database["status"] != "fail" {
+		t.Fatalf("checks.database = %v, want a fail entry", checks)
+	}
+	if !lc.contains("no self-repair applied", "backup") {
+		t.Fatalf("the refusal did not reach the operator log with the backup/restore answer: %s", lc.buf.String())
+	}
+}
+
+// nowStampUTC is the RFC 3339 stamp the schema's strftime CHECK requires.
+func nowStampUTC() string { return time.Now().UTC().Format(time.RFC3339) }
+
+// logCapture is a logger the test can assert on: the guard's promises — what
+// it repaired, why it refused — are log lines, and a guard that cannot be
+// observed cannot be trusted.
+type logCapture struct {
+	log *slog.Logger
+	buf *bytes.Buffer
+}
+
+func newLogCapture(t *testing.T) *logCapture {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	return &logCapture{log: slog.New(slog.NewJSONHandler(buf, nil)), buf: buf}
+}
+
+// contains reports whether one captured line carries every substring.
+func (c *logCapture) contains(subs ...string) bool {
+	for _, line := range strings.Split(c.buf.String(), "\n") {
+		all := true
+		for _, sub := range subs {
+			if !strings.Contains(line, sub) {
+				all = false
+				break
+			}
+		}
+		if all {
+			return true
+		}
+	}
+	return false
+}
+
+// integrityHasProblems reports whether PRAGMA integrity_check finds anything
+// wrong — either a problem line or a check that cannot even complete.
+func integrityHasProblems(db *sql.DB) bool {
+	rows, err := db.Query("PRAGMA integrity_check")
+	if err != nil {
+		return true
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			return true
+		}
+		if !strings.EqualFold(strings.TrimSpace(line), "ok") {
+			return true
+		}
+	}
+	return false
+}
+
+// corruptOneFTSIndexPage damages one FTS index page of a closed database and
+// reports whether the damage is visible to PRAGMA integrity_check. Which page
+// a zeroed byte lands in is a matter of FTS5 page geometry (segment ids are
+// folded into the page numbers, and full pages carry slack a zero byte can
+// sit in without breaking a parse), so the helper walks the pages until the
+// check fires — the same walk the repair is meant to clear.
+func corruptOneFTSIndexPage(t *testing.T, path string) bool {
+	t.Helper()
+	db, err := sql.Open("sqlite", path+"?_foreign_keys=1&_journal_mode=WAL&_busy_timeout=5000")
+	if err != nil {
+		t.Fatalf("open for corruption: %v", err)
+	}
+	type pageRef struct {
+		id    int
+		block []byte
+	}
+	var pages []pageRef
+	{
+		rows, err := db.Query(`SELECT id, block FROM messages_fts_data ORDER BY id`)
+		if err != nil {
+			t.Fatalf("read index pages: %v", err)
+		}
+		for rows.Next() {
+			var p pageRef
+			if err := rows.Scan(&p.id, &p.block); err != nil {
+				t.Fatalf("scan index page: %v", err)
+			}
+			pages = append(pages, p)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("read index pages: %v", err)
+		}
+		rows.Close()
+	}
+	if len(pages) < 3 {
+		t.Fatalf("the index has %d data pages: the test needs a settled, merged index", len(pages))
+	}
+	defer db.Close()
+	for _, p := range pages {
+		if len(p.block) >= 16 {
+			b := make([]byte, len(p.block))
+			copy(b, p.block)
+			b[len(b)/2] = 0
+			if _, err := db.Exec(`UPDATE messages_fts_data SET block = ? WHERE id = ?`, b, p.id); err != nil {
+				t.Fatalf("corrupt page %d: %v", p.id, err)
+			}
+			if integrityHasProblems(db) {
+				return true
+			}
+			if _, err := db.Exec(`UPDATE messages_fts_data SET block = ? WHERE id = ?`, p.block, p.id); err != nil {
+				t.Fatalf("restore page %d: %v", p.id, err)
+			}
+		}
+	}
+	return false
+}
+
+// corruptMessagesRootPage rewrites one cell pointer of the messages table's
+// root page to point outside the page. The database must be closed: after a
+// clean close the WAL is checkpointed away and the file is self-contained.
+func corruptMessagesRootPage(t *testing.T, path string) bool {
+	t.Helper()
+	db, err := sql.Open("sqlite", path+"?_query_only=1&_busy_timeout=5000")
+	if err != nil {
+		t.Fatalf("open for page layout: %v", err)
+	}
+	var pageSize, rootPage int
+	if err := db.QueryRow(`PRAGMA page_size`).Scan(&pageSize); err != nil {
+		t.Fatalf("page_size: %v", err)
+	}
+	if err := db.QueryRow(`SELECT rootpage FROM sqlite_master WHERE type='table' AND name='messages'`).Scan(&rootPage); err != nil {
+		t.Fatalf("messages rootpage: %v", err)
+	}
+	db.Close()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	// Page N starts at (N-1)*pageSize: the 100-byte database header is the
+	// first 100 bytes of page 1, not a preamble before it.
+	off := (rootPage - 1) * pageSize
+	if off+8 >= len(data) {
+		t.Fatalf("page %d at offset %d is outside the %d-byte file", rootPage, off, len(data))
+	}
+	if pageType := data[off]; pageType != 0x05 && pageType != 0x0D {
+		t.Fatalf("messages root page %d has type 0x%02x, want a table btree page", rootPage, pageType)
+	}
+	cellCount := binary.BigEndian.Uint16(data[off+3 : off+5])
+	if cellCount == 0 {
+		t.Fatalf("messages root page %d has no cells", rootPage)
+	}
+	binary.BigEndian.PutUint16(data[off+8:off+10], 0xFFFF)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write corrupt page: %v", err)
+	}
+
+	check, err := sql.Open("sqlite", path+"?_foreign_keys=1&_journal_mode=WAL&_busy_timeout=5000")
+	if err != nil {
+		t.Fatalf("reopen for verification: %v", err)
+	}
+	damaged := integrityHasProblems(check)
+	check.Close()
+	return damaged
+}
+
+// messagesTableIntact is the sanity check that the index corruption helper
+// really left the content alone: the right number of rows and a known line.
+func messagesTableIntact(t *testing.T, path string) bool {
+	t.Helper()
+	db, err := sql.Open("sqlite", path+"?_query_only=1&_busy_timeout=5000")
+	if err != nil {
+		t.Fatalf("open for content check: %v", err)
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM messages`).Scan(&n); err != nil || n != 120 {
+		t.Fatalf("content check: n=%d err=%v, want 120", n, err)
+	}
+	var norm string
+	if err := db.QueryRow(`SELECT normalized_text FROM messages ORDER BY rowid LIMIT 1`).Scan(&norm); err != nil {
+		t.Fatalf("content check: %v", err)
+	}
+	return strings.Contains(norm, "harbour light keeper")
 }
 
 func TestServeMigratesBeforeListening(t *testing.T) {
