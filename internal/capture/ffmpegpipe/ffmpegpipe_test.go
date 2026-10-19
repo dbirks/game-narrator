@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
 	"image/color"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -147,6 +149,196 @@ func TestTestSourceDeliversAnimatedFramesAtRate(t *testing.T) {
 	}
 	if st.State != capture.StateRunning {
 		t.Errorf("state = %s while frames are flowing", st.State)
+	}
+}
+
+// TestDeliveredTracksHandedOverFrames pins the delivery counter against the
+// bug make test-full's full parallel load exposed: the pump used to
+// increment Stats.Delivered *after* the channel send, so a stats read racing
+// a hand-over could report fewer delivered frames than the consumer already
+// held in hand ("source delivered=29 but the channel handed over 30 frames").
+//
+// The invariant: from the instant a frame has been handed to the consumer,
+// every Stats() read must report Delivered >= that frame — the inspector
+// must never undercount what the pipeline was fed (docs/spec/10 preflight
+// reads Delivered to judge freshness). At rest, Delivered is exactly the
+// number of frames the consumer took, so a hand-over abandoned by ctx is
+// rolled back, not kept.
+//
+// The decisive observation is deterministic: with no consumer at the
+// channel, the pump parks on the send of the newest frame, and there it
+// stays until the test acts. A pump that counts *before* the send is parked
+// with the frame already counted; a pump that counts *after* the send is
+// parked with the count still pending, forever, and reports one frame short
+// — exactly the undercount the live stats showed. White-box by design: it
+// drives the real pump + LatestSlot — the delivery code the live path runs
+// — with synthetic frames, so it needs no FFmpeg and cannot be skipped.
+func TestDeliveredTracksHandedOverFrames(t *testing.T) {
+	s := &Source{
+		IDName: "test:delivered-counter",
+		Width:  8,
+		Height: 8,
+		slot:   capture.NewLatestSlot(),
+		out:    make(chan capture.Frame),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s.pump(ctx)
+	}()
+
+	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	frame := func(i int) capture.Frame {
+		return capture.Frame{
+			Seq:                int64(i),
+			SourceClock:        capture.ClockMonotonic,
+			CaptureTimestampNS: int64(i),
+			Width:              8,
+			Height:             8,
+			PixFmt:             capture.PixRGB24,
+			Image:              img,
+			Hash:               "h",
+		}
+	}
+	take := func(i int) {
+		t.Helper()
+		s.slot.Put(frame(i))
+		got, ok := <-s.out
+		if !ok {
+			t.Fatalf("frame channel closed before frame %d", i)
+		}
+		if got.Seq != int64(i) {
+			t.Fatalf("frame %d: got seq %d", i, got.Seq)
+		}
+		// The consumer holds frame i: every stats read from here on must
+		// already agree with it.
+		if d := s.Stats().Delivered; d < uint64(i) {
+			t.Fatalf("consumer holds frame %d but Stats.Delivered=%d: the counter lagged the hand-over (it must move with the send, not behind it)", i, d)
+		}
+	}
+
+	const k = 49
+	for i := 1; i <= k; i++ {
+		take(i)
+	}
+
+	// The parked-send observation: put one more frame and do not take it.
+	// The pump takes it and parks on the send — stably, until the test acts.
+	// A pump that counts before the send is parked with the count done; one
+	// that counts after the send is parked with it pending forever.
+	s.slot.Put(frame(k + 1))
+	deadline := time.Now().Add(2 * time.Second)
+	for s.slot.Takes() < k+1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if s.slot.Takes() < k+1 {
+		t.Fatalf("pump never took frame %d (takes=%d): the test premise is broken", k+1, s.slot.Takes())
+	}
+	// Settle: the pump is parked on the send; nothing it does from here on
+	// can change the counter before a consumer appears. The grace below only
+	// covers the transient where the pump has not even been scheduled yet —
+	// a count that is still pending at rest is the bug, not a slow scheduler.
+	time.Sleep(50 * time.Millisecond)
+	d := s.Stats().Delivered
+	if d < k+1 {
+		time.Sleep(300 * time.Millisecond)
+		d = s.Stats().Delivered
+	}
+	if d < k+1 {
+		t.Fatalf("pump parked on the send of frame %d reports Stats.Delivered=%d: the frame is in flight to the consumer but uncounted — the counter must move with the send, not behind it", k+1, d)
+	}
+
+	// Finish the hand-over (no Put: frame k+1 is already in flight on the
+	// channel — the slot is empty, and a second copy would queue behind it).
+	got, ok := <-s.out
+	if !ok {
+		t.Fatalf("frame channel closed before frame %d", k+1)
+	}
+	if got.Seq != int64(k+1) {
+		t.Fatalf("frame %d: got seq %d", k+1, got.Seq)
+	}
+	if d := s.Stats().Delivered; d < uint64(k+1) {
+		t.Fatalf("consumer holds frame %d but Stats.Delivered=%d: the counter lagged the hand-over", k+1, d)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	wg.Wait()
+	if d := s.Stats().Delivered; d != k+1 {
+		t.Fatalf("settled Stats.Delivered=%d, want exactly %d (the frames the consumer took)", d, k+1)
+	}
+	if d := s.slot.Drops(); d != 0 {
+		t.Fatalf("test lost %d frames into the slot; the consumer kept up, so none may be dropped", d)
+	}
+}
+
+// TestPumpCountsRollbackOnCancelledHandOver pins the rollback half of the same
+// fix: the pump counts a hand-over before the send so a stats read can never
+// lag the consumer — and a send abandoned by ctx (Close) must be uncounted,
+// or Delivered would claim frames the consumer never got.
+func TestPumpCountsRollbackOnCancelledHandOver(t *testing.T) {
+	const k = 50
+	s := &Source{
+		IDName: "test:delivered-rollback",
+		Width:  8,
+		Height: 8,
+		slot:   capture.NewLatestSlot(),
+		out:    make(chan capture.Frame),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s.pump(ctx)
+	}()
+
+	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	take := func(i int) {
+		t.Helper()
+		f := capture.Frame{
+			Seq:                int64(i),
+			SourceClock:        capture.ClockMonotonic,
+			CaptureTimestampNS: int64(i),
+			Width:              8,
+			Height:             8,
+			PixFmt:             capture.PixRGB24,
+			Image:              img,
+			Hash:               "h",
+		}
+		s.slot.Put(f)
+		got, ok := <-s.out
+		if !ok || got.Seq != int64(i) {
+			t.Fatalf("frame %d not delivered in order (ok=%v seq=%d)", i, ok, got.Seq)
+		}
+	}
+	for i := 1; i <= k; i++ {
+		take(i)
+	}
+	// Prime the slot with one more frame, then shut the source down without
+	// the consumer ever taking it. The consumer now holds exactly k frames,
+	// so settled Delivered must be k.
+	f := capture.Frame{
+		Seq:                int64(k + 1),
+		SourceClock:        capture.ClockMonotonic,
+		CaptureTimestampNS: int64(k + 1),
+		Width:              8,
+		Height:             8,
+		PixFmt:             capture.PixRGB24,
+		Image:              img,
+		Hash:               "h",
+	}
+	s.slot.Put(f)
+	cancel()
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	wg.Wait()
+	if d := s.Stats().Delivered; d != k {
+		t.Fatalf("settled Stats.Delivered=%d, want %d: frame %d was never handed to the consumer and must not be counted (nor may a delivered frame go uncounted)", d, k, k+1)
 	}
 }
 

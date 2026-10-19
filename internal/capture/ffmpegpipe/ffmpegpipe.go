@@ -670,20 +670,36 @@ func (s *Source) pump(ctx context.Context) {
 		if !ok {
 			return
 		}
+		// Count the hand-over *before* the send, not after: the unbuffered
+		// send completes at the instant the consumer receives the frame, so an
+		// increment parked behind it lets a concurrent Stats() read report
+		// fewer deliveries than the consumer already has in hand — the stats
+		// would undercount what the pipeline was fed (docs/spec/10 preflight
+		// reads Delivered exactly to decide that).
+		s.mu.Lock()
+		s.stats.Delivered++
+		s.mu.Unlock()
 		select {
 		case s.out <- f:
 		case <-ctx.Done():
+			// The consumer never got the frame, so uncount it: Delivered must
+			// never claim a hand-over that did not happen.
+			s.mu.Lock()
+			s.stats.Delivered--
+			s.mu.Unlock()
 			return
 		}
 		s.recordDelivered()
 	}
 }
 
-// recordDelivered updates the published counters and the fps estimate.
+// recordDelivered updates the freshness, fps estimate and running state after
+// a frame has actually reached the consumer. Delivered itself is counted by
+// the pump around the send (see pump), because only that ordering keeps the
+// published number consistent with what the consumer has observed.
 func (s *Source) recordDelivered() {
 	now := time.Now()
 	s.mu.Lock()
-	s.stats.Delivered++
 	s.stats.LastFrameAt = now
 	s.window.add(now)
 	s.stats.FPS = s.window.fps()
