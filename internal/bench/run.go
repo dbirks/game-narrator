@@ -70,11 +70,22 @@ type sampleOutcomes struct {
 	commitMsgIDs []string // message.committed payload message_id, in order
 	commitTSNS   []int64  // capture ts of each transition into committed
 	commitRaw    []string // the committed reading (payload raw_text)
+	commitStable []string // the committed stable text (payload text), in commit order
 	commitText   string   // last ranking trace row's accepted (tracker-stable) text
 	topID        string   // top candidate of the last ranking trace row
 	topProb      float64  // its probability
 	ocrText      string   // last non-empty OCR reading of the run
 	stats        pipeline.Stats
+
+	// Display-window grading (ADR-0058 amendment 3): the top-1 of the line's
+	// display window — the frames the oracle says the truth line is on screen.
+	// windowRanked is true when a ranking row fell inside the window (the
+	// reading below is then the graded one); windowTop* is the top candidate
+	// of the window's committed/stable reading when the sample committed,
+	// else of the window's last ranking row.
+	windowTopID   string
+	windowTopProb float64
+	windowRanked  bool
 
 	// Speech side (sidecar).
 	speechStarted   []speechEvent
@@ -112,6 +123,7 @@ func runSample(ctx context.Context, framesDir, timestampsFile string, s Sample, 
 		Index:           idx,
 		Preprocess:      vision.DefaultSteps(),
 		Trace:           true,
+		TraceMax:        benchTraceMax(len(s.Frames)),
 		Mode:            pipeline.ModeReplay,
 		OCRTimeout:      ocr.DefaultTimeout,
 		Tracker:         benchTracker,
@@ -154,6 +166,7 @@ func runSample(ctx context.Context, framesDir, timestampsFile string, s Sample, 
 		var p struct {
 			MessageID   string `json:"message_id"`
 			RawText     string `json:"raw_text"`
+			Text        string `json:"text"`
 			Transitions []struct {
 				To                 string `json:"to"`
 				CaptureTimestampNS int64  `json:"capture_timestamp_ns"`
@@ -164,14 +177,24 @@ func runSample(ctx context.Context, framesDir, timestampsFile string, s Sample, 
 		}
 		out.commitMsgIDs = append(out.commitMsgIDs, p.MessageID)
 		out.commitRaw = append(out.commitRaw, p.RawText)
+		out.commitStable = append(out.commitStable, p.Text)
 		for _, tr := range p.Transitions {
 			if tr.To == "committed" {
 				out.commitTSNS = append(out.commitTSNS, tr.CaptureTimestampNS)
 			}
 		}
 	}
+	out.stats = runner.Stats()
+	// Overflow fence (ADR-0058 amendment 3): the harness must lose no trace
+	// rows — the grading readout runs on them. The ring is sized to the sample
+	// (benchTraceMax), so an eviction is a defect, not a shed row: fail the
+	// sample loudly instead of grading on an incomplete timeline.
+	if d := out.stats.TraceDropped; d > 0 {
+		return sampleOutcomes{}, fmt.Errorf("bench: sample %s: trace ring overflow — %d rows evicted before the readout (the ring was sized %d rows for %d frames; the harness must lose no trace rows, ADR-0058 amendment 3)",
+			s.ID, d, benchTraceMax(len(s.Frames)), len(s.Frames))
+	}
 	trace := runner.Trace()
-	for i := range trace { // last ranking row wins: it stands behind the commit
+	for i := range trace { // last ranking row wins: the legacy (last-row) reading
 		if trace[i].TopCandidate != "" {
 			out.topID, out.topProb = trace[i].TopCandidate, trace[i].TopScore
 		}
@@ -182,7 +205,7 @@ func runSample(ctx context.Context, framesDir, timestampsFile string, s Sample, 
 			out.ocrText = trace[i].OCRText
 		}
 	}
-	out.stats = runner.Stats()
+	gradeDisplayWindow(&out, s, trace)
 
 	speech, cancelled, speaker, known, err := runSidecar(ctx, idx, regions[0].ID, s)
 	if err != nil {
@@ -198,6 +221,79 @@ func runSample(ctx context.Context, framesDir, timestampsFile string, s Sample, 
 		out.speakerID, out.speakerKnown, _ = scriptSpeaker(out.commitMsgIDs[0])
 	}
 	return out, nil
+}
+
+// benchTraceMax sizes the pipeline's trace ring to one sample's replay so no
+// row can be evicted (ADR-0058 amendment 3): a frame contributes at most three
+// rows (one dispatch row, one observation row, one ranking row), and the +64
+// margin covers the run's non-frame rows. This is the harness's ring option
+// (Config.TraceMax); the pipeline's runtime default is untouched.
+func benchTraceMax(frames int) int {
+	return frames*4 + 64
+}
+
+// displayWindowFrames is the sample's display window: the frames the oracle
+// says the truth line is on screen (ADR-0058 amendment 3). The captured holdout
+// carries the fixture's per-frame oracle labels in s.DisplayWindow (a frame is
+// in the window when the oracle marks the box present and its line label is
+// the line's label); the synthetic sets leave it nil, and the window then is
+// the sample's box-present frames (its text.png frames — a synthetic sample's
+// trailing frames are boxless, so there the window and the ranked span
+// coincide and both holdouts are graded one way).
+func displayWindowFrames(s Sample) []Frame {
+	var out []Frame
+	for i, f := range s.Frames {
+		present := f.File != "" && f.File != "absent.png" && !f.Absent
+		if s.DisplayWindow != nil {
+			present = s.DisplayWindow[i]
+		}
+		if present {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// gradeDisplayWindow computes the sample's display-window top-1 reading
+// (ADR-0058 amendment 3): over the ranking trace rows whose driving frame
+// falls in the window's capture-ts range, the graded top-1 is the top
+// candidate of the line's committed/stable reading — the window row whose
+// accepted text is the first commit's stable text, the reading the session's
+// own commit rule (session/apply.go decide: the commit is the applied
+// ranking's top candidate) committed — or, when the sample did not commit or
+// no such row exists, of the window's last ranking row. A sample with no
+// ranking row in the window is unranked (windowRanked stays false) and the
+// metrics fall back to the last-row reading for it.
+func gradeDisplayWindow(out *sampleOutcomes, s Sample, trace []pipeline.TraceEntry) {
+	win := displayWindowFrames(s)
+	if len(win) == 0 {
+		return
+	}
+	w0, w1 := win[0].TsNS, win[len(win)-1].TsNS
+	committed := ""
+	if len(out.commitStable) > 0 {
+		committed = out.commitStable[0]
+	}
+	var committedTop string
+	var committedProb float64
+	for i := range trace {
+		row := &trace[i]
+		if row.TopCandidate == "" {
+			continue
+		}
+		if row.CaptureTimestampNS < w0 || row.CaptureTimestampNS > w1 {
+			continue
+		}
+		// The window's last ranking row is the fallback reading.
+		out.windowTopID, out.windowTopProb, out.windowRanked = row.TopCandidate, row.TopScore, true
+		if committed != "" && row.AcceptedText == committed {
+			// The committed reading's row; the last such row wins.
+			committedTop, committedProb = row.TopCandidate, row.TopScore
+		}
+	}
+	if committedTop != "" {
+		out.windowTopID, out.windowTopProb = committedTop, committedProb
+	}
 }
 
 // pinReplayEngineThreads pins the OCR engine's OpenMP thread pool to one

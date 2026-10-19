@@ -333,3 +333,41 @@ func trunc(s string, n int) string {
 	}
 	return s[:n-1] + "…"
 }
+
+// TestTraceRingOverflowCountsDrops is the overflow guard the bench harness
+// relies on (ADR-0058 amendment 3): the trace ring is bounded, and a harness
+// that reads it after a long replay must be able to tell when rows were
+// evicted rather than silently grading on an incomplete timeline. Sizing the
+// ring below the corpus's row count must retain exactly TraceMax rows and
+// count every eviction in Stats.TraceDropped — the counter the harness asserts
+// is 0 on a correctly sized run.
+func TestTraceRingOverflowCountsDrops(t *testing.T) {
+	eng := &fakeOCR{script: ocrScript(t), delay: fastScript, respectCtx: true}
+	h := newHarness(t, eng, func(c *pipeline.Config) { c.TraceMax = 8 })
+	st, _, err := h.run(t, h.source(0, false))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := len(h.runner.Trace()); got != 8 {
+		t.Errorf("retained rows = %d, want 8 (the ring's bound)", got)
+	}
+	if st.TraceDropped == 0 {
+		t.Error("TraceDropped = 0: a run that outlives its ring must count the evicted rows, or a harness reading the ring cannot tell its timeline is incomplete")
+	}
+}
+
+// TestTraceRingDefaultKeepsShortRuns is the mirror: the 24-frame corpus fits
+// in the runtime default ring (defaultTraceMax), so a run that does not size
+// the ring reports zero drops — the invariant the bench's per-sample sizing
+// (frames*4+64) generalizes.
+func TestTraceRingDefaultKeepsShortRuns(t *testing.T) {
+	eng := &fakeOCR{script: ocrScript(t), delay: fastScript, respectCtx: true}
+	h := newHarness(t, eng, nil)
+	st, _, err := h.run(t, h.source(0, false))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if st.TraceDropped != 0 {
+		t.Errorf("TraceDropped = %d, want 0: the corpus fits the default ring, so no row may be evicted", st.TraceDropped)
+	}
+}

@@ -22,25 +22,62 @@ const (
 )
 
 // RunMetrics computes the report's metric rows over one run's sample outcomes.
-// top1Misses returns the ranked in-script samples whose top-1 candidate was
-// not the truth message — the same samples RunMetrics counts against top1N
-// (in-script AND ranked) — as per-sample diagnostics (message ids, no text).
-// An empty list is nil so the report JSON carries nothing on a clean run.
+// top1Misses returns, per (sample, reading), the ranked in-script samples
+// whose top-1 candidate was not the truth message — the same samples RunMetrics
+// counts against the two top-1 rows (in-script AND ranked) — as per-sample
+// diagnostics (message ids, no text). The readings are the graded display-window
+// one (ADR-0058 amendment 3; the window reading when the oracle defined a
+// window with ranking rows in it, else the last-row fallback) and the legacy
+// last-ranking-row-of-the-span one (kept visible so a trailing in-script
+// message stays on the record, never hidden). An empty list is nil so the
+// report JSON carries nothing on a clean run.
 func top1Misses(outcomes []sampleOutcomes) []Top1Miss {
 	var misses []Top1Miss
 	for _, o := range outcomes {
-		s := o.sample
-		if s.msgID == "" || o.topID == "" || o.topID == s.msgID {
+		if o.sample.msgID == "" {
 			continue
 		}
-		misses = append(misses, Top1Miss{
-			SampleID:  s.id,
-			MessageID: s.msgID,
-			TopID:     o.topID,
-			TopProb:   o.topProb,
-		})
+		// The graded reading misses: only recorded when it is the window
+		// reading (in the fallback case the graded reading IS the last-row
+		// reading, recorded below — no duplicate row).
+		if o.windowRanked && o.windowTopID != "" && o.windowTopID != o.sample.msgID {
+			misses = append(misses, Top1Miss{
+				SampleID:  o.sample.id,
+				MessageID: o.sample.msgID,
+				Reading:   Top1ReadingWindow,
+				TopID:     o.windowTopID,
+				TopProb:   o.windowTopProb,
+			})
+		}
+		if o.topID != "" && o.topID != o.sample.msgID {
+			misses = append(misses, Top1Miss{
+				SampleID:  o.sample.id,
+				MessageID: o.sample.msgID,
+				Reading:   Top1ReadingLastRow,
+				TopID:     o.topID,
+				TopProb:   o.topProb,
+			})
+		}
 	}
 	return misses
+}
+
+// top1GradedReading is the reading the top1_exact_accuracy row grades: the
+// display-window reading when the oracle defined a window with ranking rows in
+// it, else the last-row reading (the legacy figure) — a sample the oracle
+// gives no window is graded the old way, never dropped (ADR-0058 amendment 3).
+func (o *sampleOutcomes) top1GradedReading() (topID string, reading string) {
+	if o.windowRanked {
+		return o.windowTopID, Top1ReadingWindow
+	}
+	return o.topID, Top1ReadingLastRow
+}
+
+func (o *sampleOutcomes) top1GradedProb() float64 {
+	if o.windowRanked {
+		return o.windowTopProb
+	}
+	return o.topProb
 }
 
 // Every row carries its sample count; a row with no samples is n/a, never a
@@ -52,6 +89,7 @@ func RunMetrics(outcomes []sampleOutcomes) []Metric {
 		cerSum, werSum                float64
 		ocrN                          int
 		top1N, top1Hit                int
+		lastRowN, lastRowHit          int
 		abstain                       int
 		speakerN, speakerHit          int
 		speechN, speechHit            int
@@ -87,13 +125,30 @@ func RunMetrics(outcomes []sampleOutcomes) []Metric {
 			if firstCommit == "" || firstCommit == unknownMsgID {
 				abstain++
 			}
-			if o.topID != "" {
+			// top1_exact_accuracy is graded on the display-window reading
+			// (ADR-0058 amendment 3): the truth line's top-1 while the oracle
+			// says the line is on screen — the committed/stable reading's row
+			// when the sample committed, else the window's last ranking row.
+			// Samples the oracle gives no window keep the last-row reading.
+			graded, _ := o.top1GradedReading()
+			if graded != "" {
 				top1N++
-				if o.topID == s.msgID {
+				if graded == s.msgID {
 					top1Hit++
 				}
-				probs = append(probs, o.topProb)
-				labels = append(labels, o.topID == s.msgID)
+				probs = append(probs, o.top1GradedProb())
+				labels = append(labels, graded == s.msgID)
+			}
+			// The legacy last-row figure stays visible as its own row:
+			// top1_last_row grades the same samples on the last ranking row of
+			// the whole span, informational, so the amendment-2 evidence (a
+			// trailing in-script message reads the old figure down) is not
+			// hidden by the window change.
+			if o.topID != "" {
+				lastRowN++
+				if o.topID == s.msgID {
+					lastRowHit++
+				}
 			}
 		}
 		if s.textKind == "dialogue" {
@@ -166,7 +221,9 @@ func RunMetrics(outcomes []sampleOutcomes) []Metric {
 		ratioMetric("ocr_cer", cerSum/ocrNOr(float64(ocrN)), ocrN, "ratio", "", "mean character error rate, truth text vs committed reading"),
 		ratioMetric("ocr_wer", werSum/ocrNOr(float64(ocrN)), ocrN, "ratio", "", "mean word error rate, truth text vs committed reading"),
 		ratioMetric("top1_exact_accuracy", float64(top1Hit)/float64(top1N), top1N, "ratio", objTop1,
-			fmt.Sprintf("%d/%d ranked in-script samples ranked the truth message first", top1Hit, top1N)),
+			fmt.Sprintf("%d/%d ranked in-script samples ranked the truth message first on the line's display window (the oracle's frames where the line is on screen; committed/stable reading when committed, ADR-0058 amendment 3)", top1Hit, top1N)),
+		ratioMetric("top1_last_row", float64(lastRowHit)/float64(lastRowN), lastRowN, "ratio", "",
+			fmt.Sprintf("legacy figure, informational: %d/%d ranked in-script samples ranked the truth message first on the last ranking row of the whole span (the pre-amendment-3 window; a span whose trailing frames show another in-script message reads down here while the display-window row above does not)", lastRowHit, lastRowN)),
 		ratioMetric("abstention_rate", float64(abstain)/float64(inScript), inScript, "ratio", "",
 			"in-script samples with no confident in-script commit (abstain or no commit)"),
 		naBrier("calibration_brier", probs, labels, ""),

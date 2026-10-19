@@ -192,6 +192,14 @@ type Stats struct {
 	// fence absolute, and this is the assertion that would notice it broken.
 	StaleApplied uint64 `json:"stale_generation_applied"`
 
+	// TraceDropped counts trace rows evicted from the bounded ring: recordTrace
+	// keeps at most Config.TraceMax rows (default defaultTraceMax) and evicts the
+	// oldest past that. It must be 0 in a replay whose ring the caller sized to
+	// the run (the bench harness does, ADR-0058 amendment 3): a non-zero count
+	// means the harness's readout lost rows and the timeline it reports is
+	// incomplete. Always 0 when Trace is off.
+	TraceDropped uint64 `json:"trace_dropped,omitempty"`
+
 	Latency Latency `json:"latency"`
 }
 
@@ -210,15 +218,29 @@ type counters struct {
 	traceLog []TraceEntry
 	traceOn  bool
 	traceMax int
+	// traceDropped counts rows evicted from a full ring; snapshot() copies it
+	// into Stats.TraceDropped so a caller that sized the ring can assert none
+	// were lost (ADR-0058 amendment 3).
+	traceDropped uint64
 }
 
-func newCounters(trace bool) *counters {
+// defaultTraceMax is the pipeline's runtime trace ring size. The ring is a
+// harness-readout concern (the timeline Runner.Trace() exposes for tests, the
+// evidence bundle and the developer inspector); a harness that reads the ring
+// after a long replay raises it per run via Config.TraceMax so no row is
+// evicted (ADR-0058 amendment 3). The runtime default stays this value.
+const defaultTraceMax = 512
+
+func newCounters(trace bool, traceMax int) *counters {
+	if traceMax <= 0 {
+		traceMax = defaultTraceMax
+	}
 	return &counters{
 		frameOCR:  newHist(),
 		ocrRank:   newHist(),
 		frameComm: newHist(),
 		traceOn:   trace,
-		traceMax:  512,
+		traceMax:  traceMax,
 	}
 }
 
@@ -315,6 +337,7 @@ func (c *counters) snapshot() Stats {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	s := c.s
+	s.TraceDropped = c.traceDropped
 	s.Latency = Latency{
 		FrameToOCR:       c.frameOCR.summary(),
 		OCRToRanked:      c.ocrRank.summary(),
@@ -332,6 +355,7 @@ func (c *counters) recordTrace(e TraceEntry) {
 	if len(c.traceLog) >= c.traceMax {
 		copy(c.traceLog, c.traceLog[1:])
 		c.traceLog = c.traceLog[:len(c.traceLog)-1]
+		c.traceDropped++ // the eviction the caller can assert on (ADR-0058 amendment 3)
 	}
 	c.traceLog = append(c.traceLog, e)
 }

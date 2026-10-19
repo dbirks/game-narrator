@@ -152,10 +152,13 @@ func (r capturedRow) isLineRow() bool { return r.Full && r.Text != "" }
 
 // capturedSpan is one oracle span: the frame range (in the fixture's truth
 // rows) of one sample — a leading empty run or one narration-line occurrence
-// with its trailing frames.
+// with its trailing frames. line is the oracle's label of the narration line
+// (empty for the leading empty span); it selects the sample's display window
+// (the rows the oracle says show the line, ADR-0058 amendment 3).
 type capturedSpan struct {
 	kind  string
 	text  string
+	line  string
 	start int
 	end   int // exclusive
 }
@@ -205,7 +208,7 @@ func (f *CapturedFixture) Segments(resolve func(text string) string) []Sample {
 		if j+1 < len(lineStarts) {
 			end = lineStarts[j+1]
 		}
-		spans = append(spans, capturedSpan{kind: "dialogue", text: f.Rows[s].Text, start: s, end: end})
+		spans = append(spans, capturedSpan{kind: "dialogue", text: f.Rows[s].Text, line: f.Rows[s].Line, start: s, end: end})
 	}
 	return f.buildSamples(spans, resolve)
 }
@@ -220,8 +223,18 @@ func (f *CapturedFixture) buildSamples(spans []capturedSpan, resolve func(text s
 		}
 		n++
 		frames := make([]Frame, 0, sp.end-sp.start)
-		for _, r := range f.Rows[sp.start:sp.end] {
+		// The display window (ADR-0058 amendment 3): the frames the oracle says
+		// the line is on screen — a present row whose line label is the span's
+		// line. Within the span's range the segmenting rule guarantees every
+		// line row is the span's line, so this is the line's frames exactly:
+		// the trailing frames (the next occurrence's lead-in) carry a
+		// different label or no box and fall outside the window.
+		dw := make([]bool, sp.end-sp.start)
+		for i, r := range f.Rows[sp.start:sp.end] {
 			frames = append(frames, Frame{File: r.File, TsNS: r.TsNS, Absent: !r.Present})
+			if sp.kind == "dialogue" {
+				dw[i] = r.Present && r.Line == sp.line
+			}
 		}
 		s := Sample{
 			ID:             fmt.Sprintf("cx%04d", n),
@@ -233,6 +246,7 @@ func (f *CapturedFixture) buildSamples(spans []capturedSpan, resolve func(text s
 			IntendedSpeech: sp.kind == "dialogue",
 			Split:          SplitHoldout, // a captured frame is graded, never tuned on
 			Variant:        Variant{Resolution: f.Resolution},
+			DisplayWindow:  dw,
 		}
 		if id := resolve(sp.text); id != "" {
 			id := id

@@ -262,6 +262,12 @@ type Config struct {
 	// record, this is the one a test prints.
 	Trace bool
 
+	// TraceMax bounds the trace ring's row count; zero keeps the runtime default
+	// (defaultTraceMax). A harness that reads the ring after a long replay sizes
+	// it to the run so no row is evicted and asserts Stats.TraceDropped is 0
+	// (ADR-0058 amendment 3). Negative is a configuration error.
+	TraceMax int
+
 	// Now stamps Stats latency buckets. nil uses time.Now; tests may inject.
 	Now func() time.Time
 }
@@ -491,6 +497,8 @@ func (c Config) Validate() error {
 		return ErrNoRegion
 	case c.SessionID == "":
 		return errors.New("pipeline: session_id is required")
+	case c.TraceMax < 0:
+		return errors.New("pipeline: trace_max must be ≥ 0 (0 = default ring size)")
 	}
 	seen := map[string]bool{}
 	for i, r := range c.Regions {

@@ -75,7 +75,7 @@ func New(cfg Config) (*Runner, error) {
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
-	return &Runner{cfg: c, cnt: newCounters(c.Trace), gates: newGates(c.Regions)}, nil
+	return &Runner{cfg: c, cnt: newCounters(c.Trace, c.TraceMax), gates: newGates(c.Regions)}, nil
 }
 
 // Config reports the effective configuration, including the clamps normalize
@@ -128,6 +128,12 @@ type rankRequest struct {
 	gen     int64
 	entered time.Time
 	ocrAt   time.Time
+	// frameSeq and captureTSNS stamp the ranking's trace row with the frame
+	// that drove the dispatch: the row is the answer to this observation's
+	// stable reading, and the harness's display-window readout (ADR-0058
+	// amendment 3) correlates the row with the oracle's frames on this stamp.
+	frameSeq    int64
+	captureTSNS int64
 }
 
 type rankJob struct {

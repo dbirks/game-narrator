@@ -66,6 +66,15 @@ type Sample struct {
 	IntendedSpeech bool    `json:"intended_speech"`
 	Split          string  `json:"split"` // tuning | holdout
 	Variant        Variant `json:"variant"`
+	// DisplayWindow marks, per frame index, the frames the oracle says the
+	// sample's line is on screen. The captured holdout fills it from the
+	// fixture's per-frame oracle rows (ADR-0058 amendment 3: the top-1 readout
+	// is graded on the line's display window, not the span's last row); the
+	// synthetic sets leave it nil, and the window then falls back to the
+	// sample's box-present frames. It is oracle plumbing the harness computes,
+	// never truth data: the field is excluded from the truth.json schema
+	// (json:"-"), so no set migration is involved.
+	DisplayWindow []bool `json:"-"`
 }
 
 // TruthSet is the whole ground-truth document.

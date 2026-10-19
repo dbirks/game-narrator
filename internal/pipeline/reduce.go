@@ -303,13 +303,15 @@ func (r *Runner) maybeRank(ctx context.Context, red *session.Reducer, head *redu
 		head.ranked[rs.RegionID] = rs.NormalizedKey
 
 		req := rankRequest{
-			region:  rs.RegionID,
-			obsSeq:  head.byRegion[rs.RegionID],
-			text:    rs.Text,
-			scene:   r.cfg.SceneID,
-			gen:     gen,
-			entered: v.entered,
-			ocrAt:   v.ocrAt,
+			region:      rs.RegionID,
+			obsSeq:      head.byRegion[rs.RegionID],
+			text:        rs.Text,
+			scene:       r.cfg.SceneID,
+			gen:         gen,
+			entered:     v.entered,
+			ocrAt:       v.ocrAt,
+			frameSeq:    v.obs.FrameSeq,
+			captureTSNS: v.obs.CaptureTimestampNS,
 		}
 		if a := head.anchors[rs.RegionID]; a != nil {
 			req.entered, req.ocrAt = a.entered, a.ocrAt
@@ -533,12 +535,14 @@ func (r *Runner) bookRanking(rk rankIn, res session.Result) error {
 		score = rk.rank.Candidates[0].Probability
 	}
 	r.cnt.recordTrace(TraceEntry{
-		RegionID:     rk.req.region,
-		AcceptedText: rk.req.text,
-		TopCandidate: top,
-		TopScore:     score,
-		Reason:       rk.rank.Reason,
-		Event:        eventNames(res.Events),
+		FrameSeq:           rk.req.frameSeq,
+		CaptureTimestampNS: rk.req.captureTSNS,
+		RegionID:           rk.req.region,
+		AcceptedText:       rk.req.text,
+		TopCandidate:       top,
+		TopScore:           score,
+		Reason:             rk.rank.Reason,
+		Event:              eventNames(res.Events),
 	})
 	return nil
 }

@@ -11,7 +11,9 @@ the scripted speech sidecar), ADR-0054 (Dolphin fixture factory), AGENTS.md
 rules 3 (provenance classes) and 5 (no game material in tracked files).
 Tests: `TestCapturedBench*` (internal/bench/captured_test.go), `TestBenchE2E`
 (unchanged synthetic assertions), `TestTop1GradingWindowTrailingMessage`
-(internal/bench/tail_message_test.go, amendment 2), `make bench`.
+(internal/bench/tail_message_test.go, amendments 2 and 3),
+`TestTraceRingOverflowCountsDrops`/`TestTraceRingDefaultKeepsShortRuns`
+(internal/pipeline/runner_test.go, amendment 3), `make bench`.
 
 ## Context and constraints
 
@@ -222,3 +224,105 @@ the truth line exactly once.
 **Reversal.** If a future fixture/grading change trims the span to the
 line's display window (or re-grades the top-1 readout on it, per a new ADR),
 raw and adjusted figures coincide and this amendment's adjustment expires.
+
+## Amendment 3 (2026-10-19): top-1 is graded on the truth line's display
+window; the legacy last-row figure stays visible; the harness loses no trace
+rows (ring overflow is a loud failure, not a shrunken denominator)
+
+Amendment 2 measured the ≥95% top-1 objective on the display window (19/19)
+and kept the raw last-row figure (17/18) in the report as not_met. This
+amendment makes the display window the *graded* reading — so both holdouts
+are graded one way — and fixes the companion denominator artifact (cx0020
+overflowing the 512-row trace ring and dropping out of the top-1 denominator).
+No matcher threshold or fold changes; no change in `internal/matcher` or
+`internal/games/textnorm`.
+
+**1. The display window (precise definition).** For an in-script sample the
+display window is the set of frames the oracle says the truth line is on
+screen:
+
+- **class (b) captured**: the fixture's per-frame oracle rows (truth.json) —
+  the rows where `box_present` is true **and** the row's line label equals the
+  span's line label. Within a span's range the segmenting rule guarantees every
+  line row is the span's line, so the window is the line's frames exactly and
+  the trailing frames (the next occurrence's lead-in, which carry a different
+  label or no box) fall outside it. This is cx0014's shape made structural:
+  the trailing prompt frames are outside line 471's window.
+- **class (a) synthetic**: the sample's box-present frames (its text.png
+  frames). A synthetic sample's trailing frames are boxless, so the window and
+  the ranked span coincide there and the two classes are graded one way.
+
+The harness carries this per sample (`Sample.DisplayWindow`, `json:"-"` —
+oracle plumbing the harness computes from the fixture's labels, never truth
+data; the truth.json schema is unchanged).
+
+**2. The graded top-1 (precise definition).** Over the pipeline's ranking
+trace rows (rows with a top candidate) whose driving frame — now stamped on
+the row with `frame_seq`/`capture_timestamp_ns` (the frame that drove the
+ranking dispatch) — falls inside the window's capture-ts range, the graded
+top-1 is:
+
+- the top candidate of the line's **committed/stable reading** when the sample
+  committed: the last window row whose accepted text equals the first commit's
+  stable text (the `text` of message.committed). The session's own commit rule
+  makes this the commit's reading: `session/apply.go decide` commits the
+  applied ranking's top candidate, and an applied ranking's text must equal the
+  region's text (`stale_text` fence), so the commit's stable text is exactly
+  the accepted text of the row that committed it;
+- else (the sample did not commit, or no such row exists) the top candidate of
+  the window's **last ranking row**.
+
+A sample with no ranking row in the window — or no oracle window at all — is
+graded on the legacy last-row reading (the last ranking row of the whole span),
+never silently dropped. `top1_exact_accuracy` is graded on this reading and the
+≥95% objective applies to it.
+
+**3. The legacy figure is not hidden.** The old whole-span last-row reading
+stays in the report as its own row, `top1_last_row` (informational, no
+objective): the same in-script samples graded on the last ranking row of the
+whole span. The report's Top-1 misses table records both readings per sample
+(`window` | `last_row`), so a trailing in-script message (cx0014's prompt,
+message 472) still reads the legacy figure down on the record instead of
+disappearing. The calibration row's incorrect-top-1 count and the fit's raw
+material (`collectFit`) are taken from the graded reading / the committed
+stable reading, so the fit's evidence and the graded row agree.
+
+**4. The harness loses no trace rows.** The pipeline's trace ring is a bounded
+in-memory readout. It now exposes:
+
+- `Config.TraceMax` — the ring's row bound (zero keeps the runtime default of
+  512, which is **unchanged**: this is a harness option, not a runtime-default
+  change).
+- `Stats.TraceDropped` — the count of rows evicted from a full ring, so a
+  caller that sized the ring can assert none were lost.
+
+The bench harness sizes the ring per sample to `frames*4+64` (a frame
+contributes at most three rows: one dispatch, one observation, one ranking)
+and treats a non-zero `Stats.TraceDropped` as a **hard failure of that sample**
+(loud NOT RUN with the eviction count), not a shed row to grade around. This
+removes the cx0020 denominator artifact: its 680-frame span no longer overflows
+the ring, so its ranking rows are retained and the sample is graded like every
+other in-script sample.
+
+**5. Measured effect (run 20261019; two deterministic re-runs agree).** On the
+`windwaker-legend-dense` holdout the graded top-1 is **19/19 = 100% met** on
+the display window (all 19 in-script samples now ranked — cx0020 retained),
+while `top1_last_row` stays **17/18 = 94.4%** (cx0014's trailing prompt, the
+amendment-2 evidence, still visible). The `windwaker-newgame` and synthetic
+holdouts are unaffected (their windows coincide with the ranked span). No
+matcher change.
+
+**Reproduction.** `TestTop1GradingWindowTrailingMessage`
+(internal/bench/tail_message_test.go) reproduces the class on synthetic frames
+with invented text and now asserts the graded reading (truth counted correct on
+the display window) while the `last_row` reading still records the trailing
+message. The overflow guard is `TestTraceRingOverflowCountsDrops` and
+`TestTraceRingDefaultKeepsShortRuns` (internal/pipeline/runner_test.go): a ring
+sized below the run's rows retains exactly `TraceMax` rows and counts every
+eviction, and the default ring keeps a short run with zero drops.
+
+**Reversal.** Revert the graded reading to the last ranking row of the whole
+span (drop the `top1_exact_accuracy`/`top1_last_row` split and restore the
+single last-row row), remove `Config.TraceMax`/`Stats.TraceDropped` and the
+harness's per-sample ring sizing, and un-stamp the ranking trace row. The
+pipeline's runtime default ring size is untouched by this amendment either way.

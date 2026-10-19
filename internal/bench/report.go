@@ -265,9 +265,10 @@ func RenderMarkdown(rep *Report, outcomes []sampleOutcomes) string {
 	}
 	if len(d.Top1Misses) > 0 {
 		b.WriteString("\n## Top-1 misses — ranked in-script samples whose first candidate was not the truth (message ids; no game text in this report)\n\n")
-		b.WriteString("| sample | truth message | top-1 message | top-1 prob |\n|---|---|---|---|\n")
+		b.WriteString("reading: `window` = the graded display-window reading (top1_exact_accuracy); `last_row` = the legacy last-ranking-row-of-the-span figure (top1_last_row)\n\n")
+		b.WriteString("| sample | reading | truth message | top-1 message | top-1 prob |\n|---|---|---|---|---|\n")
 		for _, m := range d.Top1Misses {
-			fmt.Fprintf(&b, "| %s | %s | %s | %.4f |\n", m.SampleID, m.MessageID, m.TopID, m.TopProb)
+			fmt.Fprintf(&b, "| %s | %s | %s | %s | %.4f |\n", m.SampleID, m.Reading, m.MessageID, m.TopID, m.TopProb)
 		}
 	}
 	b.WriteString("\n## Manifest\n\n")

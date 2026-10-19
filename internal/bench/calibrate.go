@@ -211,7 +211,10 @@ func capturedFitSource(fx *CapturedFixture, samples []Sample, msgs []games.Messa
 }
 
 // collectFit re-ranks each completed sample's committed stable reading
-// (falling back to its last OCR reading) against the sample's index and
+// (the message.committed "text" payload — the reading the commit was based
+// on, not the span's last row, which a segment's trailing frames may show
+// as a different in-script message; ADR-0058 amendment 3) against the
+// sample's index and
 // returns the fit's raw material plus the counts: used, skipped (empty box
 // or retrieval miss — counted, never silently dropped) and the incorrect
 // top-1 examples (the fit's raw material: a fit needs wrong top-1s to have
@@ -225,7 +228,10 @@ func collectFit(outcomes []sampleOutcomes, idx *matcher.Index) (fit []matcher.Te
 			skipped++ // empty box (or a truth line not in the script): nothing to calibrate against
 			continue
 		}
-		text := o.commitText
+		var text string
+		if len(o.commitStable) > 0 {
+			text = o.commitStable[0]
+		}
 		if text == "" {
 			text = o.ocrText
 		}

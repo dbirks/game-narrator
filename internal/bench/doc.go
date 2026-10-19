@@ -96,11 +96,21 @@ type NotRunSample struct {
 	Reason   string `json:"reason"`
 }
 
-// Top1Miss is one ranked in-script sample whose top-1 was not the truth
-// message. Message ids only: reports carry no game text (AGENTS.md rule 5).
+// Top1Miss is one (sample, reading) whose top-1 was not the truth message.
+// Reading names the graded reading the row was taken on (ADR-0058 amendment
+// 3): "window" — the display-window reading top1_exact_accuracy grades — or
+// "last_row" — the legacy last-ranking-row-of-the-span reading, kept visible
+// so a trailing in-script message stays on the record. Message ids only:
+// reports carry no game text (AGENTS.md rule 5).
+const (
+	Top1ReadingWindow  = "window"
+	Top1ReadingLastRow = "last_row"
+)
+
 type Top1Miss struct {
 	SampleID  string  `json:"sample_id"`
 	MessageID string  `json:"message_id"` // the truth message
-	TopID     string  `json:"top_id"`     // the candidate the pipeline ranked first
+	Reading   string  `json:"reading"`    // window | last_row
+	TopID     string  `json:"top_id"`     // the candidate the reading ranked first
 	TopProb   float64 `json:"top_prob"`
 }

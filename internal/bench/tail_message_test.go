@@ -3,14 +3,18 @@ package bench
 // TestTop1GradingWindowTrailingMessage reproduces, on class (a) synthetic
 // frames with invented text (no game material), the top-1 grading-window
 // failure measured on the captured holdout's sample cx0014 (ADR-0058
-// amendment 2): a sample span whose trailing frames show a DIFFERENT
-// in-script message (there: the game's continuation prompt rendered in the
-// subtitle bar). The pipeline and the matcher behave correctly on both lines
-// — the shown line is committed, and the trailing line is ranked top-1 when
-// it appears — but the top-1 metric grades the LAST ranking row of the whole
-// span, so the sample is recorded as a top-1 miss. The assertions pin that
-// shape so a future change to the matcher, the tracker or the metric cannot
-// silently move the class of failure without updating this test.
+// amendment 2) and pins the amendment-3 grading that fixes it: a sample span
+// whose trailing frames show a DIFFERENT in-script message (there: the game's
+// continuation prompt rendered in the subtitle bar). The pipeline and the
+// matcher behave correctly on both lines — the shown line is committed, and
+// the trailing line is ranked top-1 when it appears. The top-1 objective is
+// graded on the truth line's DISPLAY WINDOW (the oracle's frames where the
+// line is on screen), where the truth is the top-1; the legacy
+// last-ranking-row-of-the-span reading still records the trailing message as
+// a miss, kept visible as the informational top1_last_row figure rather than
+// hidden. The assertions pin that shape so a future change to the matcher,
+// the tracker or the metric cannot silently move the class of failure
+// without updating this test.
 
 import (
 	"context"
@@ -114,6 +118,17 @@ func TestTop1GradingWindowTrailingMessage(t *testing.T) {
 	}
 	ext := ts.Samples[0]
 	ext.Frames = extFrames
+	// The oracle for the extended span: line A is on screen on s1's box
+	// frames only; s2's frames render line B (the trailing content) and are
+	// outside A's display window — the captured cx0014 shape, where the
+	// fixture's per-frame oracle labels play this role.
+	first := len(ts.Samples[0].Frames)
+	// s1's frames are the first block: line A's window is its box-present
+	// frames; s2's frames (the trailing content, line B) are outside it.
+	ext.DisplayWindow = make([]bool, len(extFrames))
+	for i := 0; i < first; i++ {
+		ext.DisplayWindow[i] = ts.Samples[0].Frames[i].File == "text.png"
+	}
 	tsPath := filepath.Join(work, "ts-extended.json")
 	if err := writeManifest(tsPath, ext.Frames); err != nil {
 		t.Fatal(err)
@@ -133,18 +148,44 @@ func TestTop1GradingWindowTrailingMessage(t *testing.T) {
 		t.Fatalf("commits = %v, want the shown line %s first", out.commitMsgIDs, idA)
 	}
 	// 2. The trailing message is ranked top-1 when it is on screen: the
-	// matcher is right about both lines.
+	// matcher is right about both lines (the last-row reading).
 	if out.topID != idB {
 		t.Fatalf("last ranking row's top = %s, want the trailing line %s", out.topID, idB)
 	}
-	// 3. The top-1 grading window (last ranking row of the whole span)
-	// records the sample as a miss — the exact shape of the cx0014 entry in
-	// the captured report.
-	misses := top1Misses([]sampleOutcomes{out})
-	if len(misses) != 1 || misses[0].SampleID != ext.ID || misses[0].MessageID != idA || misses[0].TopID != idB {
-		t.Fatalf("top1Misses = %+v, want one miss (truth %s, top-1 %s)", misses, idA, idB)
+	// 3. Display-window grading (ADR-0058 amendment 3): graded on the frames
+	// the oracle says line A is on screen, the truth line is the top-1 — the
+	// cx0014-shaped miss is a grading-window artifact, not a matcher error.
+	if !out.windowRanked {
+		t.Fatalf("window ranking = none, want a ranking row inside the display window")
 	}
-	// 4. The scripted speech side speaks only the truth line, once.
+	if out.windowTopID != idA {
+		t.Fatalf("display-window top-1 = %s, want the truth line %s (the committed/stable reading in the window)", out.windowTopID, idA)
+	}
+	// 4. The misses list records the readings separately: the window reading
+	// is a hit, the legacy last-row reading still records the trailing
+	// message (visible, not hidden — the amendment-2 evidence stays on the
+	// record as the top1_last_row figure).
+	misses := top1Misses([]sampleOutcomes{out})
+	if len(misses) != 1 || misses[0].SampleID != ext.ID || misses[0].MessageID != idA || misses[0].TopID != idB || misses[0].Reading != Top1ReadingLastRow {
+		t.Fatalf("top1Misses = %+v, want exactly one miss: the last-row reading (truth %s, top-1 %s)", misses, idA, idB)
+	}
+	// 5. The metric rows grade one way and keep the other visible:
+	// top1_exact_accuracy (display window) counts the truth as correct,
+	// top1_last_row (legacy span-wide figure) records the miss.
+	m := RunMetrics([]sampleOutcomes{out})
+	if g := findMetric(t, m, "top1_exact_accuracy"); g.N != 1 || g.Value != 1.0 || g.Met != "met" {
+		t.Errorf("top1_exact_accuracy = %+v, want 1/1 met on the display window", g)
+	}
+	if g := findMetric(t, m, "top1_last_row"); g.N != 1 || g.Value != 0.0 {
+		t.Errorf("top1_last_row = %+v, want 0/1 (the trailing message still reads the legacy figure down)", g)
+	}
+	// 6. The harness lost no trace rows: the ring is sized to the sample and
+	// the overflow fence (Stats.TraceDropped) reads zero (ADR-0058 amendment
+	// 3).
+	if out.stats.TraceDropped != 0 {
+		t.Fatalf("trace ring dropped %d rows on a %d-frame sample sized to %d rows: the harness must lose no rows", out.stats.TraceDropped, len(ext.Frames), benchTraceMax(len(ext.Frames)))
+	}
+	// 7. The scripted speech side speaks only the truth line, once.
 	if len(out.speechStarted) != 1 || out.speechStarted[0].messageID != idA {
 		t.Fatalf("speech.started = %+v, want exactly the truth line %s once", out.speechStarted, idA)
 	}
