@@ -490,26 +490,45 @@ func (r *FixtureRecorder) StartCapture(ctx context.Context) error {
 	return nil
 }
 
-// StopCapture joins the capture loop. It is idempotent and safe before
-// StartCapture. Finalize calls it, so a capture never writes a frame after
-// the manifest is assembled.
+// StopCapture joins the capture loop and its workers. It is idempotent and
+// safe before StartCapture: a second StopCapture (and Finalize, which
+// always calls it first) returns without waiting again — receiving from
+// the already-closed done channel is immediate — so StopCapture + Finalize
+// can be called in any order and any number of times.
+//
+// The join keys on the loop's done channel, NOT the captureOn flag: the loop
+// clears the flag itself when it stops on its own budget (the duration or
+// byte gates in captureGate/captureReserve), and a flag-keyed join would
+// early-return in that case and let Finalize read the frame list while the
+// in-flight frames are still being encoded and written — a manifest shorter
+// than the files on disk (the fixture-loss shape, masked in production only
+// by wall-clock drain time). Both stop paths (self-stop on budget, cancel)
+// end in the same defers — close(jobs), wg.Wait, close(done) — so waiting
+// on done is the one join that is correct no matter who stopped the loop.
 func (r *FixtureRecorder) StopCapture() {
 	r.mu.Lock()
-	if !r.captureOn {
-		r.mu.Unlock()
+	done := r.captureDone
+	cancel := r.captureCancel
+	if done != nil {
+		r.captureOn = false
+	}
+	r.mu.Unlock()
+	if done == nil {
+		// The capture never started: nothing to join (no deadlock, no wait
+		// on a nil channel).
 		return
 	}
-	r.captureOn = false
-	cancel := r.captureCancel
-	done := r.captureDone
-	r.captureCancel = nil
-	r.mu.Unlock()
+	// The loop's done channel closes only in the loop's exit defers —
+	// close(jobs) + wg.Wait + close(done) — whichever stop path the loop
+	// took, so waiting on it joins the worker drain no matter who stopped
+	// the loop. It is also the second call's join (receiving from an
+	// already-closed channel returns), which is the idempotency the
+	// budget-self-stop case needs: the loop clears captureOn itself there,
+	// so the flag says "not running" while the drain is still open.
 	if cancel != nil {
-		cancel()
+		cancel() // idempotent; a no-op once the loop has stopped itself
 	}
-	if done != nil {
-		<-done
-	}
+	<-done
 }
 
 // captureWorkers is the parallel worker count of the capture loop (encode +
@@ -546,7 +565,18 @@ type captureJob struct {
 // Screenshot shares. It stops on context cancel, the budget, or
 // captureFailTolerance consecutive grab failures (a lost display is not
 // something a capture loop should spin on).
+//
+// The join contract (ADR-0071): every exit path — budget self-stop, cancel,
+// grab-failure stop — funnels into the same defers, and the done channel is
+// closed EXACTLY ONCE, by the first defer registered, in this goroutine:
+// the exit sequence is close(jobs) -> wg.Wait (every in-flight frame is
+// encoded, written and published) -> close(done). StopCapture and Finalize
+// join on done, so the worker drain finishes before the frame list is read
+// no matter who stopped the loop. Nothing outside this goroutine closes
+// done (and nothing may: a second close would panic the process).
 func (r *FixtureRecorder) captureLoop(ctx context.Context, done chan struct{}) {
+	// close(done) is registered FIRST so it runs LAST, after the drain
+	// defer below: the joiner sees done closed only when the drain is done.
 	defer close(done)
 	jobs := make(chan captureJob, captureInflight)
 	var wg sync.WaitGroup
@@ -562,7 +592,8 @@ func (r *FixtureRecorder) captureLoop(ctx context.Context, done chan struct{}) {
 	// The grabber leaves the loop and then close(jobs) makes the workers
 	// drain the channel (every grabbed frame is a reserved frame number and
 	// must be completed); wg.Wait returns the loop to StopCapture only when
-	// nothing is in flight.
+	// nothing is in flight. This defer runs BEFORE close(done) (LIFO), so
+	// the drain is complete by the time the done channel closes.
 	defer func() { close(jobs); wg.Wait() }()
 
 	interval := r.intervalFor(r.lastScreenLocked())
@@ -592,7 +623,7 @@ func (r *FixtureRecorder) captureLoop(ctx context.Context, done chan struct{}) {
 			continue
 		}
 		fails = 0
-		no, active, fresh := r.captureReserve()
+		no, stamp, active, fresh := r.captureReserve()
 		if !active {
 			// The capture stopped (budget or cancel) between the gate and
 			// the reserve: the grabbed frame is not part of the recording —
@@ -609,7 +640,7 @@ func (r *FixtureRecorder) captureLoop(ctx context.Context, done chan struct{}) {
 		case <-ctx.Done():
 			r.captureSkip(no) // the grab happened but the recording ended: drop it, keep the sequence whole
 			return
-		case jobs <- captureJob{no: no, ts: r.clock.now(), img: img}:
+		case jobs <- captureJob{no: no, ts: stamp, img: img}:
 		}
 		interval = r.intervalFor(r.lastScreenLocked())
 	}
@@ -628,32 +659,37 @@ func (r *FixtureRecorder) lastScreenLocked() DriveScreen {
 // may be captured now (the captureMinGap since the last reservation of
 // either stream — the gap is enforced on reservations, the capture instant,
 // so in-flight frames cannot burst past it while a previous frame is still
-// in a worker), and, when both hold, hands out the reserved frame number.
-// (no, active, fresh): no>0 means the number is reserved and the frame
-// must be completed (or skipped at cancel); active=false means the capture
-// has stopped for good; fresh=false means retry soon.
-func (r *FixtureRecorder) captureReserve() (int, bool, bool) {
+// in a worker), and, when both hold, hands out the reserved frame number
+// with its reservation stamp. (no, stamp, active, fresh): no>0 means the
+// number is reserved and the frame must be completed (or skipped at
+// cancel); the stamp is the clock instant of the reservation — the job's
+// recorded timestamp is THIS stamp, not a second clock read (a re-read at
+// job hand-off drifts up to a loop interval past the reservation, so the
+// recorded timestamps could run closer than the gap the reservation
+// enforced); active=false means the capture has stopped for good;
+// fresh=false means retry soon.
+func (r *FixtureRecorder) captureReserve() (int, time.Time, bool, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !r.captureOn {
-		return 0, false, false
+		return 0, time.Time{}, false, false
 	}
 	if r.plan.MaxDuration > 0 && r.clock.now().Sub(r.captureStart) >= r.plan.MaxDuration {
 		r.captureOn = false // the budget is the stop; the manifest records the window
-		return 0, false, false
+		return 0, time.Time{}, false, false
 	}
 	if r.plan.MaxBytes > 0 && r.captureBytes >= r.plan.MaxBytes {
 		r.captureOn = false
-		return 0, false, false
+		return 0, time.Time{}, false, false
 	}
 	fresh := r.lastFrameTS.IsZero() || r.clock.now().Sub(r.lastFrameTS) >= captureMinGap
 	if !fresh {
-		return 0, true, false
+		return 0, time.Time{}, true, false
 	}
 	no := r.nextFrameNo
 	r.nextFrameNo++
 	r.lastFrameTS = r.clock.now()
-	return no, true, true
+	return no, r.lastFrameTS, true, true
 }
 
 // reserveFrameNoLocked reserves the next frame number unconditionally —
@@ -932,8 +968,11 @@ const OCRConfFloor = 0.4
 // "recorded OCR answer" convention the synthetic corpus uses
 // (docs/spec/11 "Fixture origins").
 func (r *FixtureRecorder) Finalize(ctx context.Context, drv DriveTrace) (FixtureSummary, error) {
-	// Join any running parallel capture first: the manifest is assembled
-	// from the frame list as of this point, so no frame may land after it.
+	// Join the parallel capture first, if there is one: the manifest is
+	// assembled from the frame list as of this point, so no frame may land
+	// after it. StopCapture is a no-op when the capture never started and
+	// returns immediately when a StopCapture already joined the drain (the
+	// done channel is already closed), so Finalize never waits again.
 	r.StopCapture()
 	r.mu.Lock()
 	frames := append([]FixtureFrame(nil), r.frames...)

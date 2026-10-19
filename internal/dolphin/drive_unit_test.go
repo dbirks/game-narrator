@@ -527,3 +527,164 @@ func TestDriveStorySubWinsWhenReachedFirst(t *testing.T) {
 		t.Errorf("credit = %q/%s, want story_subtitle (reached first)", drv.Reason, drv.SuccessScreen)
 	}
 }
+
+// TestNameConfirmLostARecovery is the 2026-10-19 live-play run's loss mode as
+// a unit: the measured A on a cursor-on-Yes name-confirm lands while the
+// dialog is still settling and is dropped, so the dialog stays up with the
+// cursor blinking off (side unmeasured). The old policy's blind stick after 3
+// no-side iterations wrapped the cursor away from Yes (each 900 ms hold moves
+// it one step) and the dialog resolved on the no path — the screen went back
+// to the title and the drive sat on the re-raised prompt until the loop
+// detector killed the run. The policy must instead resend the measured A
+// while the last MEASURED side was Yes (the cursor cannot have moved: only
+// our input moves it, and the policy sends no stick in that window), and
+// never send the blind stick onto a Yes-confirmed dialog.
+func TestNameConfirmLostARecovery(t *testing.T) {
+	b := &fakeBridge{shots: []image.Image{
+		synthTitleDim(320, 240),        // title: START
+		synthNameEntDim(320, 240),      // the name entry: A+START+A(name)
+		synthTitleDim(320, 240),        // the measured bounce back to the title: START
+		synthContinue(320, 240, "no"),  // the name confirm, cursor measured on No: the stick
+		synthContinue(320, 240, "yes"), // cursor measured on Yes: the prescribed A
+		synthBlinkOffPrompt(320, 240),  // the A dropped on the dialog's settle: blinking off
+		synthBlinkOffPrompt(320, 240),  // the dialog still up, still blinking off
+		synthDialog(320, 240),          // the retry lands: the save-creation notice
+		synthBoxDark(320, 240),         // the measured DARK box form (success)
+	}}
+	drv, err := RunDrive(context.Background(), b, fastOpts(90), WindWakerNewGameDrive())
+	if err != nil || !drv.OK {
+		t.Fatalf("drive = ok %v err %v reason %q\n%s", drv.OK, err, drv.Reason, drv.TransitionLog())
+	}
+	if drv.Reason != "dialogue_box" {
+		t.Errorf("reason = %q, want dialogue_box", drv.Reason)
+	}
+	want := []DriveScreen{DriveScreenTitle, DriveScreenNameEntry, DriveScreenTitle,
+		DriveScreenNameConfirm, DriveScreenNameConfirm, DriveScreenNameConfirm,
+		DriveScreenNameConfirm, DriveScreenSaveNotice, DriveScreenDialogueBox}
+	if len(drv.Transitions) != len(want) {
+		t.Fatalf("transitions = %d, want %d:\n%s", len(drv.Transitions), len(want), drv.TransitionLog())
+	}
+	for i, w := range want {
+		if drv.Transitions[i].Screen != w {
+			t.Errorf("transition %d screen = %s, want %s", i, drv.Transitions[i].Screen, w)
+		}
+	}
+	// The measured action sequence: START, A+START+A (3 injects), START,
+	// stick (the one and only stick, onto the measured No), A (Yes),
+	// A, A (the two lost-A retries), A (the notice). Ten injects, and
+	// injects 6..8 carry NO axes: the blind stick onto a Yes-confirmed
+	// dialog is exactly the input that lost the 2026-10-19 run.
+	if len(b.injects) != 10 {
+		t.Fatalf("injects = %d, want 10: %+v", len(b.injects), b.injects)
+	}
+	if b.injects[5].axes.MainX != -1 || b.injects[5].buttons.A {
+		t.Errorf("confirm:no inject = %+v, want the measured stick left with no button", b.injects[5])
+	}
+	for i := 6; i <= 8; i++ {
+		if b.injects[i].axes.MainX != 0 || b.injects[i].axes.MainY != 0 {
+			t.Errorf("inject %d axes = %+v, want no stick (the last measured side was Yes — the retry is the A, not the stick)", i, b.injects[i].axes)
+		}
+		if !b.injects[i].buttons.A {
+			t.Errorf("inject %d buttons = %+v, want the measured A retry", i, b.injects[i].buttons)
+		}
+	}
+	// The transition log: the A retries are named as A, and the blind
+	// STICK(no-side) never happens on this path.
+	log := drv.TransitionLog()
+	for _, w := range []string{"name_confirm:yes --(A)--> name_confirm:-", "name_confirm:- --(A)--> name_confirm:-"} {
+		if !strings.Contains(log, w) {
+			t.Errorf("transition log missing %q:\n%s", w, log)
+		}
+	}
+	if strings.Contains(log, "STICK(no-side)") {
+		t.Errorf("the blind stick fired on a Yes-confirmed dialog (the 2026-10-19 loss mode):\n%s", log)
+	}
+}
+
+// TestNameConfirmLostAThenNoRead is the 2026-10-19 live-play run's EXACT loss
+// sequence as a unit: the measured A on the cursor-on-Yes name-confirm is
+// dropped (the dialog did not advance), and on the next sample the cursor
+// reads back on NO (the dialog's settle moved it). The OLD lastMeasuredSide
+// policy reset its side memory on that No read, so the following blink-off
+// frames fell into the blind STICK(no-side) — which wrapped the cursor and
+// closed the dialog on the NO path (the screen went to the title and START
+// reopened the same prompt until the loop detector killed the run). The
+// confirmPending policy must instead: keep trying to confirm the SAME dialog
+// (a measured-No read re-converges with the measured stick — safe, it
+// converges on Yes — and the blink-off frames retry the measured A, never the
+// blind stick) until the dialog advances to the save notice and the box.
+func TestNameConfirmLostAThenNoRead(t *testing.T) {
+	b := &fakeBridge{shots: []image.Image{
+		synthTitleDim(320, 240),        // title: START
+		synthNameEntDim(320, 240),      // the name entry: A+START+A(name); sets seenName
+		synthContinue(320, 240, "no"),  // the name confirm, cursor measured on No: the stick
+		synthContinue(320, 240, "yes"), // cursor measured on Yes: the prescribed A
+		synthContinue(320, 240, "no"),  // the A dropped; the settle moved the cursor back to No
+		synthBlinkOffPrompt(320, 240),  // the cursor blinks off while the dialog is still up
+		synthBlinkOffPrompt(320, 240),  // still up, still blinking off
+		synthBlinkOffPrompt(320, 240),  // still up, still blinking off
+		synthDialog(320, 240),          // the A retry lands: the save-creation notice
+		synthBoxDark(320, 240),         // the measured DARK box form (success)
+	}}
+	drv, err := RunDrive(context.Background(), b, fastOpts(90), WindWakerNewGameDrive())
+	if err != nil || !drv.OK {
+		t.Fatalf("drive = ok %v err %v reason %q\n%s", drv.OK, err, drv.Reason, drv.TransitionLog())
+	}
+	if drv.Reason != "dialogue_box" {
+		t.Errorf("reason = %q, want dialogue_box", drv.Reason)
+	}
+	want := []DriveScreen{DriveScreenTitle, DriveScreenNameEntry,
+		DriveScreenNameConfirm, DriveScreenNameConfirm, DriveScreenNameConfirm,
+		DriveScreenNameConfirm, DriveScreenNameConfirm, DriveScreenNameConfirm,
+		DriveScreenSaveNotice, DriveScreenDialogueBox}
+	if len(drv.Transitions) != len(want) {
+		t.Fatalf("transitions = %d, want %d:\n%s", len(drv.Transitions), len(want), drv.TransitionLog())
+	}
+	for i, w := range want {
+		if drv.Transitions[i].Screen != w {
+			t.Errorf("transition %d screen = %s, want %s", i, drv.Transitions[i].Screen, w)
+		}
+	}
+	// Eleven injects: START (title), A+START+A (the name entry, 3), stick (No),
+	// A (Yes), stick (No, re-converge — the MEASURED stick, not the blind one),
+	// A A A (the three blink-off retries), A (the notice). The box carries none.
+	if len(b.injects) != 11 {
+		t.Fatalf("injects = %d, want 11: %+v", len(b.injects), b.injects)
+	}
+	// The two No-side actions (the confirm at index 4 and the re-converge at 6)
+	// are the measured stick (MainX=-1, no button).
+	for _, wantStick := range []int{4, 6} {
+		if b.injects[wantStick].axes.MainX != -1 || b.injects[wantStick].buttons.A {
+			t.Errorf("inject %d = %+v, want the measured stick left with no button", wantStick, b.injects[wantStick])
+		}
+	}
+	// The three blink-off retries (7..9) are the measured A with NO stick: this
+	// is the input the old policy got wrong (it sent the blind stick here and
+	// lost the dialog on the No path).
+	for i := 7; i <= 9; i++ {
+		if b.injects[i].axes.MainX != 0 || b.injects[i].axes.MainY != 0 {
+			t.Errorf("inject %d axes = %+v, want no stick (the confirmPending retry is the A, not the blind stick)", i, b.injects[i].axes)
+		}
+		if !b.injects[i].buttons.A {
+			t.Errorf("inject %d buttons = %+v, want the measured A retry", i, b.injects[i].buttons)
+		}
+	}
+	if !b.injects[10].buttons.A || b.injects[10].axes.MainX != 0 {
+		t.Errorf("inject 10 = %+v, want the save-notice A", b.injects[10])
+	}
+	// The transition log: the No read re-converges with the measured stick, the
+	// blink-off frames are A retries, and the blind STICK(no-side) never fires.
+	log := drv.TransitionLog()
+	for _, w := range []string{
+		"name_confirm:yes --(A)--> name_confirm:no",
+		"name_confirm:no --(STICK(-1,0)x900ms)--> name_confirm:-",
+		"name_confirm:- --(A)--> name_confirm:-",
+	} {
+		if !strings.Contains(log, w) {
+			t.Errorf("transition log missing %q:\n%s", w, log)
+		}
+	}
+	if strings.Contains(log, "STICK(no-side)") {
+		t.Errorf("the blind stick fired after the lost-A No read (the 2026-10-19 loss mode):\n%s", log)
+	}
+}
