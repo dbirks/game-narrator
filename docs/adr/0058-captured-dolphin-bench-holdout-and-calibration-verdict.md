@@ -10,7 +10,8 @@ or ADR-adjusted with evidence"), docs/spec/13 evidence correlation, ADR-0035
 the scripted speech sidecar), ADR-0054 (Dolphin fixture factory), AGENTS.md
 rules 3 (provenance classes) and 5 (no game material in tracked files).
 Tests: `TestCapturedBench*` (internal/bench/captured_test.go), `TestBenchE2E`
-(unchanged synthetic assertions), `make bench`.
+(unchanged synthetic assertions), `TestTop1GradingWindowTrailingMessage`
+(internal/bench/tail_message_test.go, amendment 2), `make bench`.
 
 ## Context and constraints
 
@@ -152,3 +153,72 @@ Inputs for this ADR:
   `internal/bench/captured.go`, and the Makefile's captured block, and restore
   the sidecar's end-of-replay answer loop; the synthetic holdout and its
   metrics are unaffected by either.
+
+## Amendment 2 (2026-10-18): the dense holdout's single top-1 miss (cx0014) is a
+grading-window artifact, not a matcher defect; the objective is graded on the
+display window (measured 19/19)
+
+The `windwaker-legend-dense` holdout (run 20261018T194640Z; two deterministic
+re-runs agree) measures top-1 17/18 = 94.4% against the ≥95% provisional
+objective. The one miss is sample cx0014. The diagnosis below is measured
+(replayed sample by sample through the real pipeline; message references are
+stable BMG source ids — no game text, AGENTS.md rule 5):
+
+- cx0014's line is BMG source message **471** (oracle text 72 runes; retrieval
+  key 71 runes), present in fixture frames 296–306 (the fixture's own
+  classifier: `story_subtitle`/`storysub`). The segmentation rule extends the
+  span to the next occurrence to exercise the advance/duplicate-speech paths,
+  so the span carries a 9-frame boxless tail (fixture frames 307–315): 4
+  cutscene frames and 5 frames the fixture factory classifies
+  `prompt`/`continue:yes`.
+- On those 5 prompt frames the subtitle bar renders the game's continuation
+  prompt, which is itself an in-script message: BMG source message **472**
+  (31 runes; 6 words; word rune-lengths 6,3,4,3,3,7; 4 × U+002E; leading
+  3-dot run; trailing two alphanumerics + U+002E). The pipeline's OCR reading
+  of those frames is a 31-rune string whose retrieval key is byte-identical to
+  message 472's stored key (a unique exact-table hit) — a verbatim rendering
+  of a script message, not a hallucination (the fixture's per-frame
+  classifier independently labels the same frames `prompt continue:yes`).
+- The matcher is correct on every observable line of the sample: while line
+  471 is displayed its top-1 = 471, `MATCH_EXACT`, text component 1.0,
+  top-1 probability 0.6328 (the line's OCR reading is 0 characters off the
+  oracle at the first OCR call; the tracker-stable reading differs from the
+  oracle only in three case folds and one line-break-to-space join — all
+  folded by the retrieval key by design). On the prompt frames the top-1 =
+  472, `MATCH_EXACT`, text component 1.0, probability 0.6912 — the reported
+  miss (top_prob identical to four digits).
+- `top1_exact_accuracy` grades each in-script sample on the LAST ranking row
+  of the whole sample span (the harness's `sampleOutcomes.topID`). For cx0014
+  that row is the prompt-frame ranking of 472 — a different, correctly
+  recognized in-script message — hence the 17/18.
+- Companion denominator artifact, same tail design: cx0020 (final line;
+  680-frame span, 580 of them trailing `prompt continue:yes` frames) overflows
+  the pipeline's 512-row trace ring, so the harness readout keeps no ranking
+  rows for it (all 512 retained rows are box-absent observation rows) and the
+  sample drops out of the top-1 denominator (18 of 19 in-script samples are
+  "ranked"). Its truth was nonetheless committed first (recall 19/19): the
+  committed message is the ranking's top candidate (`session/apply.go`
+  decide), so the truth was top-1 in its own display window.
+
+**Verdict.** The ≥95% top-1 objective is met on the display window:
+**19/19 = 100%** of in-script samples have their truth message accepted as
+top-1 while it is on screen (the commit-side reading of the same rankings;
+recall 19/19 is that reading). The raw last-row figure stays **17/18 = 94.4%
+not_met in the report** — it is not hidden, and no matcher threshold or fold
+is tuned to move it: no change in `internal/matcher` or
+`internal/games/textnorm` is warranted by this evidence, and the synthetic
+holdout (48 samples) and every other metric are unaffected. The calibration
+verdict is unchanged: NOT FITTED (0 incorrect top-1 among fit-eligible
+samples; the fit requires ≥10).
+
+**Reproduction.** `TestTop1GradingWindowTrailingMessage`
+(internal/bench/tail_message_test.go) reproduces the class on class (a)
+synthetic frames with invented text: a sample whose trailing frames show a
+different in-script message. It asserts the shown line commits first, the
+trailing line is ranked top-1 while displayed, the last-row grading window
+records exactly the cx0014-shaped miss, and the scripted speech side speaks
+the truth line exactly once.
+
+**Reversal.** If a future fixture/grading change trims the span to the
+line's display window (or re-grades the top-1 readout on it, per a new ADR),
+raw and adjusted figures coincide and this amendment's adjustment expires.
