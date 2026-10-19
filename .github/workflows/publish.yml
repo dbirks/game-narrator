@@ -251,7 +251,8 @@ jobs:
           sudo tar -C /usr/local/bin -xzf /tmp/syft.tgz syft
           syft version
 
-      # Builds everything, pushes the multi-arch image (tag = v1.2.3) with the
+      # Builds everything, pushes the multi-arch image (tag = 1.2.3 —
+      # {{ .Version }} strips the leading v from the git tag) with the
       # goreleaser SBOM attestation, signs per-arch images + manifest via
       # docker_signs (keyless cosign) and creates the GitHub Release
       # (prerelease for v0.* — see the release block in .goreleaser.yaml).
@@ -270,7 +271,9 @@ jobs:
       - name: Verify signature (self-check, mirrors docs/release.md)
         run: |
           set -euo pipefail
-          TAG="${GITHUB_REF#refs/tags/}"
+          # The image tag is {{ .Version }} — the git tag WITHOUT its leading
+          # v (goreleaser strips it; e.g. v0.4.2 -> image tag 0.4.2).
+          TAG="${GITHUB_REF#refs/tags/v}"
           cosign verify \
             --certificate-identity-regexp 'https://github.com/dbirks/game-narrator/.github/workflows/publish.yml@.*' \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \

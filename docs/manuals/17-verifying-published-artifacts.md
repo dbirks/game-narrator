@@ -36,7 +36,9 @@ anchor (docs/release.md, "Hard rules").
      --certificate-oidc-issuer https://token.actions.githubusercontent.com
    ```
 
-   For a tagged release, replace `:edge` with the tag (e.g. `:v1.2.3`);
+   For a tagged release, replace `:edge` with the image tag — the release
+   version WITHOUT the leading `v` (e.g. `:1.2.3` for tag `v1.2.3`; the
+   `v` prefix is a git-tag convention, not part of the image tag);
    for a pinned digest, verify `ghcr.io/dbirks/game-narrator@sha256:…`
    (the digest from the run's manifest) instead of a tag — tags move,
    digests do not.

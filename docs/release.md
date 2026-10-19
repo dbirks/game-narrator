@@ -101,27 +101,94 @@ push to `main`:
 
 Pull `ghcr.io/dbirks/game-narrator:edge` (or `:sha-<short>`) to consume.
 
-### 2.2 Tagged release (`v*` tag)
+### 2.2 Cutting a release (tagged `v*`)
 
 Preconditions (docs/spec/15 "Release gate matrix"): `make test-full` passes
 on the dev host (gates that cannot run here are reported NOT RUN with setup
 instructions; the UNO Q hardware gate is NOT RUN until UNO Q is available),
-milestone complete, ADRs updated, release notes ready.
+milestone complete, ADRs updated.
+
+Optional but recommended: dry-run the tagged config path locally before
+pushing the tag (in a throwaway `git worktree` of the commit you will tag —
+never push the tag; goreleaser refuses a dirty worktree, so keep build logs
+outside it):
 
 ```sh
-git tag v0.4.2 && git push origin v0.4.2
+git worktree add --detach /tmp/gn-rel-dryrun HEAD
+cd /tmp/gn-rel-dryrun
+git tag -a v0.1.0-rc.0 -m "dry-run"        # local-only
+goreleaser release --clean --skip=announce,publish,sign,docker
+# inspect dist/ (names, CHANGELOG.md, dpkg-deb -f ..._linux_arm64.deb Version)
+git tag -d v0.1.0-rc.0 && git worktree remove --force /tmp/gn-rel-dryrun
 ```
 
-This runs the `release` job in `.github/workflows/publish.yml`:
+`--skip` values are valid goreleaser 2.14 pipe names; the skip set means
+nothing is announced, published (no GitHub Release, no image push) or
+signed. The run still exercises the tagged path end to end: versions
+without the snapshot suffix, archive/nfpm names, `dist/CHANGELOG.md`,
+`checksums.txt`, SBOMs and the embedded `game-narrator version` stamp
+(dry-run evidence: tag `v0.1.0-rc.0` -> `game-narrator_0.1.0-rc.0_linux_
+{arm64,amd64}.{tar.gz,deb,pkg.tar.zst}`, deb control `Version: 0.1.0~rc.0`,
+which `dpkg --compare-versions … gt 0.0.0~snapshot.9999999999.gffffff`).
+
+Then cut and push the tag:
+
+```sh
+git tag -a v0.4.2 -m "Release v0.4.2" && git push origin v0.4.2
+```
+
+The push triggers the `release` job in `.github/workflows/publish.yml`
+(`if: push && startsWith(github.ref, 'refs/tags/v')`), which runs
 `goreleaser release --clean` with `GN_DOCKER_REPO=ghcr.io/dbirks/game-narrator`
-— archives/.debs/SBOMs/checksums, a GitHub Release (**prerelease** for
-`v0.*` tags, normal release otherwise), the multi-arch image pushed under
-the tag (`v0.4.2`) with the goreleaser SBOM attestation, and keyless cosign
-signatures on the per-arch images **and** the multi-arch manifest
-(`docker_signs` in `.goreleaser.yaml`). The artifact scanner then runs over
-`dist/` (archives/.debs; image layers are covered by the pinned base digest
-and the image SBOM attestation), and the job verifies the image signature
-(self-check).
+and the repo `GITHUB_TOKEN`:
+
+- **Version**: goreleaser `.Version` is the tag WITHOUT the leading `v`
+  (`v0.4.2` -> `0.4.2`); everything below is named from it. The .deb's
+  control `Version` is `0.4.2` (a prerelease tag like `v0.1.0-rc.0` becomes
+  `0.1.0~rc.0`, which `dpkg --compare-versions` orders above every
+  `0.0.0~snapshot.*` — section 9); the Arch package keeps `pkgver 0.4.2`.
+- **Artifacts**: `game-narrator_0.4.2_linux_{amd64,arm64}.tar.gz`, the
+  `.deb` and `*.pkg.tar.zst` packages, one Syft SPDX SBOM per archive
+  (`game-narrator_0.4.2_<arch>.sbom.spdx.json`), `checksums.txt` and
+  `CHANGELOG.md`.
+- **Release notes**: the `changelog` pipe (default `use: git`) generates
+  the notes from `git log <previous-tag>..v0.4.2` (commit subjects, full
+  history if this is the first tag) and writes `dist/CHANGELOG.md`; the
+  `release` pipe then uses that text as the GitHub Release body
+  (v2.14.0 `internal/pipe/release/body.go`: header + notes + footer).
+- **GitHub Release**: created as a **prerelease** for `v0.*` tags
+  (`release.prerelease` template: `enable` iff the tag has the `v0.`
+  prefix, else `disable`), normal otherwise. Local runs can never create
+  it (`release.disable` is true when `GITHUB_ACTIONS` is unset — §2.3).
+- **Image**: the multi-arch manifest is pushed as
+  `ghcr.io/dbirks/game-narrator:0.4.2` (single tag; per-arch digests
+  inside) with the goreleaser SBOM attestation, then keyless cosign
+  signatures on the per-arch images **and** the manifest
+  (`docker_signs`, `artifacts: all`). Identity: Sigstore via GitHub OIDC,
+  certificate identity
+  `https://github.com/dbirks/game-narrator/.github/workflows/publish.yml@refs/tags/v0.4.2`
+  (no keys in the repo, ADR 0048). `cosign sign-blob` is not used anywhere:
+  archives/checksums are **not** individually signed — their integrity is
+  `checksums.txt` + the scanner verdict + the release's artifact listing.
+- **Scan + self-check**: `scripts/release/scan-artifacts.sh` over `dist/`,
+  then `cosign verify` of the pushed image tag against the publish.yml
+  identity (the same command as §2.4 with `:0.4.2`).
+
+**Verify before consuming** (docs/manuals/17): the image signature and
+SBOM attestation (§2.4, tag `:0.4.2` — no `v`), `sha256sum -c
+checksums.txt` over the downloaded artifacts, and the run's recorded
+scanner verdicts (§2.5, §7).
+
+**Rolling back a bad release**: a pushed release is treated as immutable
+— never move a published image tag to a different digest or force-update
+a tag (digests and scanner evidence are recorded per tag in
+`artifacts/<run-id>/manifest`). Instead: fix and cut the next tag
+(`v0.4.3`, or `v0.1.0-rc.1` within a prerelease line) and point consumers
+at the new tag/digest; optionally mark the bad GitHub Release as
+`yanked` via the GitHub UI (artifacts remain, for audit). On devices that
+already installed it, roll back per section 4 (previous `.deb`/
+`pacman` + data-directory backup; images: `docker pull
+<repo>@<previous-digest>`).
 
 ### 2.3 Why local `goreleaser` cannot publish
 
@@ -144,7 +211,8 @@ cosign verify \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-For a tagged release replace `:edge` with the tag (e.g. `:v1.2.3`);
+For a tagged release replace `:edge` with the image tag — the release
+version WITHOUT the leading `v` (e.g. `:1.2.3` for tag `v1.2.3`);
 `cosign verify-attestation --type spdxjson` shows the SBOM attestation.
 
 **UNO Q remains NOT VERIFIED** until the hardware smoke
