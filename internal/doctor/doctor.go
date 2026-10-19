@@ -29,6 +29,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/dbirks/game-narrator/internal/dolphin"
 	"github.com/dbirks/game-narrator/internal/providers"
 	"github.com/dbirks/game-narrator/internal/providers/openai"
 )
@@ -191,8 +192,23 @@ type Options struct {
 	// OCRImage overrides the embedded controlled image.
 	OCRImage []byte
 
+	// FixtureRoot resolves the external fixture root the game.image check
+	// scans for manifest-recorded image SHA-256 (games never committed,
+	// AGENTS.md rule 5); nil uses dolphin.FixtureDir ($GAME_NARRATOR_FIXTURE_DIR,
+	// default artifacts/fixtures).
+	FixtureRoot func() string
+
 	// Now stamps the report; nil means time.Now.
 	Now func() time.Time
+}
+
+// fixtureRoot applies the FixtureRoot seam (tests point it at a temp tree so
+// the suite never depends on the host's artifacts/ contents).
+func (o *Options) fixtureRoot() string {
+	if o.FixtureRoot != nil {
+		return o.FixtureRoot()
+	}
+	return dolphin.FixtureDir()
 }
 
 func (o *Options) withDefaults() Options {
@@ -290,7 +306,10 @@ func Run(ctx context.Context, o Options) Report {
 
 	if r.opts.Dev {
 		r.add(ctx, "emulator.dolphin", r.opts.Timeout, func(ctx context.Context) Check { return r.checkEmulator(ctx) })
-		r.add(ctx, "game.image", r.opts.Timeout, func(ctx context.Context) Check { return r.checkGameImage(ctx) })
+		// The game.image check hashes the whole disc image against the fixture
+		// manifests, so it runs on its own budget rather than the 15 s probe
+		// deadline (gameImageCheckBudget).
+		r.add(ctx, "game.image", gameImageCheckBudget, func(ctx context.Context) Check { return r.checkGameImage(ctx) })
 	}
 
 	report := Report{GeneratedAt: r.opts.Now().UTC(), Checks: r.checks}

@@ -534,41 +534,82 @@ func (r *runner) checkEmulator(_ context.Context) Check {
 	}
 }
 
-// checkGameImage reports only whether the user-supplied image is configured and
-// readable. The path itself is private and is never printed, in any output
-// stream, including error text from os.Stat (AGENTS.md rule 5).
-func (r *runner) checkGameImage(_ context.Context) Check {
+// checkGameImage reports the state of the user-supplied game image and, when
+// it is not usable, exactly what to do: which environment variable names it,
+// what file is expected (the user's own disc image, CISO/ISO), how to verify
+// its identity (the SHA-256 prefix from the fixture manifests, read at run
+// time when they are present) and which gates need it. The path itself is
+// private and is never printed, in any output stream, including error text
+// from os.Stat (AGENTS.md rule 5); the only reportable facts are existence,
+// size and the SHA-256 prefix.
+func (r *runner) checkGameImage(ctx context.Context) Check {
 	path, ok := r.opts.LookupEnv(EnvGameImagePath)
 	path = strings.TrimSpace(path)
+	exp := fixtureImageExpectation(r.opts.fixtureRoot())
+
 	if !ok || path == "" {
 		return Check{
 			Status:  StatusNotConfigured,
 			Summary: "no game image is configured",
-			Detail:  EnvGameImagePath + " is not set",
-			Remedy:  "export " + EnvGameImagePath + "=<path to your own legally obtained image>; the path is never recorded",
+			Detail: EnvGameImagePath + " is not set. Expect your own legally obtained GameCube disc image (CISO/ISO, e.g. .ciso or .iso). " +
+				exp.verifyText() + ". Needed by: " + gameImageGates + ".",
+			Remedy: "export " + EnvGameImagePath + "=<path to your disc image>; the path is never recorded. Re-run doctor.",
 		}
 	}
+
 	info, err := os.Stat(path)
-	if err != nil {
-		reason := "the file cannot be read"
-		if errors.Is(err, fs.ErrNotExist) {
-			reason = "the file does not exist"
+	if err != nil || info.IsDir() {
+		reason := "the configured file does not exist"
+		if err == nil {
+			reason = "the configured path points at a directory, not a disc image"
 		} else if errors.Is(err, fs.ErrPermission) {
-			reason = "the file is not readable by this user"
+			reason = "the configured file is not readable by this user"
 		}
 		return Check{
-			Status:  StatusFail,
-			Summary: EnvGameImagePath + " is set, but " + reason,
-			Detail:  "the configured path is not reported",
-			Remedy:  "fix the path or permissions; doctor never prints it",
+			Status:  StatusNotConfigured,
+			Summary: "the configured game image is not usable: " + reason,
+			Detail: EnvGameImagePath + " is set, but " + reason + "; the path is not reported. Expect your own legally obtained GameCube disc image (CISO/ISO, e.g. .ciso or .iso). " +
+				exp.verifyText() + ". Needed by: " + gameImageGates + ".",
+			Remedy: "point " + EnvGameImagePath + " at your disc image, verify its SHA-256 prefix, and re-run doctor; the path is never recorded",
 		}
 	}
-	if info.IsDir() {
-		return Check{Status: StatusFail, Summary: EnvGameImagePath + " points at a directory, not a game image"}
+
+	summary := fmt.Sprintf("%s is set, file exists, %d bytes", EnvGameImagePath, info.Size())
+	if len(exp.shas) == 0 {
+		return Check{
+			Status:  StatusOK,
+			Summary: summary,
+			Detail:  "no fixture manifest with a recorded image SHA-256 was found, so the identity is not verified against a fixture",
+		}
+	}
+
+	sum, err := sha256File(ctx, path)
+	if err != nil {
+		return Check{
+			Status:  StatusDegraded,
+			Summary: summary + " (identity not verified)",
+			Detail:  "the image could not be hashed within the check budget: " + oneLine(err.Error(), 200),
+			Remedy:  "re-run doctor; the bench gate re-verifies the image SHA-256 against the fixture manifest",
+		}
+	}
+	for _, want := range exp.shas {
+		if strings.EqualFold(sum, want) {
+			return Check{
+				Status:  StatusOK,
+				Summary: summary + " and matches the fixture manifest (SHA-256 prefix " + hashPrefix(sum) + ")",
+			}
+		}
+	}
+	want := make([]string, len(exp.shas))
+	for i, s := range exp.shas {
+		want[i] = hashPrefix(s)
 	}
 	return Check{
-		Status:  StatusOK,
-		Summary: fmt.Sprintf("%s is set, file exists, %d bytes", EnvGameImagePath, info.Size()),
+		Status:  StatusFail,
+		Summary: "the configured game image does not match the fixtures it was pointed at",
+		Detail: "its SHA-256 prefix is " + hashPrefix(sum) + "; the fixture manifest(s) record " +
+			strings.Join(want, " or ") + ". The fixtures were recorded against a different image.",
+		Remedy: "point " + EnvGameImagePath + " at the image the fixtures were recorded against (verify the SHA-256 prefix above), or re-record the fixtures; the path is never recorded",
 	}
 }
 

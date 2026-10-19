@@ -52,6 +52,11 @@ func (r *runner) checkRoles(ctx context.Context) {
 			// report for the full model timeout.
 			budget = decisionProbeTimeout
 		}
+		if cfg.Protocol == providers.ProtocolOpenAIChatVision && visionProbeTimeout > budget {
+			// The VLM probe gets its own (longer) budget: its warm calls alone
+			// exceed the default role budget (visionProbeTimeout).
+			budget = visionProbeTimeout
+		}
 		r.add(ctx, "providers."+string(role), budget, func(ctx context.Context) Check {
 			return r.checkRole(ctx, role, cfg)
 		})
@@ -65,6 +70,20 @@ func (r *runner) checkRoles(ctx context.Context) {
 // probe that needs more has a network or model problem the operator should
 // see, not wait out.
 const maxRoleProbeBudget = 5 * time.Minute
+
+// visionProbeTimeout is the check-level budget of the openai_chat_vision
+// role probe (vision_ocr_fallback). A VLM completion takes seconds per
+// request even when warm — measured 9-20 s per probe request on the dev
+// gateway (qwen3-8-27b, 2026-10-19) — and the probe sends the model listing
+// plus the chat pong, the controlled-image read and the two capability
+// probes: the default role budget (max(ModelTimeout, 4 × the role's 10 s
+// production timeout)) is smaller than the sum of those warm calls, so a
+// healthy gateway would report FAIL on a timeout. The budget mirrors the
+// live session test's choice (internal/runtime: an extended HTTP allowance
+// for the VLM OCR fallback) at the check level; the production role timeout
+// is untouched, and a wedged gateway still fails the row within 3 minutes
+// instead of hanging the report (checkGrace).
+const visionProbeTimeout = 3 * time.Minute
 
 // roleProbeRequests counts the model requests the role probe sends for one
 // check, by protocol: the chat roles send the pong completion plus the two

@@ -40,6 +40,16 @@ Roles: `agent_reasoning`, `fast_reasoning`, `vision_ocr_fallback`
 `voice_design`/`voice_clone` (Qwen3-TTS, ADR 0022), `speech_asr`
 (OpenAI-compatible `/audio/transcriptions`, ADR 0061).
 
+**Standard dev environment.** The dev host's shared gateway serves the
+`qwen3-8-27b` checkpoint for the OpenAI-compatible roles, and the standard
+dev env sets `GAME_NARRATOR_ROLE_VISION_OCR_FALLBACK_MODEL=qwen3-8-27b`
+(`.env.example`; docs/dev-environment.md; ADR-0040). Sessions engage the VLM
+OCR fallback **only when the role's model id is configured** — an unset role
+is a `NOT CONFIGURED` doctor row and the session runs primary-OCR-only. The
+doctor probes the role with a real controlled-image read (plus the chat and
+capability probes) before reporting `OK`; the probe runs on its own 3-minute
+check budget because warm 27B-scale VLM calls take seconds each (ADR-0067).
+
 ## Capability findings
 
 For OpenAI-compatible roles, the adapter and `doctor` record what the

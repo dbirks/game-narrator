@@ -215,27 +215,60 @@ The items that actually remain, each with a proposed unit of work
    2 h chaos soak on a scheduled (not per-session) cadence; each re-run
    refreshes the recorded-run citation in this report. Acceptance: a
    recorded run newer than the cited sha, with its evidence bundle.
-6. **`vision_ocr_fallback` role NOT CONFIGURED in the dev shell (FR-06).**
+6. **`vision_ocr_fallback` role NOT CONFIGURED in the dev shell (FR-06) — closed 2026-10-19 (ADR 0067).**
    Files: bootstrap/doctor config docs, `docs/manuals`. The capability is
    live-proven (`TestLiveVLMOCRFallbackHardFontCrop`, deterministic fallback
    cf1c15d; blocked.md row Cleared), but sessions only use the VLM OCR
    fallback when the role's model id is configured. Unit: document + wire the
    role into the standard dev env so doctor shows OK. Acceptance: doctor
    `vision_ocr_fallback` OK with the live fallback test green.
+   Evidence (2026-10-19): the standard dev env now sets
+   `GAME_NARRATOR_ROLE_VISION_OCR_FALLBACK_MODEL=qwen3-8-27b` (shared gateway;
+   `.env.example`, docs/dev-environment.md gates table + verified gaps,
+   docs/manuals/04). Live doctor with the role set: `OK
+   providers.vision_ocr_fallback — model qwen3-8-27b answered the chat probe
+   in 12.97s and read "NARRATOR 42" in 8.192s` (the vision probe now runs on
+   its own 3-minute check budget — warm 27B VLM probe calls measure 9-20 s
+   each, and the old 60 s role budget FAILed a healthy gateway; production
+   role timeouts untouched). `TestLiveOCRFallbackSession` live PASS (115 s;
+   primary Tesseract defeated at CER 0.957 ≥ the 0.6 trigger, VLM secondary
+   exact read best CER 0.000, two genuine gateway calls with recorded
+   request ids).
 7. **The ASR WER 0.2 bound is a chosen constant pending stress (FR-10).**
    Files: `internal/providers/asr`, ADR 0061. Unit: collect real
    transcript/ground-truth pairs across voices and lengths; if the bound
    misfires, set it from the measured distribution and record it in ADR 0061.
    Acceptance: the bound (0.2 or the revised value) is evidence-based and
    the QA loop's regeneration/flagging is unchanged.
-8. **Authorized external image dependency (FR-04, M2 bench, FR-13).**
+8. **Authorized external image dependency (FR-04, M2 bench, FR-13) — closed 2026-10-19 (ADR 0067).**
    Files: bootstrap/doctor (the game-image check), fixture manifests. The
    captured-frame bench, the real-disc parse and the Dolphin fixtures all
    need the authorized image at `GAME_NARRATOR_GAME_IMAGE_PATH` (AGENTS.md
    rule 5 — never in the repo; hashes live in the fixture manifests only).
-   Unit: doctor/bootstrap prints the exact expectation (path + manifest hash
-   prefix) when it is missing. Acceptance: a fresh host reports NOT CONFIGURED
-   with the actionable steps, not a cryptic failure.
+   Unit: doctor/bootstrap prints the exact expectation (manifest hash
+   prefix — the path itself is never printed, rule 5) when it is missing.
+   Acceptance: a fresh host reports NOT CONFIGURED with the actionable
+   steps, not a cryptic failure.
+   Evidence (2026-10-19): the `doctor --dev` `game.image` row now carries the
+   full expectation. Unset, or set-but-missing/unreadable/directory, is
+   `NOT CONFIGURED` naming the env var, the expected file (the user's own
+   CISO/ISO disc image), how to verify it (its SHA-256 must start with the
+   12-char prefix read at run time from the fixture manifests'
+   `game_image_sha256` under `$GAME_NARRATOR_FIXTURE_DIR`) and the three
+   gates that need it (bench captured holdout, `make test-dolphin`,
+   `import-disc`) — verified live: the unset-env JSON row carries every
+   clause. With the image set the check hashes the whole file against the
+   fixture manifests: live run `OK … file exists, 1088455232 bytes and
+   matches the fixture manifest (SHA-256 prefix 677726191ba8)` on the real
+   1.1 GB CISO (five manifests); a mismatch is `FAIL` naming both prefixes;
+   a spent context is `DEGRADED` with the reason. Unit (`-race` green):
+   `TestGameImageUnsetIsNotConfigured`,
+   `TestGameImageUnsetWithoutManifests`, `TestGameImageMissingFileIsNotConfigured`,
+   `TestGameImageDirectoryIsNotConfigured`, `TestGameImageWrongHashIsFail`
+   (prefixes present, path absent from text and `Format`/`FormatJSON`),
+   `TestGameImageMatchingHashIsOK`, `TestGameImageNoManifestsIsOKSizeOnly`,
+   `TestGameImageHashBudgetExceededIsDegraded`, `TestGameImageNeverPrintsThePath`
+   (unchanged, hermetic via the `Options.FixtureRoot` seam).
 9. **A dedicated "bottleneck report" assertion (M7 "diagnostics expose
    bottlenecks").** Files: `internal/runtime` (or `internal/doctor`), the
    bench report. The bench/soak reports already emit per-stage latencies

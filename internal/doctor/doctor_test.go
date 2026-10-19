@@ -325,6 +325,7 @@ func TestGameImageNeverPrintsThePath(t *testing.T) {
 	}
 	h := newFakeHost(t)
 	h.opts.Dev = true
+	h.opts.FixtureRoot = func() string { return t.TempDir() }
 	h.withEnv(EnvGameImagePath, image)
 	rep := h.run()
 
@@ -345,14 +346,21 @@ func TestGameImageNeverPrintsThePath(t *testing.T) {
 	}
 }
 
-func TestGameImageSetButMissingIsFail(t *testing.T) {
+func TestGameImageSetButMissingIsNotConfigured(t *testing.T) {
 	h := newFakeHost(t)
 	h.opts.Dev = true
+	h.opts.FixtureRoot = func() string { return t.TempDir() }
 	h.withEnv(EnvGameImagePath, filepath.Join(t.TempDir(), "gone.iso"))
 	c := h.check(h.run(), "game.image")
-	mustStatus(t, c, StatusFail)
+	// A set-but-wrong path means the image is still not configured: the
+	// report is NOT CONFIGURED with the actionable steps (acceptance gap 8),
+	// not a cryptic FAIL.
+	mustStatus(t, c, StatusNotConfigured)
 	if strings.Contains(c.Summary+strings.ToLower(c.Detail)+strings.ToLower(c.Remedy), "gone.iso") {
 		t.Fatalf("failure text leaked the file name: %+v", c)
+	}
+	if !strings.Contains(c.Remedy, EnvGameImagePath) {
+		t.Fatalf("remedy must name the env var: %+v", c)
 	}
 }
 
