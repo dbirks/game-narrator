@@ -5,9 +5,19 @@ package api
 // durable directory, the audio sink, the security posture, the import
 // policies — so a section that cannot be answered honestly degrades to
 // "unknown" without dragging the rest of the page down with it.
+//
+// Role availability is deliberately not rendered from
+// providers.RoleConfig.Status(): that method still consults the preflight
+// table's per-role "deployed" flags, which predate the adapters that landed
+// afterwards (System One for the decision role, vLLM-Omni speech for the
+// voice roles, OpenAI transcriptions for speech_asr). The page derives each
+// role's state from the same facts the runtime wiring and the doctor's role
+// probes use: the role's configured model, and whether this build ships an
+// adapter for the protocol the role speaks (protocolAdapters below).
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -18,8 +28,62 @@ import (
 
 	"github.com/dbirks/game-narrator/internal/bootstrap"
 	"github.com/dbirks/game-narrator/internal/providers"
+	"github.com/dbirks/game-narrator/internal/providers/asr"
+	"github.com/dbirks/game-narrator/internal/providers/openai"
+	"github.com/dbirks/game-narrator/internal/providers/systemone"
+	"github.com/dbirks/game-narrator/internal/providers/tts"
 	"github.com/dbirks/game-narrator/internal/store"
 )
+
+// protocolAdapters answers "does this build ship an adapter for protocol p"
+// by referencing the adapter's own NewFromRole constructor — the same
+// constructor cmd/game-narrator's role wiring (newDecisionWiring,
+// newVoiceWiring, the OCR fallback and ASR QA wiring) and the doctor's role
+// probes call to build the client a configured role actually speaks
+// (docs/spec/06 "Provider registry"). A protocol without an entry has no
+// adapter in this build, and deleting or renaming an adapter package breaks
+// the build here rather than leaving a stale flag behind.
+//
+// The keys are protocols, not roles: the runtime wires a role on the
+// protocol it speaks (newDecisionWiring accepts the decision role only on
+// System One; the tts and asr constructors reject any other protocol), so
+// the page answers "will this build run this role" from the protocol
+// contract, the way the runtime and doctor do.
+var protocolAdapters = map[providers.Protocol]func(providers.RoleConfig) (any, error){
+	providers.ProtocolOpenAIChat: func(cfg providers.RoleConfig) (any, error) {
+		return openai.NewFromRole(cfg)
+	},
+	providers.ProtocolOpenAIChatVision: func(cfg providers.RoleConfig) (any, error) {
+		return openai.NewFromRole(cfg)
+	},
+	providers.ProtocolSystemOne: func(cfg providers.RoleConfig) (any, error) {
+		return systemone.NewFromRole(cfg)
+	},
+	providers.ProtocolOpenAITranscriptions: func(cfg providers.RoleConfig) (any, error) {
+		return asr.NewFromRole(cfg)
+	},
+	providers.ProtocolVLLMOmniSpeech: func(cfg providers.RoleConfig) (any, error) {
+		return tts.NewFromRole(cfg)
+	},
+}
+
+// settingsRoleState renders one role row's state from the same two facts the
+// runtime wiring and the doctor's role probes use: the role is configured (it
+// has a model), and this build ships the adapter for the protocol the role
+// speaks (protocolAdapters). The result is one of the three states the page's
+// contract names (docs/status/ui-coverage.md): NOT CONFIGURED, CONFIGURED or
+// NOT AVAILABLE — never the credential, and never a claim the build cannot
+// keep.
+func settingsRoleState(cfg providers.RoleConfig) string {
+	if !cfg.Configured() {
+		modelEnv, _, _, _ := providers.RoleEnvVars(cfg.Role)
+		return fmt.Sprintf("NOT CONFIGURED: no model configured (set %s)", modelEnv)
+	}
+	if _, ok := protocolAdapters[cfg.Protocol]; !ok {
+		return fmt.Sprintf("NOT AVAILABLE: a model is configured, but protocol %q has no adapter implemented in this build", cfg.Protocol)
+	}
+	return "CONFIGURED"
+}
 
 // osLookupEnv is the environment the sections read. A variable indirection so
 // a handler test can point the whole page at a fixture environment without
@@ -151,7 +215,7 @@ func (s *Server) settingsRoles(roles map[providers.Role]providers.RoleConfig) []
 		}
 		out = append(out, modelRoleView{
 			Role:            string(role),
-			State:           cfg.Status(),
+			State:           settingsRoleState(cfg),
 			Configured:      cfg.Configured(),
 			Model:           cfg.Model,
 			Protocol:        string(cfg.Protocol),

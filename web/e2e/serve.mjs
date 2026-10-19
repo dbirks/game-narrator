@@ -12,7 +12,7 @@
 // usage: node web/e2e/serve.mjs <name> <host:port> <command...>
 
 import { spawn } from "node:child_process";
-import { createWriteStream } from "node:fs";
+import { createWriteStream, readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -51,6 +51,48 @@ const goEnv = {
   GOCACHE: join(realHome, ".cache", "go-build"),
 };
 
+// Provider-configuration hermeticity: Playwright merges this webServer's
+// `env` block into the launcher's process.env before it spawns it, so the
+// only reliable way to tell "the project declared this variable" from "the
+// developer's shell exported it" is to re-read the config this webServer
+// entry came from and collect the GAME_NARRATOR_* names the entry declares
+// for this server. The child gets its inherited environment minus every
+// other GAME_NARRATOR_* variable, so a spec's expectations about model-role
+// states never depend on the host's live configuration (the settings page
+// rendered the developer's own Clef/ASR/TTS wiring otherwise). Declared
+// names keep their project values, which are already in process.env.
+function declaredGameNarratorVars(name) {
+  const cfgText = readFileSync(join(webRoot, "playwright.config.ts"), "utf8");
+  const marker = `serve.mjs ${name} `;
+  const start = cfgText.indexOf(marker);
+  if (start === -1) return [];
+  const rest = cfgText.slice(start + marker.length);
+  // The entry ends where the next webServer command begins.
+  const nextCommand = rest.indexOf("command:");
+  const section = nextCommand === -1 ? rest : rest.slice(0, nextCommand);
+  const envAt = section.indexOf("env:");
+  if (envAt === -1) return [];
+  const openAt = section.indexOf("{", envAt);
+  if (openAt === -1) return [];
+  // Brace-depth scan: template expressions like ${ports.x} are balanced,
+  // so the scan stops at the env block's own closing brace.
+  let depth = 0;
+  let closeAt = -1;
+  for (let i = openAt; i < section.length; i++) {
+    const ch = section[i];
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        closeAt = i;
+        break;
+      }
+    }
+  }
+  const block = closeAt === -1 ? section.slice(openAt) : section.slice(openAt, closeAt + 1);
+  return [...new Set(block.match(/GAME_NARRATOR_[A-Z0-9_]+/g) ?? [])];
+}
+
 // The proof the isolation spec needs: what the *real* data directory looked like
 // the instant before this server was allowed to exist.
 const realDataDir = join(
@@ -59,6 +101,21 @@ const realDataDir = join(
 );
 const before = await snapshot(realDataDir);
 
+// Scrub the inherited provider configuration before the manifest is written,
+// keeping only the variables this server's project declares (names recorded,
+// never values): the manifest records what the scrub did so a spec can assert
+// the server's provider environment is exactly the project's, not the
+// developer's.
+const declaredProviderVars = declaredGameNarratorVars(name);
+const childEnv = { ...process.env, ...goEnv };
+const scrubbedProviderVars = [];
+for (const key of Object.keys(childEnv)) {
+  if (!key.startsWith("GAME_NARRATOR_")) continue;
+  if (declaredProviderVars.includes(key)) continue;
+  delete childEnv[key];
+  scrubbedProviderVars.push(key);
+}
+
 const manifestDir = join(webRoot, "test-results", "e2e-runs");
 await mkdir(manifestDir, { recursive: true });
 // The server's own log, beside the manifest: a webServer whose stderr only
@@ -66,12 +123,28 @@ await mkdir(manifestDir, { recursive: true });
 // (a killed orchestrator session, a model outage), which is exactly when the
 // log is needed. Every line the server prints is appended here, in addition to
 // the inherited stdio, for the lifetime of the process.
-const logStream = createWriteStream(join(manifestDir, `${name}.log`), { flags: "a" });
+const logStream = createWriteStream(join(manifestDir, `${name}.log`), {
+  flags: "a",
+});
 const manifest = join(manifestDir, `${name}.json`);
 await writeFile(
   manifest,
   JSON.stringify(
-    { name, listen, command, dataDir, homeDir, realDataDir, before, pid: process.pid },
+    {
+      name,
+      listen,
+      command,
+      dataDir,
+      homeDir,
+      realDataDir,
+      before,
+      pid: process.pid,
+      // What the provider-configuration scrub did: the names the project
+      // declared for this server (kept, with the project's values) and the
+      // names inherited from the developer's shell (dropped). Names only —
+      // a manifest must never carry a credential (AGENTS.md rule 5).
+      env: { declared: declaredProviderVars, scrubbed: scrubbedProviderVars },
+    },
     null,
     2,
   ),
@@ -109,8 +182,7 @@ const child = spawn(command[0], [...command.slice(1), "--listen", listen, "--dat
   cwd: repoRoot,
   stdio: ["inherit", "pipe", "pipe"],
   env: {
-    ...process.env,
-    ...goEnv,
+    ...childEnv,
     HOME: homeDir,
     XDG_DATA_HOME: join(homeDir, ".local", "share"),
     GAME_NARRATOR_DATA_DIR: dataDir,
@@ -157,7 +229,11 @@ async function snapshot(dir) {
     const files = [];
     for (const entry of entries.sort()) {
       const info = await stat(join(dir, entry)).catch(() => null);
-      files.push({ name: entry, size: info?.size ?? -1, mtimeMs: info?.mtimeMs ?? -1 });
+      files.push({
+        name: entry,
+        size: info?.size ?? -1,
+        mtimeMs: info?.mtimeMs ?? -1,
+      });
     }
     return { exists: true, files };
   } catch {

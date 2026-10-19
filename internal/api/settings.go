@@ -65,8 +65,10 @@ type modelsGatewayView struct {
 
 type modelRoleView struct {
 	Role string `json:"role"`
-	// State is providers.RoleConfig.Status() verbatim: CONFIGURED,
-	// NOT CONFIGURED or NOT AVAILABLE with its note.
+	// State is one of CONFIGURED, NOT CONFIGURED or NOT AVAILABLE with its
+	// note; settingsRoleState derives it from the configured model and the
+	// adapter this build ships for the role's protocol (protocolAdapters),
+	// the same facts the runtime wiring and the doctor's role probes use.
 	State      string `json:"state"`
 	Configured bool   `json:"configured"`
 	Model      string `json:"model"`

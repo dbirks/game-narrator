@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { trackConsoleErrors } from "./support/console";
 import { ports } from "./support/ports";
+import { assertHermeticProviderEnv } from "./support/servers";
 
 /**
  * The /settings and /tests pages (docs/spec/09), on the shared `api` webServer
@@ -14,24 +15,27 @@ import { ports } from "./support/ports";
  * repository's own scenario catalog (ADR-0047).
  *
  *   1. /settings (admin): the effective configuration renders — the model
- *      roles with their environment-dependent state (NOT CONFIGURED on a
- *      fresh checkout, CONFIGURED where the operator's env sets them), the
- *      storage/audio/security/import sections, the no-auto-update policy —
- *      and no secret material reaches the DOM (the token is a presence
- *      boolean, the endpoint is the "<configured>" marker, and the
- *      operator's real env values are asserted absent); the backup download
- *      is a real SQLite file (its 16-byte header is asserted on the bytes);
- *   2. /tests (developer via the admin role): the catalog lists a blocked
- *      scenario with its reason and the unblocked GN-T047 as runnable, running
- *      synthetic/dialogue-advance-001 enqueues the durable job and the
- *      in-process worker reports PASS, and the report opens in the
- *      sandboxed iframe (sandbox="" — no scripts, no same-origin access).
+ *      roles with their state (the api server's provider environment is
+ *      scrubbed, so NOT CONFIGURED naming each role's model variable in any
+ *      developer shell), the storage/audio/security/import sections, the
+ *      no-auto-update policy — and no secret material reaches the DOM (the
+ *      token is a presence boolean, the endpoint is the "<configured>"
+ *      marker, and the operator's real env values are asserted absent); the
+ *      backup download is a real SQLite file (its 16-byte header is asserted
+ *      on the bytes);
+ *   2. /tests (developer via the admin role): the catalog lists the unblocked
+ *      Dolphin scenario (the savestate work) and the unblocked GN-T047 as
+ *      runnable, running synthetic/dialogue-advance-001 enqueues the durable
+ *      job and the in-process worker reports PASS, and the report opens in
+ *      the sandboxed iframe (sandbox="" — no scripts, no same-origin access).
  */
 
 const ADMIN = { username: "m5st-admin", password: "steady as the tide" };
-// Blocked by its own fixture data (`status: blocked` + reason): the catalog
-// must show the row and its reason, not hide it (ADR-0037).
-const STILL_BLOCKED_ID = "dolphin/first-gameplay-dialogue";
+// The savestate work unblocked the last two Dolphin scenarios: the catalogue
+// must now list the row as runnable (the blocked-row contract — the row shows
+// its reason and its Run button is disabled — is covered by the page's unit
+// test web/src/pages/Tests.test.tsx against a synthetic blocked fixture).
+const UNBLOCKED_DOLPHIN_ID = "dolphin/first-gameplay-dialogue";
 // GN-T047 was blocked while the TTS contract was atomic; the streamed /
 // cancellable endpoint unblocked it (see the fixture's header), so the
 // catalog now lists it as runnable — the unblock is asserted too.
@@ -77,23 +81,39 @@ test("m5: the settings page and the test harness page", async ({ page }, testInf
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
   await expect(page.getByTestId("settings-roles")).toBeVisible();
 
-  // Roles: the per-role state depends on the operator's environment — a
-  // fresh checkout renders NOT CONFIGURED with the variable to set, an
-  // operator with role models set sees CONFIGURED (or NOT AVAILABLE where the
-  // protocol has no adapter yet). The invariant the page must keep in every
-  // state: no endpoint value and no token in the DOM.
-  for (const role of [
-    "agent_reasoning",
-    "fast_reasoning",
-    "vision_ocr_fallback",
-    "decision",
-    "voice_design",
-    "voice_clone",
-    "speech_asr",
-  ]) {
+  // Roles: the `api` server's provider environment is scrubbed by
+  // e2e/serve.mjs (the manifest records which inherited GAME_NARRATOR_*
+  // variables it dropped), so the rows are deterministic in any developer
+  // shell: every role reports NOT CONFIGURED naming its own model variable.
+  // Without the scrub this assertion would depend on the host's live
+  // configuration — the developer's own Clef/ASR/TTS wiring would render as
+  // CONFIGURED rows here. The scrub itself is asserted against the manifest
+  // below: every GAME_NARRATOR_* variable this spec's process has is either
+  // declared by the project (kept, with the project's value) or recorded as
+  // dropped.
+  const providerEnv = assertHermeticProviderEnv("api");
+  const roleModelEnv: Record<string, string> = {
+    agent_reasoning: "GAME_NARRATOR_ROLE_AGENT_REASONING_MODEL",
+    fast_reasoning: "GAME_NARRATOR_ROLE_FAST_REASONING_MODEL",
+    vision_ocr_fallback: "GAME_NARRATOR_ROLE_VISION_OCR_FALLBACK_MODEL",
+    decision: "GAME_NARRATOR_ROLE_DECISION_MODEL",
+    voice_design: "GAME_NARRATOR_ROLE_VOICE_DESIGN_MODEL",
+    voice_clone: "GAME_NARRATOR_ROLE_VOICE_CLONE_MODEL",
+    speech_asr: "GAME_NARRATOR_ROLE_SPEECH_ASR_MODEL",
+  };
+  for (const [role, modelEnv] of Object.entries(roleModelEnv)) {
     await expect(page.getByTestId(`role-${role}`)).toHaveText(
-      /NOT CONFIGURED|NOT AVAILABLE|CONFIGURED/,
+      `NOT CONFIGURED: no model configured (set ${modelEnv})`,
     );
+  }
+  // The scrub record must name every GAME_NARRATOR_* variable this spec's
+  // process sees — kept (declared) or dropped, never silently inherited. The
+  // api project declares none, so all of them were dropped.
+  for (const key of Object.keys(process.env).filter((k) => k.startsWith("GAME_NARRATOR_"))) {
+    expect(
+      providerEnv.scrubbed,
+      `${key} was inherited by the spec but the api manifest does not record it as scrubbed`,
+    ).toContain(key);
   }
   // The gateway row is presence-only and shows variable NAMES, never values
   // (docs/spec/14): the endpoint's variable is a constant; the token's
@@ -161,16 +181,16 @@ test("m5: the settings page and the test harness page", async ({ page }, testInf
   await expect(page.getByRole("heading", { name: "Tests" })).toBeVisible();
   await expect(page.getByTestId("scenario-catalog")).toBeVisible();
 
-  // A blocked scenario is a row that says why, not a row that is hidden
-  // (ADR-0037): the fixture's `status: blocked` renders the pill and the
-  // reason, and its Run button is disabled. The synthetic GN-T047 scenario
-  // was blocked while the TTS contract was atomic; the streamed / cancellable
-  // endpoint unblocked it, and the catalog now lists it as runnable — both
-  // states are asserted, so a fixture edit that moves either is visible.
-  const blockedRow = page.getByTestId(`scenario-${STILL_BLOCKED_ID}`);
-  await expect(blockedRow).toContainText("blocked");
-  await expect(blockedRow).toContainText("unreachable today");
-  await expect(blockedRow.getByRole("button", { name: "Run" })).toBeDisabled();
+  // A scenario the fixture data unblocked is a row that says runnable — the
+  // savestate work lifted the last Dolphin block, and the unblock is asserted
+  // the way a fixture `status` change is visible: the row is listed (not
+  // hidden) with its Run button enabled. GN-T047 was unblocked by the
+  // streamed/cancellable TTS contract; both unblocks are asserted, so a
+  // fixture edit that re-blocks either is visible. (The blocked-row contract
+  // — reason shown, Run disabled — is pinned by the page's unit test.)
+  const dolphinRow = page.getByTestId(`scenario-${UNBLOCKED_DOLPHIN_ID}`);
+  await expect(dolphinRow).toContainText("runnable");
+  await expect(dolphinRow.getByRole("button", { name: "Run" })).toBeEnabled();
   const unblockedRow = page.getByTestId(`scenario-${UNBLOCKED_ID}`);
   await expect(unblockedRow).toContainText("GN-T047");
   await expect(unblockedRow).toContainText("runnable");

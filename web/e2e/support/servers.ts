@@ -22,11 +22,25 @@ export interface ServerRun {
   realDataDir: string;
   before: Snapshot;
   pid: number;
+  /** Provider-env scrub record; empty object on manifests written before the scrub landed. */
+  env?: ProviderEnv;
 }
 
 export interface Snapshot {
   exists: boolean;
   files: { name: string; size: number; mtimeMs: number }[];
+}
+
+/**
+ * What the provider-configuration scrub did to the server's environment:
+ * `declared` are the GAME_NARRATOR_* variables the project declares for this
+ * server (the child receives them, with the project's values) and `scrubbed`
+ * the names inherited from the developer's shell that the child must not see.
+ * Names only — a manifest must never carry a credential (AGENTS.md rule 5).
+ */
+export interface ProviderEnv {
+  declared: string[];
+  scrubbed: string[];
 }
 
 const webRoot = resolve(import.meta.dirname, "..", "..");
@@ -71,6 +85,30 @@ export function defaultDataDirSnapshot(run: ServerRun): Snapshot {
         return { name, size: info.size, mtimeMs: info.mtimeMs };
       }),
   };
+}
+
+/**
+ * The provider-configuration hermeticity assertion: the server must not have
+ * inherited any GAME_NARRATOR_* variable the spec's own process has, except
+ * the ones the project declares for it. The launcher records both lists in
+ * the manifest; a variable that is neither declared nor scrubbed would have
+ * reached the server unrecorded — the state that let a spec's expectations
+ * depend on the developer's live Clef/ASR/TTS wiring.
+ */
+export function assertHermeticProviderEnv(name: string): ProviderEnv {
+  const run = serverRun(name);
+  const env = run.env ?? { declared: [], scrubbed: [] };
+  const inherited = Object.keys(process.env).filter((key) => key.startsWith("GAME_NARRATOR_"));
+  const unrecorded = inherited.filter(
+    (key) => !env.declared.includes(key) && !env.scrubbed.includes(key),
+  );
+  expect(
+    unrecorded,
+    `these GAME_NARRATOR_* variables are set in the spec's environment but the "${name}" manifest records neither keeping nor dropping them: ${unrecorded.join(
+      ", ",
+    )} — the server may have inherited them`,
+  ).toEqual([]);
+  return env;
 }
 
 /**

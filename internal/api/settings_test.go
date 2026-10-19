@@ -26,6 +26,39 @@ func settingsBody(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 	return body
 }
 
+// clearSettingsEnv makes a settings test hermetic: the page renders the
+// effective configuration of *this* process, and the developer's live
+// environment (gateway URL, the token variable GAME_NARRATOR_GATEWAY_TOKEN_ENV
+// points at, every GAME_NARRATOR_ROLE_* variable) would otherwise decide the
+// state a test asserts on. mutableSettingEnv() is the page's own list of the
+// variables it renders, so clearing it clears everything the page reads.
+func clearSettingsEnv(t *testing.T) {
+	t.Helper()
+	for _, e := range mutableSettingEnv() {
+		t.Setenv(e, "")
+	}
+}
+
+// roleEnv is the per-role GAME_NARRATOR_ROLE_<ROLE>_MODEL variable.
+func roleEnv(role string) string {
+	return "GAME_NARRATOR_ROLE_" + strings.ToUpper(role) + "_MODEL"
+}
+
+// settingsRoleRows parses the GET body into one map per role row.
+func settingsRoleRows(t *testing.T, rec *httptest.ResponseRecorder) map[string]map[string]any {
+	t.Helper()
+	body := settingsBody(t, rec)
+	roles, _ := body["models"].(map[string]any)["roles"].([]any)
+	out := make(map[string]map[string]any, len(roles))
+	for _, r := range roles {
+		row, _ := r.(map[string]any)
+		if name, _ := row["role"].(string); name != "" {
+			out[name] = row
+		}
+	}
+	return out
+}
+
 // TestSettingsRequiresAdmin pins the scope table's grant: every role below
 // admin is refused on all three routes, and the refusal is a 403 problem, not
 // a 200 with an empty configuration.
@@ -56,6 +89,7 @@ func TestSettingsRequiresAdmin(t *testing.T) {
 func TestSettingsRedactsSecrets(t *testing.T) {
 	const secretHost = "gateway.internal.example:9443"
 	const secretToken = "super-secret-bearer-token-abc123"
+	clearSettingsEnv(t)
 	t.Setenv("GAME_NARRATOR_GATEWAY_URL", "https://"+secretHost+"/v1")
 	t.Setenv("GAME_NARRATOR_GATEWAY_TOKEN", secretToken)
 	t.Setenv("GAME_NARRATOR_ROLE_FAST_REASONING_MODEL", "fast-model-x")
@@ -101,8 +135,11 @@ func TestSettingsRedactsSecrets(t *testing.T) {
 // TestSettingsNotConfiguredAndImmutable pins the two states the page renders:
 // a role with no model reports NOT CONFIGURED with the variable to set in
 // its state string, and the mutable section says 0 with the controlling
-// variables named.
+// variables named. The test is hermetic: every variable the page reads is
+// cleared first, so a developer's live environment (a configured decision
+// role and gateway included) cannot flip the expected state.
 func TestSettingsNotConfiguredAndImmutable(t *testing.T) {
+	clearSettingsEnv(t)
 	a := newTestAuth(t)
 	h := a.handler(WithWebAssets(uiBuild()), WithStore(a.st))
 	rec := a.get(t, h, auth.RoleAdmin, "/api/v1/settings")
@@ -155,6 +192,80 @@ func TestSettingsNotConfiguredAndImmutable(t *testing.T) {
 		t.Errorf("update.auto_update = %v, want false", update["auto_update"])
 	}
 	_ = raw
+}
+
+// TestSettingsConfiguredAndImplemented pins the third state: a role whose
+// model is set and whose protocol this build ships an adapter for reports
+// CONFIGURED — for every role, including the decision role (System One,
+// wired by newDecisionWiring) and speech_asr (the OpenAI transcription wire),
+// whose adapters the preflight table still lists as undeployed. The page
+// derives availability from the protocol contract (protocolAdapters), not
+// from that stale flag, so a configured System One role must not render NOT
+// AVAILABLE. The negative arm (a model configured over a protocol with no
+// adapter) pins the NOT AVAILABLE state the page keeps for genuinely
+// unimplemented protocols.
+func TestSettingsConfiguredAndImplemented(t *testing.T) {
+	t.Run("configured and implemented reports CONFIGURED for every role", func(t *testing.T) {
+		clearSettingsEnv(t)
+		t.Setenv("GAME_NARRATOR_GATEWAY_URL", "http://127.0.0.1:19443/v1")
+		for _, role := range []string{
+			"agent_reasoning", "fast_reasoning", "vision_ocr_fallback",
+			"decision", "voice_design", "voice_clone", "speech_asr",
+		} {
+			t.Setenv(roleEnv(role), "model-"+role)
+		}
+		t.Setenv("GAME_NARRATOR_ROLE_DECISION_PROTOCOL", "systemone")
+
+		a := newTestAuth(t)
+		h := a.handler(WithWebAssets(uiBuild()), WithStore(a.st))
+		rec := a.get(t, h, auth.RoleAdmin, "/api/v1/settings")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /api/v1/settings = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+		}
+		rows := settingsRoleRows(t, rec)
+		for _, role := range []string{
+			"agent_reasoning", "fast_reasoning", "vision_ocr_fallback",
+			"decision", "voice_design", "voice_clone", "speech_asr",
+		} {
+			row, ok := rows[role]
+			if !ok {
+				t.Fatalf("the %s role row is missing", role)
+			}
+			if state, _ := row["state"].(string); state != "CONFIGURED" {
+				t.Errorf("%s state = %q, want CONFIGURED (this build ships the adapter for its protocol)", role, state)
+			}
+		}
+	})
+
+	t.Run("configured over an unimplemented protocol reports NOT AVAILABLE", func(t *testing.T) {
+		clearSettingsEnv(t)
+		t.Setenv("GAME_NARRATOR_GATEWAY_URL", "http://127.0.0.1:19443/v1")
+		t.Setenv("GAME_NARRATOR_ROLE_VOICE_DESIGN_MODEL", "model-voice_design")
+		// probe_required names a protocol the build records but ships no
+		// adapter for, so a configured role over it must report NOT AVAILABLE.
+		t.Setenv("GAME_NARRATOR_ROLE_VOICE_DESIGN_PROTOCOL", "probe_required")
+
+		a := newTestAuth(t)
+		h := a.handler(WithWebAssets(uiBuild()), WithStore(a.st))
+		rec := a.get(t, h, auth.RoleAdmin, "/api/v1/settings")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /api/v1/settings = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+		}
+		rows := settingsRoleRows(t, rec)
+		row, ok := rows["voice_design"]
+		if !ok {
+			t.Fatal("the voice_design role row is missing")
+		}
+		state, _ := row["state"].(string)
+		if !strings.Contains(state, `protocol "probe_required" has no adapter implemented`) {
+			t.Errorf("voice_design state = %q, want a NOT AVAILABLE state naming the unimplemented protocol", state)
+		}
+		if clone, ok := rows["voice_clone"]; ok {
+			if state, _ := clone["state"].(string); !strings.HasPrefix(state, "NOT CONFIGURED") {
+				t.Errorf("voice_clone state = %q, want NOT CONFIGURED (the protocol override is per role)", state)
+			}
+		}
+	})
 }
 
 // TestSettingsPutDeclinesWithTheEnvList pins the 405 contract: PUT exists so
