@@ -261,6 +261,13 @@ type FixtureRecorder struct {
 	st       Status // the launch's status (image SHA, user dir, display, pid)
 	launched bool
 
+	// clock is the recorder's own clock (wallClock by production): the
+	// capture loop's cadence and the budget/gap stamps read from it, so a
+	// test can run the loop on a virtual clock (testVirtualClock) and
+	// assert its bookkeeping independent of host load. A test sets it via
+	// SetCaptureClock before Launch; production keeps the wall clock.
+	clock captureClock
+
 	// Parallel adaptive capture (schema 2). The capture loop records frames
 	// on its own clock (independent of the drive's iteration cadence) at the
 	// plan's high rate while the last recorded frame measures a dialogue/
@@ -327,6 +334,33 @@ type CapturePlan struct {
 // the bytes' worth (a grab takes ~80 ms; the screen cannot out-run that).
 const captureMinGap = 100 * time.Millisecond
 
+// captureClock is the recorder's own clock: the stamps (budgets, the min-gap
+// gap, the frame timestamps) and the capture loop's cadence read from it.
+// Production is the wall clock; a test injects a virtual one so the
+// loop's bookkeeping is assertable on its own clock, however loaded the
+// host is (a wall-clock test asserts frame counts inside a sleep window,
+// which full-suite -race load starves).
+type captureClock interface {
+	now() time.Time
+	// tick blocks until d has elapsed on the clock. It reports false when
+	// ctx finished first (the loop must stop).
+	tick(ctx context.Context, d time.Duration) bool
+}
+
+// wallClock is the production clock.
+type wallClock struct{}
+
+func (wallClock) now() time.Time { return time.Now() }
+
+func (wallClock) tick(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(d):
+		return true
+	}
+}
+
 // captureFailTolerance is how many consecutive grab failures the capture
 // loop survives before it stops (a lost window is honest to stop on; the
 // fixture then ends shorter and the manifest says so). The drive's own
@@ -352,7 +386,19 @@ func NewFixtureRecorder(b Bridge, root, id string) (*FixtureRecorder, error) {
 	if err := os.MkdirAll(filepath.Join(dir, "frames"), 0o755); err != nil {
 		return nil, fmt.Errorf("dolphin: fixture dir %s: %w", dir, err)
 	}
-	return &FixtureRecorder{inner: b, id: id, root: dir, pending: map[int]capturePending{}, lineIDPrefix: "ww-legend"}, nil
+	return &FixtureRecorder{inner: b, id: id, root: dir, pending: map[int]capturePending{}, lineIDPrefix: "ww-legend", clock: wallClock{}}, nil
+}
+
+// SetCaptureClock swaps the recorder's clock (test hook; production keeps
+// the wall clock). It must be called before StartCapture: the stamps and
+// the loop's cadence read it from then on.
+func (r *FixtureRecorder) SetCaptureClock(c captureClock) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if c == nil {
+		return
+	}
+	r.clock = c
 }
 
 // Dir is the fixture's directory (<root>/<id>).
@@ -434,7 +480,7 @@ func (r *FixtureRecorder) StartCapture(ctx context.Context) error {
 	r.plan = r.plan.normalize()
 	r.captureOn = true
 	r.captureErr = nil
-	r.captureStart = time.Now()
+	r.captureStart = r.clock.now()
 	cctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	r.captureCancel = cancel
@@ -522,10 +568,8 @@ func (r *FixtureRecorder) captureLoop(ctx context.Context, done chan struct{}) {
 	interval := r.intervalFor(r.lastScreenLocked())
 	fails := 0
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(interval):
+		if !r.clock.tick(ctx, interval) {
+			return // the capture stopped (cancel); the loop leaves on its own clock
 		}
 		active, fresh := r.captureGate()
 		if !active {
@@ -565,7 +609,7 @@ func (r *FixtureRecorder) captureLoop(ctx context.Context, done chan struct{}) {
 		case <-ctx.Done():
 			r.captureSkip(no) // the grab happened but the recording ended: drop it, keep the sequence whole
 			return
-		case jobs <- captureJob{no: no, ts: time.Now(), img: img}:
+		case jobs <- captureJob{no: no, ts: r.clock.now(), img: img}:
 		}
 		interval = r.intervalFor(r.lastScreenLocked())
 	}
@@ -594,7 +638,7 @@ func (r *FixtureRecorder) captureReserve() (int, bool, bool) {
 	if !r.captureOn {
 		return 0, false, false
 	}
-	if r.plan.MaxDuration > 0 && time.Since(r.captureStart) >= r.plan.MaxDuration {
+	if r.plan.MaxDuration > 0 && r.clock.now().Sub(r.captureStart) >= r.plan.MaxDuration {
 		r.captureOn = false // the budget is the stop; the manifest records the window
 		return 0, false, false
 	}
@@ -602,13 +646,13 @@ func (r *FixtureRecorder) captureReserve() (int, bool, bool) {
 		r.captureOn = false
 		return 0, false, false
 	}
-	fresh := r.lastFrameTS.IsZero() || time.Since(r.lastFrameTS) >= captureMinGap
+	fresh := r.lastFrameTS.IsZero() || r.clock.now().Sub(r.lastFrameTS) >= captureMinGap
 	if !fresh {
 		return 0, true, false
 	}
 	no := r.nextFrameNo
 	r.nextFrameNo++
-	r.lastFrameTS = time.Now()
+	r.lastFrameTS = r.clock.now()
 	return no, true, true
 }
 
@@ -620,7 +664,7 @@ func (r *FixtureRecorder) captureReserve() (int, bool, bool) {
 func (r *FixtureRecorder) reserveFrameNoLocked() int {
 	no := r.nextFrameNo
 	r.nextFrameNo++
-	r.lastFrameTS = time.Now()
+	r.lastFrameTS = r.clock.now()
 	return no
 }
 
@@ -712,7 +756,7 @@ func (r *FixtureRecorder) captureGate() (bool, bool) {
 	if !r.captureOn {
 		return false, false
 	}
-	if r.plan.MaxDuration > 0 && time.Since(r.captureStart) >= r.plan.MaxDuration {
+	if r.plan.MaxDuration > 0 && r.clock.now().Sub(r.captureStart) >= r.plan.MaxDuration {
 		r.captureOn = false // the budget is the stop; the manifest records the window
 		return false, false
 	}
@@ -720,7 +764,7 @@ func (r *FixtureRecorder) captureGate() (bool, bool) {
 		r.captureOn = false
 		return false, false
 	}
-	fresh := r.lastFrameTS.IsZero() || time.Since(r.lastFrameTS) >= captureMinGap
+	fresh := r.lastFrameTS.IsZero() || r.clock.now().Sub(r.lastFrameTS) >= captureMinGap
 	return true, fresh
 }
 
@@ -821,7 +865,7 @@ func (r *FixtureRecorder) Screenshot(ctx context.Context) (image.Image, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := r.recordFrame(img, time.Now()); err != nil {
+	if _, err := r.recordFrame(img, r.clock.now()); err != nil {
 		return nil, err
 	}
 	return img, nil
