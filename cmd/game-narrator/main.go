@@ -34,6 +34,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/assets"
 	"github.com/dbirks/game-narrator/internal/auth"
 	"github.com/dbirks/game-narrator/internal/bootstrap"
+	"github.com/dbirks/game-narrator/internal/clips"
 	"github.com/dbirks/game-narrator/internal/doctor"
 	"github.com/dbirks/game-narrator/internal/events"
 	"github.com/dbirks/game-narrator/internal/games"
@@ -527,6 +528,21 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 	// allowlist is the documented default — GAME_NARRATOR_REPLAY_ROOTS, else
 	// testdata/ from a dev checkout, else nothing in production.
 	devTraceDir := filepath.Join(cfg.DataDir, "dev-trace")
+	// The managed replay clip store (ADR-0073): inside the data directory, so
+	// a clip installed by the API lives in the durable state a backup copies
+	// (the backup route ships the store's directories alongside the database)
+	// and so the runtime always treats it as a replay root — the product path
+	// by which a recorded clip reaches a running appliance without an
+	// operator editing /etc/game-narrator/env and restarting the service.
+	clipsDir := filepath.Join(cfg.DataDir, "replay-clips")
+	// A staging directory is what an interrupted upload left behind; it is
+	// private state with no reader, so the process that starts answers for
+	// it rather than the disk growing one entry per interrupted install.
+	if n, perr := clips.PruneStaging(clipsDir); perr != nil {
+		log.Warn("pruning the clip store's staging directories", "error", perr)
+	} else if n > 0 {
+		log.Info("removed stale clip staging directories", "count", n)
+	}
 	// The session's speech pipeline (docs/spec/07, ADR-0039): wired only when
 	// the voice workflow is — a silent appliance keeps answering the audio
 	// route 503 rather than applying a control to nothing. The sink is the
@@ -574,6 +590,7 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 		Jobs:        runner,
 		AssetsRoot:  devTraceDir,
 		ReplayRoots: runtime.DefaultReplayRoots(os.LookupEnv),
+		ClipsDir:    clipsDir,
 		Speech:      speechOpts,
 		OCRFallback: ocrFallback,
 		Decision:    decisionOpts,
@@ -594,6 +611,7 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 	}
 	log.Info("session runtime ready",
 		"dev_trace_root", filepath.Base(devTraceDir),
+		"clip_store", filepath.Base(clipsDir),
 		"replay_roots", len(runtime.DefaultReplayRoots(os.LookupEnv)))
 
 	// Auth store (docs/spec/08 "API version and user authentication", ADR-0016):
@@ -660,6 +678,11 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 			return ocr.Tesseract{PSM: psm, Timeout: 15 * time.Second}
 		}, runtime.DefaultReplayRoots(os.LookupEnv)),
 		api.WithDiscImport(strings.TrimSpace(os.Getenv(EnvImportDir))),
+		// The managed replay clip store (ADR-0073): the same asset store the
+		// imports commit to (provenance is the archive's content hash) and the
+		// managed directory the runtime treats as a replay root. Both halves
+		// are wired here, so the API answers the real store rather than 503.
+		api.WithClips(assetStore, clipsDir),
 		api.WithTrustedProxy(trustedProxyCIDRs(os.LookupEnv)...),
 	}
 	if voiceSvc != nil {

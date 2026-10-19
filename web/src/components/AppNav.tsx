@@ -56,6 +56,13 @@ export function AppNav() {
           Tests
         </Link>
       ) : null}
+      {/* The clip store is developer-scoped (ADR-0073): a clip is a recording
+          of gameplay frames, the same evidence class as the dev-trace store. */}
+      {atLeast("developer") ? (
+        <Link to="/replay-clips" data-testid="nav-replay-clips">
+          Replay clips
+        </Link>
+      ) : null}
       <span className="nav-spacer" />
       {state === "authenticated" && user ? (
         <span className="nav-user" data-testid="nav-user">

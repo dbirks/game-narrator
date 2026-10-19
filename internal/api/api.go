@@ -124,6 +124,15 @@ type Server struct {
 	adapters *adapter.Registry
 	jobQueue JobQueue
 
+	// clipsAssets and clipsStoreDir back the managed replay clip store
+	// (ADR-0073): /api/v1/replay/clips commits the uploaded archive to
+	// clipsAssets for provenance and installs it under clipsStoreDir, which
+	// the session runtime always treats as a replay root. An unwired half
+	// answers 503: a store that answered "no clips" because it is not
+	// configured would hide the configuration fact the operator needs.
+	clipsAssets   assets.Store
+	clipsStoreDir string
+
 	// sessions owns the session lifecycle API (sessions.go): start, status and
 	// stop, plus the dev-trace asset lookup the developer inspector's asset
 	// route reads through. nil answers 503 for the same honest-degradation
@@ -549,6 +558,20 @@ func (s *Server) Handler() http.Handler {
 	// and /api/v1/profiles/* are both curator-tier there.
 	routes.register(mux, http.MethodGet, "/api/v1/import/disc/images", s.handleDiscImportImages)
 	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/import/disc", s.handleDiscImport)
+
+	// The managed replay clip store (ADR-0073): an archive of the replay
+	// layout streams into the asset store under its content hash and installs
+	// under the managed directory the session runtime always treats as a
+	// replay root, so a recorded clip is installable by API — the sustained
+	// device script used to get there by editing /etc/game-narrator/env and
+	// restarting, the operator footgun this surface removes. The grant is
+	// developer in the scope table because a clip is a recording of gameplay
+	// frames — the same sensitive-evidence tier as the dev traces (docs/spec/08)
+	// — and an admin passes by the role order, which is how the device scripts
+	// reach it with the token they already mint.
+	routes.register(mux, http.MethodPost, "/api/v1/replay/clips", s.handleClipsUpload)
+	routes.register(mux, http.MethodGet, "/api/v1/replay/clips", s.handleClipsList)
+	routes.register(mux, http.MethodDelete, "/api/v1/replay/clips/{id}", s.handleClipsDelete)
 
 	// The voice setup workflow (docs/spec/08 "APIs": voice list/auditions/
 	// approve/register/preview). The 202 audition job runs as voices.JobKind;

@@ -65,6 +65,16 @@ var (
 	// ErrInvalidAudioSettings: a control value outside its documented range
 	// (volume 0..1, speech_delay_ms 0..speechDelayMaxMS).
 	ErrInvalidAudioSettings = errors.New("runtime: invalid audio settings")
+	// ErrClipsUnavailable (ADR-0073): a session asked for a stored clip by id
+	// but this process has no managed clip store wired — the id names nothing
+	// here, so the answer is the documented degraded shape, not a 404 that
+	// blames a clip nobody installed.
+	ErrClipsUnavailable = errors.New("runtime: the managed clip store is not configured in this process")
+	// ErrInvalidClipID (ADR-0073): the clip id a session named is not a clip id
+	// at all (the id contract is the traversal boundary, docs/spec/14
+	// "Filesystem"). The answer is 400 with the rule named, never a path the
+	// id almost spelled.
+	ErrInvalidClipID = errors.New("runtime: the clip id is not a valid clip id")
 )
 
 // ModeConservative and ModePredictive are the session decision modes
@@ -83,10 +93,16 @@ type StartRequest struct {
 	DevTrace    bool
 }
 
-// FrameSource names the session's input. Dir is meaningful for replay.
+// FrameSource names the session's input. Dir is meaningful for replay. ClipID
+// (ADR-0073) selects a clip from the managed clip store by id instead of by
+// path: the id is the only client-controlled component, it is checked against
+// the clip id contract before any filesystem access, and the directory it
+// resolves to still has to pass the replay-root allowlist — the store is a
+// root, so it passes — so an id cannot name a directory outside the store.
 type FrameSource struct {
-	Kind string
-	Dir  string
+	Kind   string
+	Dir    string
+	ClipID string
 }
 
 // Options wires the runtime into its neighbours. Store and Hub are mandatory;
@@ -102,6 +118,14 @@ type Options struct {
 
 	AssetsRoot  string
 	ReplayRoots []string
+	// ClipsDir is the managed clip store (ADR-0073): the directory inside the
+	// data directory the API installs uploaded clips into. When non-empty the
+	// manager admits it as a replay root in addition to ReplayRoots — the
+	// product path by which a clip reaches a running appliance without an
+	// operator editing the service environment — and sessions may select a
+	// clip by id against it. Empty means this process has no clip store: a
+	// session that names a clip id then answers ErrClipsUnavailable.
+	ClipsDir string
 	// ReplaySpeed paces a replayed session's frames: 0 (the default) drains
 	// the recording as fast as the pipeline consumes it, the documented
 	// Frame-replay-gate behaviour (docs/spec/12: the decision is a pure

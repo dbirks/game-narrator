@@ -21,25 +21,17 @@
 #   --source capture           REFUSED with a clear NOT RUN (exit 2) until the
 #                              UVC capture dongle is attached.
 #
-# Replay-root operator step (temporary, documented, restored afterwards):
-# the installed appliance ships WITHOUT GAME_NARRATOR_REPLAY_ROOTS, and
-# DefaultReplayRoots admits nothing in production (no testdata/ beside the
-# service's working dir), and the API has no clip-upload route — so the
-# product today cannot replay a user clip on an installed device without a
-# configuration change (reported as a product gap). The product's own
-# configuration surface for the appliance service is /etc/game-narrator/env
-# (the unit's EnvironmentFile; docs/spec/10 "Configure env file protected at
-# 0600"). The runner therefore performs the documented operator step:
-#   1. back up /etc/game-narrator/env (byte-for-byte, 0600, in the stage dir);
-#   2. append GAME_NARRATOR_REPLAY_ROOTS=/var/lib/game-narrator/replay;
-#   3. systemctl daemon-reload + restart, wait for /health/ready, verify the
-#      variable is present in the running process environment (the single
-#      variable is grepped out of /proc/PID/environ; the env file itself is
-#      never printed, catted or copied out);
-#   and RESTORES it at the end (and on any failure, via the EXIT trap):
-#   4. restore the backup, daemon-reload + restart, wait for ready, verify
-#      the variable is gone. The report records every step and the metadata
-#      (mode/owner/line count) before and after.
+# Clip install (ADR-0073, the product path — no env file, no restart):
+# the installed appliance ships WITHOUT GAME_NARRATOR_REPLAY_ROOTS and the
+# runtime's managed clip store (<data dir>/replay-clips) is a replay root
+# by default. The runner uploads the committed synthetic clip through
+# POST /api/v1/replay/clips (a tar of the layout; the archive's content hash
+# is committed to the asset store as the clip's provenance), starts every
+# session with frame_source {"kind":"replay","clip_id":"sustained-replay"},
+# and deletes the clip with DELETE /api/v1/replay/clips/{id} at the end.
+# /etc/game-narrator/env (which holds the gateway token) is never read,
+# written, restored or printed by this script: it stays exactly as the
+# operator left it.
 #
 # What one 10 s sample records (budgets: docs/spec/10 "Resource budgets" +
 # internal/hwsmoke serveRSSBudgetMiB):
@@ -75,10 +67,10 @@
 # is the HTTP API.
 #
 # Cleanup (through the API): the session is stopped (idempotent stop), the
-# profile revision is archived; the per-run clip dir, token and /tmp stage
-# are removed. The game/edition rows have no delete route — they remain as
-# inert fixtures (recorded in the report). The env file is restored to its
-# pre-run bytes (see operator step above).
+# uploaded clip is deleted (DELETE /api/v1/replay/clips/{id}), the profile
+# revision is archived; the token and /tmp stage are removed. The
+# game/edition rows have no delete route — they remain as inert fixtures
+# (recorded in the report). The service env file is never touched.
 #
 # Artifacts: artifacts/hw-sustained/<run-id>/ (gitignored) gets the raw
 # sample JSONL, per-session log, ops log and report.json/report.md. The
@@ -91,8 +83,8 @@
 # heredocs; shellcheck's symbol tracking mis-parses that nesting and reports
 # the runner's own assignments as missing (SC2153) or unassigned (SC2154).
 # Both are false positives for this file: every flagged name is assigned in
-# the runner header (MINUTES/RUN_ID/CLIP_SHA/GAME_SLUG) or in the runner
-# body (ENV_APPENDED/env_restored).
+# the runner header (MINUTES/RUN_ID/CLIP_SHA/GAME_SLUG/CLIP_ID) or in the
+# runner body (clip_archive_sha/clip_removed).
 # shellcheck disable=SC2153,SC2154
 
 set -u
@@ -212,11 +204,12 @@ PY
 
 # ── the device runner ───────────────────────────────────────────────────────
 # Runs as root on the appliance (one `sudo -n sh` invocation, like
-# scripts/hw/run-on-device.sh): it may touch systemd (daemon-reload +
-# restart only, for the documented operator step and its restore) and the
-# data dir. It never prints /etc/game-narrator/env or the process env as a
-# whole; it greps out at most two non-secret values (GAME_NARRATOR_LISTEN,
-# GAME_NARRATOR_REPLAY_ROOTS) and records them in the ops log.
+# scripts/hw/run-on-device.sh): it mints an API token through the installed
+# binary's `admin` CLI and does everything else through the HTTP API
+# (the clip install and its cleanup included — ADR-0073). It never prints
+# /etc/game-narrator/env or the process env as a whole; it greps out at
+# most one non-secret value (GAME_NARRATOR_LISTEN) and records it in the
+# ops log.
 cat > "$tmp/runner.sh" <<'RUNNER_EOF'
 #!/bin/sh
 # Device-side runner for the sustained-play run. Invoked:
@@ -233,11 +226,16 @@ OUT=$BASE/out
 mkdir -p "$OUT" || exit 1
 
 DATA_DIR=/var/lib/game-narrator
-REPLAY_ROOT=$DATA_DIR/replay
-CLIP_DIR=$REPLAY_ROOT/sustained-$RUN_ID
-ENV_FILE=/etc/game-narrator/env
-ENV_BAK=$BASE/env.backup
 SERVICE=game-narrator
+# The unit's EnvironmentFile. This script READS it exactly once and for
+# exactly one non-secret value (GAME_NARRATOR_LISTEN, the service's listen
+# address): it never writes it, backs it up or prints it — the clip install
+# is the API's job (ADR-0073), not the env file's.
+ENV_FILE=/etc/game-narrator/env
+# The managed clip store's id for this run (ADR-0073): fixed, so a rerun on
+# the same appliance finds and replaces its own clip instead of 409-ing;
+# a slug per the clip id contract (internal/clips).
+CLIP_ID=sustained-replay
 
 log() {
 	echo "[sustained $(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" | tee -a "$OUT/runner.log"
@@ -249,7 +247,6 @@ log() {
 printf '{"state":"starting","ts":%d}\n' "$(date +%s)" >"$OUT/status" 2>/dev/null || true
 on_exit() {
 	rc=$?
-	restore_env   # the operator step must be undone even on failure
 	[ "$rc" -eq 0 ] && return 0
 	printf '{"state":"error","rc":%d,"ts":%d}\n' "$rc" "$(date +%s)" >"$OUT/status" 2>/dev/null
 }
@@ -264,12 +261,6 @@ if [ -f "$ENV_FILE" ]; then
 fi
 log "API at $API"
 
-env_meta() {
-	# Metadata only (mode/owner/line count), never contents.
-	ls -la "$ENV_FILE" 2>/dev/null | awk '{print $1, $3, $4}' \
-		| tr -s ' '
-}
-
 wait_ready() {
 	# $1 = max attempts (1 s apart). Returns 0 once /health/ready is 200.
 	i=0
@@ -283,76 +274,11 @@ wait_ready() {
 	return 1
 }
 
-proc_has_replay_roots() {
-	# $1 = expected value. Greps the RUNNING process env for exactly one
-	# non-secret variable (never prints the env file or the whole env).
-	pid=$(systemctl show -p MainPID --value "$SERVICE" 2>/dev/null)
-	[ -n "$pid" ] && [ -r "/proc/$pid/environ" ] \
-		&& tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null \
-		| grep -qx "GAME_NARRATOR_REPLAY_ROOTS=$1"
-}
-
-ENV_APPENDED=0
-ENV_META_PRE=""
-env_restored=0
-restore_env() {
-	# Idempotent restore of the documented operator step: put the pre-run
-	# env bytes back, reload + restart, wait for ready, verify the variable
-	# is gone from the running process. Skipped when the step was not taken.
-	[ "$ENV_APPENDED" = "1" ] || return 0
-	[ "$env_restored" = "1" ] && return 0
-	log "operator step: restoring /etc/game-narrator/env from the pre-run backup"
-	cp -a "$ENV_BAK" "$ENV_FILE" \
-		&& chown root:root "$ENV_FILE" && chmod 600 "$ENV_FILE"
-	systemctl daemon-reload
-	systemctl restart "$SERVICE"
-	if wait_ready 90; then
-		if proc_has_replay_roots "$REPLAY_ROOT"; then
-			log "warning: REPLAY_ROOTS is still present in the service environment after the restore"
-		else
-			log "operator step: restore verified (variable absent, service ready)"
-		fi
-		env_restored=1
-	else
-		log "FAIL: the service did not become ready after the env restore"
-	fi
-}
-
-# 2) The replay-root operator step (temporary, restored afterwards — see the
-# script header). The installed service admits a replay dir only under
-# GAME_NARRATOR_REPLAY_ROOTS (internal/runtime allowlist); production ships
-# without it, so this is the product gap the run documents.
-if grep -qx "GAME_NARRATOR_REPLAY_ROOTS=$REPLAY_ROOT" "$ENV_FILE" 2>/dev/null; then
-	log "replay root already configured by an operator step; reusing it (NOT restored at the end)"
-	ENV_META_PRE="$(env_meta)"
-elif grep -q '^GAME_NARRATOR_REPLAY_ROOTS=' "$ENV_FILE" 2>/dev/null; then
-	log "FAIL: $ENV_FILE sets a different GAME_NARRATOR_REPLAY_ROOTS; refusing to mix it with this run's value (operator action required)"
-	exit 1
-else
-	log "operator step: backing up $ENV_FILE ($(env_meta))"
-	ENV_META_PRE="$(env_meta)"
-	cp -a "$ENV_FILE" "$ENV_BAK" && chmod 600 "$ENV_BAK" \
-		|| { log "FAIL: could not back up the env file"; exit 1; }
-	printf 'GAME_NARRATOR_REPLAY_ROOTS=%s\n' "$REPLAY_ROOT" >>"$ENV_FILE" \
-		|| { log "FAIL: could not append the replay root to the env file"; exit 1; }
-	ENV_APPENDED=1
-	log "operator step: appended GAME_NARRATOR_REPLAY_ROOTS=$REPLAY_ROOT (backup in the stage dir; restored at the end)"
-	systemctl daemon-reload
-	systemctl restart "$SERVICE"
-	if ! wait_ready 90; then
-		log "FAIL: the service did not become ready after the operator step"
-		exit 1
-	fi
-	if proc_has_replay_roots "$REPLAY_ROOT"; then
-		log "operator step: verified the running process has the replay root"
-	else
-		log "FAIL: the running process lacks GAME_NARRATOR_REPLAY_ROOTS after restart"
-		exit 1
-	fi
-fi
-
 # 3) Auth: a dedicated `sustained` admin account (generated password, never
 # printed) and a 1-day API token through the installed binary's `admin` CLI.
+# The replay-root configuration no longer exists at all (ADR-0073): the clip
+# install is section 3b, an API call, so this script neither reads nor
+# writes /etc/game-narrator/env and never restarts the service.
 BIN=/usr/bin/game-narrator
 TOKEN=$BASE/token
 chmod 600 "$TOKEN" 2>/dev/null || true
@@ -430,18 +356,45 @@ for it in items:
         break' "$li_file" "$li_key" "$@" 2>/dev/null
 }
 
-log "placing the clip under the replay root ($CLIP_DIR)"
-mkdir -p "$CLIP_DIR" || exit 1
-cp -r "$BASE/clip/." "$CLIP_DIR/" || { log "FAIL: clip copy failed"; exit 1; }
-chown -R game-narrator:game-narrator "$CLIP_DIR" || true
+# 3b) Clip install through the API (ADR-0073): the managed clip store under
+# the data directory is a replay root by default, so no replay-root
+# configuration and no service restart. A rerun replaces its own clip: a
+# 409 is the "already installed" answer, and the delete-then-reupload keeps
+# the run idempotent without ever touching the env file.
+log "installing the clip as $CLIP_ID through POST /api/v1/replay/clips"
+if ! tar -cf "$BASE/clip.tar" -C "$BASE" clip; then
+	log "FAIL: could not tar the staged clip"
+	exit 1
+fi
+api_status=$(curl -s -o "$BASE/.body" -w '%{http_code}' \
+	-H "Authorization: Bearer $(cat "$TOKEN")" \
+	-F "file=@$BASE/clip.tar;filename=sustained-clip.tar" \
+	-F "name=$CLIP_ID" "$API/api/v1/replay/clips")
+if [ "$api_status" = "409" ]; then
+	log "clip $CLIP_ID already installed (an earlier run); replacing it"
+	api_status=$(curl -s -o "$BASE/.body" -w '%{http_code}' -X DELETE \
+		-H "Authorization: Bearer $(cat "$TOKEN")" \
+		"$API/api/v1/replay/clips/$CLIP_ID")
+	[ "$api_status" = "204" ] || { log "FAIL: DELETE clip -> $api_status: $(head -c 300 "$BASE/.body")"; exit 1; }
+	api_status=$(curl -s -o "$BASE/.body" -w '%{http_code}' \
+		-H "Authorization: Bearer $(cat "$TOKEN")" \
+		-F "file=@$BASE/clip.tar;filename=sustained-clip.tar" \
+		-F "name=$CLIP_ID" "$API/api/v1/replay/clips")
+fi
+if [ "$api_status" != "201" ]; then
+	log "FAIL: POST clip -> $api_status: $(head -c 300 "$BASE/.body")"
+	exit 1
+fi
+clip_archive_sha=$(jqget "$BASE/.body" archive_sha256)
+log "clip installed (archive sha256 ${clip_archive_sha:0:16}…; provenance committed to the asset store)"
 
 # 4) Catalog through the API: game -> edition -> draft -> import seed ->
 # regions -> review -> publish. The Idempotency store is in-process memory
-# (internal/api catalog_idempotency), so after the service restart of the
-# operator step a retry of a previous run's create 409s instead of replaying:
-# the game and edition therefore fall back to list + reuse (fixed slug / fixed
-# region-language-revision identity); each run still gets its own draft
-# profile revision, archived at the end (rule 5).
+# (internal/api catalog_idempotency), so after ANY service restart (a release
+# or operator action) a retry of a previous run's create 409s instead of
+# replaying: the game and edition therefore fall back to list + reuse (fixed
+# slug / fixed region-language-revision identity); each run still gets its
+# own draft profile revision, archived at the end (rule 5).
 log "creating or reusing the fixture game/edition/profile through the API"
 game_body=$(python3 -c 'import json,sys; print(json.dumps({"slug": sys.argv[1], "title": "Synthetic Sustained Replay Fixture", "platform": "gamecube-like", "user_tags": []}))' "$GAME_SLUG")
 api POST /api/v1/games "$game_body" "gn-sustained-fixture-game" >"$BASE/.resp"
@@ -562,7 +515,7 @@ fetch_session() {
 
 start_session() {
 
-	body=$(python3 -c 'import json,sys; print(json.dumps({"profile_id": sys.argv[1], "frame_source": {"kind": "replay", "dir": sys.argv[2]}, "mode": "conservative"}))' "$profile_id" "$CLIP_DIR")
+	body=$(python3 -c 'import json,sys; print(json.dumps({"profile_id": sys.argv[1], "frame_source": {"kind": "replay", "clip_id": sys.argv[2]}, "mode": "conservative"}))' "$profile_id" "$CLIP_ID")
 	api_status=$(curl -s -o "$BASE/.body" -w '%{http_code}' \
 		-H "Authorization: Bearer $(cat "$TOKEN")" -X POST \
 		--data-binary "$body" "$API/api/v1/sessions")
@@ -819,8 +772,20 @@ with open(sys.argv[1], "a") as f:
 PY
 fi
 
-# 7) Cleanup through the API: archive the profile revision (the game and
-# edition rows have no delete route; they stay inert and are recorded).
+# 7) Cleanup through the API: stop already done; delete the uploaded clip
+# (ADR-0073) and archive the profile revision (the game and edition rows
+# have no delete route; they stay inert and are recorded).
+clip_removed=0
+api_status=$(curl -s -o "$BASE/.body" -w '%{http_code}' -X DELETE \
+	-H "Authorization: Bearer $(cat "$TOKEN")" \
+	"$API/api/v1/replay/clips/$CLIP_ID")
+if [ "$api_status" = "204" ]; then
+	clip_removed=1
+	log "clip $CLIP_ID deleted -> 204"
+else
+	log "warning: DELETE clip -> $api_status: $(head -c 300 "$BASE/.body")"
+fi
+
 get_profile_etag
 if [ "$api_status" = "200" ]; then
 	api_status=$(curl -s -o /dev/null -w '%{http_code}' \
@@ -831,27 +796,20 @@ if [ "$api_status" = "200" ]; then
 else
 	log "warning: could not re-read the profile for archiving ($api_status)"
 fi
-rm -rf "$CLIP_DIR" 2>/dev/null
 
-# 8) Wind down is done; the run's ops log is written at the very end (after
-# the operator-step restore) so it records the final env state.
-rm -rf "$CLIP_DIR" 2>/dev/null
+# 8) Wind down is done; the run's ops log is written at the very end so it
+# records the clip store's final state and the installed version.
 
 log "run complete: $n_sessions session(s) started, $n_failed failed, " \
 	"cumulative frames=$cum_frames ocr_calls=$cum_ocr commits=$cum_commits " \
 	"dropped=$cum_dropped speech_started=$cum_speech_started"
 
-# 9) Finish: the operator step is restored (idempotent; a no-op when it was
-# not taken), then the ops log is written so it captures the restore, and
-# the poller is told the run is done.
-restore_env
+# 9) Finish: the ops log is written, then the poller is told the run is done.
 {
-	printf 'env_file=/etc/game-narrator/env\n'
-	printf 'env_metadata_pre_run=%s\n' "$ENV_META_PRE"
-	printf 'env_appended_line=GAME_NARRATOR_REPLAY_ROOTS=%s\n' "$REPLAY_ROOT"
-	printf 'env_operator_step=%s\n' "$([ "$ENV_APPENDED" = "1" ] && echo taken || echo reused-existing)"
-	printf 'env_restored=%s\n' "$env_restored"
-	printf 'env_metadata_after_run=%s\n' "$(env_meta)"
+	printf 'clip_store=managed (ADR-0073; no env file, no restart)\n'
+	printf 'clip_id=%s\n' "$CLIP_ID"
+	printf 'clip_archive_sha256=%s\n' "$clip_archive_sha"
+	printf 'clip_deleted=%s\n' "$([ "$clip_removed" = "1" ] && echo yes || echo no)"
 	printf 'installed_version=%s\n' "$(dpkg-query -W -f='${Version}' game-narrator 2>/dev/null)"
 	printf 'clip_sha256=%s\n' "$CLIP_SHA"
 } >"$OUT/ops.txt"
@@ -1072,13 +1030,11 @@ report = {
     "minutes_requested": minutes,
     "minutes_observed": round((samples[-1]["ts"] - samples[0]["ts"]) / 60.0, 2) if len(samples) >= 2 else 0,
     "samples": len(samples),
-    "operator_step": {
-        "mechanism": "GAME_NARRATOR_REPLAY_ROOTS appended to /etc/game-narrator/env (the unit's EnvironmentFile), daemon-reload + restart, restored from the pre-run backup afterwards",
-        "reused_existing": ops.get("env_operator_step") == "reused-existing",
-        "restored": ops.get("env_restored") == "1",
-        "env_metadata_before": ops.get("env_metadata_pre_run", ""),
-        "env_metadata_after": ops.get("env_metadata_after_run", ""),
-        "note": "temporary, documented operator step: the product cannot replay a user clip on an installed device without a configuration change (no production replay-root default, no clip-upload API route) — reported as a product gap",
+    "clip_store": {
+        "mechanism": "POST /api/v1/replay/clips (the managed clip store under the data directory, a replay root by default — ADR-0073); deleted with DELETE /api/v1/replay/clips/{id} after the run. /etc/game-narrator/env was never read, written or restored and the service was never restarted",
+        "clip_id": ops.get("clip_id", ""),
+        "archive_sha256": ops.get("clip_archive_sha256", ""),
+        "deleted": ops.get("clip_deleted") == "yes",
     },
     "sessions": {
         "started": len(sessions),
@@ -1128,7 +1084,9 @@ lines.append("- Speech: %s" % (
     % report["sessions"]["audio_sink"] if audio_wired else
     "none — the session snapshots carry no audio block (voice workflow not wired on this device; no TTS voice "
     "configured, no audio sink present), so speech was disabled for the whole run. Recorded as such."))
-lines.append("- Replay root: temporary, documented operator step — `GAME_NARRATOR_REPLAY_ROOTS=/var/lib/game-narrator/replay` appended to `/etc/game-narrator/env` (the unit's EnvironmentFile), service restarted; the pre-run env file was restored at the end (restored: %s; metadata before `%s`, after `%s`). The product cannot replay a user clip on an installed device without this configuration change (no production replay-root default, no clip-upload API route) — reported as a product gap." % ("yes" if report["operator_step"]["restored"] else "no", report["operator_step"]["env_metadata_before"] or "n/a", report["operator_step"]["env_metadata_after"] or "n/a"))
+lines.append("- Clip: the committed synthetic clip was uploaded through `POST /api/v1/replay/clips` (the managed clip store, ADR-0073) and deleted through the API after the run — the product path that replaced the env-file operator step. Clip id `%s`, archive sha256 `%s…`, deleted: %s. The service env file was never touched and the service never restarted."
+              % (report["clip_store"]["clip_id"], report["clip_store"]["archive_sha256"][:16] or "?",
+                 "yes" if report["clip_store"]["deleted"] else "no"))
 lines.append("\n## Budgets (docs/spec/10 + internal/hwsmoke)\n")
 lines.append("| Check | Result | Measured | Budget |")
 lines.append("| --- | --- | --- | --- |")
@@ -1151,8 +1109,8 @@ lines.append("- `device-out/runner.log` — the device runner's own log.")
 lines.append("- `report.json` — this report, machine-readable.")
 lines.append("\n## Cleanup\n")
 lines.append("- Session stopped through `POST /api/v1/sessions/{id}/stop`; profile archived through `POST /api/v1/profiles/{id}/status` (to=archived).")
-lines.append("- Per-run clip dir, token and /tmp stage removed from the device. The fixture game/edition rows have no delete route and remain inert.")
-lines.append("- The env file was restored to its pre-run bytes and the service restarted; the replay root is no longer configured on the device.")
+lines.append("- The uploaded clip was deleted through `DELETE /api/v1/replay/clips/%s`; the token and /tmp stage are removed from the device. The fixture game/edition rows have no delete route and remain inert." % (report["clip_store"]["clip_id"] or "sustained-replay"))
+lines.append("- The service env file was never read, written or restored by this run (ADR-0073): no operator step, no service restart.")
 with open(outdir + "/report.md", "w") as f:
     f.write("\n".join(lines) + "\n")
 

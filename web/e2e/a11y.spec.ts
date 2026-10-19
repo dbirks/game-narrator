@@ -230,6 +230,16 @@ test("axe: every route of the ui-coverage matrix, WCAG 2.1 A/AA", async ({ page 
     { name: "play", url: "/play", settle: (page) => settled(page, "play-start-form") },
     { name: "settings", url: "/settings", settle: (page) => settled(page, "settings-roles") },
     { name: "tests", url: "/tests", settle: (page) => settled(page, "scenario-catalog") },
+    {
+      name: "replay-clips",
+      url: "/replay-clips",
+      settle: async (page) => {
+        // The store is empty on this appliance: the upload panel and the
+        // empty state are the settled shape (ADR-0073).
+        await settled(page, "clips-upload-form");
+        await expect(page.getByTestId("empty-state")).toBeVisible();
+      },
+    },
     { name: "developer", url: "/developer", settle: (page) => settled(page, "session-start") },
     {
       name: "diagnostics (signed in)",

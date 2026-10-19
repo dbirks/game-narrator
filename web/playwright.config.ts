@@ -34,6 +34,7 @@ const correctionsUrl = `http://127.0.0.1:${ports.corrections}`;
 const sseUrl = `http://127.0.0.1:${ports.sse}`;
 const curationUrl = `http://127.0.0.1:${ports.curation}`;
 const discUrl = `http://127.0.0.1:${ports.disc}`;
+const clipsUrl = `http://127.0.0.1:${ports.clips}`;
 const routesUrl = `http://127.0.0.1:${ports.routes}`;
 const a11yUrl = `http://127.0.0.1:${ports.a11y}`;
 const developerDecisionUrl = `http://127.0.0.1:${ports.developerDecision}`;
@@ -197,6 +198,15 @@ export default defineConfig({
       name: "disc",
       testMatch: /(disc-import-walk|speaker-link)\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: discUrl },
+    },
+    {
+      // The managed replay clip store walk (ADR-0073) on the packaged binary,
+      // with NO replay allowlist: the managed clip store under the data
+      // directory is the only replay root the server admits, which is the
+      // point of the walk (the env-file step the device run needed is gone).
+      name: "clips",
+      testMatch: /replay-clips-walk\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: clipsUrl },
     },
     {
       // The route × first-run matrix (docs/spec/09 "Routes and page
@@ -493,6 +503,19 @@ export default defineConfig({
       cwd: "..",
       url: `${discUrl}/api/v1/health/live`,
       env: { GAME_NARRATOR_IMPORT_DIR: discImportDir },
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The managed clip store walk (ADR-0073): deliberately no
+      // GAME_NARRATOR_REPLAY_ROOTS — the managed store inside this server's
+      // data directory is the only replay root, and the walk asserts the
+      // synthetic clip runs from there.
+      command: `node web/e2e/serve.mjs clips 127.0.0.1:${ports.clips} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${clipsUrl}/api/v1/health/live`,
       reuseExistingServer: false,
       timeout: 60_000,
       stdout: "ignore",

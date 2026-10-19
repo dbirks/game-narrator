@@ -12,6 +12,7 @@ import {
 } from "../api/client";
 import { fetchReadiness } from "../api/system";
 import { fetchAllMessages } from "../api/profiles";
+import { clipsApi } from "../api/clips";
 import {
   openEventStream,
   sessionsApi,
@@ -108,6 +109,10 @@ function SetupForm() {
   // role for it (the route is operator), so the control is developer-only.
   const [devTrace, setDevTrace] = useState(false);
   const [replayDir, setReplayDir] = useState(DEFAULT_REPLAY_DIR);
+  // A managed-store clip id (ADR-0073) outranks the directory: the store is a
+  // replay root by default, so an uploaded clip needs no allowlist entry. The
+  // list is developer-scoped, so the picker only exists for developer and up.
+  const [replayClip, setReplayClip] = useState("");
   const [mode, setMode] = useState<SessionMode>("conservative");
   const [startError, setStartError] = useState<unknown>(null);
 
@@ -125,13 +130,25 @@ function SetupForm() {
     enabled: Boolean(profileId),
   });
 
+  // The managed clip store (ADR-0073), listed for the source picker. The
+  // route is developer-scoped, so a lower role never asks (the picker is
+  // hidden) and a list failure is shown, not swallowed into a silent
+  // directory-only form.
+  const clipList = useQuery({
+    queryKey: ["play", "replay-clips"],
+    queryFn: ({ signal }) => clipsApi.list(signal),
+    enabled: sourceKind === "replay" && developer,
+  });
+
   const start = useMutation({
     mutationFn: () =>
       sessionsApi.start({
         profile_id: profileId,
         frame_source:
           sourceKind === "replay"
-            ? { kind: "replay", dir: replayDir }
+            ? replayClip !== ""
+              ? { kind: "replay", clip_id: replayClip }
+              : { kind: "replay", dir: replayDir }
             : sourceKind === "dolphin"
               ? { kind: "dolphin" }
               : { kind: "test_pattern" },
@@ -201,19 +218,48 @@ function SetupForm() {
             </select>
           </label>
           {sourceKind === "replay" ? (
-            <label>
-              Replay directory
-              <input
-                type="text"
-                value={replayDir}
-                onChange={(event) => setReplayDir(event.target.value)}
-                data-testid="play-replay-dir"
-              />
-              <span className="muted">
-                Must sit under the configured replay allowlist; the dev checkout admits its
-                testdata.
-              </span>
-            </label>
+            <>
+              {developer ? (
+                <label>
+                  Clip from the managed store
+                  <select
+                    value={replayClip}
+                    onChange={(event) => setReplayClip(event.target.value)}
+                    data-testid="play-replay-clip"
+                  >
+                    <option value="">(replay directory instead)</option>
+                    {clipList.data?.clips.map((clip) => (
+                      <option key={clip.id} value={clip.id} disabled={Boolean(clip.missing)}>
+                        {clip.id} · {clip.missing ? "missing" : `${clip.frames} frames`}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="muted">
+                    {clipList.isPending
+                      ? "Listing clips…"
+                      : clipList.isError
+                        ? "The clip store could not be listed; a replay directory still works."
+                        : (clipList.data?.clips.length ?? 0) === 0
+                          ? "No clips installed yet: upload one from the Replay clips page."
+                          : "A selected clip outranks the directory below (the store is a replay root)."}
+                  </span>
+                </label>
+              ) : null}
+              <label>
+                Replay directory
+                <input
+                  type="text"
+                  value={replayDir}
+                  disabled={replayClip !== ""}
+                  onChange={(event) => setReplayDir(event.target.value)}
+                  data-testid="play-replay-dir"
+                />
+                <span className="muted">
+                  Must sit under the configured replay allowlist; the dev checkout admits its
+                  testdata. Ignored while a managed-store clip is selected.
+                </span>
+              </label>
+            </>
           ) : null}
           <label>
             Mode

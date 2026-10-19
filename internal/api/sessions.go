@@ -32,9 +32,13 @@ type startSessionRequest struct {
 }
 
 // startFrameSrc names the frame input. Dir is meaningful for replay only.
+// ClipID (ADR-0073) selects a clip from the managed clip store by id; the
+// runtime resolves it inside the store and re-checks the result against the
+// replay-root allowlist, so the id alone cannot name a path.
 type startFrameSrc struct {
-	Kind string `json:"kind"`
-	Dir  string `json:"dir,omitempty"`
+	Kind   string `json:"kind"`
+	Dir    string `json:"dir,omitempty"`
+	ClipID string `json:"clip_id,omitempty"`
 }
 
 // sessionResponse is the API view of a session (runtime.Info is its shape,
@@ -60,6 +64,7 @@ func (s *Server) handleSessionsStart(w http.ResponseWriter, r *http.Request) {
 	req.ProfileID = strings.TrimSpace(req.ProfileID)
 	req.FrameSource.Kind = strings.TrimSpace(req.FrameSource.Kind)
 	req.FrameSource.Dir = strings.TrimSpace(req.FrameSource.Dir)
+	req.FrameSource.ClipID = strings.TrimSpace(req.FrameSource.ClipID)
 	req.Mode = strings.TrimSpace(req.Mode)
 
 	// dev_trace stores sampled gameplay frames under the session (ADR-0024).
@@ -77,7 +82,7 @@ func (s *Server) handleSessionsStart(w http.ResponseWriter, r *http.Request) {
 
 	info, err := s.sessions.Start(r.Context(), runtime.StartRequest{
 		ProfileID:   req.ProfileID,
-		FrameSource: runtime.FrameSource{Kind: req.FrameSource.Kind, Dir: req.FrameSource.Dir},
+		FrameSource: runtime.FrameSource{Kind: req.FrameSource.Kind, Dir: req.FrameSource.Dir, ClipID: req.FrameSource.ClipID},
 		Mode:        req.Mode,
 		DevTrace:    req.DevTrace,
 	})
@@ -243,6 +248,15 @@ func (s *Server) sessionProblem(w http.ResponseWriter, r *http.Request, err erro
 	case errors.Is(err, runtime.ErrSourceMissing):
 		s.writeProblem(w, r, http.StatusBadRequest, "source-missing",
 			"Bad Request", "the replay directory does not exist")
+	case errors.Is(err, runtime.ErrInvalidClipID):
+		// The clip id is the session's selection key for the managed store
+		// (ADR-0073); an id that is not a clip id is a client error, and it is
+		// answered 400 before the runtime touches the filesystem.
+		s.writeProblem(w, r, http.StatusBadRequest, "invalid-clip-id",
+			"Bad Request", "frame_source.clip_id is not a valid clip id (a lowercase slug; see POST /api/v1/replay/clips)")
+	case errors.Is(err, runtime.ErrClipsUnavailable):
+		s.writeProblem(w, r, http.StatusServiceUnavailable, "clips-unavailable",
+			"Clips Unavailable", "this process has no managed clip store; upload a clip with POST /api/v1/replay/clips on a wired appliance, or start the session with a replay directory")
 	case errors.Is(err, runtime.ErrAnotherSessionRunning):
 		s.writeProblem(w, r, http.StatusConflict, "session-already-running",
 			"Session Already Running", "one active session at a time is a key invariant; stop the running session first")

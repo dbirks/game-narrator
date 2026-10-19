@@ -68,4 +68,9 @@ export const ports = {
    *  synthetic disc (testdata/disc), so the walk imports a disc image through
    *  the UI without a user's real one. */
   disc: 18112,
+  /** the packaged binary the managed-clip-store walk drives
+   *  (replay-clips-walk.spec.ts, ADR-0073): NO replay allowlist at all — the
+   *  managed clip store under the data dir is the only replay root, which is
+   *  the point of the walk. */
+  clips: 18113,
 } as const;

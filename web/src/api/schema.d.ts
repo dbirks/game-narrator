@@ -796,6 +796,50 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/replay/clips": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List the managed replay clip store.
+     * @description The store's provenance table reconciled against its directories: a directory the index lost is adopted (validated, created_by recovered), and an index row whose directory is gone is listed with missing true. No host path appears in the answer; the id is the whole address a session needs.
+     */
+    get: operations["listClips"];
+    put?: never;
+    /**
+     * Upload a replay clip: an archive of the replay layout, installed under the managed store.
+     * @description multipart/form-data with a file part carrying the archive (tar or zip; a single top-level directory is unwrapped) and an optional name field naming the clip id. The archive is committed to the asset store under its content hash before it is extracted; the extraction is confined to a staging directory (zip-slip, symlink and absolute entries are refused); the layout is validated against the replay format (a timestamps.json manifest whose frames exist and whose first and last frame decode); and only then does the clip install under the managed store directory that the session runtime always treats as a replay root — the product path by which a recorded clip reaches a running appliance without an operator editing the service environment (ADR-0073). A colliding id answers 409 clip_exists, never a silent rename.
+     */
+    post: operations["uploadClip"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/replay/clips/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    /**
+     * Remove one clip from the managed store by id.
+     * @description The id is validated against the clip id contract before any filesystem access. A clip running in an active session is not refused: the session's open files keep reading and the session settles with source-missing. The index row is removed best-effort afterwards; the deletion of the directory is the act.
+     */
+    delete: operations["deleteClip"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/sessions/{id}": {
     parameters: {
       query?: never;
@@ -2181,6 +2225,8 @@ export interface components {
       kind: components["schemas"]["FrameSourceKind"];
       /** @description Replay recording directory; required for kind replay and must sit under the configured allowlist. */
       dir?: string;
+      /** @description A managed-store clip id (from GET /api/v1/replay/clips); with kind replay it selects the clip by id and outranks dir. The id is validated against the clip id contract and its resolved directory still has to pass the replay-root allowlist (ADR-0073). */
+      clip_id?: string;
     };
     StartSessionRequest: {
       /** @description The profile to run; must be the edition's published revision. */
@@ -2247,6 +2293,8 @@ export interface components {
       source: components["schemas"]["SessionSource"];
       /** @description Present when the process has a voice workflow wired and this session's sink built; absent on a silent session, where the audio route answers 503 audio_unavailable. */
       audio?: components["schemas"]["SessionAudio"];
+      /** @description The managed-store clip this run replays (ADR-0073); absent on dir- and device-sourced sessions. */
+      clip_id?: string;
     };
     /** @description The session's capture source self-report (the API view of capture.Stats): the source's own ID and lifecycle state, its delivered count and measured rate, the supervised-restart count that separates a one-time device loss from flapping capture, and the last failure text. */
     SessionSource: {
@@ -3019,6 +3067,60 @@ export interface components {
       game_id: string;
       /** @description The region the game id maps to; the edition's region is the curator's choice and a mismatch is the review's business. */
       disc_region: string;
+    };
+    /** @description A replay clip installed under the managed clip store (ADR-0073): the id a session selects by, the install-time summary, and the archive's provenance. No host path appears in this object. */
+    Clip: {
+      /** @description The clip id: a lowercase slug a session's frame_source.clip_id selects by, and the store's directory name. */
+      id: string;
+      /** @description The display name the upload carried; absent when the id came from the archive. */
+      name?: string;
+      /** @description The frame count the import validated from the clip's timestamps.json manifest. */
+      frames: number;
+      /** @description The content hash of the uploaded archive, committed to the asset store: the clip's provenance is verifiable against the store. */
+      archive_sha256: string;
+      /** @description The uploaded archive's size in bytes. */
+      archive_size: number;
+      /**
+       * @description The container the upload arrived in; unknown for a clip the store adopted from a directory it found without a provenance row.
+       * @enum {string}
+       */
+      archive_format: "tar" | "zip" | "unknown";
+      /** Format: date-time */
+      created_at: string;
+      /** @description The account that installed the clip; recovered when the store adopted a directory without a provenance row. */
+      created_by?: string;
+      /** @description True when the index has the clip but its directory is gone: it cannot start a session, and the delete is a cleanup. */
+      missing?: boolean;
+    };
+    /** @description The 201 answer to a clip upload: the installed clip's record plus the detail sentence. */
+    ClipUploaded: {
+      /** @description The clip id: a lowercase slug a session's frame_source.clip_id selects by, and the store's directory name. */
+      id: string;
+      /** @description The display name the upload carried; absent when the id came from the archive. */
+      name?: string;
+      /** @description The frame count the import validated from the clip's timestamps.json manifest. */
+      frames: number;
+      /** @description The content hash of the uploaded archive, committed to the asset store: the clip's provenance is verifiable against the store. */
+      archive_sha256: string;
+      /** @description The uploaded archive's size in bytes. */
+      archive_size: number;
+      /**
+       * @description The container the upload arrived in (the list's Clip additionally admits unknown for a clip the store adopted from a directory without a provenance row).
+       * @enum {string}
+       */
+      archive_format: "tar" | "zip";
+      /** Format: date-time */
+      created_at: string;
+      /** @description The account that installed the clip; recovered when the store adopted a directory without a provenance row. */
+      created_by?: string;
+      /** @description True when the index has the clip but its directory is gone: it cannot start a session, and the delete is a cleanup. */
+      missing?: boolean;
+      /** @description What the upload did and how to use the result: the asset store's hash and the frame_source a session starts with. */
+      detail: string;
+    };
+    /** @description The managed clip store as listed: one record per installed clip, index order. */
+    ClipList: {
+      clips: components["schemas"]["Clip"][];
     };
   };
   responses: {
@@ -4603,6 +4705,99 @@ export interface operations {
       404: components["responses"]["Problem"];
       409: components["responses"]["Problem"];
       501: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  listClips: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The store's clips, in index order. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ClipList"];
+        };
+      };
+      401: components["responses"]["Problem"];
+      403: components["responses"]["Problem"];
+      500: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  uploadClip: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "multipart/form-data": {
+          /**
+           * Format: binary
+           * @description The clip archive (tar or zip; gzip-wrapped tar is not admitted), at most 512 MiB, at most 1 GiB uncompressed, at most 50000 entries, at most 64 MiB per file.
+           */
+          file: string;
+          /** @description Optional clip id (a lowercase slug of at most 64 characters). Without it the id comes from the archive's top-level directory, then the uploaded filename, then a hash-derived fallback. */
+          name?: string;
+        };
+      };
+    };
+    responses: {
+      /** @description The clip is installed and its provenance recorded. */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ClipUploaded"];
+        };
+      };
+      400: components["responses"]["Problem"];
+      401: components["responses"]["Problem"];
+      403: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
+      413: components["responses"]["Problem"];
+      415: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  deleteClip: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The clip id (a lowercase slug). */
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The clip is removed; no body. */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      400: components["responses"]["Problem"];
+      401: components["responses"]["Problem"];
+      403: components["responses"]["Problem"];
+      404: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
       503: components["responses"]["Problem"];
       default: components["responses"]["Problem"];
     };

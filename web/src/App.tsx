@@ -14,6 +14,7 @@ import { NewGamePage } from "./pages/NewGame";
 import { NotFoundPage } from "./pages/NotFound";
 import { PlayPage } from "./pages/Play";
 import { PublishPage } from "./pages/Publish";
+import { ReplayClipsPage } from "./pages/ReplayClips";
 import { RegionsPage } from "./pages/Regions";
 import { SetupPage } from "./pages/Setup";
 import { SettingsPage } from "./pages/Settings";
@@ -58,6 +59,16 @@ export function App() {
           element={
             <RequireAuth>
               <TestsPage />
+            </RequireAuth>
+          }
+        />
+        {/* /replay-clips is developer-scoped by the API (403 otherwise); the
+            guard here is the unauthenticated case (ADR-0073). */}
+        <Route
+          path="/replay-clips"
+          element={
+            <RequireAuth>
+              <ReplayClipsPage />
             </RequireAuth>
           }
         />

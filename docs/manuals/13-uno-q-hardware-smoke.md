@@ -16,7 +16,9 @@ explicitly NOT VERIFIED"; AGENTS.md rule 12).
 - The appliance wired per docs/spec/10 "Physical connection":
   GameCube → RCA-to-HDMI converter → HDMI splitter → UVC capture dongle
   through the USB hub into the UNO Q, plus a USB audio DAC/speaker on the
-  hub. A dev host without a dongle or a DAC is fine: the affected checks
+  hub ([18-hdmi-capture-on-uno-q.md](18-hdmi-capture-on-uno-q.md) has the
+  full bring-up: hub/power, first-boot checks, capture-mode choice,
+  region/colour calibration, troubleshooting). A dev host without a dongle or a DAC is fine: the affected checks
   report NOT RUN with the attach instruction, the rest still run.
 - Dependencies the preflight itself verifies: `v4l-utils` (v4l2-ctl),
   FFmpeg, Tesseract + the English pack, PipeWire/Pulse tooling
@@ -132,15 +134,17 @@ scripts/hw/sustained-on-device.sh <user>@<uno-q-host> [--minutes N] [--source re
 It drives the **running service's API** (no standalone process, no dev
 flags): the committed synthetic clip
 `testdata/synthetic/replay/dialogue-advance-001` (invented text only,
-AGENTS.md rule 5) is placed under the service's replay allowlist and a
-session loop starts replay sessions through `POST /api/v1/sessions` until
-the clip drains, then the next, for N minutes (default 30). Every frame,
-OCR call, ranking and commit goes through the installed `serve` binary.
-Per AGENTS.md rule 3 this is a **replay source on the device** — it is NOT
-capture evidence and NOT hardware acceptance of the capture path. With
-`--source capture` the script refuses with a clear NOT RUN (exit 2) until
-the UVC capture dongle is attached; it never dresses the replay loop up as
-capture.
+AGENTS.md rule 5) is uploaded through `POST /api/v1/replay/clips` into the
+managed clip store — a replay root by default (ADR-0073) — and a session
+loop starts replay sessions with
+`frame_source {"kind":"replay","clip_id":"sustained-replay"}` through
+`POST /api/v1/sessions` until the clip drains, then the next, for N minutes
+(default 30). Every frame, OCR call, ranking and commit goes through the
+installed `serve` binary. Per AGENTS.md rule 3 this is a **replay source on
+the device** — it is NOT capture evidence and NOT hardware acceptance of
+the capture path. With `--source capture` the script refuses with a clear
+NOT RUN (exit 2) until the UVC capture dongle is attached; it never dresses
+the replay loop up as capture.
 
 Every 10 s one sample is recorded: service RSS and CPU % (from
 `/proc/<pid>/stat`, parsed comm-safely), system memory (the 4 GB headroom
@@ -158,29 +162,32 @@ Budgets (PASS/FAIL, the same bounds the 60 s smoke uses):
 | no stalled pipeline | no run of ≥ 3 failed sessions, 0 queue drops, frames advancing in the final minute |
 | UI responsiveness | API p95 ≤ 2000 ms, page p95 ≤ 5000 ms |
 
-**Replay-root operator step (temporary, restored afterwards).** The
-installed appliance ships without `GAME_NARRATOR_REPLAY_ROOTS`, the
-production default admits no replay dir, and the API has no clip-upload
-route — so the product today cannot replay a user clip on an installed
-device without a configuration change (a product gap, reported in the run
-record). The script performs the documented operator step through the
-product's own configuration surface, `/etc/game-narrator/env` (the unit's
-`EnvironmentFile`): back up the file, append
-`GAME_NARRATOR_REPLAY_ROOTS=/var/lib/game-narrator/replay`,
-`systemctl daemon-reload` + restart, verify the running process has the
-value; and at the end (and on any failure, via the runner's EXIT trap)
-restore the pre-run bytes, restart, and verify the variable is gone. The
-env file itself is never printed, catted or copied out — only mode/owner/
-line-count metadata and the single variable name are recorded. The same
-step by hand, if ever needed:
+**Clip install (the product path — no env file, no restart, ADR-0073).**
+The installed appliance ships without `GAME_NARRATOR_REPLAY_ROOTS`; the
+managed clip store under the data directory (`/var/lib/game-narrator/replay-clips`)
+is a replay root by default, and the clip is installed with the same
+product path a developer uses from the UI (the **Replay clips** page,
+developer tier): a tar of the replay layout is uploaded to
+`POST /api/v1/replay/clips`, the archive's content hash is committed to the
+asset store as the clip's provenance, the clip installs under its id, and
+every session selects it by `clip_id`. After the run the clip is deleted
+with `DELETE /api/v1/replay/clips/{id}` (a rerun replaces its own clip:
+409 → delete → re-upload). The runner reads `/etc/game-narrator/env`
+exactly once and for exactly one non-secret value (the service's listen
+address); it never writes, backs up, restarts or prints it — the env file
+holds the gateway token, and bringing a clip onto the device no longer
+means opening it. The same step by hand, if ever needed (as a developer or
+admin account):
 
 ```sh
-sudo cp -a /etc/game-narrator/env /root/env-sustained.bak
-echo 'GAME_NARRATOR_REPLAY_ROOTS=/var/lib/game-narrator/replay' | sudo tee -a /etc/game-narrator/env
-sudo systemctl daemon-reload && sudo systemctl restart game-narrator
+# on the appliance, with a 1-day admin/developer API token in TOKEN
+sudo tar -cf /tmp/clip.tar -C /path/to/replay-layout dialogue-advance-001
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -F 'file=@/tmp/clip.tar;filename=clip.tar' -F 'name=my-clip' \
+  http://127.0.0.1:8080/api/v1/replay/clips
 # … later …
-sudo cp -a /root/env-sustained.bak /etc/game-narrator/env
-sudo systemctl daemon-reload && sudo systemctl restart game-narrator
+curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:8080/api/v1/replay/clips/my-clip
 ```
 
 Speech: the device has no audio sink yet, and the session snapshots carry
@@ -209,6 +216,12 @@ with `--source capture` and with a configured TTS voice + USB DAC.
 | `GAME_NARRATOR_HW_AUDIO_CONSENT` | `1` = consent the audible tone; anything else = NOT RUN. |
 | `GAME_NARRATOR_BINARY` | Explicit path to the serve binary the budget session runs. Unset: `game-narrator` on PATH (the appliance's installed binary), else a build from the module root (dev host). A set-but-missing path is NOT RUN, not a crash. |
 | `GAME_NARRATOR_HW_SMOKE` | Must be exactly `1` for any `TestHW*` to run at all; anything else (or unset) skips every hardware smoke test as NOT RUN. The `test-hardware` Makefile target and `scripts/hw/run-on-device.sh` set it; `go test ./...` does not. |
+
+Before wiring the physical chain (dongle, hub, power, mode choice,
+calibration), work [18-hdmi-capture-on-uno-q.md](18-hdmi-capture-on-uno-q.md);
+its preflight script (`scripts/hw/capture-preflight.sh`) is the
+read-only first-boot check for exactly this gate's capture/audio
+preconditions.
 
 ## Thermal readings
 

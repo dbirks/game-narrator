@@ -77,6 +77,12 @@ func matrixCases() []routeCase {
 		{http.MethodGet, "/api/v1/dev/fixtures", auth.RoleDeveloper, ""},
 		{http.MethodPost, "/api/v1/dev/test-runs", auth.RoleDeveloper, `{}`},
 
+		// The managed replay clip store (ADR-0073): gameplay recording, so the
+		// developer tier; the matrix proves the operator cannot install one.
+		{http.MethodPost, "/api/v1/replay/clips", auth.RoleDeveloper, `{}`},
+		{http.MethodGet, "/api/v1/replay/clips", auth.RoleDeveloper, ""},
+		{http.MethodDelete, "/api/v1/replay/clips/" + id, auth.RoleDeveloper, ""},
+
 		// admin: users, tokens, config
 		{http.MethodGet, "/api/v1/users", auth.RoleAdmin, ""},
 		{http.MethodPost, "/api/v1/users", auth.RoleAdmin, `{}`},
@@ -238,6 +244,14 @@ func TestEveryRegisteredRouteIsCoveredByTheScopeTable(t *testing.T) {
 			// queue itself stays operator-gated at /api/v1/jobs.
 			if acc.Min != auth.RoleCurator {
 				t.Errorf("%s %s granted to %s, want curator (the onboarding surface is curator-end-to-end)", rt.method, rt.path, acc.Min)
+			}
+		case strings.HasPrefix(rt.path, "/api/v1/replay/"):
+			// The managed clip store is developer (ADR-0073): a clip is a
+			// recording of gameplay frames — the same sensitive-evidence tier
+			// as the dev traces — and installing one changes what the runtime
+			// can replay, which is a developer act, not an operator convenience.
+			if acc.Min != auth.RoleDeveloper {
+				t.Errorf("%s %s granted to %s, want developer (a clip is gameplay recording, docs/spec/08)", rt.method, rt.path, acc.Min)
 			}
 		case rt.path == "/api/v1/jobs" || rt.path == "/api/v1/jobs/{id}" || rt.path == "/api/v1/events":
 			if acc.Min != auth.RoleViewer {

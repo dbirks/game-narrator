@@ -77,6 +77,10 @@ var literalEnums = map[string][]string{
 	"FrameSourceKind": {runtime.SourceKindReplay, runtime.SourceKindTestPattern, runtime.SourceKindV4L2, runtime.SourceKindDolphin},
 	"SessionState":    {runtime.StateStarting, runtime.StateRunning, runtime.StateStopping, runtime.StateStopped, runtime.StateFailed},
 	"SessionMode":     {runtime.ModeConservative, runtime.ModePredictive},
+	// The managed clip store (ADR-0073): the container the upload arrived in,
+	// the two words internal/clips/extract.go's Format.String() writes.
+	"Clip.properties.archive_format":         {"tar", "zip", "unknown"},
+	"ClipUploaded.properties.archive_format": {"tar", "zip"},
 	// The per-stage bottleneck summary (docs/spec/16 M7): the three stage
 	// names internal/runtime/bottleneck.go names, in pipeline order.
 	"StageLatency.properties.stage": {runtime.StageFrameToOCR, runtime.StageOCRToRanked, runtime.StageFrameToCommitted},

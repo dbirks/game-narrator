@@ -23,6 +23,7 @@ matrix, in the states those specs establish.
 | `/diagnostics` | `diagnostics` (dev server), `embedded` (packaged), `m5-part1` | readiness `ok` with per-check detail (transient probe 503s retried), model-health panel, version/commit; reachable anonymously (`route-coverage`) |
 | `/settings` | `m5-settings-tests` | all role rows render NOT CONFIGURED/CONFIGURED/NOT AVAILABLE with no endpoint or token material in the DOM; storage/audio/security/imports/version sections; backup download is a real SQLite file (16-byte header asserted on the bytes) |
 | `/tests` | `m5-settings-tests` | scenario catalog lists a blocked row with its reason (the dolphin fixture, whose frames are unreachable today) and the unblocked GN-T047 as runnable; running the synthetic scenario reports PASS with a succeeded state; the report opens in a `sandbox=""` iframe and shows PASS |
+| `/replay-clips` | `replay-clips-walk` | the managed clip store (ADR-0073): the committed synthetic clip uploaded through the page lands as a row with its frame count and the uploaded archive's own SHA-256 (provenance, checked against the bytes the browser sent); the Play page's clip picker lists it and the session runs it by id on a server with NO replay allowlist; the delete empties the store back to its empty state |
 | `/developer` | `developer` | inspector over a real replay session: session state `stopped`, the commit events (message ids, speech-eligible flags), frame/ROI/crop samples, OCR normalized text + confidence, ranked candidates table |
 | `/library` | `catalog`, `voices`, `onboarding`, `route-coverage` | "No games yet" empty state; created game card renders with its title; sign-out makes the route redirect to `/login?next=/library` |
 | `/games/new` | `onboarding` | the setup agent's form and streamed tool timeline: import + quality tools succeed with sources shown, the draft goes draft → published through the approve action, the game then appears in `/library`; malicious-page variant never calls the non-existent tool and says so |
@@ -81,6 +82,7 @@ absent in both runs):
 | `/play` | 0 | 0 |
 | `/settings` | 0 | 0 |
 | `/tests` | 0 | 0 |
+| `/replay-clips` | 0 | 0 |
 | `/developer` | 0 | 0 |
 | `/diagnostics` (signed in) | 0 | 0 |
 | `/login` (signed out) | 0 | 0 |

@@ -78,6 +78,15 @@ func DefaultPolicy() *Policy {
 		Grant{Method: "", Pattern: "/api/v1/dev/{rest...}", Access: Require(RoleDeveloper)},
 		Grant{Method: "", Pattern: "/api/v1/dev", Access: Require(RoleDeveloper)},
 
+		// The managed replay clip store (ADR-0073). A clip is a recording of
+		// gameplay frames — the same sensitive-evidence class as the dev-trace
+		// store the /api/v1/dev prefix keeps behind the developer tier — and
+		// installing or removing one changes what the runtime can replay, so
+		// all three verbs sit at developer, not operator. The admin role
+		// passes by the role order, which is how the on-device scripts reach
+		// this surface with the admin token they already mint.
+		Grant{Method: "", Pattern: "/api/v1/replay/{rest...}", Access: Require(RoleDeveloper)},
+
 		// config, users and sealed provider credentials are admin (docs/spec/08
 		// scopes; docs/spec/14 "Agent cannot update admin/gateway/secret config
 		// … without role-protected explicit action").

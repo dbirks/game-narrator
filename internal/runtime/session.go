@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/assets"
 	"github.com/dbirks/game-narrator/internal/capture"
+	"github.com/dbirks/game-narrator/internal/clips"
 	"github.com/dbirks/game-narrator/internal/events"
 	"github.com/dbirks/game-narrator/internal/games"
 	"github.com/dbirks/game-narrator/internal/matcher"
@@ -28,18 +30,23 @@ import (
 // copy taken under the session lock, so a reader never sees a half-updated
 // row the way a direct struct read would.
 type Info struct {
-	ID              string         `json:"session_id"`
-	ProfileID       string         `json:"profile_id"`
-	ProfileRevision string         `json:"profile_revision"`
-	Mode            string         `json:"mode"`
-	SourceKind      string         `json:"frame_source"`
-	DevTrace        bool           `json:"dev_trace"`
-	State           string         `json:"state"`
-	Reason          string         `json:"reason,omitempty"`
-	CreatedAt       time.Time      `json:"created_at"`
-	EndedAt         time.Time      `json:"ended_at,omitempty"`
-	EventCursor     int64          `json:"event_cursor"`
-	Stats           pipeline.Stats `json:"stats"`
+	ID              string `json:"session_id"`
+	ProfileID       string `json:"profile_id"`
+	ProfileRevision string `json:"profile_revision"`
+	Mode            string `json:"mode"`
+	SourceKind      string `json:"frame_source"`
+	// ClipID is the managed-store clip this run replays (ADR-0073): the id a
+	// session was started with, so the UI's source line can say which clip is
+	// running rather than only which kind. Empty for dir- and device-sourced
+	// sessions.
+	ClipID      string         `json:"clip_id,omitempty"`
+	DevTrace    bool           `json:"dev_trace"`
+	State       string         `json:"state"`
+	Reason      string         `json:"reason,omitempty"`
+	CreatedAt   time.Time      `json:"created_at"`
+	EndedAt     time.Time      `json:"ended_at,omitempty"`
+	EventCursor int64          `json:"event_cursor"`
+	Stats       pipeline.Stats `json:"stats"`
 	// Audio is the session's speech half — the sink, the live controls, the
 	// speech counters and the current utterance — present when the process
 	// has a voice workflow wired and the session's sink built.
@@ -205,7 +212,18 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 	if err != nil {
 		return Info{}, fmt.Errorf("runtime: build candidate index: %w", err)
 	}
-	src, err := buildFrameSource(kind, req.FrameSource.Dir, m.opts.ReplayRoots, m.opts.ReplaySpeed, m.opts.DevDolphin, m.opts.ManualSource, nil)
+	// A clip id outranks dir: the id is the product path (ADR-0073), and a
+	// request that names both keeps the id — the directory it would resolve
+	// to is exactly <clips store>/<id>, which is what the id already says.
+	dir := req.FrameSource.Dir
+	if kind == SourceKindReplay && req.FrameSource.ClipID != "" {
+		var err2 error
+		dir, err2 = m.clipSourceDir(req.FrameSource.ClipID)
+		if err2 != nil {
+			return Info{}, err2
+		}
+	}
+	src, err := buildFrameSource(kind, dir, m.effectiveReplayRoots(), m.opts.ReplaySpeed, m.opts.DevDolphin, m.opts.ManualSource, nil)
 	if err != nil {
 		return Info{}, err
 	}
@@ -284,6 +302,7 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 		ProfileRevision: strconv.Itoa(published.RevisionNum),
 		Mode:            mode,
 		SourceKind:      kind,
+		ClipID:          req.FrameSource.ClipID,
 		DevTrace:        req.DevTrace,
 		State:           StateStarting,
 		CreatedAt:       time.Now().UTC(),
@@ -303,7 +322,7 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 			"profile_id":       published.ID,
 			"profile_revision": published.RevisionNum,
 			"mode":             mode,
-			"frame_source":     map[string]any{"kind": kind},
+			"frame_source":     frameSourceEvent(kind, req.FrameSource.ClipID),
 			"dev_trace":        req.DevTrace,
 			"regions":          len(content.Regions),
 		}),
@@ -361,6 +380,75 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 
 // checkRequest validates the request before anything is touched, so a bad
 // body costs nothing on the box.
+// effectiveReplayRoots is the frame source's allowlist (ADR-0073): the
+// configured roots plus, when this process has a managed clip store, the
+// store itself. An uploaded clip is product content on this appliance — the
+// whole point of the clip route is that it stops needing an operator edit of
+// the service environment — so it is a root by construction, not by config.
+// Duplicates are dropped; the allowlist test is a prefix walk and repeats
+// change nothing but read as if they meant something.
+func (m *Manager) effectiveReplayRoots() []string {
+	roots := make([]string, 0, len(m.opts.ReplayRoots)+1)
+	for _, r := range m.opts.ReplayRoots {
+		if r == "" {
+			continue
+		}
+		dup := false
+		for _, kept := range roots {
+			if kept == r {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			roots = append(roots, r)
+		}
+	}
+	if d := m.opts.ClipsDir; d != "" {
+		dup := false
+		for _, kept := range roots {
+			if kept == d {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			roots = append(roots, d)
+		}
+	}
+	return roots
+}
+
+// clipSourceDir resolves a clip id against the managed store (ADR-0073). The
+// id contract (internal/clips) is the security boundary — no separators means
+// no traversal — and the resolved directory still has to pass the replay-root
+// allowlist in buildFrameSource, so the id and the root check are the two
+// independent layers docs/spec/14 "Filesystem" asks for. The directory's
+// existence is the allowlist test's job: a clip deleted between the list and
+// the start answers the documented "source missing", not a path error.
+func (m *Manager) clipSourceDir(clipID string) (string, error) {
+	if m.opts.ClipsDir == "" {
+		return "", ErrClipsUnavailable
+	}
+	if !clips.ValidID(clipID) {
+		return "", fmt.Errorf("%w: %q", ErrInvalidClipID, clipID)
+	}
+	return filepath.Join(m.opts.ClipsDir, clipID), nil
+}
+
+// frameSourceEvent is the session.started event's frame_source object. The
+// kind and the clip id (a slug, never a path) are evidence the developer UI
+// correlates the run to its input with; a dir-shaped source names no path —
+// the event stream is developer-readable and a host path is not event data
+// (docs/spec/14 "Filesystem").
+func frameSourceEvent(kind, clipID string) map[string]any {
+	out := map[string]any{"kind": kind}
+	if clipID != "" {
+		out["clip_id"] = clipID
+	}
+	return out
+}
+
 func (m *Manager) checkRequest(ctx context.Context, req StartRequest) error {
 	m.mu.Lock()
 	closed := m.closed
@@ -382,6 +470,17 @@ func (m *Manager) checkRequest(ctx context.Context, req StartRequest) error {
 	case "", ModeConservative, ModePredictive:
 	default:
 		return fmt.Errorf("%w: %q", ErrInvalidMode, req.Mode)
+	}
+	// Clip ids select a managed-store clip rather than a path (ADR-0073);
+	// the id is validated here, where the request's shape is the only input.
+	if req.FrameSource.ClipID != "" {
+		if req.FrameSource.Kind != SourceKindReplay {
+			return fmt.Errorf("%w: clip_id selects a replay clip and is not used with frame source kind %q", ErrInvalidClipID, req.FrameSource.Kind)
+		}
+		if !clips.ValidID(req.FrameSource.ClipID) {
+			return fmt.Errorf("%w: %q (a clip id is a lowercase slug of at most %d characters — letters, digits, dot, dash, underscore — and never a path)",
+				ErrInvalidClipID, req.FrameSource.ClipID, clips.MaxIDLen)
+		}
 	}
 	switch req.FrameSource.Kind {
 	case SourceKindReplay, SourceKindTestPattern, SourceKindV4L2, SourceKindDolphin, SourceKindManual:
