@@ -245,7 +245,21 @@ const (
 //   - nameent vs the rest: the bright bottom hint bar (0.941) + the keyboard
 //     grid's dense ink (text.edges 0.104-0.134);
 //   - box vs letter: the box band carries glyph ink (edges >= boxBandEdgesMin)
-//     where the letter band is smooth (measured edges 0.000).
+//     where the letter band is smooth (measured edges 0.000);
+//   - box (dark) vs the dark family (ADR-0054 amendment 1, the 2026-10-18
+//     dense legend recording): the first in-game dialogue box (the Outset
+//     Island opening NPC) is a DARK translucent band with white text over a
+//     rendered scene — the dark family below swallows it (measured mean
+//     75-83, l3.dark > 0.85, mid 126-137) and its near-white character in
+//     the side band reads as the cursor blob (measured 0.0256, cx 0.256),
+//     so 576 settled frames of the box measured "continue:yes" and the
+//     legend watch's dialogue-box boundary never fired. Every measured
+//     system screen carries the dark-gray frame bands (lb 0.156-0.212),
+//     where the rendered scene measures lb 0.000 — and the box band is
+//     measured STABLE across the box's whole life (35 settled samples:
+//     mean 46-57, edges 0.031, bright 0.014), where the legend's
+//     between-subtitle interludes vary (mean 68-137, edges <= 0.026, the
+//     one 0.038 frame carrying bright 0.133).
 const (
 	classDarkMaxMean      = 110.0 // dark system screen family: full-frame mean (measured 32-90; the continue dialog measured 98.4, so the cap sits above its flicker band and 45+ below the bright screens' 155-158)
 	classDarkMinDark      = 0.85  // ...and a near-black lower third (measured dark 0.88-1.00)
@@ -340,6 +354,49 @@ const (
 	classStorySubLbMax     = 0.05 // the legend's pure-black bar (measured 0.000; the name entry / file selection 0.156-0.173, the title 0.28-0.60, the prompt 0.167-0.212)
 	classStorySubBrightMin = 0.02 // the subbar bright floor (measured 0.032-0.046 with text; 0.000 without)
 	classStorySubEdgesMin  = 0.05 // the subbar glyph-edge floor (measured 0.078-0.118 with text; <= 0.039 without, the file selection 0.024)
+
+	// The in-game dialogue box's DARK form (ADR-0054 amendment 1): the box is
+	// a dark translucent band (measured boxband mean 46-57 settled) carrying
+	// white glyph text (measured edges 0.031 settled) over a rendered scene
+	// (measured lb 0.000). The clauses, in separation order:
+	//   - lb < 0.08 (the letterbox clause the name entry / dialog family use):
+	//     every measured system screen (the create-save / continue-anyway
+	//     prompts, the save notices, the name entry) carries the dark-gray
+	//     frame bands (measured 0.156-0.212), so a pure-black-banded frame is
+	//     a rendered scene or a cinematic, never a system screen — the box's
+	//     "blob" is a character in the scene, not a cursor;
+	//   - lower-third bright < 0.10 (the prompt clause's sky cap): a settled
+	//     box over the dark village scene measures 0.004-0.005, where a
+	//     bright lower third would be scene, not box;
+	//   - boxband mean < 68: the dark box (measured 46-57 settled single-line;
+	//     48.7-64.3 settled multi-line, the 2026-10-18 17:03 first-dialogue
+	//     recording's frames 19-29 — the band's luma rises as the scene
+	//     behind the translucent overlay changes); the legend's
+	//     between-subtitle interludes measure 68-137 in the same window;
+	//   - boxband edges >= 0.028: the box's white text ink floor (measured
+	//     0.031 settled single-line, 0.040-0.178 multi-line — the ink GROWS
+	//     with the line count, so the former 0.05 ceiling retired in
+	//     amendment 7; the legend's between-subtitle interludes measure
+	//     <= 0.026, the one 0.038 frame also failing the bright clause);
+	//   - boxband bright <= 0.08: the flat dark band (measured 0.014 settled
+	//     single-line; 0.017-0.075 settled multi-line — the inked frames of
+	//     a longer line) where a scene's bright content (the legend's
+	//     measured 0.245 frame, the one inked interlude frame's 0.133)
+	//     would sit inside the window;
+	//   - centre-band text ink <= 0.06 (UNCHANGED — amendment 7's load-
+	//     bearing separator): the box's scene above the band is a rendered
+	//     scene with sparse glyph ink (measured 0.006-0.043 settled); the
+	//     storybook panel's pages carry dense manuscript ink in the centre
+	//     band (measured 0.141-0.177) — with the edges ceiling gone, the
+	//     storybook pages' boxband edges (measured 0.070+) OVERLAP the
+	//     multi-line box's (0.040-0.178), so the pages are now separated by
+	//     the centre-band ink (0.141+ vs 0.06, a 2.4x margin) and the band
+	//     bright (0.245 vs 0.08, a 3x margin), not the edges range.
+	classBoxDarkMaxMean   = 68.0  // the dark box band's luma cap (measured 46-57 single-line, 48.7-64.3 multi-line settled; the legend interludes 68-137)
+	classBoxDarkInkMin    = 0.028 // the box text's glyph-edge floor (measured 0.031 single-line, 0.040-0.178 multi-line settled; the legend interludes <= 0.026)
+	classBoxDarkBrightMax = 0.08  // the flat dark band's bright-content cap (measured 0.014 single-line, 0.075 multi-line settled; the legend's 0.245 frame, the inked interlude 0.133)
+	classBoxDarkTextMax   = 0.06  // the scene's sparse centre-band ink (measured 0.006-0.043 settled; the storybook pages 0.141+)
+	classBoxDarkLbMax     = 0.08  // the letterbox ceiling: system screens 0.156-0.212, rendered scenes 0.000 (shares the name entry's band floor)
 )
 
 // titleDimMeanMin: the title's dim ("press START") phase's full-frame mean
@@ -392,6 +449,24 @@ func (s ScreenSig) ClassOf() (ScreenClass, CursorSide) {
 	// lb 0.25+ (it cannot reach this clause).
 	if sub := s.Regions["subbar"]; s.Letterbox < classStorySubLbMax && sub.bright >= classStorySubBrightMin && sub.edges >= classStorySubEdgesMin {
 		return ClassStorySub, CursorNone
+	}
+
+	// The in-game dialogue box's DARK form (ADR-0054 amendment 1): CHECKED
+	// BEFORE the dark family because the family would otherwise swallow these
+	// frames (measured mean 75-83, l3.dark > 0.85, mid 126-137) and read the
+	// near-white character in the side band (measured blob 0.0256, cx 0.256)
+	// as the cursor — the 2026-10-18 dense recording's 576 settled box frames
+	// measured "continue:yes" exactly this way, and the legend watch's
+	// dialogue-box boundary never fired. The measured clauses above separate
+	// the box from the legend's between-subtitle interludes (the same lb
+	// 0.000 rendered scenes: the box band is dark, flat and glyph-inked —
+	// mean 46-57, edges 0.031, bright 0.014 across the box's whole life —
+	// where the interludes vary, mean 68-137, edges <= 0.026, and their one
+	// inked frame carries bright 0.133) and from every system screen (the
+	// letterbox clause: the prompts and notices measure 0.156-0.212, the
+	// scene 0.000).
+	if s.Letterbox < classBoxDarkLbMax && l3.bright < promptLowerBrightMax && bb.mean < classBoxDarkMaxMean && bb.edges >= classBoxDarkInkMin && bb.bright <= classBoxDarkBrightMax && tx.edges <= classBoxDarkTextMax {
+		return ClassBox, CursorNone
 	}
 
 	// The dark system screens: a near-black lower third and a low full-frame

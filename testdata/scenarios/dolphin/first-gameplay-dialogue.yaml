@@ -1,26 +1,113 @@
-# dolphin/first-gameplay-dialogue — BLOCKED — M6 task list: 'The first in-game dialogue after the legend (later game region)'. The recorded drive's observation budget ends inside the opening legend; the first gameplay dialogue is a later region the drive does not reach.
+# dolphin/first-gameplay-dialogue — the first in-game dialogue after the
+# opening legend: a savestate recorded at the first NPC dialogue (ADR-0043
+# opt-in savestates; the state file lives in the fixture dir, referenced by
+# hash) is restored and the recorder captures the first dialogue boxes with
+# the dense 10 Hz rate during the reveals. M6 task list: 'The first in-game
+# dialogue after the legend (later game region)'.
 #
-# Origin: CAPTURED (real Dolphin, windwaker-newgame fixture, AGENTS.md rule
-# 5 — the fixture lives under gitignored artifacts/fixtures/ and is
-# referenced here by id + manifest SHA-256 only; no frame or game text is
-# stored in this file). Replay runs the real recognition/runtime path
-# (dolphin-emulator source) at the 2.2 s capture cadence; decision + tts are
-# RECORDED inference replayed through the fake provider gateways (recorded
-# profile oracle / recorded voice), never live.
+# The drive restores the savestate at the first dialogue, captures the box
+# typewriter reveals (the first box is detected and committed once), the A
+# presses that advance to the next box (each advance commits a NEW line and
+# the stale line is fenced), and the box closes (the region vanishes and the
+# session abstains — no further line is committed past the four recorded
+# boxes).
+#
+# Origin: CAPTURED (real Dolphin, windwaker-first-dialogue fixture,
+# AGENTS.md rule 5 — the fixture and its savestate live under gitignored
+# artifacts/fixtures/ and are referenced here by id + manifest SHA-256 only;
+# no frame, savestate or game text is stored in this file). The truth text is
+# the record-time Tesseract reading under the manifest's ocr_box recipe
+# (the adaptive box-text crop, ADR-0054 amendment — a recipe revision
+# re-finalised over the recorded frames; the drive timeline: frames, inputs
+# and savestate, is the recording's, untouched). Replay runs the real
+# recognition/runtime path (dolphin-emulator source) at the recording's
+# capture cadence; decision + tts are RECORDED inference replayed through the
+# fake provider gateways (recorded profile oracle / recorded voice), never
+# live.
 schema_version: 1
 id: dolphin/first-gameplay-dialogue
 origin: dolphin
-profile: windwaker-newgame
+profile: windwaker-first-dialogue
 mode: frame_replay
 input:
-  fixture: windwaker-newgame
-  manifest_sha256: 8bad2ce69b1afbc2fa8623f0315546a0cd261502c06b01f24d150ecc8a167c2a
-  first: 24
-  last: 24
+  fixture: windwaker-first-dialogue
+  manifest_sha256: 3132a9e11403ec53d1b4b9cf74d671254554e1308986c058174432ceecbfd1a1
+  first: 0
+  last: 0
 inference:
   decision: recorded
   tts: recorded
   voice: dolphin-legend-narrator
-status: blocked
-reason: "unreachable today: the recorded drive ends inside the opening legend (frame 25 of the fixture); the first gameplay dialogue is a later game region the drive does not reach. Unblock: capture a savestate at the first NPC dialogue (savestate hotkeys, opt-in per ADR-0043) and record a new fixture from that savestate."
+assertions:
+  # --- the first gameplay textbox is detected --------------------------------
+  # The box's typewriter reveal settles on the full line (the first truth
+  # frame that shows it) and the line commits within 5 s of that frame,
+  # matched against the imported script at the matcher's rank-1/CER bound —
+  # the pipeline only commits a profile line the retrieval ranked top within
+  # the acceptance thresholds, so the detected+committed pair is the
+  # rank-1/CER proof on this replay.
+  - type: message_detected
+    message_id: ww-first-01
+    max_delay_ms: 5000
 
+  # --- the typewriter reveal commits exactly once ----------------------------
+  # The reveal is observed over many frames (the dense capture resolves the
+  # prefix frames); the settled line commits once, not once per prefix frame.
+  - type: message_committed_count
+    message_id: ww-first-01
+    count: 1
+  - type: no_duplicate_commit
+
+  # --- the A advance produces a new commit ------------------------------------
+  # Each of the three A presses the recording made advances the dialogue to
+  # the next box: a new line is detected and committed for each box, exactly
+  # once per box.
+  - type: message_detected
+    message_id: ww-first-02
+    max_delay_ms: 5000
+  - type: message_committed_count
+    message_id: ww-first-02
+    count: 1
+  - type: message_committed_count
+    message_id: ww-first-03
+    count: 1
+  - type: message_committed_count
+    message_id: ww-first-04
+    count: 1
+  - type: committed_only
+    names:
+      - ww-first-01
+      - ww-first-02
+      - ww-first-03
+      - ww-first-04
+
+  # --- the stale line is fenced ----------------------------------------------
+  # Advancing the dialogue advances the generation fence: no stale-generation
+  # message may be applied, no stale utterance may complete for a line the
+  # dialogue moved past, and each occurrence may be spoken at most once.
+  - type: no_stale_generation_applied
+  - type: no_stale_speech
+    message_id: ww-first-01
+  - type: no_stale_speech
+    message_id: ww-first-02
+  - type: no_duplicate_speech
+    message_id: ww-first-01
+  - type: no_duplicate_speech
+    message_id: ww-first-02
+
+  # --- box close: the session abstains ----------------------------------------
+  # Each box's in-flight speech is cancelled the moment its region vanishes —
+  # the A advance closes the box (three cancellations) and the final A press
+  # closes the conversation (the fourth): the stale line's audio is fenced at
+  # the source, and after the last box nothing past the four recorded lines
+  # may be committed or spoken. The decision chain of the run is the real
+  # one: commit, ask, resolve, speak.
+  - type: speech_cancelled
+    reason: region_vanished
+    count: 4
+  - type: events_order
+    names:
+      - message.committed
+      - decision.requested
+      - decision.resolved
+      - speech.started

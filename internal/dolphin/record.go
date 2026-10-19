@@ -122,6 +122,21 @@ type FixtureSubTiming struct {
 	Open       bool  `json:"open"`
 }
 
+// FixtureState is one savestate checkpoint the recording saved (ADR-0054
+// amendment 1): the file under the fixture root's states/ dir (gitignored,
+// AGENTS.md rule 5 — the state embeds the game's RAM, so it is referenced by
+// path + SHA-256 and never committed) and the screen it was taken at. The
+// manifest reference is the hash: a replay or a --save_state boot that wants
+// the checkpoint verifies the file against the manifest's claim before it
+// trusts it.
+type FixtureState struct {
+	Label  string `json:"label"` // the checkpoint's name ("legend_start", "first_dialogue")
+	Slot   int    `json:"slot"`  // the savestate slot it was saved from
+	File   string `json:"file"`  // relative to the fixture root ("states/...")
+	SHA256 string `json:"sha256"`
+	Screen string `json:"screen,omitempty"` // the screen measured when it was saved
+}
+
 // FixtureManifest is the fixture's manifest.json. It carries the SHA-256 of
 // every frame and the game-image SHA only (the image path itself is never
 // written: the image is a user-supplied secret, AGENTS.md rule 5).
@@ -138,6 +153,15 @@ type FixtureManifest struct {
 	Inputs          []FixtureInput   `json:"inputs"`
 	Oracle          FixtureOracle    `json:"oracle"`
 	OCR             FixtureOCRRecipe `json:"ocr"`
+	// OCRBox is the in-game dialogue box's OCR recipe (ADR-0054 amendment
+	// 1): present when the recording OCR'd dialogue-box frames (the box-text
+	// crop, where OCR names the narration's bottom-bar crop). Zero = the
+	// legacy narration-only recording.
+	OCRBox *FixtureOCRRecipe `json:"ocr_box,omitempty"`
+	// States are the savestate checkpoints the recording saved along the way
+	// (ADR-0054 amendment 1): the drive's restart points, referenced by hash
+	// so a re-boot from a checkpoint verifies the file before it trusts it.
+	States []FixtureState `json:"states,omitempty"`
 }
 
 // FixtureCapture records the parallel adaptive capture plan (schema 2) and
@@ -176,12 +200,29 @@ type FixtureOracle struct {
 
 // FixtureOCRRecipe records how the fixture's truth text was produced, so a
 // replay can state what "the OCR said" means: the engine, the page mode, the
-// enlargement and the normalised subtitle crop the engine saw.
+// enlargement and the normalised subtitle crop the engine saw. When Adaptive
+// is set, Region is the BASE region of a per-frame adaptive crop: the engine
+// saw the base region with its top replaced by the frame's measured text-ink
+// top (boxTextCropAdaptive) — recorded so the recipe is reproducible on the
+// fixture's pixels. Replay never re-crops: the profile's region is the base
+// region and the truth is this recipe's record-time reading.
 type FixtureOCRRecipe struct {
-	Engine string     `json:"engine"`
-	PSM    int        `json:"psm"`
-	Scale  int        `json:"scale"`
-	Region [4]float64 `json:"region"`
+	Engine   string              `json:"engine"`
+	PSM      int                 `json:"psm"`
+	Scale    int                 `json:"scale"`
+	Region   [4]float64          `json:"region"`
+	Adaptive *FixtureOCRAdaptive `json:"adaptive,omitempty"`
+}
+
+// FixtureOCRAdaptive records the adaptive-crop parameters (the base region's
+// top is replaced, per frame, by the first row whose glyph-edge ink reaches
+// InkFloor, minus Margin; no strong row = the base region). See
+// boxTextCropAdaptive for the measured values.
+type FixtureOCRAdaptive struct {
+	InkFloor float64 `json:"ink_floor"`
+	Margin   float64 `json:"margin"`
+	ScanY0   float64 `json:"scan_y0"`
+	ScanY1   float64 `json:"scan_y1"`
 }
 
 // FixtureSummary is Finalize's hand-back: where the fixture lives and its
@@ -247,6 +288,17 @@ type FixtureRecorder struct {
 	publishNext int
 	lastScreen  DriveScreen // the last published frame's class (the loop's clock)
 	captureErr  error       // the first frame-write failure (Finalize surfaces it)
+
+	// Savestate checkpoints (ADR-0054 amendment 1): the states the run saved
+	// along the way (legend start, first dialogue) land under the fixture
+	// root's states/ dir and are referenced by hash in the manifest. AddState
+	// is the only writer; Finalize folds the entries into the manifest.
+	states []FixtureState
+	// lineIDPrefix names the profile line ids ("ww-legend" by default, the
+	// opening-legend fixtures): a fixture whose lines are not the legend's
+	// (the first in-game dialogue) must not reuse the legend's id space, or
+	// the scenarios' message names would claim the wrong line.
+	lineIDPrefix string
 }
 
 // capturePending is a reserved frame awaiting (or completing into) its
@@ -300,11 +352,51 @@ func NewFixtureRecorder(b Bridge, root, id string) (*FixtureRecorder, error) {
 	if err := os.MkdirAll(filepath.Join(dir, "frames"), 0o755); err != nil {
 		return nil, fmt.Errorf("dolphin: fixture dir %s: %w", dir, err)
 	}
-	return &FixtureRecorder{inner: b, id: id, root: dir, pending: map[int]capturePending{}}, nil
+	return &FixtureRecorder{inner: b, id: id, root: dir, pending: map[int]capturePending{}, lineIDPrefix: "ww-legend"}, nil
 }
 
 // Dir is the fixture's directory (<root>/<id>).
 func (r *FixtureRecorder) Dir() string { return r.root }
+
+// SetLineIDPrefix sets the profile line ids' prefix (default "ww-legend",
+// the opening-legend fixtures). A fixture whose lines are the first in-game
+// dialogue (not the legend's narration) uses its own prefix so the id space
+// never blends the two line sets (the scenarios name lines by id).
+func (r *FixtureRecorder) SetLineIDPrefix(prefix string) {
+	if prefix == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lineIDPrefix = prefix
+}
+
+// AddState records one savestate checkpoint the run saved (ADR-0054
+// amendment 1): file is the state file's path (under the fixture root's
+// states/ dir — the caller copied it there after SaveState), label its
+// checkpoint name ("legend_start", "first_dialogue"), slot the savestate
+// slot it was saved from. The file's SHA-256 is computed now (the manifest
+// reference is the hash) and the entry lands in the manifest's states block
+// at Finalize. screen is the screen measured at the save (advisory; the
+// fixture's own frames are the record).
+func (r *FixtureRecorder) AddState(label string, slot int, file, screen string) error {
+	abs := file
+	if !filepath.IsAbs(file) {
+		abs = filepath.Join(filepath.Dir(r.root), file) // the fixture root (states/ is its child, not the fixture's)
+	}
+	sum, err := sha256File(abs)
+	if err != nil {
+		return fmt.Errorf("dolphin: fixture state %s: %w", file, err)
+	}
+	rel, err := filepath.Rel(filepath.Dir(r.root), abs)
+	if err != nil {
+		return fmt.Errorf("dolphin: fixture state %s: %w", file, err)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.states = append(r.states, FixtureState{Label: label, Slot: slot, File: filepath.ToSlash(rel), SHA256: sum, Screen: screen})
+	return nil
+}
 
 // SetCapturePlan arms the parallel adaptive capture (call before
 // StartCapture). It is a no-op after the capture has started: the plan is
@@ -834,46 +926,14 @@ func (r *FixtureRecorder) Finalize(ctx context.Context, drv DriveTrace) (Fixture
 		imageSHA = r.inner.State().ImageSHA
 	}
 
-	// The truth text, per frame. Non-subtitle frames carry no narration text
-	// in the region (the presence/absence of the bottom bar is the point of
-	// those scenarios), so only the subtitle frames are OCR'd.
-	//
-	// The crop dedupe (dense recordings, schema 2): a high-rate capture holds
-	// a static subtitle for hundreds of near-identical frames; the OCR answer
-	// is a function of the crop's pixels, so a crop whose pixels are identical
-	// to a crop already read reuses that reading instead of re-running the
-	// engine (identical input, identical answer — the recipe is unchanged and
-	// the truth is still the engine's record-time reading, only not re-run on
-	// pixels the engine has already seen). The cache is the exact pixel hash,
-	// so any pixel difference re-runs the engine.
-	texts := make([]string, len(frames))
-	canonical := []string{} // distinct lines, in first-seen order
-	seen := map[string]int{}
-	cropCache := map[string]string{} // crop pixel hash -> the engine's reading
+	// The truth text, per frame (ocrFrames: the shared record-time OCR +
+	// canonicalisation step, also the re-OCR path for a recipe revision).
+	texts, subRuns, boxRuns, subFrames, boxFrames, err := r.ocrFrames(ctx, frames)
+	if err != nil {
+		return FixtureSummary{}, err
+	}
 	resolution := FixtureSize{W: st.Region.W, H: st.Region.H}
 	recipe := FixtureOCRRecipe{Engine: "tesseract", PSM: ocr.DefaultPSM, Scale: ocrSubtitleScale, Region: StorySubCrop}
-
-	for i, fr := range frames {
-		if fr.Screen != string(DriveScreenStorySubtitle) {
-			continue
-		}
-		text, err := r.ocrFrameCached(ctx, fr.File, cropCache)
-		if err != nil {
-			return FixtureSummary{}, fmt.Errorf("dolphin: fixture OCR frame %s: %w", fr.File, err)
-		}
-		texts[i] = text
-		if text == "" {
-			continue
-		}
-		key := ocrFoldKey(text)
-		if idx, ok := seen[key]; !ok {
-			seen[key] = len(canonical)
-			canonical = append(canonical, text)
-			continue
-		} else if canonical[idx] == "" {
-			canonical[idx] = text
-		}
-	}
 
 	var capture *FixtureCapture
 	if captureOn {
@@ -888,16 +948,34 @@ func (r *FixtureRecorder) Finalize(ctx context.Context, drv DriveTrace) (Fixture
 			Bytes:           bytes,
 		}
 	}
-	manifest := r.buildManifest(frames, inputs, st, drv, imageSHA, resolution, recipe, capture)
+
+	var ocrBox *FixtureOCRRecipe
+	if boxFrames > 0 {
+		// The box recipe records the ADAPTIVE crop: the base boxTextCrop with
+		// the per-frame text-ink top (boxTextCropAdaptive). The parameters are
+		// recorded so the recipe is reproducible on the fixture's pixels.
+		ocrBox = &FixtureOCRRecipe{
+			Engine: "tesseract", PSM: ocr.DefaultPSM, Scale: ocrSubtitleScale,
+			Region:   boxTextCrop,
+			Adaptive: &FixtureOCRAdaptive{InkFloor: boxInkFloor, Margin: boxCropMargin, ScanY0: boxInkScanY0, ScanY1: boxInkScanY1},
+		}
+	}
+
+	r.mu.Lock()
+	states := append([]FixtureState(nil), r.states...)
+	prefix := r.lineIDPrefix
+	r.mu.Unlock()
+
+	manifest := r.buildManifest(frames, inputs, st, drv, imageSHA, resolution, recipe, capture, ocrBox, states)
 	summary := FixtureSummary{Dir: r.root, ID: r.id, Frames: len(frames), Capture: capture}
 
 	if err := writeJSON(filepath.Join(r.root, "manifest.json"), manifest); err != nil {
 		return summary, err
 	}
-	if err := r.writeTruth(frames, texts, canonical); err != nil {
+	if err := r.writeTruth(frames, texts, subRuns, boxRuns); err != nil {
 		return summary, err
 	}
-	lines, err := r.writeProfile(canonical, resolution)
+	lines, err := r.writeProfile(subRuns, boxRuns, subFrames, boxFrames, resolution, prefix)
 	if err != nil {
 		return summary, err
 	}
@@ -920,27 +998,175 @@ func (r *FixtureRecorder) Finalize(ctx context.Context, drv DriveTrace) (Fixture
 	return summary, nil
 }
 
-// ocrFrameCached is ocrFrame with the crop dedupe: the crop's pixel hash is
-// computed first and, when the cache already holds an answer for exactly
-// these pixels, the engine is not re-run. cache is Finalize's per-run map
-// (see there for why identical pixels carry the identical reading).
-func (r *FixtureRecorder) ocrFrameCached(ctx context.Context, file string, cache map[string]string) (string, error) {
+// ocrCropCached is ocrFrameCached generalised to a crop window: the crop's
+// pixel hash is computed first and, when the cache already holds an answer
+// for exactly these pixels, the engine is not re-run. cache is Finalize's
+// per-run map (shared across both crops — the pixel hash is the key, so a
+// subtitle crop and a box crop with identical pixels share the reading).
+// boxInk* are the measured parameters of the adaptive box-text crop
+// (boxTextCropAdaptive), read from the retained first-dialogue fixture's
+// frames (2026-10-18): the dialogue box's first text line sits where the box
+// has ONE line (measured y 0.74-0.84) or, for a multi-line box, at its first
+// line (measured y 0.64-0.70). A fixed 0.62 top (boxTextCrop, kept for
+// presence and the profile region) therefore drags the box's top border and
+// empty interior into every single-line box's reading; on the 2026-10-18
+// first-dialogue recording that garbage read conf 0.34-0.67 and never
+// settled, while the same box read conf 0.81-0.85 with the text-anchored top
+// and the multi-line box kept its three lines at conf 0.89-0.92.
+const (
+	// boxInkScanY0/Y1 bound the row scan for the text-ink top (above the box
+	// bottom, below the scene).
+	boxInkScanY0 = 0.60
+	boxInkScanY1 = 0.90
+	// boxInkFloor is the row edge-ink fraction (fraction of the row's
+	// horizontal |dluma|>=boxEdgeDelta pixels) that counts as text ink. A
+	// text line measures 0.11-0.43; the box's border and its flat interior
+	// measure <= 0.06; the floor sits between the two.
+	boxInkFloor = 0.08
+	// boxCropMargin is how far above the first ink row the adaptive top sits
+	// (the glyph's ascenders and the row-resolution of the ink scan).
+	boxCropMargin = 0.02
+	// boxCropTopMin keeps the adaptive top inside the box: a spurious ink row
+	// high in the scene must not drag the crop up into the scene art.
+	boxCropTopMin = 0.55
+	// boxEdgeDelta is the luma step (0..255) that counts as a glyph-stroke
+	// edge — the same delta the screen signature uses (sigEdgeDelta).
+	boxEdgeDelta = 30
+)
+
+// adaptiveBoxTextCrop returns the record-time reading crop for one
+// dialogue-box frame: the base boxTextCrop with its top replaced by the
+// frame's measured text-ink top minus boxCropMargin. The bottom, left and
+// right edges are the base region's (the text never runs below the measured
+// 0.82 and the base x band is the reading band). When no row reaches
+// boxInkFloor (the box is empty or mid-fade) the base region is returned:
+// the reading is "" anyway (below OCRConfFloor), so the fallback cannot
+// invent a line. The crop is a deterministic function of the frame's
+// pixels, so re-running it on the fixture's frames reproduces the truth.
+func adaptiveBoxTextCrop(img image.Image) [4]float64 {
+	crop := boxTextCrop
+	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if w < 4 || h < 4 {
+		return crop
+	}
+	x0, x1 := int(0.05*float64(w)), int(0.85*float64(w))
+	y0, y1 := int(boxInkScanY0*float64(h)), int(boxInkScanY1*float64(h))
+	lum := func(x, y int) uint32 {
+		r, g, bl, _ := img.At(x, y).RGBA()
+		return (r + g + bl) / (3 * 256)
+	}
+	for y := y0; y < y1; y++ {
+		var edges int
+		for x := x0 + 1; x < x1; x++ {
+			d := int(lum(x, y)) - int(lum(x-1, y))
+			if d < 0 {
+				d = -d
+			}
+			if d >= boxEdgeDelta {
+				edges++
+			}
+		}
+		if float64(edges)/float64(x1-x0-1) < boxInkFloor {
+			continue
+		}
+		top := float64(y)/float64(h) - boxCropMargin
+		if top < boxCropTopMin {
+			top = boxCropTopMin
+		}
+		crop[1] = top
+		break
+	}
+	return crop
+}
+
+// ocrFrames is the record-time OCR + canonicalisation step, shared by the
+// live Finalize and the recipe-revision re-OCR (re-finalise): two text-
+// bearing screen classes are OCR'd (ADR-0054 amendment 1) — the opening
+// legend's narration subtitles (story_subtitle, the bottom-bar crop) and the
+// in-game dialogue box (dialogue_box, the adaptive box-text crop).
+// Presence/absence of the box in the region is the point of the other frames,
+// so they carry no text.
+//
+// The crop dedupe (dense recordings, schema 2): a high-rate capture holds a
+// static subtitle for hundreds of near-identical frames; the OCR answer is a
+// function of the crop's pixels, so a crop whose pixels are identical to a
+// crop already read reuses that reading instead of re-running the engine
+// (identical input, identical answer — the recipe is unchanged and the truth
+// is still the engine's record-time reading, only not re-run on pixels the
+// engine has already seen). The cache is the exact pixel hash, so any pixel
+// difference re-runs the engine.
+func (r *FixtureRecorder) ocrFrames(ctx context.Context, frames []FixtureFrame) (texts []string, sub, box lineRuns, subFrames, boxFrames int, err error) {
+	texts = make([]string, len(frames))
+	cropCache := map[string]string{} // crop pixel hash -> the engine's reading
+	for i, fr := range frames {
+		switch fr.Screen {
+		case string(DriveScreenStorySubtitle):
+			subFrames++
+			text, err := r.ocrCropCached(ctx, fr.File, StorySubCrop, cropCache)
+			if err != nil {
+				return nil, sub, box, subFrames, boxFrames, fmt.Errorf("dolphin: fixture OCR frame %s: %w", fr.File, err)
+			}
+			texts[i] = text
+		case string(DriveScreenDialogueBox):
+			boxFrames++
+			text, err := r.ocrBoxFrame(ctx, fr.File, cropCache)
+			if err != nil {
+				return nil, sub, box, subFrames, boxFrames, fmt.Errorf("dolphin: fixture OCR frame %s: %w", fr.File, err)
+			}
+			texts[i] = text
+		}
+	}
+	// Canonical lines per reveal run (canonicalizeRuns): the profile's message
+	// set is the settled lines, not the readings. The first-seen scheme
+	// (amendment 3) was right that Tesseract's record-time reading is the
+	// truth, wrong about WHICH reading names the line: it pinned the
+	// typewriter's first prefix as a line and made the profile teach the
+	// matcher its own prefixes (the 2026-10-18 17:14
+	// windwaker-first-dialogue re-record: 30 profile lines for 4 spoken).
+	sub = canonicalizeRuns(frames, texts, string(DriveScreenStorySubtitle))
+	box = canonicalizeRuns(frames, texts, string(DriveScreenDialogueBox))
+	return texts, sub, box, subFrames, boxFrames, nil
+}
+
+// ocrCropCached OCRs one frame's crop, reusing the reading of an identical
+// crop (the crop's exact pixels hash to the cache key — the dense capture
+// holds static text for hundreds of frames).
+func (r *FixtureRecorder) ocrCropCached(ctx context.Context, file string, crop [4]float64, cache map[string]string) (string, error) {
 	img, err := readPNGFile(filepath.Join(r.root, "frames", file))
 	if err != nil {
 		return "", err
 	}
-	crop := vision.CropNormalized(img, vision.RectOf(games.Region{
-		RectX: StorySubCrop[0], RectY: StorySubCrop[1],
-		RectW: StorySubCrop[2] - StorySubCrop[0], RectH: StorySubCrop[3] - StorySubCrop[1],
+	return r.ocrImageCrop(ctx, img, crop, cache)
+}
+
+// ocrBoxFrame OCRs one dialogue-box frame with the ADAPTIVE box-text crop
+// (boxTextCropAdaptive): the top is anchored to the frame's measured text
+// ink, so a single-line box is not read through the box's empty interior and
+// border. The base region stays the profile's and the presence region's
+// crop; only the record-time reading crop moves.
+func (r *FixtureRecorder) ocrBoxFrame(ctx context.Context, file string, cache map[string]string) (string, error) {
+	img, err := readPNGFile(filepath.Join(r.root, "frames", file))
+	if err != nil {
+		return "", err
+	}
+	return r.ocrImageCrop(ctx, img, adaptiveBoxTextCrop(img), cache)
+}
+
+// ocrImageCrop runs the shared OCR core over one already-decoded crop.
+func (r *FixtureRecorder) ocrImageCrop(ctx context.Context, img image.Image, crop [4]float64, cache map[string]string) (string, error) {
+	c := vision.CropNormalized(img, vision.RectOf(games.Region{
+		RectX: crop[0], RectY: crop[1],
+		RectW: crop[2] - crop[0], RectH: crop[3] - crop[1],
 	}), vision.CropOptions{})
-	if crop == nil || crop.Bounds().Empty() {
+	if c == nil || c.Bounds().Empty() {
 		return "", nil
 	}
-	sum := cropPixelHash(crop)
+	sum := cropPixelHash(c)
 	if text, ok := cache[sum]; ok {
 		return text, nil
 	}
-	big := enlarge(crop, ocrSubtitleScale)
+	big := enlarge(c, ocrSubtitleScale)
 	res, err := ocr.Tesseract{PSM: ocr.DefaultPSM}.Recognize(ctx, big)
 	if err != nil {
 		return "", err
@@ -975,9 +1201,15 @@ func cropPixelHash(img image.Image) string {
 
 // writeTruth writes truth.json in the fixture's ground-truth shape: one row
 // per frame with the textbox presence in the region and the OCR text. Present
-// is true exactly where the drive measured the narration's bottom bar
-// (story_subtitle); elsewhere the region is not a textbox even if pixels are.
-func (r *FixtureRecorder) writeTruth(frames []FixtureFrame, texts []string, canonical []string) error {
+// is true exactly where the drive measured a text-bearing screen — the
+// narration's bottom bar (story_subtitle) or the in-game dialogue box
+// (dialogue_box, ADR-0054 amendment 1); elsewhere the region is not a textbox
+// even if pixels are. The line labels run over the combined line set (the
+// narration lines first, then the box lines) so a label always names one
+// profile message; every frame of a run carries its RUN's line label (a
+// typewriter prefix belongs to the line it is revealing), and Full marks
+// exactly the frames whose reading IS the run's canonical line.
+func (r *FixtureRecorder) writeTruth(frames []FixtureFrame, texts []string, sub, box lineRuns) error {
 	type row struct {
 		File    string `json:"file"`
 		TsNS    int64  `json:"ts_ns"`
@@ -986,33 +1218,47 @@ func (r *FixtureRecorder) writeTruth(frames []FixtureFrame, texts []string, cano
 		Line    string `json:"line"`
 		Full    bool   `json:"text_is_full_line"`
 	}
-	canonLine := map[string]string{}
-	for i, c := range canonical {
-		canonLine[ocrFoldKey(c)] = string(rune('a' + i))
+	offset := len(sub.Canonical)
+	labelOf := func(fam lineRuns, idx int, off int) string {
+		if idx < 0 {
+			return ""
+		}
+		return string(rune('a' + idx + off))
 	}
 	rows := make([]row, 0, len(frames))
 	for i, fr := range frames {
-		sub := fr.Screen == string(DriveScreenStorySubtitle)
+		present := fr.Screen == string(DriveScreenStorySubtitle) || fr.Screen == string(DriveScreenDialogueBox)
 		text := ""
 		if i < len(texts) {
 			text = texts[i]
 		}
 		ln := ""
 		full := false
-		if text != "" {
-			ln = canonLine[ocrFoldKey(text)]
-			full = ln != ""
+		switch fr.Screen {
+		case string(DriveScreenStorySubtitle):
+			ln = labelOf(sub, sub.lineOf[i], 0)
+			if text != "" {
+				full = ocrFoldKey(text) == sub.runKey[i]
+			}
+		case string(DriveScreenDialogueBox):
+			ln = labelOf(box, box.lineOf[i], offset)
+			if text != "" {
+				full = ocrFoldKey(text) == box.runKey[i]
+			}
 		}
-		rows = append(rows, row{File: fr.File, TsNS: fr.TsNS, Present: sub, Text: text, Line: ln, Full: full})
+		rows = append(rows, row{File: fr.File, TsNS: fr.TsNS, Present: present, Text: text, Line: ln, Full: full})
 	}
 	return writeJSON(filepath.Join(r.root, "truth.json"), rows)
 }
 
-// writeProfile writes profile.json: the distinct narration lines as messages
-// (ids carry no game text — "ww-legend-NN" — so the committed scenario YAML
-// can name them freely), consecutive lines linked by next edges, and the
-// measured bottom-bar region.
-func (r *FixtureRecorder) writeProfile(canonical []string, resolution FixtureSize) (int, error) {
+// writeProfile writes profile.json: the distinct narration lines (first) and
+// in-game dialogue-box lines (ADR-0054 amendment 1) as messages — ids carry
+// no game text ("<prefix>-NN", the prefix set per fixture so the two line
+// sets never blend) — so the committed scenario YAML can name them freely —
+// consecutive lines linked by next edges within each family, and the
+// measured text regions (the box's region first when the fixture carries box
+// lines: the harness reads Regions[0] as the region it replays against).
+func (r *FixtureRecorder) writeProfile(sub, box lineRuns, subFrames, boxFrames int, resolution FixtureSize, prefix string) (int, error) {
 	type msg struct {
 		ID           string `json:"id"`
 		OriginalText string `json:"original_text"`
@@ -1024,42 +1270,93 @@ func (r *FixtureRecorder) writeProfile(canonical []string, resolution FixtureSiz
 		Type       string  `json:"type"`
 		Confidence float64 `json:"confidence"`
 	}
-	messages := make([]msg, 0, len(canonical))
-	for i, c := range canonical {
-		messages = append(messages, msg{ID: fmt.Sprintf("ww-legend-%02d", i+1), OriginalText: c})
+	subCanonical, boxCanonical := sub.Canonical, box.Canonical
+	total := len(subCanonical) + len(boxCanonical)
+	messages := make([]msg, 0, total)
+	idOf := func(i int) string { return fmt.Sprintf("%s-%02d", prefix, i+1) }
+	for i, c := range subCanonical {
+		messages = append(messages, msg{ID: idOf(i), OriginalText: c})
 	}
-	edges := make([]edge, 0, max(len(canonical)-1, 0))
-	for i := 1; i < len(canonical); i++ {
-		edges = append(edges, edge{
-			From: fmt.Sprintf("ww-legend-%02d", i), To: fmt.Sprintf("ww-legend-%02d", i+1),
-			Type: "next", Confidence: 0.9,
+	offset := len(subCanonical)
+	for i, c := range boxCanonical {
+		messages = append(messages, msg{ID: idOf(offset + i), OriginalText: c})
+	}
+	edges := make([]edge, 0, max(total-1, 0))
+	addEdges := func(n, base int) {
+		for i := 1; i < n; i++ {
+			edges = append(edges, edge{
+				From: idOf(base + i - 1), To: idOf(base + i),
+				Type: "next", Confidence: 0.9,
+			})
+		}
+	}
+	addEdges(len(subCanonical), 0)
+	addEdges(len(boxCanonical), offset)
+	// The region order is by text-bearing frame count (the primary text
+	// region first): the harness replays against regions[0], so a
+	// subtitle-centric fixture (the press-paced legend: 541 bottom-bar frames
+	// against 8 stray box frames) must present the bottom bar first, and a
+	// box-centric fixture (the first dialogue) the box. A tie keeps the box
+	// first (the in-game box is the stronger text region).
+	putBoxFirst := boxFrames > 0 && boxFrames >= subFrames
+	regions := []map[string]any{}
+	boxRegion := func() map[string]any {
+		return map[string]any{
+			"id": "box", "type": "textbox",
+			"x": boxTextCrop[0], "y": boxTextCrop[1],
+			"w": boxTextCrop[2] - boxTextCrop[0], "h": boxTextCrop[3] - boxTextCrop[1],
+		}
+	}
+	bottomRegion := func() map[string]any {
+		return map[string]any{
+			"id": "bottom", "type": "textbox",
+			"x": StorySubCrop[0], "y": StorySubCrop[1],
+			"w": StorySubCrop[2] - StorySubCrop[0], "h": StorySubCrop[3] - StorySubCrop[1],
+		}
+	}
+	if len(box.Canonical) > 0 {
+		if putBoxFirst {
+			regions = append(regions, boxRegion())
+		}
+		if len(sub.Canonical) > 0 {
+			regions = append(regions, bottomRegion())
+		}
+		if !putBoxFirst {
+			// The box lines exist but the bottom bar is the primary text
+			// region: the box region rides along (a two-region fixture the
+			// harness reads against regions[0]).
+			regions = append(regions, boxRegion())
+		}
+	} else if len(sub.Canonical) > 0 {
+		regions = append(regions, bottomRegion())
+	}
+	if len(regions) == 0 {
+		regions = append(regions, map[string]any{
+			"id": "bottom", "type": "textbox",
+			"x": StorySubCrop[0], "y": StorySubCrop[1],
+			"w": StorySubCrop[2] - StorySubCrop[0], "h": StorySubCrop[3] - StorySubCrop[1],
 		})
 	}
 	p := map[string]any{
 		"id":     r.id,
 		"origin": "dolphin",
-		"description": "Recorded Wind Waker opening-legend fixture (docs/spec/11 'Fixture origins'): " +
-			"the narration lines are the real Tesseract readings of the drive's subtitle frames, " +
-			"recorded at capture time; the profile, truth and frames live in this gitignored fixture only " +
-			"(AGENTS.md rule 5). No game text appears in any tracked file.",
-		"text_kind": "dialogue",
-		"messages":  messages,
-		"edges":     edges,
-		"regions": []map[string]any{{
-			"id":   "bottom",
-			"type": "textbox",
-			"x":    StorySubCrop[0], "y": StorySubCrop[1],
-			"w": StorySubCrop[2] - StorySubCrop[0], "h": StorySubCrop[3] - StorySubCrop[1],
-		}},
+		"description": "Recorded Wind Waker fixture (docs/spec/11 'Fixture origins'): " +
+			"the lines are the real Tesseract readings of the recording's subtitle and dialogue-box " +
+			"frames, recorded at capture time; the profile, truth and frames live in this gitignored " +
+			"fixture only (AGENTS.md rule 5). No game text appears in any tracked file.",
+		"text_kind":  "dialogue",
+		"messages":   messages,
+		"edges":      edges,
+		"regions":    regions,
 		"resolution": resolution,
 	}
-	return len(canonical), writeJSON(filepath.Join(r.root, "profile.json"), p)
+	return total, writeJSON(filepath.Join(r.root, "profile.json"), p)
 }
 
 // buildManifest assembles the manifest from the recorded frames, the input
 // log, the launch status and the drive's oracle (its transition log is the
 // record of which scene/state the drive believed it was in).
-func (r *FixtureRecorder) buildManifest(frames []FixtureFrame, inputs []FixtureInput, st Status, drv DriveTrace, imageSHA string, resolution FixtureSize, recipe FixtureOCRRecipe, capture *FixtureCapture) FixtureManifest {
+func (r *FixtureRecorder) buildManifest(frames []FixtureFrame, inputs []FixtureInput, st Status, drv DriveTrace, imageSHA string, resolution FixtureSize, recipe FixtureOCRRecipe, capture *FixtureCapture, ocrBox *FixtureOCRRecipe, states []FixtureState) FixtureManifest {
 	oracle := FixtureOracle{OK: drv.OK, Reason: drv.Reason, SuccessText: drv.SuccessText}
 	for _, tr := range drv.Transitions {
 		oracle.Transitions = append(oracle.Transitions, FixtureTransition{
@@ -1092,6 +1389,8 @@ func (r *FixtureRecorder) buildManifest(frames []FixtureFrame, inputs []FixtureI
 		Inputs:     inputs,
 		Oracle:     oracle,
 		OCR:        recipe,
+		OCRBox:     ocrBox,
+		States:     states,
 	}
 }
 
@@ -1164,6 +1463,94 @@ func ManifestSHA256(dir string) (string, error) {
 // (480p letterbox text is ~14px tall at native size — far below Tesseract's
 // useful input). The factor is recorded in the fixture's OCR recipe.
 const ocrSubtitleScale = 4
+
+// lineRuns is one screen family's reveal runs with their canonical lines:
+// the profile's message set (Canonical, the distinct settled lines in
+// first-seen run order) plus the per-frame membership the truth writer uses
+// for text_is_full_line — a frame is FULL exactly when its own reading
+// fold-matches its run's canonical line (the settled frames of a typewriter
+// reveal, never its prefixes, never a noise variant).
+type lineRuns struct {
+	Canonical []string // distinct settled lines, first-seen run order
+	lineOf    []int    // per frame: Canonical index of the frame's run's line, -1 outside the family
+	runKey    []string // per frame: fold key of the frame's run's canonical line ("" outside the family)
+}
+
+// canonicalizeRuns groups a screen family's frames into reveal runs —
+// maximal consecutive stretches of the family's screen class — and picks
+// each run's canonical reading: the MODE fold key among the run's non-empty
+// readings. A typewriter reveal holds its settled line for the bulk of the
+// run, and a static line's OCR noise stays within a few variants, so the
+// mode is the line the run displays; ties go to the longer raw text, then
+// the last occurrence (deterministic: the fold keys are walked in sorted
+// order, map order never leaks into the choice). A run whose canonical key
+// an earlier run established reuses that line: the same dialogue line twice
+// in a scene is one message (the first-seen scheme was right about dedupe,
+// never about which reading represents the line).
+func canonicalizeRuns(frames []FixtureFrame, texts []string, screen string) lineRuns {
+	runs := lineRuns{lineOf: make([]int, len(frames)), runKey: make([]string, len(frames))}
+	for i := range runs.lineOf {
+		runs.lineOf[i] = -1
+	}
+	keyToLine := map[string]int{}
+	i := 0
+	for i < len(frames) {
+		if frames[i].Screen != screen {
+			i++
+			continue
+		}
+		j := i
+		for j < len(frames) && frames[j].Screen == screen {
+			j++
+		}
+		line := -1
+		var canKey string
+		count := map[string]int{}
+		lastIdx := map[string]int{}
+		for k := i; k < j; k++ {
+			if texts[k] == "" {
+				continue
+			}
+			key := ocrFoldKey(texts[k])
+			count[key]++
+			lastIdx[key] = k
+		}
+		if len(count) > 0 {
+			var best string
+			bestN, bestLen, bestLast := 0, -1, -1
+			keys := make([]string, 0, len(count))
+			for k := range count {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				n, l, last := count[k], len(texts[lastIdx[k]]), lastIdx[k]
+				switch {
+				case n > bestN ||
+					n == bestN && l > bestLen ||
+					n == bestN && l == bestLen && last > bestLast:
+					best, bestN, bestLen, bestLast = k, n, l, last
+				}
+			}
+			canKey = best
+			if l, ok := keyToLine[canKey]; ok {
+				line = l
+			} else {
+				line = len(runs.Canonical)
+				keyToLine[canKey] = line
+				runs.Canonical = append(runs.Canonical, texts[lastIdx[canKey]])
+			}
+		}
+		for k := i; k < j; k++ {
+			runs.lineOf[k] = line
+			if line >= 0 {
+				runs.runKey[k] = canKey
+			}
+		}
+		i = j
+	}
+	return runs
+}
 
 // ocrFoldKey is the retrieval fold the profile deduplicates lines under
 // (punctuation stripped, OCR glyph confusions folded — the same fold the

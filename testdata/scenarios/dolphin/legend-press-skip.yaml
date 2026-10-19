@@ -1,26 +1,160 @@
-# dolphin/legend-press-skip — BLOCKED — M6 task list: 'The legend advancing to the next subtitle (rapid advance — press pacing)'. A press-paced advance (A mid-subtitle) is not in the recorded drive: the measured drive is wait-only (ADR-0043 — a press may skip a subtitle, which corrupts the timing oracle), and the fixture ends mid subtitle two.
+# dolphin/legend-press-skip — Press-paced legend advance: the recorder taps A
+# mid-subtitle at a measured cadence, advancing the opening scroll through all
+# eighteen subtitles and ending as the first dialogue box ("Big Brother!!")
+# appears. M6 task list: 'The legend advancing to the next subtitle (rapid
+# advance — press pacing)'.
 #
-# Origin: CAPTURED (real Dolphin, windwaker-newgame fixture, AGENTS.md rule
-# 5 — the fixture lives under gitignored artifacts/fixtures/ and is
+# This is the captured press-pace drive ADR-0043's unblock calls for: a
+# savestate at the legend start, a measured per-subtitle press interval
+# (A held ~200 ms at 1.7 s during each stable subtitle), and a re-recorded
+# fixture. The press may skip a subtitle (cutting its display short); the
+# dense 10 Hz capture still resolves each held line, so every pressed
+# subtitle commits exactly once, in order, and the line the presses skipped
+# past (the box that opens gameplay) is never spoken here.
+#
+# Origin: CAPTURED (real Dolphin, windwaker-legend-press fixture, AGENTS.md
+# rule 5 — the fixture lives under gitignored artifacts/fixtures/ and is
 # referenced here by id + manifest SHA-256 only; no frame or game text is
 # stored in this file). Replay runs the real recognition/runtime path
-# (dolphin-emulator source) at the 2.2 s capture cadence; decision + tts are
-# RECORDED inference replayed through the fake provider gateways (recorded
-# profile oracle / recorded voice), never live.
+# (dolphin-emulator source) at the recording's capture cadence; decision +
+# tts are RECORDED inference replayed through the fake provider gateways
+# (recorded profile oracle / recorded voice), never live.
 schema_version: 1
 id: dolphin/legend-press-skip
 origin: dolphin
-profile: windwaker-newgame
+profile: windwaker-legend-press
 mode: frame_replay
 input:
-  fixture: windwaker-newgame
-  manifest_sha256: 8bad2ce69b1afbc2fa8623f0315546a0cd261502c06b01f24d150ecc8a167c2a
-  first: 20
-  last: 24
+  fixture: windwaker-legend-press
+  manifest_sha256: 550fd5a94a610ce2e36309850897a37237c5d4c8174e0d7bb9e85bd357b08d30
+  first: 0
+  last: 0
 inference:
   decision: recorded
   tts: recorded
   voice: dolphin-legend-narrator
-status: blocked
-reason: "unreachable today: a press-paced legend advance needs a calibrated press cadence (a mistimed A skips a subtitle and corrupts the subtitle-timing oracle the drive deliberately avoided, ADR-0043); the recorded drive is wait-only and the fixture ends mid subtitle two. Unblock: add a press-pace drive option with measured per-subtitle press intervals (calibrate on a savestate at the legend start) and re-record the fixture."
+assertions:
+  # --- each pressed subtitle commits exactly once, in order ----------------
+  # The eighteen held subtitle lines each commit exactly once; the order is
+  # pinned by message_detected (each commits within 5 s of the first truth
+  # frame that shows its full line, and the lines appear in scroll order).
+  - type: message_committed_count
+    message_id: ww-legend-01
+    count: 1
+  - type: message_committed_count
+    message_id: ww-legend-02
+    count: 1
+  - type: message_committed_count
+    message_id: ww-legend-03
+    count: 1
+  - type: message_committed_count
+    message_id: ww-legend-04
+    count: 1
+  - type: message_committed_count
+    message_id: ww-legend-05
+    count: 1
+  - type: message_committed_count
+    message_id: ww-legend-06
+    count: 1
+  - type: message_committed_count
+    message_id: ww-legend-07
+    count: 1
+  - type: message_committed_count
+    message_id: ww-legend-08
+    count: 1
+  - type: message_committed_count
+    message_id: ww-legend-09
+    count: 1
+  - type: message_committed_count
+    message_id: ww-legend-10
+    count: 1
+  - type: message_committed_count
+    message_id: ww-legend-11
+    count: 1
+  - type: message_committed_count
+    message_id: ww-legend-12
+    count: 1
+  - type: message_committed_count
+    message_id: ww-legend-13
+    count: 1
+  - type: message_committed_count
+    message_id: ww-legend-14
+    count: 1
+  - type: message_committed_count
+    message_id: ww-legend-15
+    count: 1
+  - type: message_committed_count
+    message_id: ww-legend-16
+    count: 1
+  - type: message_committed_count
+    message_id: ww-legend-17
+    count: 1
+  - type: message_committed_count
+    message_id: ww-legend-18
+    count: 1
 
+  # In order: each line commits at the moment its own line is on screen, not
+  # later — the first and last pin the ends of the sequence and every line
+  # between them is detected in scroll order.
+  - type: message_detected
+    message_id: ww-legend-01
+    max_delay_ms: 5000
+  - type: message_detected
+    message_id: ww-legend-06
+    max_delay_ms: 5000
+  - type: message_detected
+    message_id: ww-legend-12
+    max_delay_ms: 5000
+  - type: message_detected
+    message_id: ww-legend-18
+    max_delay_ms: 5000
+
+  # --- skipped ones are not spoken -----------------------------------------
+  # The press-paced advance skips the lines it taps through; nothing outside
+  # the eighteen held subtitles may ever be committed or spoken. The box that
+  # opens gameplay (ww-legend-19) is the first line past the legend and must
+  # stay silent in this scenario.
+  - type: committed_only
+    names:
+      - ww-legend-01
+      - ww-legend-02
+      - ww-legend-03
+      - ww-legend-04
+      - ww-legend-05
+      - ww-legend-06
+      - ww-legend-07
+      - ww-legend-08
+      - ww-legend-09
+      - ww-legend-10
+      - ww-legend-11
+      - ww-legend-12
+      - ww-legend-13
+      - ww-legend-14
+      - ww-legend-15
+      - ww-legend-16
+      - ww-legend-17
+      - ww-legend-18
+
+  # --- the real decision chain, in order ------------------------------------
+  - type: events_order
+    names:
+      - message.committed
+      - decision.requested
+      - decision.resolved
+      - speech.started
+
+  # Each line the presses advanced past is cancelled the moment the region
+  # vanishes (the next subtitle takes the screen); eighteen lines, eighteen
+  # region_vanished cancellations.
+  - type: speech_cancelled
+    reason: region_vanished
+    count: 18
+
+  # A dialogue occurrence commits at most once and no stale generation may be
+  # applied or spoken.
+  - type: no_duplicate_commit
+  - type: no_stale_generation_applied
+  - type: no_stale_speech
+    message_id: ww-legend-01
+  - type: no_duplicate_speech
+    message_id: ww-legend-01

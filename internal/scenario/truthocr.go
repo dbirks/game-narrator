@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/dbirks/game-narrator/internal/games"
 	"github.com/dbirks/game-narrator/internal/vision"
 	"github.com/dbirks/game-narrator/internal/vision/ocr"
 )
@@ -36,28 +37,56 @@ type truthEngine struct {
 // newTruthEngine builds the hash→truth map. It crops and preprocesses every
 // frame with the same recipe the pipeline uses (vision.DefaultSteps, the
 // zero Crop options), so the hashes match the pipeline's dedupe keys.
+//
+// It indexes every region the profile declares, not just the first: the
+// pipeline analyses all regions and dispatches a read for any region that
+// shows presence, so a read for a non-first region (the box, which shows
+// presence during the transitions that follow the last subtitle) must resolve
+// to a truth row rather than a "no truth row for crop hash" harness defect.
+// A truth row carries one text — the frame's primary text, which sits in the
+// session's primary region (regions[0]) — so the primary region's reads answer
+// with it and the other regions' reads answer empty: that matches the game,
+// where a line is on screen in one region, not every one, and stops a
+// non-primary region from echoing the line and making the pipeline commit it
+// twice. The session asserts only on regions[0], so the other regions' answers
+// only need to exist so their reads stop degrading the replay. Regions are
+// indexed with regions[0] last so that, if two regions' crops ever hash
+// identically, the primary region's answer wins.
 func newTruthEngine(framesDir string, profile *Profile, truth []Truth) (*truthEngine, error) {
 	regs := profile.ToRegions()
 	if len(regs) == 0 {
 		return nil, fmt.Errorf("truth engine: the profile declares no region")
 	}
-	e := &truthEngine{byHash: make(map[string]ocr.Result, len(truth))}
+	e := &truthEngine{byHash: make(map[string]ocr.Result, len(truth)*len(regs))}
+	ordered := make([]games.Region, 0, len(regs))
+	if len(regs) > 1 {
+		ordered = append(ordered, regs[1:]...)
+	}
+	ordered = append(ordered, regs[0])
 	for _, row := range truth {
 		img, err := readPNG(filepath.Join(framesDir, row.File))
 		if err != nil {
 			return nil, fmt.Errorf("truth engine: read %s: %w", row.File, err)
 		}
-		crop := vision.CropNormalized(img, vision.RectOf(regs[0]), vision.CropOptions{})
-		if crop == nil || crop.Bounds().Empty() {
-			// The region covers nothing at this resolution: the pipeline reads
-			// it as present-but-empty, and so do we.
-			continue
+		for _, reg := range ordered {
+			crop := vision.CropNormalized(img, vision.RectOf(reg), vision.CropOptions{})
+			if crop == nil || crop.Bounds().Empty() {
+				// The region covers nothing at this resolution: the pipeline
+				// reads it as present-but-empty, and so do we.
+				continue
+			}
+			in := vision.Preprocess(crop, vision.DefaultSteps())
+			// Only the primary region answers with the row's text; the others
+			// answer empty so a line is never committed from a region it is not in.
+			if reg.ID == regs[0].ID {
+				e.byHash[vision.ImageHash(in)] = truthOCR(row.Text, row.Full)
+			} else {
+				e.byHash[vision.ImageHash(in)] = truthOCR("", false)
+			}
 		}
-		in := vision.Preprocess(crop, vision.DefaultSteps())
-		e.byHash[vision.ImageHash(in)] = truthOCR(row.Text, row.Full)
 	}
 	if len(e.byHash) == 0 {
-		return nil, fmt.Errorf("truth engine: no frame produced a crop for region %q", regs[0].ID)
+		return nil, fmt.Errorf("truth engine: no frame produced a crop for any region")
 	}
 	return e, nil
 }

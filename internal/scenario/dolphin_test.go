@@ -47,22 +47,47 @@ func TestDolphinScenarios(t *testing.T) {
 		}
 		scs = append(scs, sc)
 	}
-	fixtureID := scs[0].Input.Fixture
-	for _, sc := range scs[1:] {
-		if sc.Input.Fixture != fixtureID {
-			t.Fatalf("scenario %s references fixture %q, the authored set records %q (one fixture per run)", sc.ID, sc.Input.Fixture, fixtureID)
+	// The authored set is grouped by fixture. ADR-0054's "one fixture, many
+	// scenarios" holds PER GROUP: the newgame recording is one group (boot →
+	// title → legend), and the savestate recordings (first-dialogue,
+	// legend-press, ADR-0054 amendment 1 + 8) are their own groups. Each
+	// group replays from its own artifact and gets its own report bundle, so
+	// the per-group one-fixture invariant is preserved without forcing every
+	// scenario in the directory onto a single recording. The assertion
+	// semantics (RunDolphinScenario, runScenarioCore, evaluate) are unchanged:
+	// only the grouping and per-group report are restructured.
+	type fixtureGroup struct {
+		fixtureID   string
+		fxDir       string
+		man         dolphin.FixtureManifest
+		manifestSHA string
+		usable      bool
+		unusableWhy string
+		scs         []*Scenario
+	}
+	var groups []*fixtureGroup
+	index := map[string]*fixtureGroup{}
+	for _, sc := range scs {
+		g := index[sc.Input.Fixture]
+		if g == nil {
+			g = &fixtureGroup{fixtureID: sc.Input.Fixture, fxDir: filepath.Join(fixtureRoot(root), sc.Input.Fixture)}
+			index[sc.Input.Fixture] = g
+			groups = append(groups, g)
 		}
+		g.scs = append(g.scs, sc)
 	}
-
-	fxDir := filepath.Join(fixtureRoot(root), fixtureID)
-	man, err := dolphin.VerifyFixture(fxDir)
-	if err != nil {
-		t.Skipf("NOT RUN: dolphin fixture %q is not usable at %s (%s). Setup: set %s and run `go test -run TestRealRecordFixture ./internal/dolphin/` (or `make test-dolphin`) with dolphin-emu, Xvfb, ffmpeg, x11-utils and tesseract on PATH; the fixture lands in $%s/%s",
-			fixtureID, fxDir, err, dolphin.EnvGameImage, dolphin.EnvFixtureDir, fixtureID)
-	}
-	manifestSHA, err := dolphin.ManifestSHA256(fxDir)
-	if err != nil {
-		t.Fatalf("manifest sha: %v", err)
+	for _, g := range groups {
+		man, err := dolphin.VerifyFixture(g.fxDir)
+		if err != nil {
+			g.unusableWhy = err.Error()
+			continue
+		}
+		sha, err := dolphin.ManifestSHA256(g.fxDir)
+		if err != nil {
+			g.unusableWhy = err.Error()
+			continue
+		}
+		g.man, g.manifestSHA, g.usable = man, sha, true
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), DolphinRunBudget)
@@ -72,65 +97,75 @@ func TestDolphinScenarios(t *testing.T) {
 		sc  *Scenario
 		res RunResult
 	}
-	var recs []runRec
-	var passed, failed, notRun, blocked []string
-	for _, sc := range scs {
-		sc := sc
-		t.Run(sc.ID, func(t *testing.T) {
-			res, err := RunDolphinScenario(ctx, root, sc)
-			if err != nil {
-				t.Fatalf("run: %v", err)
-			}
-			fmt.Println(res.Summary())
-			switch res.Status {
-			case "passed":
-				passed = append(passed, sc.ID)
-			case "failed":
-				failed = append(failed, sc.ID)
-				t.Fatalf("scenario failed: %s", failedDetails(res))
-			case "blocked":
-				blocked = append(blocked, sc.ID)
-			case "not_run":
-				notRun = append(notRun, sc.ID)
-			}
-			recs = append(recs, runRec{sc: sc, res: res})
-		})
-	}
-
-	// The HTML report: one bundle per run under artifacts/scenarios/<run-id>.
 	runID := time.Now().UTC().Format("20060102-150405")
 	reportRoot := filepath.Join(root, "artifacts", "scenarios", runID)
-	var runs []ScenarioReportData
-	for _, r := range recs {
-		if r.res.Status == "not_run" {
-			continue // no run, no evidence
+	var passed, failed, notRun, blocked []string
+	for _, g := range groups {
+		var recs []runRec
+		for _, sc := range g.scs {
+			sc := sc
+			t.Run(sc.ID, func(t *testing.T) {
+				res, err := RunDolphinScenario(ctx, root, sc)
+				if err != nil {
+					t.Fatalf("run: %v", err)
+				}
+				fmt.Println(res.Summary())
+				switch res.Status {
+				case "passed":
+					passed = append(passed, sc.ID)
+				case "failed":
+					failed = append(failed, sc.ID)
+					t.Fatalf("scenario failed: %s", failedDetails(res))
+				case "blocked":
+					blocked = append(blocked, sc.ID)
+				case "not_run":
+					notRun = append(notRun, sc.ID)
+				}
+				recs = append(recs, runRec{sc: sc, res: res})
+			})
 		}
-		frames := []dolphin.FixtureFrame{}
-		if r.res.Status != "blocked" {
-			// Blocked rows are the register (ADR-0037): status + reason only,
-			// no run evidence attached.
-			frames = sliceManifestFrames(man, r.sc.Input)
+
+		// The group's report bundle: artifacts/scenarios/<run-id>/
+		// <fixture-slug>/, frames sliced from THIS group's manifest. An
+		// unusable fixture group has no run evidence (every scenario in it is
+		// NOT RUN), so it is registered but not bundled.
+		if !g.usable {
+			t.Logf("NOT RUN (group %s): fixture not usable at %s (%s). Setup: set %s and run `go test -run TestRealRecordFixture ./internal/dolphin/` (or `make test-dolphin`) with dolphin-emu, Xvfb, ffmpeg, x11-utils and tesseract on PATH; the fixture lands in $%s/%s",
+				g.fixtureID, g.fxDir, g.unusableWhy, dolphin.EnvGameImage, dolphin.EnvFixtureDir, g.fixtureID)
+			continue
 		}
-		runs = append(runs, ScenarioReportData{
-			Scenario: r.sc,
-			Result:   r.res,
-			Frames:   frames,
-		})
+		var runs []ScenarioReportData
+		for _, r := range recs {
+			if r.res.Status == "not_run" {
+				continue // no run, no evidence
+			}
+			frames := []dolphin.FixtureFrame{}
+			if r.res.Status != "blocked" {
+				// Blocked rows are the register (ADR-0037): status + reason
+				// only, no run evidence attached.
+				frames = sliceManifestFrames(g.man, r.sc.Input)
+			}
+			runs = append(runs, ScenarioReportData{
+				Scenario: r.sc,
+				Result:   r.res,
+				Frames:   frames,
+			})
+		}
+		doc := ReportDoc{
+			RunID:        runID,
+			GeneratedAt:  time.Now(),
+			FixtureDir:   g.fxDir,
+			FixtureID:    g.fixtureID,
+			ManifestSHA:  g.manifestSHA,
+			FrameCount:   len(g.man.Frames),
+			GameImageSHA: g.man.GameImageSHA256,
+		}
+		reportPath, err := WriteHTMLReport(filepath.Join(reportRoot, reportSlug(g.fixtureID)), doc, runs)
+		if err != nil {
+			t.Fatalf("write HTML report (%s): %v", g.fixtureID, err)
+		}
+		t.Logf("HTML report: %s", reportPath)
 	}
-	doc := ReportDoc{
-		RunID:        runID,
-		GeneratedAt:  time.Now(),
-		FixtureDir:   fxDir,
-		FixtureID:    fixtureID,
-		ManifestSHA:  manifestSHA,
-		FrameCount:   len(man.Frames),
-		GameImageSHA: man.GameImageSHA256,
-	}
-	reportPath, err := WriteHTMLReport(reportRoot, doc, runs)
-	if err != nil {
-		t.Fatalf("write HTML report: %v", err)
-	}
-	t.Logf("HTML report: %s", reportPath)
 
 	if len(failed) > 0 {
 		t.Errorf("%d dolphin scenario(s) failed: %v", len(failed), failed)

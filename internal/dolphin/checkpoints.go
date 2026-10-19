@@ -195,21 +195,32 @@ func lumaEntropy(img image.Image) float64 {
 	return e / 8
 }
 
-// BoxPresent holds when the structural dialogue-box signature is on screen:
-// the box-band window carries a bright, glyph-inked band (mean luma and
-// horizontal-edge fraction above the calibrated minimums) while the
-// full-frame entropy stays below the scroll threshold. This is the
-// high-contrast glyph-band test the drive uses for its final assertion; it
-// cannot fire on the letter-scroll (entropy clause) or on smooth bright
-// screens (edge clause), unlike TextboxPresent's aggregate lower-third
-// stats.
+// BoxPresent holds when the structural dialogue-box signature is on screen
+// in EITHER measured form (ADR-0054 amendment 1): the bright parchment band
+// (the synthetic doubles and the letter's box: box-band mean >=
+// boxBandMeanMin, horizontal edges >= boxBandEdgesMin, full-frame entropy <
+// boxBandEntropyMax — the scroll separator) or the real WOTW dark
+// translucent box (the measured dark-form clauses below). Both forms are
+// exactly the classifier's ClassBox (signature.go carries both measured
+// shapes), so the checkpoint and the drive's screen family cannot diverge:
+// a frame the checkpoint calls a box is the frame the drive's loop
+// terminates on. The legacy bright clauses are kept as the fallback form
+// (the synthetic doubles' calibration, ADR-0043) because the dark form's
+// flat-band shape could one day read a bright box's fade frame and vice
+// versa; the OR of the two measured shapes is what "a dialogue box is on
+// screen" means here.
 func BoxPresent() Checkpoint {
 	return func(_ context.Context, cur image.Image, _ image.Image) (bool, string) {
+		sig := ScreenSigOf(cur)
+		c, _ := sig.ClassOf()
+		if c == ClassBox {
+			return true, "screen class=box (" + sig.SigLine() + ")"
+		}
 		mean, edges := boxBandStats(cur)
 		ent := lumaEntropy(cur)
 		ok := mean >= boxBandMeanMin && edges >= boxBandEdgesMin && ent < boxBandEntropyMax
-		return ok, fmt.Sprintf("boxband mean=%.0f want >= %.0f; edges=%.3f want >= %.2f; entropy=%.3f want < %.2f",
-			mean, boxBandMeanMin, edges, boxBandEdgesMin, ent, boxBandEntropyMax)
+		return ok, fmt.Sprintf("screen class=%s; boxband mean=%.0f want >= %.0f; edges=%.3f want >= %.2f; entropy=%.3f want < %.2f",
+			c, mean, boxBandMeanMin, edges, boxBandEdgesMin, ent, boxBandEntropyMax)
 	}
 }
 

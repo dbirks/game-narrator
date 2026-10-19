@@ -60,7 +60,9 @@ type DriveOptions struct {
 	// Deadline: the wall-clock budget for the whole run (zero =
 	// defaultDriveDeadline).
 	Deadline time.Duration
-	// MaxIterations: the iteration cap (zero = defaultDriveIterations).
+	// MaxIterations: the iteration cap (zero = defaultDriveIterations;
+	// defaultPastLegendIterations when PastLegend — the run rides the WHOLE
+	// legend, not just the first subtitle).
 	MaxIterations int
 	// Settle: the quiet time after each action before re-classifying (zero =
 	// defaultDriveSettle; a measured fade takes 1-2 s of emulation).
@@ -68,6 +70,18 @@ type DriveOptions struct {
 	// EvidenceDir: "" = no PNGs (hashes/keys only), otherwise one PNG per
 	// iteration (drive-iter-NNN-<screen>.png) — the frame-by-frame record.
 	EvidenceDir string
+	// PastLegend (ADR-0054 amendment 1): ride the opening legend PAST the
+	// first subtitle to the first in-game dialogue box. The story-subtitle
+	// success frame keeps its credit (the first in-game narrated text is
+	// still the success the timing record brackets), but the run does NOT
+	// close when the first full subtitle is measured — it keeps observing
+	// wait-only (the legend advances on its own; a press may skip a
+	// subtitle) until the measured dialogue-box screen appears (the run's
+	// real success, reason "dialogue_box"), the loop detector fires, or the
+	// budget is spent. The savestate checkpoints the caller saves along the
+	// way (legend start, first dialogue) make a failed iteration restartable
+	// from the nearest state instead of a cold boot.
+	PastLegend bool
 }
 
 // DriveTransition is one logged iteration: (screen, action) -> next screen
@@ -155,11 +169,18 @@ func (t DriveTrace) TransitionLog() string {
 // detector would miss (a screen that keeps "changing" while ignoring the
 // input, like the orbiting title).
 const (
-	defaultDriveDeadline     = 15 * time.Minute
-	defaultDriveIterations   = 200
-	defaultDriveSettle       = 2 * time.Second
-	driveScreenshotRetryWait = 1 * time.Second
-	driveScreenshotRetries   = 3
+	defaultDriveDeadline   = 15 * time.Minute
+	defaultDriveIterations = 200
+	// defaultPastLegendIterations is the past-legend run's cap: the whole
+	// opening legend (measured 40+ s at the 2 s cadence, 20+ subtitle runs
+	// between the first subtitle and the dialogue box) on top of the boot
+	// phases' worst case (the 2026-10-18 slow-START run's ~54-iteration
+	// title). The 15-minute deadline is the true limit; the cap only bounds
+	// a pathological no-op loop the loop detector would miss.
+	defaultPastLegendIterations = 900
+	defaultDriveSettle          = 2 * time.Second
+	driveScreenshotRetryWait    = 1 * time.Second
+	driveScreenshotRetries      = 3
 )
 
 // driveLoopChangeMin is the "visible change" floor for the loop detector
@@ -202,6 +223,20 @@ const (
 // between them.
 var StorySubCrop = [4]float64{0.12, 0.75, 0.88, 0.92}
 
+// boxTextCrop is the measured in-game dialogue box's text region (normalised
+// frame fractions x0, y0, x1, y1; ADR-0054 amendment 1, re-measured for the
+// multi-line box 2026-10-18 17:19): the box's text sits in the box's upper
+// band and spans up to THREE lines — a full 3-line box's first line starts at
+// measured y 0.64 (the 17:14 first-dialogue re-record's "Hee hee hee! This is
+// my FAVORITE spot to" line, which the original 0.70 floor clipped off and
+// the settled-line OCR lost), while a one-line box keeps its text low
+// (measured y 0.78-0.84). The top is 0.62: below the box's top border line
+// (measured y ~0.60) and above the first text line, so the border never
+// enters the reading. The classifier's boxband window (0.31-0.75 x,
+// 0.69-0.84 y) is the MEASUREMENT window (the dark flat band with the
+// text's edges); this is the READING window (the text itself).
+var boxTextCrop = [4]float64{0.05, 0.62, 0.85, 0.87}
+
 // DriveAction is the input one drive iteration sends (or wait, for
 // wait-only screens). Compound actions (the name entry's START-then-A) are
 // one action, logged as one wire description.
@@ -226,7 +261,11 @@ func RunDrive(ctx context.Context, b Bridge, opts DriveOptions, table ActionTabl
 		opts.Deadline = defaultDriveDeadline
 	}
 	if opts.MaxIterations <= 0 {
-		opts.MaxIterations = defaultDriveIterations
+		if opts.PastLegend {
+			opts.MaxIterations = defaultPastLegendIterations
+		} else {
+			opts.MaxIterations = defaultDriveIterations
+		}
 	}
 	if opts.Settle <= 0 {
 		opts.Settle = defaultDriveSettle
@@ -322,6 +361,22 @@ func RunDrive(ctx context.Context, b Bridge, opts DriveOptions, table ActionTabl
 		// The iteration's record: the screen now on screen and the action
 		// its class prescribes.
 		act := table(effective, side, prevScreen, seenName, img)
+		// The past-legend wait-only ride (ADR-0054 amendment 1): once the
+		// story-subtitle success frame is recorded, the run rides the rest of
+		// the legend WAIT-ONLY — the table's cutscene action (A when a text
+		// band is on screen) would land a press on the legend's storybook
+		// panel fades, and a press on the legend may SKIP a subtitle (the
+		// measured fact the wait-only ride exists to respect). The measured
+		// ride: nothing is pressed from the first subtitle to the dialogue
+		// box (the dense recording's 1000+ frame legend span carries no
+		// input) and the game advances to the box on its own. The legend
+		// family is the story-subtitle screen and the cutscene/unknown
+		// interludes; a screen outside it (a prompt, the title) keeps the
+		// table's action — the measured flow never puts one there.
+		if opts.PastLegend && tr.SuccessScreen != "" &&
+			(effective == DriveScreenStorySubtitle || effective == DriveScreenCutscene || effective == DriveScreenUnknown) {
+			act = waitAction(opts.Settle)
+		}
 		nt := DriveTransition{Index: iter, Time: time.Now(), Screen: effective, Side: side,
 			Action: act.Wire, Detail: sig.SigLine()}
 		if screen == DriveScreenNameEntry {
@@ -338,7 +393,11 @@ func RunDrive(ctx context.Context, b Bridge, opts DriveOptions, table ActionTabl
 		// dialogue box. The first one reached keeps the credit.
 		switch {
 		case screen == DriveScreenDialogueBox:
-			if tr.SuccessScreen == "" {
+			if tr.SuccessScreen == "" || opts.PastLegend {
+				// The past-legend run's real success: the first in-game
+				// dialogue box, reached by riding the whole legend (the
+				// story-subtitle success frame keeps its timing credit, but
+				// the run's reason and success screen name the box).
 				tr.SuccessScreen = DriveScreenDialogueBox
 			}
 			tr.Transitions = append(tr.Transitions, nt)
@@ -448,7 +507,11 @@ func RunDrive(ctx context.Context, b Bridge, opts DriveOptions, table ActionTabl
 		// record and closes once one FULL subtitle is measured (a text run
 		// closed by a text-less sample: the fade-in/hold/fade-out the
 		// recognition pipeline needs) or the observation budget is spent.
-		if screen == DriveScreenStorySubtitle {
+		// The past-legend run (ADR-0054 amendment 1) does NOT close here:
+		// its success is the measured dialogue box, reached by riding the
+		// whole legend — the timing record is built from the transitions at
+		// the close instead (subTimingsOf at finishSuccess).
+		if screen == DriveScreenStorySubtitle && !opts.PastLegend {
 			obsIters++
 			done := obsIters >= storySubObserveIters
 			if !done {

@@ -130,3 +130,68 @@ Delete `internal/dolphin/record*.go`, `internal/scenario/{dolphin,report}*.go`,
 `testdata/scenarios/dolphin/` and revert the `make test-dolphin` recipe and
 the scenario loader's dolphin origin. The fixture under `artifacts/fixtures/`
 is untracked and simply ignored; no schema or runtime surface is touched.
+
+## Amendment (2026-10-18): the adaptive box-text crop and the recipe-revision re-OCR
+
+Context (measured on the `windwaker-first-dialogue` fixture, real frames,
+2026-10-18): the dialogue box's record-time reading crop was the fixed
+`boxTextCrop` region (top 0.62). The box carries ONE line at measured y
+0.74-0.84 and, for a multi-line box, its FIRST line at y 0.64-0.70. A fixed
+0.62 top therefore drags the box's top border and empty interior into every
+single-line box's reading: on this fixture's first box, Tesseract read the
+fixed crop at conf 0.34-0.67 with unstable garbage variants ("l(newtl'd be
+here!") and the reading never settled, while the same box read at conf
+0.81-0.85 with the top anchored to the frame's text ink ("i knew you'd be
+here!"), and the multi-line box kept its three lines at conf 0.89-0.92.
+The first gameplay dialogue therefore could not commit its first message,
+and `dolphin/first-gameplay-dialogue` sat in the BLOCKED register.
+
+Decision:
+
+- **The record-time reading crop for a dialogue-box frame is adaptive to the
+  frame's pixels** (`adaptiveBoxTextCrop`, `internal/dolphin/record.go`):
+  the base `boxTextCrop` with its top replaced by the first row (x 0.05-0.85,
+  y 0.60-0.90) whose glyph-edge ink — the fraction of the row with
+  horizontal luma step >= 30 — reaches 0.08, minus a 0.02 margin (floor at
+  0.55). A text line measures 0.11-0.43 edge-ink; the box border and its
+  flat interior measure <= 0.06. No strong-ink row (empty box, mid-fade)
+  falls back to the base region: the reading is empty anyway, so the
+  fallback cannot invent a line. The crop is a deterministic function of the
+  frame's pixels.
+- **The base region stays the session's region**: the profile's
+  `textbox` region and the presence region keep the fixed `boxTextCrop`;
+  only the record-time READING crop moves. The replay's region-crop dedupe
+  (identical pixels, identical answer) is untouched.
+- **The recipe records the revision**: the manifest's `ocr_box` recipe now
+  carries the adaptive parameters (`ink_floor`, `margin`, `scan_y0/1`) next
+  to the base region, so the reading is reproducible on the fixture's
+  pixels.
+- **Recipe revision is a re-finalise, not a re-record**
+  (`TestRealReOCRFixture`, env-gated on `GN_REOCR_FIXTURE`): the frames,
+  inputs and savestate are the recorded evidence and are not touched (their
+  hashes re-verify before anything is written); only the OCR truth, the
+  profile and the manifest are rewritten by the SAME code path the live
+  recording uses (`ocrFrames` — the record-time OCR + canonicalisation, now
+  shared by `Finalize` and the re-OCR — plus `writeTruth`, `writeProfile`,
+  `buildManifest`). The fixture re-verifies afterwards, the savestates
+  hash-verify, and the operator pins the new manifest SHA-256 into the
+  scenarios (the pin-mismatch NOT-RUN discipline of this ADR unchanged).
+  The run's backup of the pre-revision fixture is kept under
+  `artifacts/fixtures/.backup-first-dialogue-pre-reocr/` (gitignored).
+
+Validation (measured, this host): re-OCR of the 98-frame fixture (19 s):
+the first box now reads one stable line (frames 6-10 conf 0.91; the
+profile's line is the reading's own mode fold, so the matcher scores
+MATCH_EXACT) and the three later boxes keep their prior readings; the
+`dolphin/first-gameplay-dialogue` scenario runs PASS (all four messages
+committed — `ww-first-01` MATCH_EXACT gen 1, `ww-first-02` gen 2,
+`ww-first-03` gen 3, `ww-first-04` gen 4 — each decision.requested →
+decision.resolved → speech.ready → speech.started, each in-flight speech
+cancelled `region_vanished` at the box's close, 17 assertions). The
+scenario's pin is the re-finalised manifest SHA-256
+(`3132a9e11403ec53d1b4b9cf74d671254554e1308986c058174432ceecbfd1a1`).
+
+Consequences: single-line dialogue boxes are read through the text, not the
+box furniture; the truth remains the engine's record-time reading under a
+recorded recipe (rule 3), and a crop-recipe revision no longer requires a
+second boot-to-dialogue drive.

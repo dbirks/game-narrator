@@ -25,7 +25,14 @@ import (
 // skipped steps. Termination: the dialogue-box class (success), the same
 // screen >= 4 consecutive iterations with no visible change (loop detected),
 // or the iteration/time budget (failure with the full transition log and the
-// last PNG). NOT RUN when the image or the host tools are missing.
+// last PNG).
+//
+// The drive runs PAST-LEGEND (ADR-0054 amendment 1): the opening legend's
+// first narration subtitle keeps its success credit (the timing record's
+// first bracket), but the run rides the rest of the legend wait-only (a
+// press may skip a subtitle) until the measured first in-game dialogue box
+// appears — the test's name is the promise. NOT RUN when the image or the
+// host tools are missing.
 func TestRealDriveToFirstDialogue(t *testing.T) {
 	img := os.Getenv(EnvGameImage)
 	if img == "" {
@@ -103,7 +110,7 @@ func TestRealDriveToFirstDialogue(t *testing.T) {
 	t.Logf("launched: display=%s dolphin_pid=%d gcpad_device=%s hotkey_device=%s image_sha256=%s",
 		st.Display, st.DolphinPID, st.PipeDevice, st.HotkeyDevice, st.ImageSHA)
 
-	drv, err := RunDrive(ctx, b, DriveOptions{EvidenceDir: evOut}, WindWakerNewGameDrive())
+	drv, err := RunDrive(ctx, b, DriveOptions{EvidenceDir: evOut, PastLegend: true}, WindWakerNewGameDrive())
 	// The full transition log, one line per iteration: (screen, action) ->
 	// next screen with the measured signature of the classified frame.
 	for _, tr := range drv.Transitions {
@@ -136,31 +143,68 @@ func TestRealDriveToFirstDialogue(t *testing.T) {
 
 	// The end assertion, measured on a fresh screenshot (the run's last poll
 	// is the drive's evidence; this is the test's own proof). The assertion
-	// matches the success screen the loop actually reached (amendment 6):
-	// the opening legend's narration subtitle (story_subtitle — the first
-	// in-game narrated text, measured in the bottom black bar) or the
-	// in-game dialogue box, whichever the loop reached first.
+	// matches the success screen the loop actually reached — but that screen
+	// is still SETTLING when the drive's last poll fires, and the drive's
+	// stop frame can itself be early (acceptance.md gap 12): the box's
+	// typewriter reveal keeps the boxband's horizontal-edge fraction below
+	// the measured floor for its first ~1-2 s; the pre-box animated scene
+	// carries a bright box band (mean 76-152) that can even match the BRIGHT
+	// box clauses on a passing frame (run-2's stop frame: boxband
+	// mean=130 edges=0.066 — a scene, not a box); and the first box frame
+	// the 2 s drive cadence samples can be the BRIEF box that auto-advances
+	// within 1-2 s (run-1/3 stop frames: boxband mean=62/59) before the
+	// first NPC dialogue box — the held box, the fixture's box 1 — appears
+	// 20-40 s later and A-HOLDS unchanged for 10+ minutes (the 64 s no-input
+	// sample: steady at boxband 46/0.031). The recheck therefore polls a
+	// bounded window and stops at the first frame that MEASURES the real
+	// box shape — the classifier's DARK box form (bb.mean below the bright
+	// floor; the animated scene's dips to 76-80 carry no glyph edges and
+	// are rejected by the classifier, not just the band) — and that accepted
+	// frame becomes the savestate round-trip's X reference. The window is
+	// the measured 20-40 s gap from the drive's stop to the held box with
+	// margin; the opening legend branch keeps the 10 s settle window (the
+	// legend's own text frames and measured interludes arrive within it).
+	legendFrame := func(img image.Image) (bool, string) {
+		sig := ScreenSigOf(img)
+		c, _ := sig.ClassOf()
+		sub := sig.Regions["subbar"]
+		// A text-bearing subtitle frame: the strict measured clauses (the
+		// class is only claimed on a frame that MEASURES the bottom-bar
+		// text).
+		textFrame := c == ClassStorySub &&
+			sig.Letterbox < classStorySubLbMax &&
+			sub.bright >= classStorySubBrightMin &&
+			sub.edges >= classStorySubEdgesMin
+		// A text-less legend interlude (between subtitles, a page turn, the
+		// storybook panel's fade): the measured interlude classes over the
+		// pure-black-bar letterbox (the dense recording's 415-508 frames:
+		// cutscene/dark/unknown, lb 0.000, full-frame mean 49-96) — not a
+		// system screen, not the title, not the box.
+		interlude := (c == ClassDark || c == ClassScene || c == ClassLetter || c == ClassUnknown) &&
+			sig.Letterbox < classStorySubLbMax && sig.Mean < 130
+		return textFrame || interlude,
+			fmt.Sprintf("class=%s lb=%.3f mean=%.1f subbar bright=%.3f edges=%.3f (text frame or measured legend interlude)",
+				c, sig.Letterbox, sig.Mean, sub.bright, sub.edges)
+	}
 	end, err := b.Screenshot(ctx)
 	if err != nil {
 		t.Fatalf("final screenshot: %v", err)
 	}
+	var ok bool
+	var detail string
+	var frames int
 	switch drv.SuccessScreen {
 	case DriveScreenStorySubtitle:
-		// The success frame carries the measured bottom-bar narration text:
-		// the pure-black letterbox clauses plus the subbar bright/edge
-		// clauses (a text-less fade frame fails these — the class is only
-		// claimed on a frame that MEASURES the text).
-		sig := ScreenSigOf(end)
-		c, _ := sig.ClassOf()
-		sub := sig.Regions["subbar"]
-		ok := c == ClassStorySub &&
-			sig.Letterbox < classStorySubLbMax &&
-			sub.bright >= classStorySubBrightMin &&
-			sub.edges >= classStorySubEdgesMin
-		t.Logf("story_subtitle: class=%s want storysub; lb=%.3f want < %.2f; subbar bright=%.3f want >= %.2f, edges=%.3f want >= %.2f",
-			c, sig.Letterbox, classStorySubLbMax, sub.bright, classStorySubBrightMin, sub.edges, classStorySubEdgesMin)
+		end, ok, detail, frames = pollSettled(t, ctx, b, end, settleRecheckWindow, settleRecheckInterval, legendFrame)
 		if !ok {
-			t.Fatalf("the final screen is not the opening legend's narration subtitle: class=%s lb=%.3f subbar bright=%.3f edges=%.3f", c, sig.Letterbox, sub.bright, sub.edges)
+			t.Fatalf("the final screen is not the opening legend: %s (no frame accepted in %d of the %s recheck window)", detail, frames, settleRecheckWindow)
+		}
+		t.Logf("story_subtitle: %s (accepted at frame %d of the %s recheck window)", detail, frames, settleRecheckWindow)
+		// The recorded success frame carries the measured text (the oracle's
+		// own record — the fresh screenshot may have caught the legend
+		// between subtitles).
+		if !drv.SuccessText {
+			t.Fatalf("the drive's success frame measured no bottom-bar text (SuccessText=false): the legend's first subtitle was not measured")
 		}
 		// The crop handoff: the measured bottom-bar subtitle region in
 		// normalised frame fractions — the live-session E2E's textbox-region
@@ -172,15 +216,22 @@ func TestRealDriveToFirstDialogue(t *testing.T) {
 			t.Logf("subtitle %d: iters %d-%d fade-in=%s hold=%s fade-out=%s open=%v", i, st.FirstIndex, st.LastIndex, st.FadeIn.Round(100*time.Millisecond), st.Hold.Round(100*time.Millisecond), st.FadeOut.Round(100*time.Millisecond), st.Open)
 		}
 	default:
-		if ok, detail := BoxPresent()(ctx, end, end); !ok {
-			t.Fatalf("the final screen is not the first dialogue box: %s", detail)
+		end, ok, detail, frames = pollSettled(t, ctx, b, end, boxRecheckWindow, settleRecheckInterval,
+			func(img image.Image) (bool, string) {
+				sig := ScreenSigOf(img)
+				c, _ := sig.ClassOf()
+				bb := sig.Regions["boxband"]
+				isBox := c == ClassBox && bb.mean < boxBandMeanMin
+				return isBox, fmt.Sprintf("class=%s lb=%.3f boxband[mean=%.0f edges=%.3f] (real box = the classifier's dark form: bb.mean < %.0f)", c, sig.Letterbox, bb.mean, bb.edges, boxBandMeanMin)
+			})
+		if !ok {
+			t.Fatalf("the final screen is not the first dialogue box: %s (no frame accepted in %d of the %s recheck window)", detail, frames, boxRecheckWindow)
+		}
+		t.Logf("boxband: %s (accepted at frame %d of the %s recheck window)", detail, frames, boxRecheckWindow)
+		if tbOK, tbDetail := TextboxPresent()(ctx, end, end); tbOK {
+			t.Logf("textbox: %s", tbDetail)
 		} else {
-			t.Logf("boxband: %s", detail)
-			if tbOK, tbDetail := TextboxPresent()(ctx, end, end); tbOK {
-				t.Logf("textbox: %s", tbDetail)
-			} else {
-				t.Logf("textbox (reference only): %s", tbDetail)
-			}
+			t.Logf("textbox (reference only): %s", tbDetail)
 		}
 	}
 	if evOut != "" {
@@ -212,6 +263,61 @@ func TestRealDriveToFirstDialogue(t *testing.T) {
 	// logged and the --save_state phase is skipped (the BLOCKED row in
 	// docs/status carries it) — the drive itself (phase 1) is what the test
 	// name promises.
+	//
+	// The savestate is anchored on the HELD box — the stable measured
+	// screen — not on the drive's first box frame. Measured (runs 1-2
+	// 2026-10-18 + the fixture's dense timeline): the pre-box animated
+	// scene carries a bright box band (mean 76-152) for 10-70 s and can
+	// even match the bright box clauses (the drive's run-2 stop frame,
+	// boxband mean=130 edges=0.066), a BRIEF box appears and auto-advances
+	// within a few seconds (run-1 step 133, boxband mean=62), and only then
+	// does the first NPC dialogue box (the fixture's box 1) appear and
+	// A-HOLD unchanged for 10+ minutes (the 64 s no-input sample: the
+	// signature steady at boxband 46/0.031). The restore's fixed 8 s settle
+	// is deterministic only on that held screen — run 1's restore pair
+	// straddled the transient (rmse 0.087 on the moving scene) and run 2's
+	// straddled the box's appearance (rmse 0.253). So the save waits, at
+	// the drive's 2 s cadence, for the DARK box band (the measured real-box
+	// shape: the ClassBox classifier's dark form, bb.mean < the bright
+	// floor — the animated scene's dips to 76-80 carry no glyph edges and
+	// are rejected by the classifier, not just the band) to HOLD for
+	// stableBoxSamples consecutive samples (the brief box auto-advances in
+	// fewer; the held box holds for minutes).
+	stableBoxSamples := 3
+	stableBoxWindow := 120 * time.Second
+	stableStreak := 0
+	stableFrames := 0
+	stableDetail := ""
+	stableDeadline := time.Now().Add(stableBoxWindow)
+	for {
+		shot, err := b.Screenshot(ctx)
+		if err == nil {
+			stableFrames++
+			sig := ScreenSigOf(shot)
+			c, _ := sig.ClassOf()
+			bb := sig.Regions["boxband"]
+			detail := fmt.Sprintf("class=%s lb=%.3f boxband[mean=%.0f edges=%.3f]", c, sig.Letterbox, bb.mean, bb.edges)
+			stableDetail = detail
+			if c == ClassBox && bb.mean < boxBandMeanMin {
+				stableStreak++
+				if stableStreak >= stableBoxSamples {
+					t.Logf("savestate: the held box is stable (dark box band for %d consecutive 2 s samples, %d frames in %s) — %s — anchoring the save here", stableStreak, stableFrames, stableBoxWindow, detail)
+					break
+				}
+			} else {
+				stableStreak = 0
+			}
+			t.Logf("savestate: held-box anchor: frame %d (streak %d/%d): %s", stableFrames, stableStreak, stableBoxSamples, detail)
+		}
+		if time.Now().After(stableDeadline) {
+			t.Fatalf("savestate: no held box (dark box band stable for %d consecutive 2 s samples) within %s (%d frames; last: %s) — the first NPC dialogue box did not hold", stableBoxSamples, stableBoxWindow, stableFrames, stableDetail)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("savestate: context done: %v", ctx.Err())
+		case <-time.After(2 * time.Second):
+		}
+	}
 	statePath, err := b.SaveState(ctx, 1)
 	if err != nil {
 		logSavestateEvidence(t, userDir, st.HotkeyDevice, "save", err)
@@ -305,20 +411,54 @@ func TestRealDriveToFirstDialogue(t *testing.T) {
 	if loadDist > crossStepMax {
 		t.Fatalf("savestate: the two restores of the same state differ (rmse %.3f > %.2f) — the load did not restore the saved state", loadDist, crossStepMax)
 	}
-	// The semantic half: the restored scene is X's SCENE CLASS again (a no-op
-	// load would stay on the advance's Y screen).
-	c1, _ := ScreenSigOf(x1).ClassOf()
+	// The semantic half: the restored scene is X's SCENE again (a no-op
+	// load would stay on the advance's Y screen). Measured over the SAME
+	// bounded settle poll as the end assertion (acceptance.md gap 12): the
+	// restore can land inside the box's own transition-in — the save fires
+	// async over the hotkey and the box AUTO-APPEARS (the drive's wait-only
+	// phase), so the saved moment can be the box's transition-in, whose
+	// measured signature is the bright smooth box-band (the drive's own log:
+	// the pre-box scene boxband mean=145 edges=0.008, the transition frame
+	// mean=130 edges=0.036) — the same family the restore lands on 8 s later
+	// (run-drive 2026-10-18 20:05: boxband mean=143-144 edges 0.002-0.004).
+	// A single frame sampled at machine timing inside that transition reads
+	// class=unknown while X reads class=box, so the poll accepts EITHER X's
+	// class OR the measured box-transition family (lb < 0.08 keeps out the
+	// letterboxed system screens; the settled dark box band 46-64 is below
+	// the bright floor, and the legend's box band 47-69, so only the
+	// box's own transition family matches).
 	cEnd, _ := ScreenSigOf(end).ClassOf()
-	if c1 != cEnd {
-		t.Fatalf("savestate: the restored scene is class %s, not X's class %s — the load did not return to the saved screen", c1, cEnd)
+	restoreFrame := func(img image.Image) (bool, string) {
+		sig := ScreenSigOf(img)
+		c, _ := sig.ClassOf()
+		bb := sig.Regions["boxband"]
+		var accepted bool
+		if cEnd == ClassBox {
+			accepted = c == ClassBox ||
+				(sig.Letterbox < classBoxDarkLbMax && bb.mean >= boxBandMeanMin)
+		} else {
+			// X is the legend's own measured family (the end assertion's
+			// legendFrame predicate: a text-bearing frame or a measured
+			// interlude — the legend advances on its own).
+			accepted, _ = legendFrame(img)
+		}
+		return accepted, fmt.Sprintf("class=%s lb=%.3f boxband[mean=%.0f edges=%.3f] (X's class %s)", c, sig.Letterbox, bb.mean, bb.edges, cEnd)
 	}
+	_, restoreOK, restoreDetail, restoreFrames := pollSettled(t, ctx, b, x1, settleRecheckWindow, settleRecheckInterval, restoreFrame)
+	if !restoreOK {
+		t.Fatalf("savestate: the restored scene is not X's scene: %s (no frame accepted in %d of the %s recheck window)", restoreDetail, restoreFrames, settleRecheckWindow)
+	}
+	t.Logf("savestate: restored scene is X's scene again — %s (accepted at frame %d of the %s recheck window)", restoreDetail, restoreFrames, settleRecheckWindow)
 
 	// Phase 3: a fresh boot with --save_state lands on the drive's SUCCESS
 	// scene (the saved state is exactly the X frame the drive reached): the
-	// letterboxed legend with its narration subtitle (the story_subtitle
-	// class, measured bottom-bar text) or the dialogue box. The state file
+	// first in-game dialogue box (the past-legend drive's goal — a stable
+	// measured screen: the dense recording held it unchanged for 10 minutes,
+	// so the boot lands on the box within the settle) or, on a budget close
+	// before the box, the letterboxed legend with its narration subtitle
+	// (the story_subtitle class, measured bottom-bar text). The state file
 	// is the measured path from the save hotkey; the boot takes over the
-	// legend's timeline at the save point, so the subtitle text is present
+	// game's timeline at the save point, so the success screen is present
 	// in the first seconds.
 
 	// Phase 3: a fresh boot with --save_state lands on X (the success scene
@@ -330,19 +470,22 @@ func TestRealDriveToFirstDialogue(t *testing.T) {
 	if err := b.Launch(ctx, LaunchSpec{SaveState: statePath}); err != nil {
 		t.Fatalf("relaunch with --save_state: %v", err)
 	}
-	// The boot lands on the drive's SUCCESS scene: the letterboxed legend
+	// The boot lands on the drive's SUCCESS scene: the first in-game
+	// dialogue box (the past-legend drive's goal — BoxPresent's measured
+	// dark-box form, ADR-0054 amendment 1) or the letterboxed legend
 	// (story_subtitle — the same measured bottom-bar text clauses the end
-	// assertion uses; BoxPresent's bright-box-band calibration cannot match
-	// the letterboxed legend, measured boxband mean 60 < 100) or the
-	// dialogue box.
+	// assertion uses; BoxPresent's box-band calibration cannot match the
+	// letterboxed legend, measured boxband mean 60 < 100).
 	sceneName := "dialogue box"
 	if drv.SuccessScreen == DriveScreenStorySubtitle {
 		sceneName = "the opening legend (story subtitle)"
 	}
 	deadline := time.Now().Add(30 * time.Second)
+	bootFrames := 0
 	for {
 		shot, serr := b.Screenshot(ctx)
 		if serr == nil {
+			bootFrames++
 			var ok bool
 			var detail string
 			if drv.SuccessScreen == DriveScreenStorySubtitle {
@@ -358,7 +501,7 @@ func TestRealDriveToFirstDialogue(t *testing.T) {
 				ok, detail = BoxPresent()(ctx, shot, shot)
 			}
 			if ok {
-				t.Logf("savestate: --save_state boot landed on X (%s) — %s", sceneName, detail)
+				t.Logf("savestate: --save_state boot landed on X (%s) at frame %d of the 30 s recheck window — %s", sceneName, bootFrames, detail)
 				if evOut != "" {
 					writeEvidencePNG(t, evOut, "savestate-boot-X.png", shot)
 				}
@@ -366,7 +509,7 @@ func TestRealDriveToFirstDialogue(t *testing.T) {
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("savestate: no %s within 30 s of the --save_state boot (the state file was %s)", sceneName, statePath)
+			t.Fatalf("savestate: no %s within 30 s of the --save_state boot (%d frames; the state file was %s)", sceneName, bootFrames, statePath)
 		}
 		select {
 		case <-ctx.Done():
@@ -390,6 +533,63 @@ func TestRealDriveToFirstDialogue(t *testing.T) {
 // rmse(X1, X2) comparison is deterministic (llvmpipe render noise + a small
 // screenshot jitter, both far below the control threshold; the measured
 // animation rate of the restored legend is ~0.07 RMSE/s, run-drive3).
+// settleRecheckWindow / settleRecheckInterval bound the post-drive rechecks
+// (the end assertion above and the --save_state boot landing below): the
+// success screen is still settling when the drive's last poll fires (the
+// box's typewriter reveal, the legend's own subtitle fades), so a single
+// frame sampled at machine timing is not a stable proof (acceptance.md gap
+// 12). The rechecks poll at the interval and stop at the first frame the
+// same measured clauses accept.
+const (
+	settleRecheckWindow   = 10 * time.Second
+	settleRecheckInterval = 1 * time.Second
+	// boxRecheckWindow bounds the end assertion's box recheck: the measured
+	// 20-40 s gap from the drive's stop frame to the first NPC dialogue box
+	// (the held box) — the brief box and the bright-form scene frames the
+	// drive can stop on are NOT the box the assertion proves — plus margin.
+	boxRecheckWindow = 120 * time.Second
+)
+
+// pollSettled re-screenshots over a bounded window, starting from the frame
+// the caller already captured (counted as frame 1), and returns the FIRST
+// frame the ok predicate accepts (the same measured clauses as the drive's
+// success gates — no looser recheck), whether a frame was accepted, the
+// detail line of the frame returned, and the number of frames sampled. A
+// screenshot error inside the window keeps the previous frame (a capture
+// hiccup is not a screen change); a cancelled context returns the last
+// frame with ok=false.
+func pollSettled(t *testing.T, ctx context.Context, b Bridge, first image.Image, window, interval time.Duration, ok func(image.Image) (bool, string)) (image.Image, bool, string, int) {
+	t.Helper()
+	okFlag, detail := ok(first)
+	if okFlag {
+		return first, true, detail, 1
+	}
+	deadline := time.Now().Add(window)
+	frame := first
+	n := 1
+	for {
+		select {
+		case <-ctx.Done():
+			return frame, false, "context done: " + ctx.Err().Error(), n
+		case <-time.After(interval):
+		}
+		if time.Now().After(deadline) {
+			return frame, false, detail, n
+		}
+		shot, err := b.Screenshot(ctx)
+		if err != nil {
+			t.Logf("settle recheck: frame %d: screenshot error (keeping frame %d): %v", n+1, n, err)
+			continue
+		}
+		n++
+		frame = shot
+		if okFlag, detail = ok(shot); okFlag {
+			return frame, true, detail, n
+		}
+		t.Logf("settle recheck: frame %d not accepted: %s", n, detail)
+	}
+}
+
 const restoreSettle = 8 * time.Second
 
 // driveTookSavePath reports whether the drive's SAVE path ran, from the
