@@ -34,6 +34,7 @@ import (
 // appears — the test's name is the promise. NOT RUN when the image or the
 // host tools are missing.
 func TestRealDriveToFirstDialogue(t *testing.T) {
+	skipUnlessTestDolphinGate(t)
 	img := os.Getenv(EnvGameImage)
 	if img == "" {
 		t.Skipf("NOT RUN: %s is not set — point it at the user-supplied game image (dev-only, the image is never logged)", EnvGameImage)
@@ -221,7 +222,10 @@ func TestRealDriveToFirstDialogue(t *testing.T) {
 				sig := ScreenSigOf(img)
 				c, _ := sig.ClassOf()
 				bb := sig.Regions["boxband"]
-				isBox := c == ClassBox && bb.mean < boxBandMeanMin
+				// The SAME measured clauses as the drive's success gate
+				// (sig.RealBoxForm): the classifier's dark box form, never
+				// looser and never the bright structural clause.
+				isBox := sig.RealBoxForm()
 				return isBox, fmt.Sprintf("class=%s lb=%.3f boxband[mean=%.0f edges=%.3f] (real box = the classifier's dark form: bb.mean < %.0f)", c, sig.Letterbox, bb.mean, bb.edges, boxBandMeanMin)
 			})
 		if !ok {

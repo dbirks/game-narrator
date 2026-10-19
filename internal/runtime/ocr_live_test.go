@@ -65,6 +65,11 @@ func TestLiveOCRFallbackSession(t *testing.T) {
 	const frames = liveFallbackFrames
 
 	// --- gates. ---
+	// Gate marker (ADR-0065): live tests run only under make test-models;
+	// the unit gate (and any manual go test) must never call the gateway.
+	if os.Getenv(providers.EnvGate) != "test-models" {
+		t.Skipf("live provider test outside the test-models gate: run via make test-models (it sets %s=test-models)", providers.EnvGate)
+	}
 	if _, err := exec.LookPath("magick"); err != nil {
 		t.Skip("NOT RUN: ImageMagick (magick) is required to render the hard-font crop")
 	}

@@ -392,7 +392,10 @@ func RunDrive(ctx context.Context, b Bridge, opts DriveOptions, table ActionTabl
 		// claimed with the measured bottom-bar text) or the full-frame
 		// dialogue box. The first one reached keeps the credit.
 		switch {
-		case screen == DriveScreenDialogueBox:
+		case screen == DriveScreenDialogueBox && sig.RealBoxForm():
+			// The measured real box: the classifier's DARK form (the band below
+			// the bright floor, RealBoxForm). The bright-form frames fall to
+			// the case below — the measured goal was NOT reached.
 			if tr.SuccessScreen == "" || opts.PastLegend {
 				// The past-legend run's real success: the first in-game
 				// dialogue box, reached by riding the whole legend (the
@@ -411,6 +414,19 @@ func RunDrive(ctx context.Context, b Bridge, opts DriveOptions, table ActionTabl
 			}
 			return finishSuccess(string(tr.SuccessScreen))
 
+		case screen == DriveScreenDialogueBox:
+			// A bright-form box band: the structural ClassBox clause matched
+			// but the frame does NOT measure the real box's dark band (bb.mean
+			// >= boxBandMeanMin). The pre-box animated scene (measured band
+			// 76-152) and the name-entry screen (measured 118/0.096 — the
+			// 2026-10-19 test-full false success) both land here. The measured
+			// goal was not reached, so this is NOT the success: the transition
+			// is recorded with its measured label and the loop keeps observing
+			// — the table's dialogue_box action is the no-op "done", the
+			// iteration settles like a wait, and a screen that never resolves
+			// to the dark form fails the loop detector (or the budget) with
+			// the full transition log instead of a false pass (docs/spec/11
+			// "avoiding false positives").
 		case screen == DriveScreenStorySubtitle:
 			if tr.SuccessScreen == "" {
 				tr.SuccessScreen = DriveScreenStorySubtitle

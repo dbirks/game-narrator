@@ -33,6 +33,12 @@ func TestLiveVLMOCRFallbackHardFontCrop(t *testing.T) {
 	const known = "The harbour bell rang twice."
 	const wantMaxCER = 0.10
 
+	// Gate marker (ADR-0065): live tests run only under make test-models;
+	// the unit gate (and any manual go test) must never call the gateway.
+	if os.Getenv(providers.EnvGate) != "test-models" {
+		t.Skipf("live provider test outside the test-models gate: run via make test-models (it sets %s=test-models)", providers.EnvGate)
+	}
+
 	// --- configuration gate: skip, with setup instructions, not a failure. ---
 	// The same pattern the provider live tests use: the shared gateway's URL
 	// and token from the role configuration, with the model resolved role-model

@@ -137,7 +137,7 @@ func TestDriveLoopReachesBox(t *testing.T) {
 		synthDialog(320, 240),
 		synthNameEntDim(320, 240),
 		synthContinue(320, 240, "yes"), // the name confirm (after the name entry)
-		synthBox(320, 240),             // the ClassBox double (the in-game dialogue box)
+		synthBoxDark(320, 240),         // the measured DARK box form (the drive's success gate, RealBoxForm)
 	}}
 	drv, err := RunDrive(context.Background(), b, fastOpts(90), WindWakerNewGameDrive())
 	if err != nil || !drv.OK {
@@ -517,7 +517,7 @@ func TestDriveStorySubWinsWhenReachedFirst(t *testing.T) {
 	b := &fakeBridge{shots: []image.Image{
 		solid(320, 240, 5),            // a letterboxed dark frame (the loop's start)
 		synthStorySub(320, 240, true), // the legend's narration subtitle (first success)
-		synthBox(320, 240),            // the in-game dialogue box (reached second)
+		synthBoxDark(320, 240),        // the in-game dialogue box (reached second, the measured dark form)
 	}}
 	drv, err := RunDrive(context.Background(), b, fastOpts(90), WindWakerNewGameDrive())
 	if err != nil || !drv.OK {

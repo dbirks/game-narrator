@@ -69,8 +69,14 @@ const (
 
 // e2eEnv gates the run: NOT RUN without the shared gateway. The voice roles
 // fall back to the deployment defaults (qwen3-tts-voicedesign / base).
+// It also requires the test-models gate marker (ADR-0065): the live
+// onboarding e2e calls the real gateway and must never run from make
+// test-unit on a host that happens to have the gateway configured.
 func e2eEnv(t *testing.T) (providers.RoleConfig, providers.RoleConfig, providers.RoleConfig, bool) {
 	t.Helper()
+	if os.Getenv(providers.EnvGate) != "test-models" {
+		t.Skipf("live onboarding e2e outside the test-models gate: run via make test-models (it sets %s=test-models)", providers.EnvGate)
+	}
 	model := strings.TrimSpace(os.Getenv("GAME_NARRATOR_LIVE_MODEL"))
 	roles, err := providers.LoadRoles(os.LookupEnv)
 	if err != nil {

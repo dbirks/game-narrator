@@ -54,6 +54,7 @@ func fixtureRootForTest(t *testing.T) string {
 }
 
 func TestRealRecordFixture(t *testing.T) {
+	skipUnlessTestDolphinGate(t)
 	img := os.Getenv(EnvGameImage)
 	if img == "" {
 		t.Skipf("NOT RUN: %s is not set — point it at the user-supplied game image (dev-only, the image is never logged)", EnvGameImage)

@@ -556,7 +556,9 @@ func synthPrompt(w, h int) *image.RGBA {
 // synthBox builds a synthetic first-dialogue screen (a mid-dark scene with a
 // bright, glyph-inked box band in the measured box-band window) that ClassOf
 // measures as ClassBox and BoxPresent holds on — the test double for the
-// box the drive drives toward.
+// box the drive drives toward. It is the BRIGHT structural form; the drive's
+// success gate requires the measured DARK form (synthBoxDark, RealBoxForm),
+// so synthBox must never be the drive's goal double.
 func synthBox(w, h int) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	set := func(x, y int, l uint8) { img.SetRGBA(x, y, color.RGBA{R: l, G: l, B: l}) }
@@ -574,6 +576,91 @@ func synthBox(w, h int) *image.RGBA {
 		for x := int(0.33 * float64(w)); x < int(0.73*float64(w)); x += 5 {
 			for dx := 0; dx < 2; dx++ {
 				set(x+dx, y, 15)
+			}
+		}
+	}
+	return img
+}
+
+// synthBoxDark builds the synthetic double of the MEASURED real WOTW
+// in-game dialogue box (ADR-0054 amendment 1): a dark rendered scene (mean
+// ~45; the measured first-dialogue frames measure 51-79) with pure-black
+// top/bottom margins (measured letterbox 0.000 — every measured system
+// screen carries the dark-gray bands 0.156+, the box's scene does not) and
+// the DARK translucent band in the box-band window (measured settled mean
+// 46-64, band bright 0.014-0.075) carrying sparse white glyph ticks (the
+// measured box text's horizontal edge fraction 0.031+ single-line). The
+// subbar window (the story-subtitle's measured text clause) stays below its
+// bright/edge floors (measured 0.0002-0.0067 / 0.007-0.008 on the real
+// frames), so the double classifies ClassBox through the dark-form clauses
+// and RealBoxForm holds — it is the drive's goal double.
+func synthBoxDark(w, h int) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	set := func(x, y int, l uint8) { img.SetRGBA(x, y, color.RGBA{R: l, G: l, B: l}) }
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			set(x, y, 45) // the dark rendered scene
+		}
+	}
+	for y := 0; y < 30; y++ {
+		for x := 0; x < w; x++ {
+			set(x, y, 5)
+			set(x, h-1-y, 5) // the pure-black margins across the measured band rows (lb 0.000)
+		}
+	}
+	for y := int(0.69 * float64(h)); y < int(0.84*float64(h)); y++ { // the dark translucent band
+		for x := int(0.31 * float64(w)); x < int(0.75*float64(w)); x++ {
+			set(x, y, 52)
+		}
+	}
+	for _, row := range []float64{0.77, 0.80, 0.83} { // the box text's glyph ticks (white, sparse)
+		for x := int(0.34 * float64(w)); x < int(0.72*float64(w)); x += 4 {
+			for dx := 0; dx < 2; dx++ {
+				set(x+dx, int(row*float64(h)), 240)
+			}
+		}
+	}
+	return img
+}
+
+// synthNameEntBoxLike builds the synthetic double of the MEASURED failure
+// shape of the 2026-10-19 test-full drive (the false dialogue_box success at
+// 25 s): a name-entry frame whose pulse phase measures the BRIGHT box-band
+// clauses (boxband mean 118 / edges 0.096, the recheck frame's measured
+// band) while its keyboard grid keeps the nameent signature (grid ink in
+// the namegrid window, the dark-gray letterbox band 0.297, below the
+// nameentry ceiling 0.30). The classifier must keep such a frame OUT of the
+// drive's success — RealBoxForm is false whatever the box band measures —
+// and this double proves the bright clause alone (the old success gate) is
+// not enough: it satisfies the bright ClassBox clauses while it is still
+// the name-entry screen.
+func synthNameEntBoxLike(w, h int) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	set := func(x, y int, l uint8) { img.SetRGBA(x, y, color.RGBA{R: l, G: l, B: l}) }
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			set(x, y, 105) // the name entry's mid-gray base (measured dim phase 104-110)
+		}
+	}
+	for y := 0; y < 30; y++ {
+		for x := 0; x < w; x++ {
+			set(x, y, 76)
+			set(x, h-1-y, 76) // the dark-gray bands across the measured band rows (lb 0.297)
+		}
+	}
+	for y := int(0.40 * float64(h)); y < int(0.75*float64(h)); y++ { // the keyboard grid
+		for x := int(0.20 * float64(w)); x < int(0.80*float64(w)); x++ {
+			set(x, y, 150)
+			if x%8 < 2 { // the letter strokes' horizontal ink (measured grid edges 0.055+)
+				set(x, y, 45)
+			}
+		}
+	}
+	for y := int(0.69 * float64(h)); y < int(0.84*float64(h)); y++ { // the bright band the pulse measured
+		for x := int(0.31 * float64(w)); x < int(0.75*float64(w)); x++ {
+			set(x, y, 102) // band mean 118 neighbourhood (the measured 118/0.096 frame)
+			if x%16 < 2 {  // the band's glyph edges (measured 0.096)
+				set(x, y, 235)
 			}
 		}
 	}

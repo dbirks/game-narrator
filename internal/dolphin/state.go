@@ -17,6 +17,14 @@ const EnvDevDolphin = "GAME_NARRATOR_DEV_DOLPHIN"
 // only its SHA-256 and size are recorded (ADR-0007 provenance rule).
 const EnvGameImage = "GAME_NARRATOR_GAME_IMAGE_PATH"
 
+// EnvGate is the make-gate marker (ADR-0065): each go-test gate recipe sets it
+// to its own name (test-unit, test-dolphin, test-models) and the real/live
+// test families require their owning gate's value, so no go-test run outside
+// its gate (make test-unit included) can boot the emulator or call the
+// gateway. It is a test-gate variable, not a runtime configuration; the
+// providers package carries the same constant (dolphin does not import it).
+const EnvGate = "GN_GATE"
+
 // DevOptIn reports whether the developer opt-in is set. lookupEnv is a seam
 // for tests; nil reads os.LookupEnv.
 func DevOptIn(lookupEnv func(string) (string, bool)) bool {

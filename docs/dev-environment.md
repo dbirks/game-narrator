@@ -25,17 +25,52 @@ A gate whose capabilities are not configured is never green, and
 
 | Gate | What it runs | Needs (env var names only) |
 | --- | --- | --- |
-| `test-unit` | `go vet` plus all unit tests with `-race` | — |
+| `test-unit` | `go vet` plus all unit tests with `-race` (real/live test families self-skip via `GN_GATE`, below) | — |
 | `test-ui` | frontend typecheck/lint/format/tests, embedded build, Playwright e2e | — |
 | `diagnostics` | `game-narrator doctor --dev` on a fresh build | — |
 | `release-snapshot` | GoReleaser snapshot pipeline (no publishing) | `goreleaser` on PATH; docker optional |
 | `bench` | the synthetic holdout split through the real pipeline (real Tesseract, real matcher) plus the captured-Dolphin holdout (class b) from the external fixtures and the calibration fit, each reported separately | `tesseract` and `magick` on PATH; the captured part also needs `$GAME_NARRATOR_FIXTURE_DIR` (the `windwaker-newgame` and/or `windwaker-legend-dense` fixtures) and `GAME_NARRATOR_GAME_IMAGE_PATH` — absent, it reports NOT RUN with setup steps, never a pass or a failure of the synthetic part |
 | `test-replay` | synthetic scenario suite (fault injection; BLOCKED reported, never passed) plus pipeline replay tests, `-race` | `tesseract` on PATH, else the replay test reports NOT RUN |
 | `test-dolphin` | real Dolphin tests (`-run Real`, one emulator at a time: `-p 1`, 45m timeout) plus the committed Dolphin scenarios replayed through the real recognition/runtime path (`TestDolphinScenarios`, 30m), writing the HTML report to `artifacts/scenarios/<run-id>/index.html` | `GAME_NARRATOR_GAME_IMAGE_PATH`; `dolphin-emu`, `Xvfb`, `ffmpeg`, `x11-utils`, `tesseract` and `xdotool` (savestate hotkeys, ADR 0043 am7) on PATH; the scenario phase also needs the external fixtures under `$GAME_NARRATOR_FIXTURE_DIR` (default `artifacts/fixtures/`) — absent or unverified fixtures report NOT RUN per scenario, never a pass |
-| `test-models` | live provider contract tests (`-run Live`), sequential (`-p 1`) | `GAME_NARRATOR_GATEWAY_URL` plus the token env (default `GAME_NARRATOR_GATEWAY_TOKEN`, name overridable via `GAME_NARRATOR_GATEWAY_TOKEN_ENV`); the vision tests run by default (the `GAME_NARRATOR_LIVE_VISION` opt-in was removed, ADR 0040); TTS registry tests `GAME_NARRATOR_TTS_BASE_DIRECT_URL` (or `GAME_NARRATOR_ROLE_VOICE_CLONE_REGISTRY_URL`) |
+| `test-models` | live provider contract tests (`-run Live`), sequential (`-p 1`) | `GAME_NARRATOR_GATEWAY_URL` plus the token env (default `GAME_NARRATOR_GATEWAY_TOKEN`, name overridable via `GAME_NARRATOR_GATEWAY_TOKEN_ENV`); the vision tests run by default (the `GAME_NARRATOR_LIVE_VISION` opt-in was removed, ADR 0040); the VLM OCR fallback session test (`TestLiveOCRFallbackSession`) uses the configured `GAME_NARRATOR_ROLE_VISION_OCR_FALLBACK_MODEL` (standard dev value `qwen3-8-27b` over the shared gateway, `.env.example`) before falling back to `GAME_NARRATOR_LIVE_MODEL`; TTS registry tests `GAME_NARRATOR_TTS_BASE_DIRECT_URL` (or `GAME_NARRATOR_ROLE_VOICE_CLONE_REGISTRY_URL`) |
 | `test-hardware` | UNO Q hardware smoke (`internal/hwsmoke`, `TestHW*`): V4L2 capture grab through the app's FFmpeg path, consented audio-sink tone, controlled-image OCR, RAM/CPU/temperature/storage preflight + 60 s serve-session RSS budget, platform report — every absent capability is NOT RUN with the attach/configure instruction, never a vacuous pass | attach a UNO Q with capture source + audio sink (13-uno-q-hardware-smoke.md); `GAME_NARRATOR_HW_AUDIO_CONSENT=1` for the audio tone; `GAME_NARRATOR_CAPTURE_DEVICE` / `GAME_NARRATOR_AUDIO_DEVICE` to choose the node/sink |
 | `soak` | the long soak pair (1h replay + 2h chaos, docs/spec/12; `TestSoakLong` budgets with explicit `-timeout`, ADR-0045) — hours-long, so it is not part of `test-full`; reports under `artifacts/soak/<run-id>/` | — |
 | `secret-scan` | `scripts/gates/secret-scan.sh --history` — every tracked file plus the added lines of every commit, for tokens/keys, private endpoint URLs and bare RFC 1918 hosts, `/home/` paths, game-data magic/extension and unallowlisted large binaries; matched values are never printed (masked, length only) | git; documented false positives are suppressed by `scripts/gates/secret-scan.allow` with a reason (the one real historical leak is allowlisted to that commit only) |
+
+## Gate marker (`GN_GATE`)
+
+The real and live test families are gated by the `GN_GATE` environment
+variable, a make-gate marker (ADR-0065) that is a **test-gate variable, not a
+runtime configuration**. Each go-test gate recipe sets it to the gate's own
+name:
+
+| Recipe | `GN_GATE` value | Tests it enables |
+| --- | --- | --- |
+| `make test-unit` | `test-unit` | the hermetic unit gate only: every real/live family skips itself |
+| `make test-dolphin` | `test-dolphin` | the `TestReal*` real-Dolphin drives/recorders/savestate tests plus the `internal/e2e` live-Dolphin e2e |
+| `make test-models` | `test-models` | the `TestLive*` provider/voices/runtime/agent/vision gateway tests and the live e2e onboarding |
+
+Every `TestReal*`/`TestLive*` test calls its gate check as its first
+statement and **skips** (plain skip, not NOT RUN — the capability is
+configured on this host, only the gate differs) unless `GN_GATE` equals its
+owning gate's value. The point is that `make test-unit` (`go test ./...`) is
+**independent of host environment**: on a host that has
+`GAME_NARRATOR_GAME_IMAGE_PATH` and the gateway env set, the unit gate must
+still not boot the emulator (one Dolphin at a time, and `-race` under full
+parallel load is not the emulator's operating point) and must not call the
+gateway; only the owning gate — the recipe that sets the matching `GN_GATE`
+— runs those tests, each with its own timeout budget and `-p 1`.
+
+Two further exclusions keep each gate at its own budget: `test-unit` runs
+`-skip TestDolphinScenarios` (the recorded-scenario replay belongs to the
+test-dolphin gate's 30-minute phase), and `test-dolphin` runs
+`-skip 'TestRealReOCRFixture$'` — the re-OCR recipe-revision step (ADR-0054)
+is a maintenance action, not a gate item; run it on demand with
+`GN_REOCR_FIXTURE=<fixture id>` plus the gate check, e.g.
+`GN_GATE=test-dolphin GN_REOCR_FIXTURE=windwaker-newgame go test -count=1
+-timeout 30m -run 'TestRealReOCRFixture$' ./internal/dolphin/`. The hardware
+smoke family is gated separately by `GAME_NARRATOR_HW_SMOKE=1`, which only
+`make test-hardware` and `scripts/hw/run-on-device.sh` set.
 
 The go-test gates (`test-replay`, `test-dolphin`, `test-models`) run through
 `scripts/gates/run-go-gate.sh`, which parses `go test -json`, prints one
@@ -111,7 +146,18 @@ RUN) or the printed summary table, not make's own exit code.
    docs/manuals/15-dolphin-fixture-recorder.md), and the live play path
    (Dolphin frames → OCR → match → Clef → speech) is proven by `internal/e2e`
    `TestLiveDolphin` (docs/status/acceptance.md). Playback on the UNO Q
-   appliance remains **NOT VERIFIED** (gap 4).
+   appliance remains **NOT VERIFIED** (gap 4). `doctor --dev` owns the
+   fresh-host contract for this image (2026-10-19, ADR-0066): when the image
+   is unset or the configured file is missing, the `game.image` check is
+   `NOT CONFIGURED` with the exact expectation — the env var name, the
+   expected file (a user-obtained CISO/ISO disc image), how to verify its
+   identity (the SHA-256 *prefix* read at run time from the fixture
+   manifests' `game_image_sha256` under `$GAME_NARRATOR_FIXTURE_DIR`) and
+   the gates that need it (the bench captured holdout, `make test-dolphin`,
+   `import-disc`) — never a cryptic failure. With the image set, the check
+   hashes the whole file and verifies the SHA-256 against the fixture
+   manifests (verified live 2026-10-19: match, prefix only, the path never
+   printed).
 3. **ASR QA loop (deployed 2026-10-18).** The gateway chat/vision/decision
    roles and the Qwen3-TTS VoiceDesign/Base endpoints are deployed and
    exercised by `make test-models` (docs/status/acceptance.md, M3/M4 rows).
@@ -126,10 +172,17 @@ RUN) or the printed summary table, not make's own exit code.
    playback nor approval is affected (the documented degraded mode).
 4. **UNO Q hardware not connected — BLOCKED.** No UNO Q, no UVC capture device
    (`/dev/video*` absent), no USB DAC identified. `make test-hardware` is `NOT RUN`.
-5. **LLM and vision roles** will use an OpenAI-compatible gateway selected through
-   environment variables per logical role (no URL, hostname, or key stored in the
-   repo or in this document). Gateway reachability: **NOT CHECKED** (nothing
-   configured yet).
+5. **LLM and vision roles** use an OpenAI-compatible gateway selected through
+   environment variables per logical role (no URL, hostname, or key stored in
+   the repo or in this document). Standard dev environment (2026-10-19,
+   ADR-0066): the shared gateway serves the chat/vision roles from the
+   `qwen3-8-27b` checkpoint, and the standard dev env sets
+   `GAME_NARRATOR_ROLE_VISION_OCR_FALLBACK_MODEL=qwen3-8-27b` (documented in
+   `.env.example` and docs/manuals/04; ADR-0040) so sessions engage the VLM
+   OCR fallback — sessions use it only when the role's model id is
+   configured. `doctor` verified the role live on 2026-10-19 (real chat and
+   controlled-image probes, `OK`) and `TestLiveOCRFallbackSession` passed
+   live the same day (genuine VLM request ids recorded, best CER 0.000).
 6. **Audio playback path unverified beyond a null sink.** PipeWire and
    WirePlumber user services are now `active` (`systemctl --user is-active
    pipewire wireplumber` → `active`, `active`) and `pactl list short sinks`

@@ -44,10 +44,22 @@ build: web-build
 dev:
 	go run ./cmd/game-narrator serve
 
-## test-unit: static analysis plus race-enabled unit tests
+## test-unit: static analysis plus race-enabled unit tests. GN_GATE=test-unit
+## marks the run so every live/real test family (the real Dolphin drives and
+## recorders, the internal/e2e Live tests, the -run Live provider/voices/
+## runtime tests) skips itself: the unit gate must never depend on host env
+## (the image path, the gateway URL) and must never boot the emulator or call
+## the gateway — the owning gates (make test-dolphin / make test-models) set
+## their own GN_GATE value and are the only runs those tests execute under
+## (AGENTS.md rule 3: label classes; ADR-0065). hwsmoke is already excluded:
+## it self-skips without GAME_NARRATOR_HW_SMOKE, which only the test-hardware
+## recipe sets. -skip keeps TestDolphinScenarios out of the unit gate the way
+## the test-replay recipe does: it belongs to the test-dolphin gate (the
+## recorded Dolphin fixture replay, 30-minute budget) and its 10+ minute run
+## would time out the unit gate's default test timeout.
 test-unit:
 	go vet ./...
-	go test -race ./...
+	GN_GATE=test-unit go test -race -skip TestDolphinScenarios ./...
 
 ## lint: Go static checks, the frontend lint/format gates and the repo-wide
 ## secret scan in tree mode (the history-including run is the dedicated
@@ -223,8 +235,15 @@ test-ui:
 ## x11-utils and tesseract on PATH; without them the tests report NOT RUN
 ## (exit 2). -p 1: one Dolphin at a time; the boot-to-first-dialogue drive
 ## and its re-record take minutes, hence the 45-minute timeout.
+## GN_GATE=test-dolphin is the explicit gate variable the TestReal* tests
+## require (ADR-0065): with it absent they skip, so no other go-test run
+## (make test-unit included) can boot a second emulator. -skip keeps the
+## re-OCR recipe-revision step (TestRealReOCRFixture, ADR-0054) out of the
+## gate: it is NOT RUN unless GN_REOCR_FIXTURE names the fixture id, which
+## would make this gate rc 2 forever — run it on demand instead:
+##   GN_REOCR_FIXTURE=<fixture id> go test -count=1 -timeout 30m -run 'TestRealReOCRFixture$' ./internal/dolphin/
 test-dolphin:
-	@scripts/gates/run-go-gate.sh test-dolphin -count=1 -p 1 -timeout 45m -run Real ./internal/dolphin/... ; \
+	@GN_GATE=test-dolphin scripts/gates/run-go-gate.sh test-dolphin -count=1 -p 1 -timeout 45m -run Real -skip 'TestRealReOCRFixture$$' ./internal/dolphin/... ; \
 	rc1=$$?; \
 	scripts/gates/run-go-gate.sh test-dolphin-scenarios -count=1 -timeout 30m -run TestDolphinScenarios ./internal/scenario/... ; \
 	rc2=$$?; \
@@ -240,12 +259,21 @@ test-dolphin:
 ## GAME_NARRATOR_LIVE_VISION switch was removed with the VLM OCR fallback,
 ## ADR 0040) and the TTS registry tests need
 ## GAME_NARRATOR_TTS_BASE_DIRECT_URL. Each unset capability reports NOT RUN
-## (exit 2), never a pass.
+## (exit 2), never a pass. The agent live smoke (two-tool registry,
+## synthetic-adventure onboarding) and the VLM OCR-fallback live test join
+## this gate (ADR-0065): they are live gateway tests and no longer ride the
+## test-unit ./... glob. The 30-minute full-chain TestLiveOnboardingAPI
+## (internal/api) stays MANUAL (GN_GATE=test-models + the package is not in
+## this recipe) — it would eat the gate's whole budget by itself.
+## GN_GATE=test-models is the gate variable the live provider/voices/runtime
+## tests require (ADR-0065): without it they skip, so make test-unit never
+## calls the real gateway.
 test-models:
-	@scripts/gates/run-go-gate.sh test-models -count=1 -p 1 -timeout 30m -run Live \
+	@GN_GATE=test-models scripts/gates/run-go-gate.sh test-models -count=1 -p 1 -timeout 30m -run Live \
 		./internal/providers/openai/... ./internal/providers/recorded/... \
 		./internal/providers/systemone/... ./internal/providers/tts/... \
-		./internal/providers/asr/... ./internal/voices/... ./internal/runtime/... ; \
+		./internal/providers/asr/... ./internal/voices/... ./internal/runtime/... \
+		./internal/agent/... ./internal/vision/... ; \
 	rc=$$?; echo $$rc > artifacts/gates/test-models.rc ; exit $$rc
 
 ## test-hardware: the UNO Q hardware gate (docs/spec/16, M8) — the

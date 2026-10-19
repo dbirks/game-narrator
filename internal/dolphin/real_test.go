@@ -15,6 +15,23 @@ import (
 	"github.com/dbirks/game-narrator/internal/capture"
 )
 
+// skipUnlessTestDolphinGate keeps the real Dolphin tests (class (d) —
+// emulator against the user image, AGENTS.md rule 3) out of every go-test
+// run that is not the test-dolphin gate itself. GN_GATE is set by the make
+// gate recipes to the gate's own name (ADR-0065): on a host with the image
+// and the emulator installed, `make test-unit` (go test ./...) must report
+// these as skipped, never boot an emulator under -race at full parallelism.
+// The message is a PLAIN skip, not the "NOT RUN" capability convention —
+// the capability is configured on this host, only the gate differs; under
+// make test-dolphin the check passes and the capability skips below keep
+// their NOT RUN semantics (rc 2) intact.
+func skipUnlessTestDolphinGate(t *testing.T) {
+	t.Helper()
+	if os.Getenv(EnvGate) != "test-dolphin" {
+		t.Skipf("real Dolphin test outside the test-dolphin gate: run via make test-dolphin (it sets %s=test-dolphin; AGENTS.md rule 3 — the unit gate must not boot the emulator)", EnvGate)
+	}
+}
+
 // TestRealDolphinBridge is the real-hardware proof (docs/spec/12: Dolphin
 // emulator mode — never labelled as unit coverage). It is skipped as NOT RUN
 // with an actionable reason when any prerequisite is missing:
@@ -30,6 +47,7 @@ import (
 // pipeline with changing hashes (frames=), and no process leftovers
 // (/proc scan).
 func TestRealDolphinBridge(t *testing.T) {
+	skipUnlessTestDolphinGate(t)
 	img := os.Getenv(EnvGameImage)
 	if img == "" {
 		t.Skipf("NOT RUN: %s is not set — point it at the user-supplied game image (dev-only, the image is never logged)", EnvGameImage)
@@ -177,6 +195,7 @@ func drainFrames(t *testing.T, ctx context.Context, src capture.Source, dur time
 // by the orchestrator's own worker-kill behaviour, not from inside the
 // process that would die.
 func TestRealAbruptContextKill(t *testing.T) {
+	skipUnlessTestDolphinGate(t)
 	img := os.Getenv(EnvGameImage)
 	if img == "" {
 		t.Skipf("NOT RUN: %s is not set — point it at the user-supplied game image (dev-only, the image is never logged)", EnvGameImage)

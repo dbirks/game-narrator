@@ -8,7 +8,12 @@ package api
 // reach review or succeeded with the synthetic CSV imported; it must NOT
 // publish without an approval.
 //
-//	GAME_NARRATOR_LIVE_MODEL=qwen3-8-27b go test -run LiveOnboardingAPI ./internal/api/
+//	GN_GATE=test-models GAME_NARRATOR_LIVE_MODEL=qwen3-8-27b go test -run LiveOnboardingAPI ./internal/api/
+//
+// GN_GATE is the make-gate marker (ADR-0065): the 30-minute full-chain run
+// is manual (the test-models recipe does not include this package), but it
+// must still never start from make test-unit on a host that happens to have
+// GAME_NARRATOR_LIVE_MODEL set.
 
 import (
 	"bytes"
@@ -37,6 +42,11 @@ import (
 )
 
 func TestLiveOnboardingAPI(t *testing.T) {
+	// Gate marker (ADR-0065): the live chain must not run from the unit gate
+	// (GN_GATE=test-unit) or a bare manual go test.
+	if os.Getenv(providers.EnvGate) != "test-models" {
+		t.Skipf("live onboarding API run outside the test-models gate: run via GN_GATE=test-models go test -run LiveOnboardingAPI ./internal/api/ (it is manual — not part of the test-models recipe — the 30-minute full chain)")
+	}
 	model := os.Getenv("GAME_NARRATOR_LIVE_MODEL")
 	if model == "" {
 		t.Skip("GAME_NARRATOR_LIVE_MODEL is not set; the live onboarding run is NOT RUN " +

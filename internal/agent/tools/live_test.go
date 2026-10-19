@@ -31,6 +31,11 @@ import (
 )
 
 func TestLiveSyntheticAdventureOnboarding(t *testing.T) {
+	// Gate marker (ADR-0065): live tests run only under make test-models;
+	// the unit gate (and any manual go test) must never call the gateway.
+	if os.Getenv(providers.EnvGate) != "test-models" {
+		t.Skipf("live provider test outside the test-models gate: run via make test-models (it sets %s=test-models)", providers.EnvGate)
+	}
 	roles, err := providers.LoadRoles(os.LookupEnv)
 	if err != nil {
 		t.Fatalf("LoadRoles: %v", err)

@@ -100,6 +100,12 @@ func hexEncode(s [32]byte) string { return hex.EncodeToString(s[:]) }
 
 // dolphinLivePrereq is one NOT RUN condition with its setup line.
 func TestLiveDolphin(t *testing.T) {
+	// The live Dolphin e2e belongs to the test-dolphin gate (ADR-0065): it
+	// boots the real emulator AND calls the real gateway, so it must never
+	// run from make test-unit on a host that happens to have both configured.
+	if os.Getenv(dolphin.EnvGate) != "test-dolphin" {
+		t.Skipf("live Dolphin e2e outside the test-dolphin gate: run via make test-dolphin (it sets %s=test-dolphin)", dolphin.EnvGate)
+	}
 	img := os.Getenv(dolphin.EnvGameImage)
 	if img == "" {
 		t.Skipf("NOT RUN: %s is not set — point it at the user-supplied Wind Waker image (dev-only, the image is never logged)", dolphin.EnvGameImage)

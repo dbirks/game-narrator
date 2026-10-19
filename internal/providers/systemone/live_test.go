@@ -51,6 +51,11 @@ const liveDecisionSkipMessage = "NOT RUN: set GAME_NARRATOR_GATEWAY_URL and the 
 // much larger context deadline (see liveDecisionBudget).
 func liveDecisionClient(t *testing.T) *Client {
 	t.Helper()
+	// Gate marker (ADR-0065): live tests run only under make test-models;
+	// the unit gate (and any manual go test) must never call the gateway.
+	if os.Getenv(providers.EnvGate) != "test-models" {
+		t.Skipf("live provider test outside the test-models gate: run via make test-models (it sets %s=test-models)", providers.EnvGate)
+	}
 	roles, err := providers.LoadRoles(os.LookupEnv)
 	if err != nil {
 		// A malformed gateway URL is a configuration fault, not a missing

@@ -106,9 +106,16 @@ var implementedProtocols = map[Protocol]bool{
 // so an operator can point the service at an existing secret variable instead
 // of copying the secret into a second place.
 const (
-	EnvGatewayURL          = "GAME_NARRATOR_GATEWAY_URL"
-	EnvGatewayTokenEnv     = "GAME_NARRATOR_GATEWAY_TOKEN_ENV"
-	EnvGatewayToken        = "GAME_NARRATOR_GATEWAY_TOKEN" // default named by EnvGatewayTokenEnv
+	EnvGatewayURL      = "GAME_NARRATOR_GATEWAY_URL"
+	EnvGatewayTokenEnv = "GAME_NARRATOR_GATEWAY_TOKEN_ENV"
+	EnvGatewayToken    = "GAME_NARRATOR_GATEWAY_TOKEN" // default named by EnvGatewayTokenEnv
+	// EnvGate is the make-gate marker (ADR-0065): each go-test gate recipe sets
+	// it to its own name (test-unit, test-dolphin, test-models) and the
+	// live/real test families require their owning gate's value — the unit
+	// gate therefore never depends on host env (gateway URL, image path) and
+	// never calls the gateway or boots the emulator. It is a test-gate
+	// variable, not a runtime configuration.
+	EnvGate                = "GN_GATE"
 	envRolePrefix          = "GAME_NARRATOR_ROLE_"
 	envRoleModelSuffix     = "_MODEL"
 	envRoleURLSuffix       = "_URL"

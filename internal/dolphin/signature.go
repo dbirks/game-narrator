@@ -629,3 +629,27 @@ func (s ScreenSig) Key() string {
 	}
 	return string(c)
 }
+
+// RealBoxForm reports whether the frame measures the classifier's DARK box
+// form — the measured shape of the real WOTW in-game dialogue box: the dark
+// translucent band (settled mean 46-64, ADR-0054 amendment 1) carrying white
+// glyph text over a rendered scene (letterbox 0.000). It is ClassBox PLUS
+// the box band below the bright clause's floor (bb.mean < boxBandMeanMin):
+// ClassOf reaches ClassBox through the structural BRIGHT clause as well
+// (bb.mean >= boxBandMeanMin, edges >= boxBandEdgesMin, entropy <
+// boxBandEntropyMax), and that bright form matches more than the real box —
+// the pre-box animated scene (measured band mean 76-152; the run-2 stop
+// frame 130.5/0.066) and the name-entry screen (measured band mean 118 /
+// edges 0.096 at letterbox 0.297, whose dim-pulse frames also pass the grid
+// clauses' neighbourhood — the 2026-10-19 test-full drive closed on such a
+// frame as the dialogue box at 25 s, the false success this predicate exists
+// to reject: under -race + full parallel load the name-entry screen's pulse
+// produced a frame the bright clause swallowed). The drive's dialogue_box
+// SUCCESS and the post-drive recheck therefore accept only the dark form;
+// a bright-form ClassBox frame is a scene frame the loop keeps observing.
+func (s ScreenSig) RealBoxForm() bool {
+	if c, _ := s.ClassOf(); c != ClassBox {
+		return false
+	}
+	return s.Regions["boxband"].mean < boxBandMeanMin
+}

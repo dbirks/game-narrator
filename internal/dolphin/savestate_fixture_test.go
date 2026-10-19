@@ -69,6 +69,7 @@ const (
 // TestRealRecordSavestateFixtures is the M6 savestate checkpoint + fixture
 // recording gate (real Dolphin only; NOT RUN without the image/tools).
 func TestRealRecordSavestateFixtures(t *testing.T) {
+	skipUnlessTestDolphinGate(t)
 	img := os.Getenv(EnvGameImage)
 	if img == "" {
 		t.Skipf("NOT RUN: %s is not set — point it at the user-supplied game image (dev-only, the image is never logged)", EnvGameImage)
