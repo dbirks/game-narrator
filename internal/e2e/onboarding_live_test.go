@@ -171,7 +171,12 @@ func TestLiveOnboarding(t *testing.T) {
 		directURL = strings.TrimSpace(os.Getenv("GAME_NARRATOR_TTS_BASE_DIRECT_URL"))
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 29*time.Minute)
+	// Global wall for the whole test (store, server, job runner). It must
+	// exceed the sum of the phase tripwires (research 20m + publish 16m +
+	// briefs/auditions tail) so a phase that runs to its own deadline fails
+	// with a clear phase error, not a bare context-deadline from here. Kept
+	// under the 40m go-test timeout the gate recipe passes.
+	ctx, cancel := context.WithTimeout(context.Background(), 37*time.Minute)
 	t.Cleanup(cancel)
 	startAll := time.Now()
 
@@ -386,7 +391,15 @@ func TestLiveOnboarding(t *testing.T) {
 			}
 		}
 	}
-	waitForRun("research phase", 15*time.Minute)
+	// The research deadline must not outwait a legitimately in-flight attempt:
+	// each agent job attempt carries a 20-minute wall (RegisterOpts below), and
+	// the router retries an idempotent slow model turn up to 3×300 s (the
+	// agentCfg.Timeout above), so a single pathological round-trip can consume
+	// ~15 min of an attempt's tail. 15 min (the old value) expired mid-attempt
+	// and failed the run while it was still in flight (observed live 2026-10-19);
+	// 20 min is the attempt's own wall, after which the job runner cancels it
+	// and the run row lands a terminal state the test can react to.
+	waitForRun("research phase", 20*time.Minute)
 	researchCalls, _, _ := recorder.snapshot()
 	t.Logf("e2e: research phase done: state=%s stop_reason=%v steps=%v tool_calls=%v wall=%s model_calls=%d",
 		snap["state"], snap["stop_reason"], snap["steps"], snap["tool_calls"],
@@ -419,7 +432,9 @@ Finish with a short summary: the character names staged and the source ids attac
 			t.Fatalf("follow-up message = %d (body %s)", rec.Code, rec.Body.String())
 		}
 		stageStart := time.Now()
-		waitForRun("follow-up phase", 15*time.Minute)
+		// Same calibration as the research phase: one in-flight attempt has a
+		// 20-minute job wall; the phase deadline must not expire mid-attempt.
+		waitForRun("follow-up phase", 20*time.Minute)
 		t.Logf("e2e: follow-up turn %d done: state=%s stop_reason=%v steps=%v tool_calls=%v wall=%s",
 			attempt+1, snap["state"], snap["stop_reason"], snap["steps"], snap["tool_calls"],
 			time.Since(stageStart).Round(time.Second))
@@ -478,7 +493,10 @@ Finish with a short summary: the character names staged and the source ids attac
 	}
 	t.Logf("e2e: approval boundary: human token issued (approval %s…); resume job %s enqueued",
 		approved.ApprovalID[:8], approved.JobID)
-	waitForRun("publish attempt", 10*time.Minute)
+	// Covers the full retry budget of the publish round-trip (3×300 s +
+	// backoff ≈ 15.2 min) so the deadline cannot expire while the router is
+	// still inside the attempt's own retry sequence.
+	waitForRun("publish attempt", 16*time.Minute)
 	published, _, err := st.GetProfile(ctx, created.ProfileID)
 	if err != nil {
 		t.Fatalf("GetProfile after approval: %v", err)

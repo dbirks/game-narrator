@@ -1,7 +1,7 @@
 # ADR-0025: Onboarding agent core — tool-calling client, typed registry, guarded executor, durable run log, single-loop resume
 
 Date: 2026-10-17
-Status: accepted
+Status: accepted (amended 2026-10-21, see Amendment 1)
 Owners: project
 Related requirements/tests: docs/spec/03 (single orchestrator agent, tool registry, durable tool/job log, scenario 7 "resumes without duplicates"); docs/spec/14 "Prompt injection" and "Abuse and resource controls" (executor verifies allowlist, args schema, role and cost before action; bound tool budget); docs/spec/17 "Agent tool result" (wrapped envelope); docs/spec/08 "Agent chat interface"; docs/spec/12 "Agent and sources"; docs/agents/system-prompt-onboarding.md (versioned prompt template); builds on ADR-0013 (recorded providers), ADR-0019 (model router)
 
@@ -194,3 +194,94 @@ tests inject a scripted model instead.
   version discipline) and the openai tool fields returns the pre-ADR
   behaviour; the openai client stays backward compatible because empty
   `Tools`/`ToolChoice` change nothing on the wire.
+
+## Amendment 1 (2026-10-19): bounded recovery before the repetition stop
+
+### Context
+
+`TestLiveOnboarding` (internal/e2e, real gateway, `qwen3-8-27b`) failed
+intermittently in the research phase with `stop_reason: repetition`: after
+live-web sources answered HTTP 403 (bot-walled pages), the model looped —
+re-requesting the same `fetch_page`/search calls and, once, a tool that is
+not in the registry. The guard of §7 is a correct *safety stop*; the
+user-visible outcome, however, was a failed onboarding for a model that
+would have recovered if told why the repeated call was refused and what
+remained. Observed 3× in one worker session and 1× in another; other runs
+pass.
+
+### Decision
+
+The repetition guard and the repeated failure of a source that refuses
+access are **bounded recovery opportunities**, not immediate stops
+(`internal/agent/recovery.go`):
+
+- **Corrective observation.** On the third identical (name+canonical-args)
+  call the loop does not stop and does not re-execute: it records a
+  *durable refused envelope* (same pending-row + finish path as an
+  executed call) whose error line reports the count, the previous
+  attempts' statuses and errors, the sources skipped so far, the tools
+  that remain, and what to do instead. The model continues on it.
+- **Recovery budget.** At most `maxRecoveries = 2` observations per run.
+  A further repetition after the budget is spent stops the run exactly as
+  before: `blocked: repetition` (the closed stop_reason vocabulary is
+  unchanged; the UI renders "Blocked: repetition — resume when the fault
+  clears"). The bound-stop call is also recorded as a durable refusal, so
+  the resume worklist (§6) stays total: a restart can only re-render it,
+  never re-execute it.
+- **Repeated tool failure / 403 sources.** A tool failure whose error line
+  names a source refusal (HTTP 401/403) marks the call's `url` argument as
+  skipped for the run. The failed tool message carries a recovery note
+  ("skipped for this run — do not fetch it again"), and any later call
+  whose `url` argument targets a skipped source is refused **without
+  execution** (no re-fetch, no tool budget spent) even when the model
+  re-phrases the arguments around the same URL.
+- **Varyed sampling on the recovery turn.** The single model turn that
+  follows a corrective observation requests a higher temperature
+  (0.8) to push the model out of its loop; every other turn sends no
+  sampling field (the provider default, as before). If the provider
+  rejects the field (400 classified `unsupported_capability` naming
+  temperature), the loop degrades exactly once — drops the field and
+  retries the same idempotent round-trip (no assistant message was
+  persisted for it, so nothing duplicates) — and stops varying sampling
+  for the rest of the run. The corrective observation, not the sampling,
+  is what recovers the model.
+- **Resume-safe.** Recovery state is re-derived from the durable log on
+  resume: the spent recovery budget from refused rows carrying the
+  `repetition detected:` marker, the skipped sources from failed rows
+  with a `url` argument and a refusal error, and the "previous attempts"
+  line from the stored outcomes. A restart cannot refund the recovery
+  budget; a repeated or skipped call is never re-executed on resume
+  (worklist case 3 re-renders the stored envelope).
+
+What this deliberately does **not** change: the stop_reason vocabulary,
+the step/tool budgets (recovered runs still spend them), the executor
+refusal semantics, and the untrusted-data channel (the observations are
+built only from tool names, executor error lines and the model's own
+arguments — no fetched page content, nothing threaded into the system
+prompt, docs/spec/14 intact). Non-idempotent actions are never retried:
+only the model round-trip is ever repeated, and at most once, only to
+drop a rejected field.
+
+### Validation
+
+Scripted-fake unit tests (category (a), `internal/agent`): a loop model
+recovers on the second attempt (corrective observation fed back, varied
+sampling asserted on the recovery request only, the repeated call never
+executed); a loop model gives up after the bound (blocked: repetition,
+repeats refused, durable rows keep the worklist total); a 403 source is
+fetched once and then refused without re-fetch even with re-phrased args
+(recovery note asserted on the failed result); the recovery budget is
+re-derived across a cancel/resume (no refund, no re-execution); a
+provider that rejects the temperature field degrades once and the run
+succeeds without a duplicated turn. `go vet` + `-race` over
+`internal/agent` and `internal/web`.
+
+### Consequences and reversal
+
+- An intermittently looping model now usually finishes the onboarding
+  within the existing budgets instead of landing `blocked: repetition`.
+  A model that ignores two explicit corrections still stops, with the
+  same reason a human or the e2e `waitForRun` retry policy understands.
+- Reversal: delete `internal/agent/recovery.go` and restore the two guard
+  branches in `loop.go` to the pre-amendment form (the §7 text above); no
+  schema or stop_reason change is involved, so no migration is required.

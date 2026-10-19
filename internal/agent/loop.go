@@ -8,7 +8,12 @@ package agent
 //   - final answer            -> state succeeded
 //   - max_steps               -> state blocked, reason max_steps
 //   - global tool budget      -> state blocked, reason budget_exhausted
-//   - identical call 3 times  -> state blocked, reason repetition
+//   - identical call 3 times  -> bounded recovery (recovery.go): a
+//                                corrective observation and a varied
+//                                sampling on the next turn; state blocked,
+//                                reason repetition only after maxRecoveries
+//   - source HTTP 401/403     -> skipped for the run: further calls to it
+//                                are refused without execution (recovery.go)
 //   - tool review_required    -> state review,  reason review_required
 //   - context cancellation    -> state cancelled
 //   - model error             -> state failed,  reason model_error
@@ -74,6 +79,13 @@ type Options struct {
 // carries the final run state; the error is non-nil only for option or
 // bookkeeping failures (model/registry missing, store errors), never for the
 // normal stop conditions, which are outcomes, not errors.
+//
+// A model that starts repeating itself is recovered, not stopped, up to
+// maxRecoveries corrective observations (recovery.go): the repeated call is
+// refused with a feedback envelope, the next model turn varies its sampling
+// when the provider accepts it, and sources that refused access are skipped
+// for the run. Only a model that repeats after the budget is spent stops the
+// run, and then with the original stop reason.
 func Run(ctx context.Context, opts Options) (Outcome, error) {
 	if opts.Model == nil {
 		return Outcome{}, fmt.Errorf("agent: Run: model is required")
@@ -102,13 +114,16 @@ func Run(ctx context.Context, opts Options) (Outcome, error) {
 	}
 
 	l := &loop{
-		opts:   opts,
-		budget: budget,
-		model:  opts.Model,
-		reg:    opts.Registry,
-		store:  opts.Store,
-		exec:   NewExecutor(opts.Registry, opts.CallerRole, budget.MaxToolCalls),
-		seen:   map[string]int{},
+		opts:              opts,
+		budget:            budget,
+		model:             opts.Model,
+		reg:               opts.Registry,
+		store:             opts.Store,
+		exec:              NewExecutor(opts.Registry, opts.CallerRole, budget.MaxToolCalls),
+		seen:              map[string]int{},
+		skipped:           map[string]string{},
+		outcomes:          map[string][]callOutcome{},
+		samplingSupported: true,
 	}
 	out, err := l.run(ctx)
 	if opts.Store != nil && err != nil {
@@ -131,6 +146,23 @@ type loop struct {
 	exec   *Executor
 	// seen counts identical (name+args) requests for the repetition guard.
 	seen map[string]int
+	// recoveries counts the corrective observations given this run; the
+	// repetition guard stops the run once it reaches maxRecoveries
+	// (recovery.go). Re-derived from the log on resume.
+	recoveries int
+	// skipped maps a source URL that refused access (HTTP 401/403) in this
+	// run to the refusal line; calls targeting it are refused without
+	// execution (recovery.go). Re-derived from the log on resume.
+	skipped map[string]string
+	// outcomes holds the last few results per repeat key so a corrective
+	// observation can report what happened to the repeated call (recovery.go).
+	outcomes map[string][]callOutcome
+	// varyNext marks the next model request to vary its sampling after a
+	// corrective observation (recovery.go); cleared after use.
+	varyNext bool
+	// samplingSupported is false once the provider rejected the temperature
+	// field; the loop then stops varying sampling for the rest of the run.
+	samplingSupported bool
 	// resumedConv is the conversation rebuilt from the durable log on a
 	// resume; empty for a fresh run.
 	resumedConv []openai.Message
@@ -217,11 +249,7 @@ func (l *loop) run(ctx context.Context) (Outcome, error) {
 			return l.finish(&out, StateBlocked, StopReasonBudget)
 		}
 
-		resp, err := l.model.Chat(ctx, openai.ChatRequest{
-			Messages:   conv,
-			Tools:      l.reg.Definitions(),
-			ToolChoice: openai.ToolChoiceAuto,
-		})
+		resp, err := l.chatWithRecovery(ctx, conv)
 		if err != nil {
 			if ctx.Err() != nil {
 				// The caller stopped the run mid-call: cancellation, not a
@@ -274,10 +302,50 @@ func (l *loop) run(ctx context.Context) (Outcome, error) {
 			}
 			calls++
 			key := repeatKey(tc.Name, tc.Arguments)
+
+			url := sourceURL(tc.Arguments)
+			if reason, ok := l.skipped[url]; ok {
+				// A source that already refused access is skipped for the run:
+				// refuse without executing (no re-fetch, no tool budget spent)
+				// so a model re-phrasing the call around the same URL cannot
+				// burn the fetch budget on it (recovery.go).
+				res := skipFeedback(tc.Name, url, reason)
+				if err := l.recordSynthesizedCall(tc, res, &conv); err != nil {
+					return out, err
+				}
+				continue
+			}
+
 			l.seen[key]++
 			if l.seen[key] >= 3 {
-				// Identical request for the third time: the model is looping.
-				return l.finish(&out, StateBlocked, StopReasonRepetition)
+				if l.recoveries >= maxRecoveries {
+					// Recovery budget spent: record the call as a durable
+					// refusal so the resume worklist stays total (it can only
+					// ever be re-rendered, never re-executed), then stop with
+					// the original reason.
+					res := l.repetitionBoundFeedback(tc.Name)
+					if err := l.recordSynthesizedCall(tc, res, &conv); err != nil {
+						return out, err
+					}
+					out.Steps, out.ToolCalls = steps, calls
+					return l.finish(&out, StateBlocked, StopReasonRepetition)
+				}
+				// Bounded recovery (recovery.go): the call is NOT re-executed.
+				// The model gets a corrective observation and its next turn
+				// varies sampling (when the provider accepts it) to break the
+				// loop. Never a retry of a non-idempotent action.
+				l.recoveries++
+				l.varyNext = true
+				res := l.repetitionFeedback(tc.Name, key)
+				l.emitEvent(events.AgentStep, map[string]any{
+					"run_id": l.opts.RunID, "step": steps,
+					"recovery": l.recoveries, "max_recoveries": maxRecoveries,
+					"repeated_call": tc.Name,
+				})
+				if err := l.recordSynthesizedCall(tc, res, &conv); err != nil {
+					return out, err
+				}
+				continue
 			}
 
 			rowID, err := l.insertToolCall(tc.ID, tc.Name, tc.Arguments)
@@ -295,6 +363,13 @@ func (l *loop) run(ctx context.Context) (Outcome, error) {
 				"run_id": l.opts.RunID, "tool_call_id": tc.ID, "name": tc.Name, "status": string(res.Status),
 			})
 
+			l.recordOutcome(key, res.Status, res.Error)
+			if res.Status == StatusFailed && url != "" && isSourceRefusal(res.Error) {
+				// The source itself refused access: skip it for the run so the
+				// model's next attempt at it is a refusal, not a re-fetch.
+				l.skipped[url] = res.Error
+			}
+
 			if res.ReviewRequired {
 				l.emitEvent(events.ReviewRequired, map[string]any{
 					"run_id": l.opts.RunID, "tool": tc.Name, "tool_call_id": tc.ID,
@@ -309,6 +384,9 @@ func (l *loop) run(ctx context.Context) (Outcome, error) {
 				Role:       RoleTool,
 				Text:       renderToolMessage(l.toolOrUnknown(tc.Name), res),
 				ToolCallID: tc.ID,
+			}
+			if reason, skip := l.skipped[url]; skip && url != "" {
+				toolMsg.Text += "\n" + skipNote(url, reason)
 			}
 			if err := l.persistMessage(toolMsg); err != nil {
 				return out, err
@@ -419,13 +497,33 @@ func (l *loop) loadConversation() (bool, error) {
 	}
 	// Seed the repetition counter from the persisted tool calls so the guard
 	// survives a resume (three identical calls split across a restart still
-	// count as three).
+	// count as three). The recovery state (recovery.go) is re-derived from
+	// the same rows: refused rows carrying the repetition marker count the
+	// recovery budget already spent, failed rows with a URL argument and a
+	// source-refusal error re-mark the skipped sources, and every finished
+	// row feeds the "previous attempts" line of a later observation. A
+	// restart therefore cannot refund the recovery budget.
 	rows, err := l.store.ListAgentToolCalls(ctx, l.opts.RunID)
 	if err != nil {
 		return false, err
 	}
 	for _, r := range rows {
-		l.seen[repeatKey(r.Name, r.ArgsJSON)]++
+		key := repeatKey(r.Name, r.ArgsJSON)
+		l.seen[key]++
+		if r.Status != store.AgentToolPending {
+			l.recordOutcome(key, ToolResultStatus(r.Status), r.Error)
+		}
+		if r.Status == store.AgentToolFailed {
+			if u := sourceURL(r.ArgsJSON); u != "" && isSourceRefusal(r.Error) {
+				l.skipped[u] = r.Error
+			}
+		}
+		if r.Status == store.AgentToolRefused && strings.HasPrefix(r.Error, repetitionMarker) {
+			l.recoveries++
+		}
+	}
+	if l.recoveries > maxRecoveries {
+		l.recoveries = maxRecoveries
 	}
 	// The rebuilt conversation cannot be returned through the signature
 	// without restructuring; stash it for executePending/run.
