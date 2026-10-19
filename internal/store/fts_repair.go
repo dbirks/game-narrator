@@ -23,7 +23,9 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 )
@@ -33,13 +35,70 @@ import (
 // messages_fts_rowid, …), which is what the damage classifier keys on.
 const ftsIndexTable = "messages_fts"
 
+// integrityCheckConn opens a throwaway *sql.DB whose one job is a
+// whole-database integrity check, and nothing else.
+//
+// Why not the shared pool: the FTS5 module in modernc.org/sqlite caches the
+// inverted-index structure per connection, and that cache is not invalidated
+// by commits made on other connections — only by the next statement on the
+// connection itself. A pooled connection that read messages_fts and then sat
+// idle while the index was rewritten elsewhere reports a false
+// `fts5: corruption found reading blob <n> from table "messages_fts"` from
+// PRAGMA integrity_check, while every fresh connection — and the file on
+// disk — reports clean. That is the field failure: the readiness probe ran
+// the check on pooled connections of an idle device, and each probe that hit
+// a stale connection saw the same phantom damage (ADR-0062, 2026-10-19
+// amendment; reproduced by TestIntegrityCheckIgnoresStalePooledFTSView).
+//
+// A dedicated *long-lived* connection is not safe either: running the check
+// populates the very cache that goes stale, so a connection that checked once
+// and then idled across a rewrite poisons itself identically. Only a
+// brand-new physical connection is guaranteed clean: it has never run an
+// FTS5 statement in this process, so its first structure read decodes the
+// structure the last writer persisted — the committed, on-disk truth.
+// (This is also exactly what the field restart proved: a new process, new
+// connections, ready 200.)
+//
+// The cost is one SQLite open per check — milliseconds against the
+// O(database) walk the check itself takes, and the probe runs on an interval,
+// not a hot path.
+func (s *Store) integrityCheckConn(ctx context.Context) (*sql.DB, error) {
+	// The check must not create a file the store never opened: if the
+	// database file disappeared out from under a running store, the check
+	// reports that instead of silently opening a fresh empty database and
+	// calling it "ok".
+	if _, err := os.Stat(s.path); err != nil {
+		return nil, fmt.Errorf("store: integrity_check on %s: %w", s.path, err)
+	}
+	db, err := sql.Open(driverName, dsn(s.path))
+	if err != nil {
+		return nil, fmt.Errorf("store: open integrity-check connection to %s: %w", s.path, err)
+	}
+	db.SetMaxOpenConns(1)
+	return db, nil
+}
+
 // IntegrityProblems runs PRAGMA integrity_check and returns the non-"ok"
 // report lines; an empty slice means the database is clean. It is the split
 // of IntegrityCheck that needs the raw lines: a caller that wants pass/fail
 // uses IntegrityCheck, a caller that wants to classify the damage (this
 // file) needs to see what the check actually said.
+//
+// The check runs on a dedicated fresh connection (integrityCheckConn), never
+// on the shared pool: a pooled connection's FTS5 structure view can be stale
+// and report corruption the file does not have. Consequence for the guard
+// below: every check RecoverDerivedFTS relies on — the pre-rebuild damage
+// confirmation, the re-check under the repair lock, and the post-rebuild
+// verification — confirms on a fresh connection, so a stale pooled view can
+// never trigger a rebuild of a healthy index.
 func (s *Store) IntegrityProblems(ctx context.Context) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, "PRAGMA integrity_check")
+	db, err := s.integrityCheckConn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+
+	rows, err := db.QueryContext(ctx, "PRAGMA integrity_check")
 	if err != nil {
 		return nil, fmt.Errorf("store: integrity_check on %s: %w", s.path, err)
 	}

@@ -1,6 +1,6 @@
 # ADR-0062: Guard FTS5 index corruption at readiness — rebuild the derived index only when the damage is provably index-only
 
-Date: 2026-10-18
+Date: 2026-10-18 (amended 2026-10-19, see follow-up)
 Status: accepted
 Owners: agent worker
 Related requirements/tests: docs/spec/06 (messages and FTS search), docs/spec/13 (bounded autonomous troubleshooting, graceful degraded modes), docs/spec/16 (evidence bundles; no simulation theater), ADR-0002 (SQLite as the content database; WAL + synchronous=NORMAL + BEGIN IMMEDIATE serialization), AGENTS.md rules 3/4/11, `internal/store` (fts: triggers, sync, repair), `cmd/game-narrator/main.go` (the readiness probe), `web/e2e/serve.mjs` (fresh data dir per run)
@@ -67,6 +67,148 @@ What the guard never does: modify or delete content rows, touch the migration jo
 ## Rollback / migration path
 
 Remove the `RecoverDerivedFTS` call from `storeReadiness` (one call site) and delete `internal/store/fts_repair.go` plus its tests. No schema, migration, protocol, or data change: the guard is a code path in the readiness probe only.
+
+## Follow-up (2026-10-19): the "corruption" was a stale per-connection view, not a damaged file
+
+Status: accepted (amendment; supersedes the "root cause stays unproven" conclusion of the original entry)
+
+### Field event
+
+On the real UNO Q (eMMC/ext4, not tmpfs) the device service went not-ready at
+11:05:48 with `database integrity check failed … fts5: corruption found reading
+blob 1099511627777 from table "messages_fts"`, repeated on every readiness
+probe for 7+ minutes while the device was **idle**. Preceding workload
+(journal): an `import.file` job, several replay sessions, then API cleanup of
+the run's profile/session. After a clean `systemctl stop`, the copied DB
+passed `PRAGMA integrity_check` and an FTS5 `integrity-check` on disk, and a
+restart came up ready 200. **The on-disk data was never corrupt: a running
+process's view was.** (The build at the time, 0cbebce, predates the guard this
+ADR introduced; had it carried dc29274, the guard would have rebuilt a
+healthy index on the phantom report.)
+
+### Reproduction (AGENTS.md rule 4: first reproduce)
+
+Deterministic in-process repro on the installed driver (modernc.org/sqlite
+v1.60.1, transpiled SQLite 3.53.4): with one Store and the real migrations,
+a journal-shaped workload (import → FTS writes via the 0002 triggers on one
+connection; reads on another; profile-delete cascade on a third) leaves the
+following state matrix when `PRAGMA integrity_check` runs afterwards:
+
+- **idle pooled connection that had previously read `messages_fts`** →
+  `fts5: corruption found reading blob <n> from table "messages_fts"` with a
+  garbage blob id (the field's 1099511627777; the repro produced
+  2611340115969 / 1786706395137) — the exact field signature;
+- the same connection's own FTS5 MATCH queries still return correct results,
+  a connection holding a *stale read snapshot* reports clean, a connection
+  with no prior FTS read reports clean, a fresh connection and a second
+  `sql.Open` on the file report clean;
+- no WAL checkpoint is needed for the phantom report (it appears as soon as
+  the index is rewritten on another connection) and a PASSIVE checkpoint does
+  not clear it;
+- **any subsequent statement on the stale connection clears the phantom
+  view** — including non-FTS statements;
+- **`PRAGMA integrity_check` itself populates the stale view**: a dedicated
+  long-lived connection that checked once, then idled across a rewrite, lies
+  on its next check with the identical garbage blob id.
+
+### Mechanism (driver internals, verified in the vendored driver source)
+
+The FTS5 module caches the inverted-index structure per connection: the
+per-connection index object (`TFts5Index`) carries a prepared
+`PRAGMA <db>.data_version` statement (`_fts5IndexDataVersion`) and the
+structure cache (`TFts5Structure`, cookie-validated via the `%_config` shadow
+table; the per-connection cookie `TFts5Config.FiCookie` advances only on that
+connection's own FTS writes). In this build the cache is **not invalidated by
+commits made on other connections** — only by the next statement on the
+connection itself. A pooled connection that read `messages_fts`, went idle,
+and then watched the index get rewritten elsewhere keeps walking the old
+structure: its shadow-table page rowids were deleted or replaced by the
+rewrite, so the structure walk hits rowids that no longer exist and reports
+"corruption found reading blob". The blob id in the message is the stale
+structure's page rowid, which is why the field value is garbage, not a page
+number. A fresh connection decodes the structure the last writer persisted
+(the committed on-disk truth) and always reports clean — which is exactly
+what the field restart proved. Whether this is a transpilation artifact or a
+latent upstream bug in SQLite 3.53.4's FTS5/WAL interaction could not be
+settled from here (the driver changelog v1.55.0–v1.60.1 carries no FTS5 fix,
+and no verified upstream fix was available); the boundary fix below is
+correct either way.
+
+### Decision (amendment)
+
+The original guard stands and is unchanged in behaviour for *real* damage.
+What changes is **where the check runs**: `Store.IntegrityCheck` and
+`Store.IntegrityProblems` no longer run `PRAGMA integrity_check` on the
+shared pool. They open a dedicated throwaway connection — a fresh
+`sql.Open` on the same DSN, `SetMaxOpenConns(1)`, closed when the check
+finishes (plus a file-existence guard so an unlinked database file is
+reported, not silently re-created as an empty one). Consequences:
+
+- the readiness probe and the doctor can never surface a stale per-connection
+  view as damage, so the field failure mode (idle device, phantom FTS
+  corruption, not-ready for minutes) is closed at the boundary;
+- the guard's `RecoverDerivedFTS` now **confirms damage on a fresh
+  connection** before rebuilding: its pre-rebuild check, its re-check under
+  the repair lock, and its post-rebuild verification all run on fresh
+  connections, so a stale pooled view can never trigger a rebuild of a
+  healthy index (pre-fix, the guard would have rebuilt and reported
+  "repaired" on the phantom report);
+- a dedicated long-lived connection is deliberately *not* used: the check
+  itself populates the per-connection FTS5 view, so a reused dedicated
+  connection poisons itself identically after idling across a rewrite
+  (reproduced above); the only provably clean vantage point is a connection
+  that has never run an FTS5 statement in this process.
+
+The cost is one SQLite open per integrity check — milliseconds against the
+O(database) walk the check takes, at readiness-probe and doctor frequency.
+
+### Options considered (amendment)
+
+- **Driver upgrade.** Rejected for now: v1.60.1 is the current release,
+  its changelog carries no FTS5 fix, and no verified fix existed to adopt;
+  the boundary fix is strictly safer and survives a later driver fix. If a
+  driver release lands a fix, the stale-view regression test (which pins the
+  mechanism and names the update path) is the place to notice it.
+- **A dedicated long-lived check connection.** Rejected: the check itself
+  populates the per-connection FTS5 view (reproduced), so it poisons itself
+  after idling across a rewrite — the field failure with a different
+  lifetime.
+- **Refresh the pooled connection before checking (e.g. run a probe
+  statement first).** Rejected: it relies on the quirk that *any* statement
+  clears the view, which is undocumented driver behaviour and would leave
+  the check racing the very connection it just "warmed".
+- **Ban long-lived read transactions / checkpoint before the check.** Not
+  the cause: the repro shows a stale *snapshot* connection reports clean and
+  no checkpoint affects the phantom view; the cache, not the WAL snapshot,
+  is the stale state.
+
+### Verification
+
+- `internal/store/fts_stale_view_test.go`, `TestIntegrityCheckIgnoresStalePooledFTSView`
+  (failing-first: with the check on the pool it fails with the phantom line;
+  with the fresh-connection check it passes; also pins the mechanism — the
+  stale pooled connection reports the field signature while a fresh
+  connection reports ok) and
+  `TestRecoverDerivedFTSNeverRebuildsOnAStaleView` (failing-first: pre-fix
+  the guard reported a repair of a healthy index; post-fix it reports
+  nothing to repair and rebuilds nothing).
+- `go test -race -count=3 -run 'FTS|Integrity|Stale|Conn' ./internal/store/`
+  and the full `./internal/store/`, `./cmd/game-narrator/`,
+  `./internal/doctor/` suites (the readiness guard tests
+  `TestStoreReadinessTracksTheLiveDatabase` /
+  `TestStoreReadinessRepairsOnlyADamagedFTSIndex` still drive both guard
+  directions through the real readiness function).
+- Note: `cmd/game-narrator` carries one pre-existing failure unrelated to
+  this change — `TestRunSupportBundleEndToEnd` expects the ADR-0069
+  pre-`bottlenecks.json` archive shape; it fails identically with this
+  change reverted.
+
+### Rollback (amendment)
+
+Revert `integrityCheckConn` out of `IntegrityProblems` (and restore the
+inline pragma loop in `IntegrityCheck`) — one function per file; delete
+`internal/store/fts_stale_view_test.go`. No schema, migration, protocol, or
+data change. The original guard's rollback path is unchanged.
 
 ## Links / references
 

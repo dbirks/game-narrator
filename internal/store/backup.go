@@ -167,26 +167,13 @@ func copyViaBackupAPI(ctx context.Context, conn *sql.Conn, destPath string) erro
 }
 
 // IntegrityCheck runs PRAGMA integrity_check and fails unless the database
-// reports "ok".
+// reports "ok". The check runs on a dedicated fresh connection, not the
+// shared pool — see Store.integrityCheckConn (fts_repair.go) for why a pooled
+// connection can report FTS5 damage the file does not have.
 func (s *Store) IntegrityCheck(ctx context.Context) error {
-	rows, err := s.db.QueryContext(ctx, "PRAGMA integrity_check")
+	problems, err := s.IntegrityProblems(ctx)
 	if err != nil {
-		return fmt.Errorf("store: integrity_check on %s: %w", s.path, err)
-	}
-	defer rows.Close()
-
-	var problems []string
-	for rows.Next() {
-		var line string
-		if err := rows.Scan(&line); err != nil {
-			return fmt.Errorf("store: integrity_check on %s: %w", s.path, err)
-		}
-		if !strings.EqualFold(strings.TrimSpace(line), "ok") {
-			problems = append(problems, line)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("store: integrity_check on %s: %w", s.path, err)
+		return err
 	}
 	if len(problems) > 0 {
 		shown := problems

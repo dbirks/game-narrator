@@ -27,7 +27,17 @@ type repoFixture struct {
 
 func newRepoFixture(t *testing.T) *repoFixture {
 	t.Helper()
-	f := &repoFixture{t: t, s: migratedStore(t), ctx: testCtx(t)}
+	return fixtureOn(t, migratedStore(t))
+}
+
+// fixtureOn builds the game/edition/profile trio on a caller-supplied store.
+// newRepoFixture is the convenience wrapper that opens its own store; this
+// one is for tests that must share a pool — for example the stale-FTS-view
+// regression test, which needs the fixture and its poison-connections on the
+// very same *sql.DB.
+func fixtureOn(t *testing.T, s *Store) *repoFixture {
+	t.Helper()
+	f := &repoFixture{t: t, s: s, ctx: testCtx(t)}
 	f.game = games.Game{
 		ID:        games.NewID(),
 		Slug:      "synthetic-tide",
@@ -36,7 +46,7 @@ func newRepoFixture(t *testing.T) *repoFixture {
 		UserTags:  []byte(`["synthetic"]`),
 		CreatedAt: nowRFC3339(),
 	}
-	if err := f.s.CreateGame(f.ctx, f.game); err != nil {
+	if err := s.CreateGame(f.ctx, f.game); err != nil {
 		t.Fatalf("CreateGame: %v", err)
 	}
 	f.edition = games.Edition{
@@ -47,10 +57,10 @@ func newRepoFixture(t *testing.T) *repoFixture {
 		Revision: "rev0",
 		Locale:   "en_US",
 	}
-	if err := f.s.CreateEdition(f.ctx, f.edition); err != nil {
+	if err := s.CreateEdition(f.ctx, f.edition); err != nil {
 		t.Fatalf("CreateEdition: %v", err)
 	}
-	p, err := f.s.CreateDraftProfile(f.ctx, f.edition.ID)
+	p, err := s.CreateDraftProfile(f.ctx, f.edition.ID)
 	if err != nil {
 		t.Fatalf("CreateDraftProfile: %v", err)
 	}
