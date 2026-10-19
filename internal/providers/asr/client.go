@@ -108,7 +108,11 @@ func New(baseURL, token, model string) (*Client, error) {
 	if u.User != nil {
 		return nil, errors.New("asr: credentials in the base URL are not allowed, use the token field")
 	}
-	return &Client{BaseURL: strings.TrimRight(u.String(), "/"), Token: token, Model: model}, nil
+	c := &Client{BaseURL: strings.TrimRight(u.String(), "/"), Token: token, Model: model}
+	// Redirect guard (spec-14, ADR-0068): a mutable gateway must not be able
+	// to move an audio upload (and its bearer token) to another host.
+	c.HTTP = &http.Client{CheckRedirect: providers.SafeRedirect(u.String())}
+	return c, nil
 }
 
 // NewFromRole builds a client for the speech_asr role, rejecting roles that
@@ -282,7 +286,8 @@ func (c *Client) httpClient() *http.Client {
 	if c.HTTP != nil {
 		return c.HTTP
 	}
-	return &http.Client{}
+	// Hand-built clients (tests, tooling) still get the redirect guard.
+	return &http.Client{CheckRedirect: providers.SafeRedirect(c.BaseURL)}
 }
 
 // writeForm writes one text field to the multipart writer.

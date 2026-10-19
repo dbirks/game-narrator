@@ -14,7 +14,7 @@ a decode error, i.e. the body and context flow the spec-14 line forbids).
 | ID | Finding | Severity | Proof / test | Status |
 |----|---------|----------|--------------|--------|
 | GN-SEC-001 | `openai`, `systemone`, `tts` clients used bare `http.Client`s: a gateway redirect to any other host was followed (Go's 10-hop default), moving the prompt/game-state/audio body and the bearer token to an unconfigured endpoint; the target's response re-entered the model context (full SSRF primitive against the trust-zone-E gateway) | High | `redirect_audit_test.go` per client (fail-first proven at HEAD: all three followed the hop); fixed wiring in `New`/`NewFromRole`/`httpClient`; policy unit tests in `redirect_test.go` | Fixed here (ADR-0068); race-green |
-| GN-SEC-002 | `asr.Client` has no redirect guard (`httpClient()` returns a bare `http.Client{}`) — same SSRF surface for the audio upload path | High | `TestASRClientRefusesOffHostRedirect` written and failing pre-fix | **Deferred**: `t.Skip("SECURITY-FINDING GN-SEC-002: …")` — `internal/providers/asr` is in flight with another worker; apply the same SafeRedirect wiring (ADR-0068) and remove the skip |
+| GN-SEC-002 | `asr.Client` has no redirect guard (`httpClient()` returns a bare `http.Client{}`) — same SSRF surface for the audio upload path | High | `TestASRClientRefusesOffHostRedirect` (fail-first proven pre-fix: the hop was followed, decode_error from the target); same SafeRedirect wiring in `New`/`NewFromRole`/`httpClient`; refused hops non-retryable via `transportError` | Fixed (ADR-0068); race-green |
 | GN-SEC-003 | Recorded evidence-harness `Client()` (live/record mode dials real gateways in `make test-models`) followed off-host redirects | Medium | `TestRedirectConfinedToOrigin` (budget, off-host, `file:`, empty-via); origin bound to `via[0]` per net/http "oldest first" | Fixed here (ADR-0068): `providers.RedirectConfinedToOrigin` |
 | GN-SEC-004 | `openai.TestNewValidatesBaseURL` pinned the pre-fix contract "HTTP must stay nil", which would have blocked any future guard; the spec-14 line could not be satisfied without breaking a test | Low (contract rot) | Same test, updated | Fixed here: test now pins `CheckRedirect != nil` and `Timeout == 0` (context stays the only deadline) |
 
@@ -70,8 +70,6 @@ tests pin that default (no code change needed).
 
 ## Residual / deferred for the orchestrator
 
-- **GN-SEC-002 (high)** — asr redirect guard; skip marker in
-  `internal/providers/redirect_audit_test.go`, one-line wiring per ADR-0068.
 - Not re-verified in this pass (other workers in flight): the Dolphin bridge
   handlers' request validation and the agent tool-allowlist/prompt-injection
   surface in `internal/agent` — both listed as in-flight; recommend a follow-up

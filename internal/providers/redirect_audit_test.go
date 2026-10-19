@@ -95,16 +95,13 @@ func TestTTSClientRefusesOffHostRedirect(t *testing.T) {
 	assertRefused(t, err, hits)
 }
 
-// SECURITY-FINDING GN-SEC-002 (deferred, severity high): asr.Client's
-// httpClient() returns a bare &http.Client{}, so a gateway redirect to a
-// different host is followed with the default 10-hop budget — the audio
-// upload and bearer token would land at an unconfigured endpoint. The
-// failing assertion below is what the fix must satisfy.
-// internal/providers/asr is in flight with another worker, so the fix is
-// deferred to the orchestrator: apply the same SafeRedirect wiring as
-// ADR-0068 (New, NewFromRole, httpClient) and remove this skip.
+// SECURITY-FINDING GN-SEC-002 (fixed, was severity high): asr.Client's
+// httpClient() returned a bare &http.Client{}, so a gateway redirect to a
+// different host was followed with the default 10-hop budget — the audio
+// upload and bearer token would have landed at an unconfigured endpoint.
+// The fix wires SafeRedirect (ADR-0068) into New/NewFromRole/httpClient;
+// this test is the acceptance line and failed (fail-first) before the fix.
 func TestASRClientRefusesOffHostRedirect(t *testing.T) {
-	t.Skip("SECURITY-FINDING GN-SEC-002: asr client follows off-host redirects (no redirect guard); fix lands with the asr worker")
 	aURL, hits := offHostGateways(t)
 	c, err := asr.New(aURL, "secret-token", "test-model")
 	if err != nil {
