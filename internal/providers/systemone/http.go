@@ -112,14 +112,16 @@ func (c *Client) transportError(err error, status int, reqID string) *providers.
 			e = providers.NewError(providers.KindUnavailable, status, "systemone: transport failure")
 		}
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, providers.ErrRedirectRefused) {
 		e.Err = err
 	}
 	e.Model = c.Model
 	if e.RequestID == "" {
 		e.RequestID = reqID
 	}
-	e.Retryable = e.Kind.RetryableByDefault()
+	// A refused redirect is a configuration fact, not a transient one.
+	e.Retryable = e.Kind.RetryableByDefault() && !errors.Is(err, providers.ErrRedirectRefused)
 	return e
 }
 

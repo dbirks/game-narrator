@@ -684,8 +684,11 @@ func TestNewValidatesBaseURL(t *testing.T) {
 	if c.BaseURL != "https://gateway.example.invalid/v1" {
 		t.Errorf("BaseURL = %q, want trailing slash trimmed", c.BaseURL)
 	}
-	if c.HTTP != nil {
-		t.Error("HTTP must stay nil by default so context deadlines are the only timeout")
+	if c.HTTP == nil || c.HTTP.CheckRedirect == nil {
+		t.Error("HTTP must carry the redirect guard (spec 14, ADR-0068): an off-host gateway redirect is refused, not followed")
+	}
+	if c.HTTP.Timeout != 0 {
+		t.Errorf("HTTP.Timeout = %v, want zero: the request context is the only deadline", c.HTTP.Timeout)
 	}
 	// A nil HTTP client still works.
 	if _, err := (&Client{BaseURL: "https://gateway.example.invalid/v1", Model: "m"}).endpoint("/chat/completions"); err != nil {

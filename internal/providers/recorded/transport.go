@@ -262,8 +262,14 @@ func (t *Transport) Stats() (hits, misses, dials int64) {
 
 // Client returns an *http.Client that uses this transport with no overall
 // timeout, which is the shape provider adapters expect: the request context owns
-// the deadline (docs/spec/06 "Timeout and cancellation defaults").
-func (t *Transport) Client() *http.Client { return &http.Client{Transport: t} }
+// the deadline (docs/spec/06 "Timeout and cancellation defaults"). The
+// redirect guard confines every hop to the original request's host (ADR-0068):
+// in live and record mode this client dials real gateways, and a mutable
+// gateway must not be able to move an evidence-capture request to another
+// host.
+func (t *Transport) Client() *http.Client {
+	return &http.Client{Transport: t, CheckRedirect: providers.RedirectConfinedToOrigin}
+}
 
 // RoundTrip implements http.RoundTripper.
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {

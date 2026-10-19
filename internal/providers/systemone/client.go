@@ -104,6 +104,10 @@ func New(baseURL, token, model string, opts ...ClientOption) (*Client, error) {
 		maxImageBytes: cfg.maxImageBytes,
 		maxOptions:    cfg.maxOptions,
 	}
+	// Redirect guard (spec-14, ADR-0068): the decision endpoint is operator
+	// configuration; a response that moves the request to another host is
+	// refused, not followed.
+	c.HTTP = &http.Client{CheckRedirect: providers.SafeRedirect(u.String())}
 	if cfg.doubtLimit > 0 {
 		uncertain := cfg.doubtUncert
 		if uncertain == nil {
@@ -188,7 +192,8 @@ func (c *Client) httpClient() *http.Client {
 	}
 	// No transport-level Timeout: the context deadline is the single source of
 	// truth so a superseded observation cancels promptly (docs/spec/13).
-	return &http.Client{}
+	// Hand-built clients still get the redirect guard.
+	return &http.Client{CheckRedirect: providers.SafeRedirect(c.BaseURL)}
 }
 
 // limits returns the effective local wire caps.

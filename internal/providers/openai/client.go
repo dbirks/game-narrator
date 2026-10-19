@@ -231,7 +231,12 @@ func New(baseURL, token, model string) (*Client, error) {
 	if u.User != nil {
 		return nil, errors.New("openai: credentials in the base URL are not allowed, use the token field")
 	}
-	return &Client{BaseURL: strings.TrimRight(u.String(), "/"), Token: token, Model: model}, nil
+	c := &Client{BaseURL: strings.TrimRight(u.String(), "/"), Token: token, Model: model}
+	// The redirect guard is the spec-14 control: the gateway is operator
+	// configuration, so a response that moves the request to another host is
+	// refused rather than followed (ADR-0068).
+	c.HTTP = &http.Client{CheckRedirect: providers.SafeRedirect(u.String())}
+	return c, nil
 }
 
 // NewFromRole builds a client for a configured role, rejecting roles that are
@@ -310,7 +315,9 @@ func (c *Client) httpClient() *http.Client {
 	}
 	// No transport-level Timeout: the context deadline is the single source of
 	// truth so a superseded observation cancels promptly (docs/spec/13).
-	return &http.Client{}
+	// Clients built by hand (tests, tooling) still get the redirect guard:
+	// it derives from BaseURL, so no configuration is lost.
+	return &http.Client{CheckRedirect: providers.SafeRedirect(c.BaseURL)}
 }
 
 func (c *Client) maxImageBytes() int {
@@ -484,12 +491,16 @@ func (c *Client) transportError(err error, status int) *providers.Error {
 		}
 	}
 	// The context error is preserved for errors.Is; the raw transport string is
-	// not, because it may contain the endpoint URL.
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	// not, because it may contain the endpoint URL. The redirect-refusal
+	// sentinel is preserved too: it names the control that refused the hop.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, providers.ErrRedirectRefused) {
 		e.Err = err
 	}
 	e.Model = c.Model
-	e.Retryable = e.Kind.RetryableByDefault()
+	// A refused redirect is a configuration fact, not a transient one: the
+	// next attempt would follow the same redirect (docs/spec/06 retry rule).
+	e.Retryable = e.Kind.RetryableByDefault() && !errors.Is(err, providers.ErrRedirectRefused)
 	return e
 }
 
