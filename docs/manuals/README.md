@@ -3,8 +3,9 @@
 The twelve runbooks required by [docs/spec/13](../spec/13-observability-and-resilience.md),
 "Operational manuals required", plus the UNO Q hardware-smoke runbook (M8,
 docs/spec/16) and the workflow manuals for the corrections/Tests page,
-the Dolphin fixture recorder and savestates, and verifying published
-artifacts. Each file states its purpose, preconditions,
+the Dolphin fixture recorder and savestates, verifying published
+artifacts, and the UNO Q install runbook. Each file states its purpose,
+preconditions,
 steps (real commands), verification, and what NOT to do. Anything that depends
 on a feature that is not committed yet is marked `NOT YET IMPLEMENTED` with the
 tracking item, and hardware-dependent claims are marked `NOT VERIFIED` per
@@ -29,6 +30,8 @@ AGENTS.md rule 12.
 | Dolphin fixture recorder and the test-dolphin gate (developer) | [15-dolphin-fixture-recorder.md](15-dolphin-fixture-recorder.md) |
 | Dolphin savestates and their dev dependencies (developer) | [16-dolphin-savestates.md](16-dolphin-savestates.md) |
 | Verifying published artifacts (release) | [17-verifying-published-artifacts.md](17-verifying-published-artifacts.md) |
+| HDMI capture bring-up on the UNO Q (dongle + hub) | [18-hdmi-capture-on-uno-q.md](18-hdmi-capture-on-uno-q.md) |
+| Install and run on an Arduino UNO Q | [19-install-on-uno-q.md](19-install-on-uno-q.md) |
 
 Blocked items these manuals point at are tracked in
 [docs/status/blocked.md](../status/blocked.md); the release runbook is

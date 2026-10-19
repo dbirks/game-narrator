@@ -1,0 +1,470 @@
+# Install and run on an Arduino UNO Q
+
+## Purpose
+
+Bring a **fresh UNO Q appliance** (Debian 13 arm64) to a running, honestly
+self-reporting Game Narrator: space freed on the small root partition,
+durable data on the large partition, the arm64 `.deb` installed and
+configured, `game-narrator doctor` clean, the UI reachable from another
+machine, a first game imported, a voice registered and a first session run.
+Every command here is a real command with a real flag (verified against the
+installed binary's `--help` and the packaging scripts); nothing is
+abbreviated into a made-up shortcut.
+
+What this manual does **not** claim: the on-device install/upgrade/rollback
+path of the `.deb` is proven on a real UNO Q (docs/release.md §6,
+`scripts/release/lifecycle-on-device.sh`, 9/9 PASS), but live **capture and
+audio playback remain NOT VERIFIED** until the UVC HDMI dongle and a USB DAC
+are attached and `make test-hardware` passes on the appliance (AGENTS.md
+rule 12, docs/spec/16 M8).
+
+## Preconditions
+
+- A UNO Q with power, on a network you can reach. For the capture/audio
+  path (not needed for install), wire the chain per docs/spec/10
+  "Physical connection": GameCube → RCA-to-HDMI converter → powered HDMI
+  splitter → UVC HDMI capture dongle on the powered hub → UNO Q, plus a USB
+  audio DAC/speaker on the hub (5 V / 3 A power distribution per that spec).
+- **SSH key access** from a dev host: `ssh <user>@<uno-q-host>` must work
+  non-interactively (`ssh -o BatchMode=yes <user>@<uno-q-host> true`). The
+  device lifecycle and hardware-smoke runners use `BatchMode` and never
+  touch the device's sshd, `authorized_keys` or network configuration.
+- **Passwordless `sudo`** for your user on the board
+  (`sudo -n true` — the lifecycle pre-flight requires exactly this).
+- A dev host with the repository checked out (for building the `.deb` and
+  running the on-device scripts).
+- Out of band (AGENTS.md rule 5): your inference gateway URL and token, and
+  the model ids for the roles you will configure — manual
+  [04-inference-gateway-connection.md](04-inference-gateway-connection.md).
+  This manual shows **placeholders only**; never put real tokens in a file
+  that is copied into the repo, a log or a screenshot.
+
+## The two partitions
+
+A 16 GB UNO Q ships with a small root partition and a large data partition
+(measured on an appliance, `df -h`):
+
+```text
+/dev/mmcblk0p68   9.8G   /                 # root — fills up fast
+/dev/mmcblk0p69  18G     /home/arduino     # large data partition
+/dev/mmcblk0p67 488M     /boot/efi
+```
+
+`df -h` shows your board's actual numbers. Game Narrator's durable state
+(SQLite catalogue + content-addressed assets) lives in
+`/var/lib/game-narrator`, which is **on the root partition by default**.
+Step 2 moves it to the large partition with a bind mount so the 10 GB root
+never fills up because of game data.
+
+## Step 1 — (optional) Debloat the root partition
+
+Each sub-step is **optional**; do them in the order shown and re-check
+`df -h /` afterwards. Only remove what you do not need — this manual does
+not ship a package allowlist for the appliance, so discover first.
+
+```sh
+# See what is using the root partition (package size in KiB).
+dpkg-query -Wf '${Installed-Size}\t${Package}\n' | sort -rn | head -20
+```
+
+- **Remove Arduino App Lab** (optional — only if you will not use the
+  Arduino IDE / container tooling on the board):
+
+  ```sh
+  apt list --installed 2>/dev/null | grep -i -E 'arduino|lab'   # discover the names
+  sudo apt-get remove --purge -y <app-lab-packages>
+  ```
+
+- **Remove Docker** (optional — Game Narrator does not use containers):
+
+  ```sh
+  sudo apt-get remove --purge -y docker.io docker-compose   # discover via apt list
+  sudo systemctl disable --now docker docker.socket 2>/dev/null
+  ```
+
+- **Drop the desktop** (optional — the board runs headless; the UI is a web
+  page). Switch the default target so the GUI stack does not start at boot:
+
+  ```sh
+  sudo systemctl set-default multi-user.target
+  ```
+
+- **Trim the journal** (optional — journald can grow large on a 4 GB box):
+
+  ```sh
+  sudo sed -ri 's/^#?SystemMaxUse=.*/SystemMaxUse=200M/' /etc/systemd/journald.conf
+  sudo systemctl restart systemd-journald
+  ```
+
+Finish the round with `sudo apt-get autoremove --purge -y` and verify:
+
+```sh
+df -h /
+```
+
+A reboot is only needed if you changed the default target or removed
+services you had running.
+
+## Step 2 — (optional, recommended) Put durable data on the large partition
+
+Do this **before installing the `.deb`** (the unit is not running yet, so
+nothing writes into the directory). The mount is transparent to the service:
+`postinst` applies owner/mode to `/var/lib/game-narrator` with
+`install -d`, which passes through the bind mount to the backing directory.
+
+```sh
+sudo mkdir -p /home/arduino/gn-data
+sudo mkdir -p /var/lib/game-narrator
+sudo mount --bind /home/arduino/gn-data /var/lib/game-narrator
+```
+
+Make it survive reboots with a systemd mount unit:
+
+```sh
+sudo tee /etc/systemd/system/gn-data.mount >/dev/null <<'UNIT'
+[Mount]
+What=/home/arduino/gn-data
+Where=/var/lib/game-narrator
+Type=bind
+[Install]
+WantedBy=multi-user.target
+UNIT
+sudo systemctl daemon-reload
+sudo systemctl enable gn-data.mount
+```
+
+And make sure the service never starts before the mount (an override is
+enough; it is `config|noreplace` territory, not a package file):
+
+```sh
+sudo systemctl edit game-narrator
+# add these lines under [Unit], then save:
+#
+# [Unit]
+# Requires=gn-data.mount
+# After=gn-data.mount
+```
+
+(`systemctl edit` fails harmlessly before the unit exists — you can run it
+again after Step 4 if you skipped it now.) Verify with `df -h /var/lib/game-narrator`
+(it must report the large partition, not `/`).
+
+## Step 3 — Get the arm64 `.deb`
+
+Two sources, in preference order:
+
+1. **A published release** (a `v*` GitHub release, docs/release.md §2.2):
+   download `game-narrator_<version>_linux_arm64.deb` and `checksums.txt`
+   from the release assets on the dev host, then check the signature of the
+   matching GHCR image and the checksums before consuming anything
+   (docs/manuals/17, docs/release.md §2.4):
+
+   ```sh
+   cosign verify \
+     ghcr.io/dbirks/game-narrator:<version> \
+     --certificate-identity-regexp 'https://github.com/dbirks/game-narrator/.github/workflows/publish.yml@.*' \
+     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+   sha256sum -c checksums.txt
+   ```
+
+   Signed images carry keyless Sigstore signatures + an SPDX SBOM
+   attestation; the `.deb` itself is integrity-checked by
+   `checksums.txt` (archives are not individually signed —
+   docs/release.md §2.2).
+2. **A local snapshot build** on the dev host (always available):
+
+   ```sh
+   make release-snapshot
+   (cd dist && sha256sum -c checksums.txt)   # every line OK
+   ```
+
+   The artifact is `dist/game-narrator_<version>_linux_arm64.deb`. Snapshot
+   versions are monotonic in the commit timestamp (ADR 0060), so a newer
+   snapshot is an ordinary `apt` upgrade over an older one.
+
+Transfer to the board:
+
+```sh
+scp dist/game-narrator_<version>_linux_arm64.deb dist/checksums.txt <user>@<uno-q-host>:~/
+```
+
+## Step 4 — Install
+
+On the board:
+
+```sh
+cd ~
+sha256sum -c checksums.txt        # every line OK
+sudo apt install ./game-narrator_<version>_linux_arm64.deb
+```
+
+`apt` resolves the declared dependencies (`ffmpeg`, `tesseract-ocr`,
+`tesseract-ocr-eng`, `v4l-utils`). `postinst` then creates the
+`game-narrator` system user, the data directory
+(`/var/lib/game-narrator`, mode 0700 — if you did Step 2 this lands on the
+large partition through the bind mount) and `/etc/game-narrator` (0750)
+with `env.example` (0640). The systemd unit ships in
+`/lib/systemd/system/game-narrator.service`.
+
+## Step 5 — Configure the environment file
+
+The runtime is configured through `/etc/game-narrator/env` (the unit's
+`EnvironmentFile`), mode 0600. It is **never shipped** in the package — you
+create it from the shipped `env.example`:
+
+```sh
+sudo cp /etc/game-narrator/env.example /etc/game-narrator/env
+sudo chmod 0600 /etc/game-narrator/env
+```
+
+Fill it in with your real values (placeholders shown; roles and semantics
+in manual [04](04-inference-gateway-connection.md) — a role is enabled only
+when its `_MODEL` variable is set):
+
+```ini
+GAME_NARRATOR_GATEWAY_URL=<gateway-base-url>
+GAME_NARRATOR_GATEWAY_TOKEN=replace-with-real-secret-outside-git
+
+# one _MODEL line per role you will use (see manual 04 for the full table)
+GAME_NARRATOR_ROLE_AGENT_REASONING_MODEL=<model-id>
+GAME_NARRATOR_ROLE_FAST_REASONING_MODEL=<model-id>
+GAME_NARRATOR_ROLE_VISION_OCR_FALLBACK_MODEL=<model-id>
+GAME_NARRATOR_ROLE_DECISION_MODEL=<model-id>
+GAME_NARRATOR_ROLE_VOICE_DESIGN_MODEL=<model-id>
+GAME_NARRATOR_ROLE_VOICE_CLONE_MODEL=<model-id>
+GAME_NARRATOR_ROLE_SPEECH_ASR_MODEL=<model-id>
+
+# optional, set per this manual's later steps:
+GAME_NARRATOR_IMPORT_DIR=/home/arduino/disc-images      # Step 8
+GAME_NARRATOR_LISTEN=127.0.0.1:8080                     # default; 0.0.0.0:8080 only per Step 7
+GAME_NARRATOR_REPLAY_ROOTS=/var/lib/game-narrator/replay # Step 10
+```
+
+Keep the file 0600 root:root; systemd (root) reads it into the unit's
+environment — the service process never opens the file itself. Never print
+its contents into logs, tickets or screenshots (the lifecycle runner
+verifies the env file by mode, owner and line count only, for this reason).
+
+## Step 6 — Start the service and run doctor
+
+```sh
+sudo systemctl enable --now game-narrator
+systemctl status game-narrator
+```
+
+The service binds `127.0.0.1:8080` by default (docs/spec/10: bind localhost
+initially, expose the LAN explicitly). Doctor is the honest self-report —
+it exits 0 with a "what to do next" list on a first-run host and exits 1
+only when a **configured** component is actually broken:
+
+```sh
+sudo sh -c 'set -a; . /etc/game-narrator/env; set +a; game-narrator doctor --data-dir /var/lib/game-narrator'
+```
+
+(The env file is sourced so the gateway/role probes see the same variables
+the service sees; this is the same pattern the lifecycle runner uses.)
+`--json` gives the machine-readable form; `--dev` adds developer-host
+checks (Dolphin/Xvfb) that do not apply to the appliance.
+
+Expected on a fresh install with no hardware attached: capture/audio rows
+`NOT CONFIGURED`/`BLOCKED` with the attach instruction, data directory
+`OK`, configured model roles `OK` (or the specific probe failure), no
+`FAIL` on the storage stack.
+
+## Step 7 — Open the UI from another machine
+
+The API is loopback-bound by design, so the safe way in from your laptop is
+an SSH tunnel (no configuration change, the loopback-only first-run
+endpoint stays loopback-only):
+
+```sh
+ssh -N -L 8080:127.0.0.1:8080 <user>@<uno-q-host>
+```
+
+then open <http://127.0.0.1:8080> in your browser.
+
+Alternatively, bind the LAN and accept the exposure: set
+`GAME_NARRATOR_LISTEN=0.0.0.0:8080` in the env file,
+`sudo systemctl daemon-reload && sudo systemctl restart game-narrator`,
+and open `http://<uno-q-host>:8080`. docs/spec/10 "Security defaults for LAN
+deployment" recommends a TLS reverse proxy / Tailscale rather than a bare
+LAN bind (set `GAME_NARRATOR_TRUSTED_PROXY_CIDRS` for the proxy that
+terminates TLS — see `game-narrator serve --help`).
+
+**First-run admin setup.** Until an admin account exists,
+`GET /api/v1/auth/status` reports `setup_required`. Create the first admin
+from the board (the API's setup endpoint is loopback-only, and the CLI
+runs directly against the database — no running server needed):
+
+```sh
+printf '%s' '<password>' | sudo -u game-narrator \
+  game-narrator admin create --data-dir /var/lib/game-narrator --username admin --role admin
+```
+
+(As the `game-narrator` user so the SQLite file it touches is owned by the
+service user.) Or, with the SSH tunnel from above, create it in the browser
+at `/setup`. Afterwards log in at `/login`; the diagnostics page is
+`/diagnostics`.
+
+## Step 8 — Import a game
+
+The reference adapter is the user's own Wind Waker disc (game id `GZL`),
+`.gcm`/`.ciso`. The disc image is read **in place and never copied** into
+the data directory; only its SHA-256 and the extracted BMG's SHA-256 are
+recorded (AGENTS.md rule 5, ADR-0066).
+
+**In the UI (allowlisted directory).** Put the disc image in a directory
+you control, name that directory in the env file
+(`GAME_NARRATOR_IMPORT_DIR=/home/arduino/disc-images`, then
+`sudo systemctl daemon-reload && sudo systemctl restart game-narrator`).
+The API may read **only** regular files inside that directory, addressed by
+basename — anything path-shaped is refused. The game's Overview page lists
+the allowlisted images; choose one and the import runs as a background job
+(`import.disc`, visible under the jobs API). Real disc images take minutes
+(hash + parse); the job is resumable and idempotent by content hash.
+
+**CLI alternative** (e.g. to import before the UI is up). The image must be
+readable by the service user, and run **as** the service user so the asset
+store stays its owner:
+
+```sh
+sudo -u game-narrator game-narrator import-disc \
+  --data-dir /var/lib/game-narrator \
+  --image /home/arduino/disc-images/<your-disc>.iso \
+  --game-slug wind-waker
+```
+
+`--publish` (off by default) moves the draft profile through review and
+publishes it; review the imported text in the UI first. Verify with
+`GET /api/v1/health/ready` staying 200 during the job and the job ending
+`succeeded`.
+
+## Step 9 — Voices
+
+With the TTS roles configured (manual 04) and a voice workflow available,
+register voices from the UI: game page → **Voices**
+(`/games/<id>/voices`) — audition (`POST /api/v1/voices/auditions`),
+approve, then register (operator role; a consent string is mandatory).
+Names are canonical (`gn_<…>_v<rev>_<digest8>`) and the registry is
+persistent state on the direct Base service — maintenance rules and
+re-registration semantics in manual
+[05-voice-registry-maintenance.md](05-voice-registry-maintenance.md).
+`doctor` probes the `voice_clone` role (registry list + a synthesis with
+the first `gn_*` voice).
+
+Audio **playback** needs the physical path: a USB DAC/speaker on the hub,
+the PipeWire sink the service uses (`GAME_NARRATOR_AUDIO_DEVICE` to pin
+one). Until the DAC is attached, sessions run with speech disabled and the
+report says so — that is an honest state, not a failure.
+
+## Step 10 — First session
+
+The Play page (`/play`) starts sessions against a published game revision;
+one active session at a time. Frame sources:
+
+- **Replay (works now, no hardware).** The installed appliance ships
+  without `GAME_NARRATOR_REPLAY_ROOTS` (the production default admits no
+  replay dir). Add it per the documented operator step — set it in
+  `/etc/game-narrator/env` (e.g.
+  `GAME_NARRATOR_REPLAY_ROOTS=/var/lib/game-narrator/replay`), place a clip
+  under it, `sudo systemctl daemon-reload && sudo systemctl restart
+  game-narrator` (manual 13 "Sustained play" documents the same step,
+  including the restore). The Play page's source picker starts the replay
+  session. **This is replay evidence, not capture evidence** (AGENTS.md
+  rule 3).
+- **Capture (once the dongle is attached).** Wire the chain per
+  docs/spec/10 "Physical connection" (GameCube → RCA-to-HDMI converter →
+  HDMI splitter → UVC capture dongle on the powered hub). Verify with the
+  hardware smoke from the dev host,
+  `scripts/hw/run-on-device.sh <user>@<uno-q-host>` (manual 13), then run
+  a capture session per the capture runbook (manual 18, in flight). Until
+  then capture and audio stay **NOT VERIFIED**.
+
+## Step 11 — Upgrade, rollback, uninstall
+
+**Upgrade (in place).** Copy the new `.deb` + `checksums.txt` to the board,
+`sha256sum -c`, then
+
+```sh
+sudo apt install ./game-narrator_<new>_linux_arm64.deb
+sudo systemctl start game-narrator      # prerm stopped the unit; start it again
+sudo sh -c 'set -a; . /etc/game-narrator/env; set +a; game-narrator doctor --data-dir /var/lib/game-narrator'
+```
+
+`/etc/game-narrator/env` and `config.yaml` survive upgrades
+(`config|noreplace` / admin-created); the data directory always survives.
+
+**Full verified cycle (clean install / upgrade / rollback / re-upgrade /
+purge, with a pre-flight data backup to `/home/arduino/gn-data.bak-<ts>`).**
+From the dev host, with two arm64 `.deb`s built from clean committed trees
+(different versions — `lifecycle-on-device.sh` refuses same-version
+pairs):
+
+```sh
+scripts/release/lifecycle-on-device.sh <user>@<uno-q-host> \
+  dist-prev/game-narrator_*_linux_arm64.deb \
+  dist-cur/game-narrator_*_linux_arm64.deb
+```
+
+It requires key-based SSH + passwordless `sudo` on the board (the same
+preconditions as this manual), writes only `/tmp/gn-lc`, the pre-flight
+backup and package-managed paths, never prints the env file, and exits 0
+only when every step PASSed and the device ends on the current package.
+Docs: docs/release.md §6.
+
+**Rollback.** Follow docs/release.md §4 in order: **backup the data
+directory first** (stop the service; a stopped process leaves the WAL
+consistent), reinstall the previous `.deb` — from a newer snapshot to an
+older one is a downgrade: `apt-get install --allow-downgrades
+./game-narrator_<old>_linux_arm64.deb` — and if the newer version applied a
+migration the old binary cannot read, restore the DB backup **before**
+starting it. Verify with `doctor` + `/api/v1/health/ready`. Manual 12 is
+the operator-facing runbook.
+
+**Uninstall / purge.**
+
+```sh
+sudo dpkg -r game-narrator       # remove: package files gone, /etc/game-narrator kept
+sudo dpkg --purge game-narrator  # purge: package + config files gone
+```
+
+`/var/lib/game-narrator` is **never deleted by the package** (user data:
+catalogue, assets, approved voice references). Back it up first, then
+removing it is an explicit admin act; `userdel game-narrator` afterwards is
+yours to decide (docs/release.md §5). If you used Step 2's bind mount,
+disable and unmount it afterwards (`sudo systemctl disable --now
+gn-data.mount`).
+
+## Verification
+
+- `systemctl status game-narrator` is active; `GET /api/v1/health/ready` is
+  200 and `GET /api/v1/system/info` answers.
+- `game-narrator doctor` (env sourced, `--data-dir /var/lib/game-narrator`)
+  reports no `FAIL`; every `NOT CONFIGURED`/`BLOCKED` row names the missing
+  piece (dongle, DAC, role model) and how to attach/configure it.
+- The UI is reachable from another machine: the login page renders, the
+  admin account logs in, `/diagnostics` shows build version/commit and live
+  readiness.
+- A disc import job ends `succeeded` and the profile's messages are visible
+  in the UI; a replay session runs end-to-end with frames/OCR/commits
+  visible in the session view.
+- `df -h /var/lib/game-narrator` reports the large partition (when Step 2
+  was done).
+
+## What NOT to do
+
+- Do not report the install as hardware-verified: capture and audio are
+  **NOT VERIFIED** until the dongle + DAC are attached and
+  `make test-hardware` passes on the appliance (AGENTS.md rule 12).
+- Do not write real tokens, the gateway's private hostname or the device's
+  IP/hostname into the repo, this manual, logs or screenshots — the env
+  file is 0600 on the board and the placeholders above are the only values
+  that belong in documentation.
+- Do not `dpkg --purge` to "roll back" — purge is the §5 semantics;
+  rollback is §4 (backup first).
+- Do not delete `/var/lib/game-narrator` while the service is running, or
+  without a backup you have tested restoring (docs/manuals/03).
+- Do not raise the RSS/temperature budgets or edit `internal/hwsmoke`
+  thresholds to make a flaky dongle pass (manual 13).
+- Do not address the disc import API with paths: basenames inside
+  `GAME_NARRATOR_IMPORT_DIR` only (ADR-0066).

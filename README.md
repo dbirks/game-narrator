@@ -106,6 +106,31 @@ for local builds):
 - **Arch `*.pkg.tar.zst`** — `sudo pacman -U --noconfirm <pkg>`; pacman
   resolves the declared Arch dependencies (docs/release.md §8).
 
+### Install on an Arduino UNO Q
+
+The appliance runs Debian 13 arm64. The full runbook (space, data
+partition, config, first run, upgrade/rollback, purge) is
+[docs/manuals/19-install-on-uno-q.md](docs/manuals/19-install-on-uno-q.md);
+the short path:
+
+1. SSH with a key to the board: `ssh <user>@<uno-q-host>` (passwordless
+   `sudo` needed for the lifecycle/smoke scripts).
+2. *(Optional)* Free the small root partition — remove App Lab/Docker/
+   desktop, `systemctl set-default multi-user.target` — and bind-mount
+   `/var/lib/game-narrator` onto the large `/home/arduino` partition.
+3. Build the arm64 `.deb` on a dev host: `make release-snapshot` (or take
+   the artifact from a tagged release), then `sha256sum -c checksums.txt`.
+4. Copy it over: `scp dist/game-narrator_*_linux_arm64.deb <user>@<uno-q-host>:~`.
+5. On the board: `sudo apt install ./game-narrator_*_linux_arm64.deb`.
+6. Create `/etc/game-narrator/env` from `env.example` (mode 0600) with your
+   gateway URL/token and the role models; placeholders in manual 19.
+7. `sudo systemctl enable --now game-narrator`, then `game-narrator doctor`
+   (env sourced, `--data-dir /var/lib/game-narrator`).
+8. Open the UI from another machine via an SSH tunnel
+   (`ssh -N -L 8080:127.0.0.1:8080 <user>@<uno-q-host>` →
+   <http://127.0.0.1:8080>), create the first admin, import your disc and
+   start a session — all in the manual.
+
 ### Develop on the Arch dev host
 
 Arch Linux with `sudo` is enough to start: the bootstrap script installs Go,
