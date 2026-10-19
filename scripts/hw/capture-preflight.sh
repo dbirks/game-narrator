@@ -8,11 +8,11 @@
 # + doctor).
 #
 # Read-only guarantee: the remote probe only reads /sys, /proc and runs
-# lsusb, v4l2-ctl, udevadm, dmesg, systemctl is-active and
+# lsusb, v4l2-ctl, udevadm, dmesg, systemctl is-active,
 # `game-narrator doctor` (the app's own diagnostics; it probes configured
 # components and does not mutate service state). It writes no file on the
 # device, and never touches sshd, sshd_config, authorized_keys, the
-# network, /etc/game-narrator or the service.
+# network, /etc/game-narrator, the USB role or the service.
 #
 # Usage (from anywhere):
 #
@@ -58,6 +58,35 @@ os=$(uname -sr 2>/dev/null)
 [ -r /etc/os-release ] && os="$os;$(. /etc/os-release && echo "${PRETTY_NAME:-}")"
 echo "T:arch:$(uname -m 2>/dev/null)"
 echo "T:os:$os"
+echo "T:kernel:$(uname -r 2>/dev/null)"
+
+# dwc3-qcom host-mode quirk status (manual 18 §"Is my board affected?"):
+# image generation + current USB role + debugfs knob presence/value.
+# data_role is unreliable (always shows "host [device]" per Arduino staff);
+# the usb_role_switch symlinks are the observable role.
+bi=NONE
+if [ -r /etc/buildinfo ]; then
+	bi=$(grep -h '^BUILD_ID=' /etc/buildinfo 2>/dev/null | head -n 1)
+fi
+[ -n "$bi" ] || bi=NONE
+echo "T:buildinfo:$bi"
+
+ur=unknown
+for d in /sys/class/usb_role/*/; do
+	[ -e "${d}host" ] && ur=host
+	[ -e "${d}device" ] && ur=device
+done
+echo "T:usb_role:$ur"
+
+tp=$(cat /sys/class/typec/port0/power_role 2>/dev/null)
+echo "T:typec_power:${tp:-unknown}"
+
+mk=absent
+if [ -e /sys/kernel/debug/usb/4e00000.usb/mode ]; then
+	mk=$(cat /sys/kernel/debug/usb/4e00000.usb/mode 2>/dev/null)
+	[ -n "$mk" ] || mk=unreadable
+fi
+echo "T:modeknob:$mk"
 
 lc=MISSING
 le=0
@@ -181,6 +210,31 @@ MISSING) add_row usb-host FAIL "lsusb missing on device: apt install usbutils";;
 	fi
 	;;
 esac
+
+# USB host role + dwc3-qcom quirk (manual 18 §"Is my board affected?")
+ur=$(field usb_role)
+bi=$(field buildinfo)
+knob=$(field modeknob)
+kr=$(field kernel)
+if [ "$bi" = NONE ] || [ -z "$bi" ]; then
+	if [ "$ur" = host ]; then
+		add_row usb-role WARN "no /etc/buildinfo (pre-2025-11 image, normally stuck in device mode) but role=host — record kernel $kr in the run notes"
+	else
+		add_row usb-role FAIL "older image (no /etc/buildinfo) in $ur mode — affected by the dwc3-qcom device-mode quirk: update the image with arduino-flasher-cli or bridge JCTL VOL_DOWN-GND at boot (manual 18 §\"Is my board affected?\")"
+	fi
+else
+	case $ur in
+	host)
+		add_row usb-role PASS "role=host, image $bi (newer than the quirk; debugfs knob: $knob)"
+		;;
+	device)
+		add_row usb-role WARN "role=device (expected while cabled to the dev PC); image $bi (kernel $kr) is newer than the quirk and should take host role when the powered hub is attached; knob $knob — after wiring, re-run and expect role=host; if it stays device: boot the board before attaching the hub, then apply the manual 18 remediation steps (user approval required)"
+		;;
+	*)
+		add_row usb-role WARN "USB role unreadable ($ur) on image $bi — check /sys/class/usb_role/ by hand (manual 18 §\"Is my board affected?\")"
+		;;
+	esac
+fi
 
 # v4l2 tooling
 case $(field v4l2) in

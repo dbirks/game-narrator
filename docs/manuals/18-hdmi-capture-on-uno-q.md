@@ -100,13 +100,79 @@ What to plug where:
   capture chain and the preflight's `usb-host` row FAILs by design).
   Attach the powered hub and the port flips to *host* mode;
   adb-over-USB disappears, Wi-Fi ssh remains.
-- Known kernel quirk (older OS images): the `dwc3-qcom` controller boots
-  in device mode when no USB-C cable is negotiated at boot. Check
-  `/etc/buildinfo` (its presence marks newer images where Arduino fixed
-  this); on an affected image the fix is a small systemd service writing
-  `echo host > /sys/kernel/debug/usb/4e00000.usb/mode` at boot (upstream
-  community fix). **NOT VERIFIED** on this appliance's image — the
-  preflight's `usb-host` row is the check.
+- Known kernel quirk (older OS images): when nothing is negotiated on
+  the USB-C CC lines at boot (notably the VIN-power scenario), the
+  `dwc3-qcom` controller defaults to *device* mode and the port never
+  becomes a host (arduino/linux-qcom issue #2, still open; Arduino
+  staff: "not a supported scenario" for VIN power). Images **without**
+  `/etc/buildinfo` (e.g. kernel `6.16.0-geffa8626771a`, Aug 2025) are the
+  affected ones; Arduino staff (forum 1412062, 2025-12-11) confirmed
+  the **latest images start automatically in host mode**. On this
+  appliance's image the community debugfs knob
+  `/sys/kernel/debug/usb/4e00000.usb/mode` is **absent** (the knob exists
+  on later images, e.g. `BUILD_ID=20251229-457`), so the community patch
+  does not apply as-is. In the powered-hub topology the board is the PD
+  sink and takes host role when the hub is attached — Arduino staff
+  (forum 1442207, 2026-07-29): the force-host jumper is "only required
+  if you were attempting to connect a USB device directly", not with a
+  standard (powered) USB-C hub. The preflight's `usb-host` and `usb-role`
+  rows are the live checks.
+
+## Is my board affected? (dwc3 host-mode quirk)
+
+Quick read-only pass — run it before relying on the capture chain. The
+`usb-role` row of the preflight does this automatically:
+
+```sh
+ssh <user>@<uno-q-host> 'cat /etc/buildinfo 2>/dev/null; uname -r;
+  ls -l /sys/class/usb_role/4e00000.usb-role-switch/ | grep -E "host|device";
+  cat /sys/class/typec/port0/data_role /sys/class/typec/port0/power_role 2>/dev/null;
+  lsusb 2>/dev/null | head'
+```
+
+| Check | Affected (old image, e.g. no `/etc/buildinfo`) | Not affected (newer image) |
+| --- | --- | --- |
+| `/etc/buildinfo` | missing | present (e.g. `BUILD_ID=20251111-426`) |
+| `data_role` | — | **unreliable: always prints `host [device]`** (Arduino staff) — never use it as the verdict |
+| current role | `device` symlink under `/sys/class/usb_role/4e00000.usb-role-switch/` while a powered hub is attached | `device` while on the dev PC (expected); `host` symlink + non-empty `lsusb` once the powered hub is attached |
+| debugfs knob `/sys/kernel/debug/usb/4e00000.usb/mode` | absent on this appliance's kernel (absent on `6.16.7-g0dd6551ae96b` / `BUILD_ID=20251111-426`; **present** on later images such as `20251229-457`) | as left |
+| host bus | no root hubs in `lsusb` | `1d6b:0002/0003` root hubs appear with the hub attached |
+
+Residual risks even on a newer image (forum 1442207 / 1447175 / 1458555,
+linux-qcom #2):
+
+1. **Booting with a USB device already attached** to the board's port can
+   leave it in device mode (Arduino uses this to decide App-Lab vs SBC
+   mode). Boot the board first, then attach the powered hub.
+2. A separate open bug can **unbind the xhci host controller at runtime**
+   (`xhci-hcd…auto: remove` in `dmesg`, seen with a Media Carrier DSI
+   display on `BUILD_ID=20260528-558`); the host bus drops and must be
+   restored.
+3. On VIN power (not our topology) the port never supplies VBUS and the
+   community debugfs workaround is the only fix — and it needs the knob,
+   which this kernel lacks.
+
+**If the port does not come up in host mode with the powered hub
+attached**, remediation in order of preference (apply with user
+approval; none of this has been applied on this appliance):
+
+1. **Official image update** with `arduino-flasher-cli` to the latest
+   release (staff: latest images auto-boot in host mode; later images
+   also ship the documented force-host mechanism,
+   `/opt/arduino/scripts/volumedown.sh`). Risk: the flasher needs the
+   board in device mode (adb/USB); Wi-Fi ssh remains after.
+2. **Official force-host jumper**: bridge `VOL_DOWN`–`GND` on the JCTL
+   header while powering on (docs.arduino.cc
+   `/tutorials/uno-q/host-mode/`). Only needed if the port still refuses
+   host role; does not change the fact that the port does not source VBUS.
+3. **Community patch** (`Psalmustrack/arduino-uno-q-usb-fix`, systemd
+   service writing `host` to the debugfs knob) — only on images where the
+   knob exists; it does **not** apply to this kernel as-is.
+
+Risk of the role switch itself: adb-over-USB disappears, Wi-Fi ssh
+remains (see *Power and the hub*). Verify afterwards: `lsusb` shows the
+hub's root hubs, `dmesg | grep -i xhci` is clean, and the preflight's
+`usb-host`/`usb-role` rows report host.
 
 ## First-boot checks
 
@@ -118,9 +184,11 @@ scripts/hw/capture-preflight.sh <user>@<uno-q-host>
 ```
 
 Expected rows **today** (dongle not yet attached, device in device mode):
-`usb-host` FAIL (no host bus), `capture-node` FAIL (no capture device),
-`audio` WARN (no sound cards) — everything else PASS. Expected after
-wiring: all PASS, or a WARN naming the exact remaining gap.
+`usb-host` FAIL (no host bus), `usb-role` WARN (device mode expected on
+the dev PC; image is newer than the quirk — see *Is my board affected?*),
+`capture-node` FAIL (no capture device), `audio` WARN (no sound cards) —
+everything else PASS. Expected after wiring: all PASS, or a WARN naming
+the exact remaining gap.
 
 Then the raw commands (ssh or the appliance console) and what each
 should show:
@@ -287,10 +355,19 @@ combination, with the game in its title/dialogue screen:
   Role-Switching Capabilities over USB Connector", QRB2210 4× A53);
   arduino.cc UNO Q product page; Arduino forum
   "Connecting USB Camera to Uno Q" (forum.arduino.cc/1412062 — PD-sink
-  port, powered-hub requirement, host-mode fix with
-  `/sys/kernel/debug/usb/4e00000.usb/mode`); github.com/
-  Psalmustrack/arduino-uno-q-usb-fix. First-boot host mode on *this
-  appliance's image*: NOT VERIFIED until the preflight's `usb-host` row
-  passes.
+  port, powered-hub requirement, latest images auto-boot in host mode
+  per Arduino staff); github.com/arduino/linux-qcom issue #2 (VIN-power
+  host-mode bug, open, assigned; root cause and debugfs workaround);
+  github.com/Psalmustrack/arduino-uno-q-usb-fix (community systemd fix +
+  its issue #2: knob present but host mode still flaky on newer images);
+  Arduino forum 1442207 (staff: force-host jumper "only required if you
+  were attempting to connect a USB device directly" — not with a
+  standard powered hub) and 1447175 (final word on VIN power, 2026-06),
+  1458555 (xhci unbind at runtime on `BUILD_ID=20260528-558`);
+  docs.arduino.cc `/tutorials/uno-q/host-mode/` (JCTL VOL_DOWN–GND
+  jumper); arduino/arduino-deb-images `volumedown.sh` (image-shipped
+  force-host mechanism). First-boot host mode on *this* appliance's
+  image: NOT VERIFIED until the preflight's `usb-host`/`usb-role` rows
+  pass with the hub attached.
 - Appliance topology and power budget: docs/spec/10 ("Physical
   connection", "5 V / 3 A compliant power distribution").
