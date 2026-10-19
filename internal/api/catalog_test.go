@@ -46,16 +46,17 @@ const syntheticCSVPath = "../games/adapter/generic/testdata/synthetic-adventure.
 
 // catalogEnv is one wired appliance.
 type catalogEnv struct {
-	t      *testing.T
-	ctx    context.Context
-	a      *testAuth
-	st     *store.Store
-	as     *assets.Local
-	reg    *adapter.Registry
-	js     *store.JobsStore
-	hub    *events.Hub
-	runner *jobs.Runner
-	h      http.Handler
+	t         *testing.T
+	ctx       context.Context
+	a         *testAuth
+	st        *store.Store
+	as        *assets.Local
+	reg       *adapter.Registry
+	js        *store.JobsStore
+	hub       *events.Hub
+	runner    *jobs.Runner
+	h         http.Handler
+	importDir string // the allowlisted disc-image directory; empty when unwired
 }
 
 func newCatalogEnv(t *testing.T) *catalogEnv {

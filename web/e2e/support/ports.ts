@@ -63,4 +63,9 @@ export const ports = {
    *  the inspector's replay with the ambiguous ranking sent to the scripted
    *  Clef instance and the endpoint-down degraded case. */
   developerDecision: 18110,
+  /** the packaged binary the disc-import walk drives (disc-import-walk.spec.ts,
+   *  ADR-0066): a fresh appliance whose disc-import allowlist is the repo's
+   *  synthetic disc (testdata/disc), so the walk imports a disc image through
+   *  the UI without a user's real one. */
+  disc: 18112,
 } as const;

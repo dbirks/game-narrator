@@ -602,7 +602,10 @@ func (b *builder) registerSpeaker(key, spelling string) {
 		return
 	}
 	b.speakerIndex[key] = len(b.res.Speakers)
-	b.res.Speakers = append(b.res.Speakers, adapter.SpeakerRef{Key: key, DisplayName: spelling})
+	// SourceNamed true: the label is the source's own text from the mapped
+	// column, so the importer may confirm the speaker at the source column's
+	// strength (a synthetic id, ADR-0070, leaves this false).
+	b.res.Speakers = append(b.res.Speakers, adapter.SpeakerRef{Key: key, DisplayName: spelling, SourceNamed: true})
 	b.speakerSpells[key] = []string{spelling}
 }
 

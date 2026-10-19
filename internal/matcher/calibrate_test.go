@@ -7,17 +7,20 @@ import (
 	"testing"
 )
 
-// TestTemperatureDefaultsUnchanged pins the shipped default: the temperature
-// stays at T = 1 (calibration revision 1). The synthetic-set fit was rejected
-// as a degenerate optimum (ADR-0035 "Calibration"), so the default must not
-// move to a fitted value; a per-profile override (RankOptions.Temperature)
-// remains the supported way to adopt a real fit.
-func TestTemperatureDefaultsUnchanged(t *testing.T) {
-	if DefaultTemperature != 1.0 {
-		t.Errorf("DefaultTemperature = %v, want 1.0 (the synthetic fit is degenerate and was not shipped)", DefaultTemperature)
+// TestTemperatureDefaultAdoptsRevision2 pins the shipped default: calibration
+// revision 2, the T fitted on the (a + b) + b′ + b″ real-content mixture
+// (ADR-0058 amendment 7; ADR-0035 "Calibration", "Real-content fit").
+// Revision 1 (T = 1, plain softmax) remains the acceptance-gate scale —
+// score.go's second softmax is pinned at T = 1 — so the adoption moves the
+// reported confidence only, never an accept/abstain decision. The revision-1
+// synthetic fit was refused as a degenerate optimum; the adopted T carries
+// the documented heavy-sharpening caveat (ADR-0058 amendment 7).
+func TestTemperatureDefaultAdoptsRevision2(t *testing.T) {
+	if CalibrationRevision != 2 {
+		t.Errorf("CalibrationRevision = %d, want 2 (the adopted real-content fit, ADR-0058 amendment 7)", CalibrationRevision)
 	}
-	if CalibrationRevision != 1 {
-		t.Errorf("CalibrationRevision = %d, want 1 (plain softmax; a real fit would define a new revision)", CalibrationRevision)
+	if DefaultTemperature != 0.07280236748934843 {
+		t.Errorf("DefaultTemperature = %v, want 0.07280236748934843 (the fitted T, ADR-0058 amendment 7)", DefaultTemperature)
 	}
 	// The default rank options carry the default temperature, and an unset
 	// temperature sanitises to it.

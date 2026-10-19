@@ -182,6 +182,12 @@ type Server struct {
 	// without any extra wiring.
 	harnessRepoRoot string
 
+	// discImportDir is the operator's allowlisted disc-image directory
+	// (GAME_NARRATOR_IMPORT_DIR, ADR-0066). Empty means the dir shape answers
+	// 503 and only the upload shape works; the store, asset, adapter and
+	// queue dependencies it leans on are the Server's own fields.
+	discImportDir string
+
 	// workerOnce starts the scenario.run worker at most once per process
 	// (tests_worker.go), from the run route after the enqueue.
 	workerOnce sync.Once
@@ -445,6 +451,7 @@ func (s *Server) Handler() http.Handler {
 	// The developer's browsing of the recorded corrections as the re-run inputs
 	// (docs/spec/08 "fixture recording and browsing", ADR-0052).
 	routes.register(mux, http.MethodGet, "/api/v1/dev/fixtures", s.handleDevFixturesList)
+	routes.register(mux, http.MethodGet, "/api/v1/dev/sessions/{id}/bottlenecks", s.handleDevSessionBottlenecks)
 	routes.register(mux, http.MethodGet, "/api/v1/dev/traces/{trace_id}", s.handleDevTraces)
 	routes.register(mux, http.MethodGet, "/api/v1/dev/assets/{sha256}", s.handleDevAsset)
 
@@ -526,12 +533,22 @@ func (s *Server) Handler() http.Handler {
 	routes.register(mux, http.MethodGet, "/api/v1/corrections", s.handleCorrectionsList)
 	routes.register(mux, http.MethodPost, "/api/v1/corrections", s.handleCreateCorrection)
 	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/characters", s.handleProfileCharacters)
+	// The curator's speaker-link action (ADR-0070): the identification of a
+	// placeholder the import created for an opaque source speaker id, with
+	// its lines, assertions, alias fold and retirement in one transaction.
+	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/characters/{cid}/speaker-link", s.handleSpeakerLink)
 	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/regions", s.handleProfileRegions)
 	routes.register(mux, http.MethodPut, "/api/v1/profiles/{id}/regions", s.handleProfileRegionsPut)
 	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/regions/preview", s.handleProfileRegionsPreview)
 	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/graph", s.handleProfileGraph)
 	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/import", s.handleImportFile)
 	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/export", s.handleProfileExport)
+	// The disc-import surface (ADR-0066): the images available in the
+	// operator's allowlisted directory, and the 202 enqueue of one
+	// import.disc job. The grants live in the scope table: /api/v1/import/*
+	// and /api/v1/profiles/* are both curator-tier there.
+	routes.register(mux, http.MethodGet, "/api/v1/import/disc/images", s.handleDiscImportImages)
+	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/import/disc", s.handleDiscImport)
 
 	// The voice setup workflow (docs/spec/08 "APIs": voice list/auditions/
 	// approve/register/preview). The 202 audition job runs as voices.JobKind;

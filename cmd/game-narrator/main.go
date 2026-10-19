@@ -235,6 +235,12 @@ flags:
 // and must never be logged or committed (docs/spec/13, AGENTS.md rule 5).
 const EnvGameImage = "GAME_NARRATOR_GAME_IMAGE_PATH"
 
+// EnvImportDir is the environment variable that names the allowlisted
+// directory the API's disc-import surface reads from (ADR-0066). Like the
+// game-image path it is operator-local configuration: the API never answers
+// with the directory's contents beyond basenames and never logs the path.
+const EnvImportDir = "GAME_NARRATOR_IMPORT_DIR"
+
 // importDiscGameIDPrefix is the game-id prefix the reference adapter accepts.
 // A disc whose id does not start with it is refused before any parse, so a
 // mislabelled image cannot be imported under the Wind Waker adapter's rules.
@@ -400,6 +406,12 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 	if err := generic.Register(adapters); err != nil {
 		return 1, fmt.Errorf("linking the generic script adapter: %w", err)
 	}
+	// The Wind Waker reference adapter (docs/spec/04): the disc-import surface
+	// (ADR-0066) needs its DiscExtractor capability, and linking it also makes
+	// raw .bmg file imports work through the API the way the CLI does them.
+	if err := windwaker.Register(adapters); err != nil {
+		return 1, fmt.Errorf("linking the windwaker disc adapter: %w", err)
+	}
 	adapterIDs := make([]string, 0, len(adapters.Adapters()))
 	for _, m := range adapters.Adapters() {
 		adapterIDs = append(adapterIDs, m.ID)
@@ -443,6 +455,19 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 			Timeout:     importJobTimeout,
 		}); err != nil {
 		return 1, fmt.Errorf("registering %s job kind: %w", api.JobKindImportFile, err)
+	}
+	// The disc-import worker (ADR-0066): the API verifies the image and queues
+	// this kind, so the queue reports progress and the report. Resumable for
+	// the same reason import.file is — the payload names a basename or a
+	// content hash, not a temporary file, so a worker that starts after a
+	// crash reads the same image and the importer reconciles by content hash.
+	if err := runner.Register(api.JobKindImportDisc,
+		api.ImportDiscJobHandler(st, assetStore, adapters), jobs.RegisterOpts{
+			Concurrency: 1,
+			Resumable:   true,
+			Timeout:     importJobTimeout,
+		}); err != nil {
+		return 1, fmt.Errorf("registering %s job kind: %w", api.JobKindImportDisc, err)
 	}
 	// The onboarding agent (ADR-0026/0028): the agent.run kind executes the
 	// durable run log in internal/agent. The model is reached through the
@@ -634,6 +659,7 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 		api.WithOCRPreview(func(psm int) ocr.Engine {
 			return ocr.Tesseract{PSM: psm, Timeout: 15 * time.Second}
 		}, runtime.DefaultReplayRoots(os.LookupEnv)),
+		api.WithDiscImport(strings.TrimSpace(os.Getenv(EnvImportDir))),
 		api.WithTrustedProxy(trustedProxyCIDRs(os.LookupEnv)...),
 	}
 	if voiceSvc != nil {

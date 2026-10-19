@@ -1,0 +1,9 @@
+{
+ "note": "Per-stage wall-clock p95 bounds for the synthetic holdout bench (docs/spec/16 M7). A flag with headroom, never a gate: the bench's verdicts stay load-invariant (ADR-0064), and a stage whose merged p95 exceeds its bound is named in the report's latency_bounds section. Provenance: bench-synthetic-001 holdout, 49 samples, single-threaded Tesseract, quiet-host runs 20261019T095914Z (frame_to_ocr p95 edge 400 ms), 20261019T100751Z (600 ms; frame_to_committed 50 ms in both) and 20261019T102937Z (400 ms; 50 ms; ocr_to_ranked carried no samples in any). Rule: two times the worst observed p95 edge across the measured runs (the edge's host-load variance sets the headroom, not its average); ocr_to_ranked is a 100 ms floor bound recorded in its absence — re-record it from a run that samples the stage, with the same rule. A loaded host (concurrent test load) once measured 1000 ms on frame_to_committed: the flag names exactly that situation (fix the regression, or re-measure on a quiet host and re-record with evidence), and the verdicts stay load-invariant (ADR-0064).",
+ "measured_at": "20261019T100751Z",
+ "bounds_ms": {
+  "frame_to_ocr": 1200,
+  "ocr_to_ranked": 100,
+  "frame_to_committed": 100
+ }
+}

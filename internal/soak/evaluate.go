@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/events"
+	gnrt "github.com/dbirks/game-narrator/internal/runtime"
 	"github.com/dbirks/game-narrator/internal/scenario"
 )
 
@@ -63,6 +64,11 @@ func (r *Result) collect(h *harness) {
 	r.Seed = h.cfg.Chaos.Seed
 	r.Config = h.cfg
 	r.Pipeline = h.runner.Stats()
+	// The run's own per-stage latency summary (docs/spec/16 M7): the same
+	// shared function the session API, the support bundle and the developer
+	// page use, over the run's own stage stats. Wall-clock diagnostic, not a
+	// pass criterion (ADR-0064's class of number).
+	r.Bottlenecks = gnrt.Bottlenecks(r.Pipeline.Latency)
 	r.Session = h.sess.Stats()
 	r.Faults = h.faultKindCounts()
 	r.ProviderErrors = h.errKindCounts()

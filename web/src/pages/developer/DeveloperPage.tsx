@@ -14,6 +14,7 @@
  */
 
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useSearchParams } from "react-router";
 
 import { ApiError, catalogApi } from "../../api/client";
 import {
@@ -22,6 +23,8 @@ import {
   sessionsApi,
   type EventEnvelope,
   type Session,
+  type SessionBottlenecks,
+  type StageLatency,
 } from "../../api/sessions";
 import { useAuth } from "../../auth/auth-context";
 import { EmptyState, ErrorState, Loading } from "../../components/states";
@@ -74,6 +77,8 @@ function DeveloperInspector() {
   const [replayDir, setReplayDir] = useState(DEFAULT_REPLAY_DIR);
   const [devTrace, setDevTrace] = useState(true);
   const [tracked, setTracked] = useState<TrackedSession | null>(null);
+  const [bottlenecks, setBottlenecks] = useState<SessionBottlenecks | null>(null);
+  const [bottlenecksError, setBottlenecksError] = useState<unknown>(null);
   const [actionError, setActionError] = useState<unknown>(null);
   const [acting, setActing] = useState(false);
 
@@ -116,10 +121,39 @@ function DeveloperInspector() {
     };
   }, []);
 
+  // Deep link: /developer?session=<id> tracks an existing session — the live
+  // play walk arrives this way from /play (its session started there, with
+  // the Dolphin frame source), and a developer can share the URL of a run
+  // under the microscope. The snapshot poll and the SSE wiring pick up from
+  // the tracked session exactly as for a locally started one, and "Load
+  // older" pages in the history the session wrote before the page opened.
+  const [searchParams] = useSearchParams();
+  const deepLinkSessionId = searchParams.get("session");
+  useEffect(() => {
+    if (deepLinkSessionId === null) return;
+    let cancelled = false;
+    setTracked(null);
+    void (async () => {
+      try {
+        const session = await sessionsApi.get(deepLinkSessionId);
+        if (!cancelled) {
+          setTracked({ session, error: null, streaming: true, streamFailed: false });
+        }
+      } catch (error) {
+        if (!cancelled) setActionError(error);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [deepLinkSessionId]);
+
   const start = useCallback(async () => {
     setActing(true);
     setActionError(null);
     dispatch({ type: "reset" });
+    setBottlenecks(null);
+    setBottlenecksError(null);
     try {
       const session = await sessionsApi.start({
         profile_id: profileId,
@@ -155,6 +189,29 @@ function DeveloperInspector() {
   // session has not settled.
   const active =
     tracked && (tracked.session.state === "starting" || tracked.session.state === "running");
+
+  // The named bottleneck (docs/spec/16 M7 "diagnostics expose bottlenecks"): the
+  // session's own stage stats settle when the run does, so the summary is read
+  // once the session stops changing state — while it runs the view is empty by
+  // design, not by accident.
+  const settled = tracked !== null && !active;
+  useEffect(() => {
+    if (!tracked || !settled) return;
+    const id = tracked.session.session_id;
+    let cancelled = false;
+    setBottlenecksError(null);
+    void devApi
+      .bottlenecks(id)
+      .then((summary) => {
+        if (!cancelled) setBottlenecks(summary);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setBottlenecksError(error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tracked, settled]);
   useEffect(() => {
     if (!tracked || !active) return;
     const id = tracked.session.session_id;
@@ -238,6 +295,7 @@ function DeveloperInspector() {
               <p className="muted">Start a replay session to watch its events stream in.</p>
             </EmptyState>
           )}
+          {tracked ? <BottleneckPanel bottlenecks={bottlenecks} error={bottlenecksError} /> : null}
         </div>
         <div className="dev-main">
           <EventTimeline
@@ -405,6 +463,97 @@ function SessionStats({
         <dt>Stale generation applied</dt>
         <dd>{stats.stale_generation_applied}</dd>
       </dl>
+    </div>
+  );
+}
+
+/** The human stage names, in pipeline order (mirrors runtime.StageLabels). */
+const STAGE_LABELS: Record<StageLatency["stage"], string> = {
+  frame_to_ocr: "capture → OCR",
+  ocr_to_ranked: "OCR → rank",
+  frame_to_committed: "capture → committed (end-to-end)",
+};
+
+/** Nanoseconds → the shortest honest reading: ms with one decimal, µs below. */
+function fmtLatency(ns: number): string {
+  const ms = ns / 1e6;
+  if (ms >= 100) return `${Math.round(ms)} ms`;
+  if (ms >= 1) return `${ms.toFixed(1)} ms`;
+  return `${(ns / 1000).toFixed(0)} µs`;
+}
+
+function fmtShare(share: number): string {
+  return `${Math.round(share * 100)}%`;
+}
+
+/**
+ * The named bottleneck (docs/spec/16 M7 "diagnostics expose bottlenecks"):
+ * the session's own per-stage latency summary, fetched once the run settles.
+ * The rows are the same ones the bench/soak reports and the support bundle
+ * render (the shared runtime.Bottlenecks function), and the slowest stage is
+ * named, not graded: these are the run's wall-clock intervals (ADR-0064).
+ */
+function BottleneckPanel({
+  bottlenecks,
+  error,
+}: {
+  bottlenecks: SessionBottlenecks | null;
+  error: unknown;
+}) {
+  if (error !== null) {
+    return (
+      <div className="panel" data-testid="bottleneck-panel">
+        <h2>Bottlenecks</h2>
+        <ErrorState error={error} action="Loading the stage latency summary" />
+      </div>
+    );
+  }
+  if (bottlenecks === null) {
+    return (
+      <div className="panel" data-testid="bottleneck-panel">
+        <h2>Bottlenecks</h2>
+        <Loading label="Reading the stage latency summary…" />
+      </div>
+    );
+  }
+  const slowest =
+    bottlenecks.slowest_stage !== ""
+      ? STAGE_LABELS[bottlenecks.slowest_stage as StageLatency["stage"]]
+      : null;
+  return (
+    <div className="panel" data-testid="bottleneck-panel">
+      <h2>Bottlenecks</h2>
+      <p className="muted">
+        Slowest stage: <strong data-testid="bottleneck-slowest">{slowest ?? "—"}</strong>
+      </p>
+      <table className="stats-table" data-testid="bottleneck-table">
+        <thead>
+          <tr>
+            <th>Stage</th>
+            <th>Samples</th>
+            <th>p50</th>
+            <th>p95</th>
+            <th>Max</th>
+            <th>Share of e2e</th>
+          </tr>
+        </thead>
+        <tbody>
+          {bottlenecks.stages.map((stage) => (
+            <tr key={stage.stage} data-testid={`bottleneck-row-${stage.stage}`}>
+              <td>{STAGE_LABELS[stage.stage] ?? stage.stage}</td>
+              <td>{stage.count}</td>
+              <td>{stage.count === 0 ? "—" : fmtLatency(stage.p50_ns)}</td>
+              <td>{stage.count === 0 ? "—" : fmtLatency(stage.p95_ns)}</td>
+              <td>{stage.count === 0 ? "—" : fmtLatency(stage.max_ns)}</td>
+              <td>{stage.count === 0 ? "—" : fmtShare(stage.share_of_end_to_end)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="muted">
+        Wall-clock stage intervals from this run's own stats (the same rows the bench and soak
+        reports and the support bundle render); a diagnostic, not a verdict.
+      </p>
     </div>
   );
 }

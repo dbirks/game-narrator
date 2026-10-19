@@ -1,8 +1,8 @@
 package windwaker
 
 // parse.go maps a parsed BMG file onto the canonical adapter.ParseResult:
-// the message rows, their counts, the flow-graph decision and the rules
-// revision marker.
+// the message rows, their counts, the speaker sidecar (ADR-0070), the
+// flow-graph decision and the rules revision marker.
 //
 // The mapping is the contract the rest of the system relies on (docs/spec/02):
 //
@@ -14,10 +14,14 @@ package windwaker
 //   - MarkupJSON is the token AST with offsets (render.go);
 //   - NormalizedText is textnorm of the text runs with tags removed and line
 //     breaks as spaces;
-//   - SpeechText is the text runs with the rule table applied.
+//   - SpeechText is the text runs with the rule table applied;
+//   - Speakers/SpeakerKeys/SpeakerColumn carry the dump's own line-to-speaker
+//     linkage as opaque keys (speakers.go) — the one source of speaker truth
+//     this file has, measured in, not guessed from, the user's own disc.
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"path"
@@ -28,6 +32,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/games"
 	"github.com/dbirks/game-narrator/internal/games/adapter"
 	"github.com/dbirks/game-narrator/internal/games/bmg"
+	"github.com/dbirks/game-narrator/internal/games/textnorm"
 	"github.com/dbirks/game-narrator/internal/gcdisc"
 )
 
@@ -35,28 +40,11 @@ import (
 // validated against the real image in ADR-0029's real-file test).
 const bmgResPath = "res/Msg/bmgres.arc"
 
-// DiscRegion maps a disc's game id to the edition's region tag. The fourth
-// character of a GameCube game id is the region; the mapping is the one the
-// user's own disc population shows (GZLE01 is the USA release, GZLP01 PAL,
-// GZLJ01 JPN), which is why 'E' is North America, not Europe — the letter is a
-// region slot, not the ISO code. An unrecognised character reports "unknown"
-// rather than guessing: the region tag feeds compatibility checks, and a
-// wrong one would silently admit a non-matching edition.
-func DiscRegion(gameID string) string {
-	if len(gameID) < 4 {
-		return "unknown"
-	}
-	switch gameID[3] {
-	case 'E':
-		return "ntsc-u"
-	case 'J':
-		return "ntsc-j"
-	case 'P':
-		return "pal"
-	default:
-		return "unknown"
-	}
-}
+// DiscRegion maps a disc's game id to the edition's region tag. The mapping
+// itself is a fact about the GameCube id format (the fourth character is the
+// region slot), which the gcdisc package reports; this wrapper is where the
+// CLI and the import job read it from the adapter's vocabulary.
+func DiscRegion(gameID string) string { return gcdisc.RegionOfGameID(gameID) }
 
 // ExtractBMG reads the first .bmg entry of the disc's message archive.
 // Errors are descriptive: which file was missing, not "parse failed".
@@ -152,6 +140,11 @@ func (a Adapter) mapFile(ctx context.Context, file *bmg.File, opts adapter.Parse
 	stamp := time.Now().UTC().Format(time.RFC3339)
 
 	result.Stats.Rows = len(file.Messages)
+	// Speaker sidecar (ADR-0070): the distinct opaque ids in first-occurrence
+	// order, and the per-row key parallel to Messages. The evidence is shared
+	// per key so every row of a speaker carries the same provenance.
+	speakerIdx := map[string]int{}
+	speakerEvidenceCache := map[string]json.RawMessage{}
 	for _, m := range file.Messages {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -163,7 +156,9 @@ func (a Adapter) mapFile(ctx context.Context, file *bmg.File, opts adapter.Parse
 		if normalized == "" {
 			// Empty or system-looking entry: skipped with a count, never a
 			// row (games.Message.Validate forbids the empty normalizedText
-			// such a row would carry).
+			// such a row would carry). A speaker whose only row was skipped
+			// must not become an unresolvable roster entry, so it is not
+			// registered either.
 			result.Stats.Skipped++
 			continue
 		}
@@ -178,6 +173,20 @@ func (a Adapter) mapFile(ctx context.Context, file *bmg.File, opts adapter.Parse
 			})
 			result.Stats.Skipped++
 			continue
+		}
+		// The speaker slot (ADR-0070): the INF1 attribute byte is the dump's
+		// own line-to-speaker linkage. It is an opaque identifier, not a name
+		// the source vouches for, so the row leaves the parse proposed — the
+		// importer binds it to a placeholder character and records the dump's
+		// claim as a dump_metadata assertion; a curator's link is what
+		// confirms the identity. An entry without the attribute byte (this
+		// layout's bound) degrades to "no speaker", never a guess. The key is
+		// folded the way message text is (the interface's Key contract), which
+		// keeps a re-import's roster match exact under the importer's own
+		// textnorm options.
+		key := speakerKeyOf(m)
+		if key != "" {
+			key = textnorm.Normalize(key, opts.TextNorm)
 		}
 		row := games.Message{
 			ID:                games.NewID(),
@@ -195,6 +204,16 @@ func (a Adapter) mapFile(ctx context.Context, file *bmg.File, opts adapter.Parse
 			CreatedAt:         stamp,
 			UpdatedAt:         stamp,
 		}
+		if key != "" {
+			evidence, ok := speakerEvidenceCache[key]
+			if !ok {
+				evidence = speakerEvidence(opts.SourceID, key)
+				speakerEvidenceCache[key] = evidence
+			}
+			row.AttributionStatus = games.AttributionProposed
+			row.AttributionConfidence = 1.0
+			row.AttributionEvidence = evidence
+		}
 		if err := row.Validate(); err != nil {
 			// A row the adapter minted that still fails validation is a bug
 			// in the mapping, not a property of the source: fail loudly so
@@ -202,7 +221,31 @@ func (a Adapter) mapFile(ctx context.Context, file *bmg.File, opts adapter.Parse
 			return nil, fmt.Errorf("windwaker: message %d failed validation: %w", m.ID, err)
 		}
 		result.Messages = append(result.Messages, row)
+		result.SpeakerKeys = append(result.SpeakerKeys, key)
+		if key != "" {
+			if _, seen := speakerIdx[key]; !seen {
+				speakerIdx[key] = len(result.Speakers)
+				result.Speakers = append(result.Speakers, adapter.SpeakerRef{
+					Key:         key,
+					DisplayName: key, // the game data names no speaker; the id is the label
+					SourceNamed: false,
+				})
+			}
+		}
 		result.Stats.Imported++
+	}
+	if len(result.Speakers) > 0 {
+		result.SpeakerColumn = SpeakerColumn
+		// A deterministic provenance marker (the rules-revision pattern):
+		// counts only, so the import report can answer "how many distinct
+		// speakers, and where did the attribution come from" without a single
+		// line of game text (AGENTS.md rule 5).
+		result.Warnings = append(result.Warnings, adapter.Warning{
+			Line:   0,
+			Column: "speakers",
+			Msg: fmt.Sprintf("speaker attribution from %s: %d distinct opaque ids across %d imported rows; the source names no speaker, so each id becomes a placeholder a curator links (ADR-0070)",
+				SpeakerColumn, len(result.Speakers), result.Stats.Imported),
+		})
 	}
 	return result, nil
 }

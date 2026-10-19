@@ -41,14 +41,21 @@ fixture dir or the image is absent.
 calibrate: fit the matcher's temperature on the set's tuning split plus the
 captured fixtures' real-frame observations (ADR-0035 "Calibration") through
 the real pipeline and write calibration.json under --out. Each captured
-fixture contributes its clean observations (class b) AND its deterministic
+fixture contributes its clean observations (class b), its deterministic
 degraded-render variants (class b′: JPEG re-encode, downscale+upscale,
-seeded Gaussian noise, fixed crop offset — generated at bench time, never
-stored, never reported as clean captures; ADR-0058 amendment 1). The
-holdout split is never read. The fit refuses a degenerate tuning set (fewer
-than 10 incorrect top-1 examples or fewer than 50 samples, or an NLL minimum
-on the fit range's boundary): it prints NOT FITTED: <reason> with the
-per-source counts, exits non-zero, and writes no calibration.json.
+seeded Gaussian noise, fixed crop offset) and its hard-set sources (class
+b″: the frames at the heavier degradation levels, ranked against the
+adversarial candidate pool — the script plus the near-duplicate distractors
+generated at bench time from the fixture's truth lines, in memory only;
+ADR-0058 amendment 4). All variant frames are generated at bench time,
+never stored, never reported as clean captures. The fit is the mixture
+(clean + b′ + b″), never the hard set alone. The holdout split is never
+read. The fit refuses a degenerate tuning set (fewer than 10 incorrect
+top-1 examples or fewer than 50 samples, or an NLL minimum on the fit
+range's boundary): it prints NOT FITTED: <reason> with the per-source
+counts, exits non-zero, and writes no calibration.json. On a fit it prints
+T plus the Brier / 10-bin ECE and reliability bins before (T = 1) and
+after (the fitted T).
 `
 
 func newBenchFlagSet() (*flag.FlagSet, *string, *string, *string, *bool, *string, *uint64) {
@@ -111,7 +118,7 @@ func runBench(args []string, log *slog.Logger) (int, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
-	rep, err := bench.RunBench(ctx, *set, *split, *out)
+	rep, err := bench.RunBench(ctx, *set, *split, *out, "")
 	if err != nil {
 		if err.Error() != "" && (containsNOTRun(err.Error())) {
 			log.Warn("bench not run", "error", err)
@@ -220,9 +227,10 @@ func runBenchCalibrate(args []string, log *slog.Logger) (int, error) {
 	}
 	// Run-level wall bound (ADR-0064): the synthetic source alone runs under
 	// the 30-minute floor; each captured fixture adds its whole frame list
-	// once per replay source — the clean capture plus every degraded variant
-	// (class b′) — so the per-frame term scales with that. A corrupt fixture
-	// is refused here, before the fit starts.
+	// once per replay source — the clean capture, every degraded variant
+	// (class b′) and every hard-set variant (class b″) — so the per-frame
+	// term scales with that. A corrupt fixture is refused here, before the
+	// fit starts.
 	fixtureDirs := fsArgsFixture(args)
 	capturedFrames := 0
 	for _, dir := range fixtureDirs {
@@ -230,7 +238,7 @@ func runBenchCalibrate(args []string, log *slog.Logger) (int, error) {
 		if err != nil {
 			return 1, err
 		}
-		capturedFrames += n * (1 + len(bench.DegradedVariants()))
+		capturedFrames += n * (1 + len(bench.DegradedVariants()) + len(bench.HardsetVariants()))
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), bench.ReplayRunBound(capturedFrames))
 	defer cancel()
@@ -258,11 +266,31 @@ func runBenchCalibrate(args []string, log *slog.Logger) (int, error) {
 		cal.Set, cal.Temperature, cal.CalibrationRevision)
 	fmt.Printf("  n=%d used, %d skipped (empty box / retrieval miss); NLL at T=1 %.6g → at fit %.6g\n",
 		cal.SamplesUsed, cal.SamplesSkipped, cal.NLLAtT1, cal.NLLAtFit)
+	fmt.Printf("  brier at T=1 %.6g → at fit %.6g; ece(10bin) at T=1 %.6g → at fit %.6g\n",
+		cal.BrierAtT1, cal.BrierAtFit, cal.ECEAtT1, cal.ECEAtFit)
+	for _, bin := range cal.ReliabilityFit {
+		beforeMean, beforeAcc := reliabilityBinAt(cal.ReliabilityT1, bin.Lo, bin.Hi)
+		fmt.Printf("  reliability [%4.2f,%4.2f): n=%-4d after mean prob %.4f / accuracy %.4f — before (T=1) mean %.4f / acc %.4f\n",
+			bin.Lo, bin.Hi, bin.N, bin.MeanProb, bin.Acc, beforeMean, beforeAcc)
+	}
 	for _, s := range cal.Sources {
-		fmt.Printf("  [%s: class %s — %d used, %d incorrect top-1, %d skipped]\n", s.Name, s.Class, s.Samples, s.IncorrectTop1, s.Skipped)
+		fmt.Printf("  [%s: class %s — %d used, %d incorrect top-1, %d skipped, %d not-run]\n", s.Name, s.Class, s.Samples, s.IncorrectTop1, s.Skipped, s.NotRun)
 	}
 	fmt.Printf("bench calibrate: wrote %s/calibration.json\n", *out)
 	return 0, nil
+}
+
+// reliabilityBinAt looks up one bin's before/after row for the side-by-side
+// print; an empty bin at the fitted T (no samples binned there) prints 0/0
+// for the T=1 side as well, which is the honest reading (the T=1 row is
+// simply not in the occupied-bins list).
+func reliabilityBinAt(bins []bench.CalibrationBin, lo, hi float64) (mean, acc float64) {
+	for _, b := range bins {
+		if b.Lo == lo && b.Hi == hi {
+			return b.MeanProb, b.Acc
+		}
+	}
+	return 0, 0
 }
 
 // fsArgsFixture collects the repeated --fixture values the flag package

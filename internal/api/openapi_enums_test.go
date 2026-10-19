@@ -63,6 +63,10 @@ var literalEnums = map[string][]string{
 	"HealthStatus.properties.status": {"ok", "fail"},
 	// The 202 of the one route that enqueues this kind.
 	"ImportAccepted.properties.job_kind": {JobKindImportFile},
+	// The 202 of the disc-import route (ADR-0066) answers which shape the
+	// job will read: the allowlisted file in place, or the upload's bytes.
+	"DiscImportAccepted.properties.job_kind": {JobKindImportDisc},
+	"DiscImportAccepted.properties.source":   {discSourceDir, discSourceUpload},
 	// internal/profileio writes the manifest schema version it understands.
 	"ProfileManifest.properties.schema_version": {profileio.SchemaVersion},
 	// The session runtime (Milestone 2, ADR-0024) writes these words: the frame
@@ -73,6 +77,9 @@ var literalEnums = map[string][]string{
 	"FrameSourceKind": {runtime.SourceKindReplay, runtime.SourceKindTestPattern, runtime.SourceKindV4L2, runtime.SourceKindDolphin},
 	"SessionState":    {runtime.StateStarting, runtime.StateRunning, runtime.StateStopping, runtime.StateStopped, runtime.StateFailed},
 	"SessionMode":     {runtime.ModeConservative, runtime.ModePredictive},
+	// The per-stage bottleneck summary (docs/spec/16 M7): the three stage
+	// names internal/runtime/bottleneck.go names, in pipeline order.
+	"StageLatency.properties.stage": {runtime.StageFrameToOCR, runtime.StageOCRToRanked, runtime.StageFrameToCommitted},
 	// The onboarding surface (ADR-0028): the run-state vocabulary the agent
 	// core writes on the run row, the tool-result statuses the executor
 	// wraps (plus the store's pending row state), and the two review-item

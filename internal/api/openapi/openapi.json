@@ -86,6 +86,10 @@
   {
    "name": "devtests",
    "description": "The /tests page: scenario catalog, gate results, readiness and reports (developer)."
+  },
+  {
+   "name": "disc-import",
+   "description": "Import a game's script from the user's own disc image: the allowlisted directory's images and the import.disc job (ADR-0066)."
   }
  ],
  "paths": {
@@ -146,7 +150,7 @@
       }
      },
      "503": {
-      "description": "Not ready \u2014 the same body, so a load balancer sees one shape for both outcomes and `checks` names what failed. A failure of the endpoint itself (a wrong method, an unwired route) is the problem+json default like anywhere else.",
+      "description": "Not ready — the same body, so a load balancer sees one shape for both outcomes and `checks` names what failed. A failure of the endpoint itself (a wrong method, an unwired route) is the problem+json default like anywhere else.",
       "content": {
        "application/json": {
         "schema": {
@@ -937,7 +941,7 @@
      "games"
     ],
     "summary": "The title library, cursor-paginated.",
-    "description": "Ordering is by ULID id, which is what makes a page boundary a row identity rather than an offset a concurrent import could shift (docs/spec/12's no-duplicates-or-gaps property). Text search is per revision (GET /api/v1/profiles/{id}/messages/search), because a match is only meaningful against one edition's script; ?q= here is refused rather than answered with an unfiltered list, which would read as \u201cno title matches\u201d.",
+    "description": "Ordering is by ULID id, which is what makes a page boundary a row identity rather than an offset a concurrent import could shift (docs/spec/12's no-duplicates-or-gaps property). Text search is per revision (GET /api/v1/profiles/{id}/messages/search), because a match is only meaningful against one edition's script; ?q= here is refused rather than answered with an unfiltered list, which would read as “no title matches”.",
     "x-required-role": "viewer",
     "parameters": [
      {
@@ -2060,6 +2064,78 @@
     }
    }
   },
+  "/api/v1/profiles/{id}/characters/{cid}/speaker-link": {
+   "post": {
+    "operationId": "linkSpeaker",
+    "tags": [
+     "profiles"
+    ],
+    "summary": "Link an import's speaker placeholder to a character.",
+    "description": "The curator's identification of an opaque source speaker (ADR-0070): the placeholder {cid} — the row an import created for a speaker id the source names only as an attribute — is identified as the target character. One transaction re-points the placeholder's lines at the target (confirmed at 1.0, the source-field evidence kept and the acting curator added as a reviewer entry), records one manual speaker assertion per re-pointed line, folds the placeholder's name into the target's aliases so a re-import binds the key straight to the target, and retires the placeholder. Draft revisions only, and If-Match carries the revision's row version like every profile write: 428 when absent, 412 when stale. A retired placeholder or a retired target answers 409, a self-link or a missing or malformed target_character_id answers 400, and a character the revision does not have answers 404.",
+    "x-required-role": "curator",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/ProfileId"
+     },
+     {
+      "name": "cid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "The placeholder character the import created for the source speaker id."
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/SpeakerLinkRequest"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Linked. ETag is the revision's new token.",
+      "headers": {
+       "ETag": {
+        "schema": {
+         "type": "string"
+        }
+       }
+      },
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SpeakerLinkResponse"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "404": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "409": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "412": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "428": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   }
+  },
   "/api/v1/profiles/{id}/regions": {
    "get": {
     "operationId": "listRegions",
@@ -2105,7 +2181,7 @@
      "profiles"
     ],
     "summary": "Replace a draft revision's whole region set.",
-    "description": "If-Match carries the profile revision's row version, the same token the message edit sends back (ADR-0015): 428 when absent, 412 when stale, 409 when the revision is published or archived. The body is exhaustive \u2014 a region set is one calibration, not a bag of boxes \u2014 and the store advances the set's revision exactly once, so cached detections keyed on it invalidate precisely (docs/spec/09 \"edits yield new region-set revision\"). Geometry is normalised [0,1] frame fractions; a box running past the frame is a 422 with the finding naming the box.",
+    "description": "If-Match carries the profile revision's row version, the same token the message edit sends back (ADR-0015): 428 when absent, 412 when stale, 409 when the revision is published or archived. The body is exhaustive — a region set is one calibration, not a bag of boxes — and the store advances the set's revision exactly once, so cached detections keyed on it invalidate precisely (docs/spec/09 \"edits yield new region-set revision\"). Geometry is normalised [0,1] frame fractions; a box running past the frame is a 422 with the finding naming the box.",
     "x-required-role": "curator",
     "parameters": [
      {
@@ -2171,7 +2247,7 @@
      "profiles"
     ],
     "summary": "OCR one frame against the boxes on the canvas.",
-    "description": "A what-if read, never a write: the editor sends a frame \u2014 an uploaded capture (multipart, image part \u2264 4 MB) or a fixture path under the configured replay roots (application/json, fixture) \u2014 plus the boxes to read, and gets back per box four OCR variants (PSM 6/7 crossed with preprocess on/off, the settings a profile stores in regions.ocr_settings), the textbox-presence classification the runtime's panel detector applies (docs/spec/04), and the timings the page renders. Boxes default to the revision's stored regions when the request names none. The image is held in memory for the request only; it is persisted exactly when dev_trace is set and an event hub is wired, as a regions.preview event carrying the frame.",
+    "description": "A what-if read, never a write: the editor sends a frame — an uploaded capture (multipart, image part ≤ 4 MB) or a fixture path under the configured replay roots (application/json, fixture) — plus the boxes to read, and gets back per box four OCR variants (PSM 6/7 crossed with preprocess on/off, the settings a profile stores in regions.ocr_settings), the textbox-presence classification the runtime's panel detector applies (docs/spec/04), and the timings the page renders. Boxes default to the revision's stored regions when the request names none. The image is held in memory for the request only; it is persisted exactly when dev_trace is set and an event hub is wired, as a regions.preview event carrying the frame.",
     "x-required-role": "curator",
     "parameters": [
      {
@@ -2271,7 +2347,7 @@
      "profiles"
     ],
     "summary": "One page of a revision's dialogue graph.",
-    "description": "The virtualized graph's page contract (docs/spec/09): nodes carry the short normalized text (\u2264 80 runes) the list row renders, plus the attribution a verified-vs-inferred label needs; edges are returned only when both endpoints are on the page, so a filtered or partial page is a connected subgraph rather than half-edges at its boundary. Filters are exact, server-side matches on speaker, message kind and scene.",
+    "description": "The virtualized graph's page contract (docs/spec/09): nodes carry the short normalized text (≤ 80 runes) the list row renders, plus the attribution a verified-vs-inferred label needs; edges are returned only when both endpoints are on the page, so a filtered or partial page is a connected subgraph rather than half-edges at its boundary. Filters are exact, server-side matches on speaker, message kind and scene.",
     "x-required-role": "viewer",
     "parameters": [
      {
@@ -2933,7 +3009,7 @@
      "sessions"
     ],
     "summary": "Apply the live audio controls (mute, volume, speech delay) to one session.",
-    "description": "The operator's audio controls of docs/spec/07 (\u201cApply volume, short fade, optional delay calibration\u201d): mute skips playback but the events still flow (result \u201cmuted\u201d), volume scales the samples in the sink path and speech_delay_ms waits before start, still fenced by newer commits. The body is partial: a field left out keeps its current value. The 200 body is the session snapshot with the applied state (Session.audio), not an acknowledgement. A session without a voice pipeline answers 503 audio_unavailable; an out-of-range control (volume outside 0..1, delay outside 0..2000) answers 400 invalid_audio_settings.",
+    "description": "The operator's audio controls of docs/spec/07 (“Apply volume, short fade, optional delay calibration”): mute skips playback but the events still flow (result “muted”), volume scales the samples in the sink path and speech_delay_ms waits before start, still fenced by newer commits. The body is partial: a field left out keeps its current value. The 200 body is the session snapshot with the applied state (Session.audio), not an acknowledgement. A session without a voice pipeline answers 503 audio_unavailable; an out-of-range control (volume outside 0..1, delay outside 0..2000) answers 400 invalid_audio_settings.",
     "x-required-role": "operator",
     "parameters": [
      {
@@ -3088,6 +3164,46 @@
       }
      },
      "400": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "503": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   }
+  },
+  "/api/v1/dev/sessions/{id}/bottlenecks": {
+   "get": {
+    "operationId": "devSessionBottlenecks",
+    "tags": [
+     "dev"
+    ],
+    "summary": "One session's per-stage latency summary: the named bottleneck.",
+    "description": "The session's own pipeline stage latencies (capture → OCR, OCR → rank, capture → committed) reduced by the shared summary function (runtime.Bottlenecks): p50/p95/max per stage, each stage's share of the end-to-end latency at the p95 point, and the named slowest stage (docs/spec/16 M7 \"diagnostics expose bottlenecks\"). The intervals are wall-clock measurements of the run (the same class as the bench's duration figure, ADR-0064): the view reports them and names the slow stage, it does not grade on them. A still-running session answers with its stats so far (usually an empty summary until the run settles). Developer-only for the same reason as the other dev inspection routes: the session's run state is developer evidence.",
+    "x-required-role": "developer",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/SessionId"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "The session's stage summary; slowest_stage is empty when no stage has samples yet.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SessionBottlenecks"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "404": {
       "$ref": "#/components/responses/Problem"
      },
      "503": {
@@ -4059,7 +4175,7 @@
      "dev"
     ],
     "summary": "The bridge's self-report: state, pids, render window, image hash.",
-    "description": "The bridge's Status verbatim: state (stopped/launching/running/failed), the private display, the dolphin and Xvfb pids, the resolved render window id and region, the controller-pipe connection fact, the isolated user dir, and the game image by SHA-256 and size \u2014 never by path. Poll this after POST /api/v1/dev/dolphin/launch until state is \"running\" or \"failed\". Answers 501 without the GAME_NARRATOR_DEV_DOLPHIN opt-in, 503 when no bridge is wired into the process.",
+    "description": "The bridge's Status verbatim: state (stopped/launching/running/failed), the private display, the dolphin and Xvfb pids, the resolved render window id and region, the controller-pipe connection fact, the isolated user dir, and the game image by SHA-256 and size — never by path. Poll this after POST /api/v1/dev/dolphin/launch until state is \"running\" or \"failed\". Answers 501 without the GAME_NARRATOR_DEV_DOLPHIN opt-in, 503 when no bridge is wired into the process.",
     "x-required-role": "developer",
     "x-dev-opt-in": "GAME_NARRATOR_DEV_DOLPHIN=1",
     "responses": {
@@ -4092,7 +4208,7 @@
      "dev"
     ],
     "summary": "Inject controller input through the isolated pad (dev host, explicit opt-in).",
-    "description": "Presses/releases the named buttons and sets the named axes through the bridge's persistent controller-pipe writer, holding for hold_ms (0 = the bridge default, calibrated against the emulated frame time). Synchronous: the answer is the write to the controller device, not a claim that the game reacted \u2014 the scene predicate (the readiness evidence) is the acceptance proof. Button and axis names are a closed set: an unknown name or an out-of-range axis is a 400, not a silent drop. Answers 501 without the opt-in, 503 when unwired, 409 while the bridge is not running.",
+    "description": "Presses/releases the named buttons and sets the named axes through the bridge's persistent controller-pipe writer, holding for hold_ms (0 = the bridge default, calibrated against the emulated frame time). Synchronous: the answer is the write to the controller device, not a claim that the game reacted — the scene predicate (the readiness evidence) is the acceptance proof. Button and axis names are a closed set: an unknown name or an out-of-range axis is a 400, not a silent drop. Answers 501 without the opt-in, 503 when unwired, 409 while the bridge is not running.",
     "x-required-role": "developer",
     "x-dev-opt-in": "GAME_NARRATOR_DEV_DOLPHIN=1",
     "requestBody": {
@@ -4178,7 +4294,7 @@
      "dev"
     ],
     "summary": "Stop the emulator and the private display (idempotent).",
-    "description": "Closes the controller pipe, stops the emulator gracefully (bounded wait, then the process group is signalled), stops the Xvfb the bridge started, and clears the state so the bridge can Launch again with a fresh isolated dir. Idempotent: stopping something already stopped is the same 200 answer, because the condition is not an error. The bridge's lifetime context does the same teardown on its own when cancelled, and the OS kills every child on the process's abrupt death \u2014 this route is the explicit, operator-visible form of that. Answers 501 without the opt-in, 503 when unwired.",
+    "description": "Closes the controller pipe, stops the emulator gracefully (bounded wait, then the process group is signalled), stops the Xvfb the bridge started, and clears the state so the bridge can Launch again with a fresh isolated dir. Idempotent: stopping something already stopped is the same 200 answer, because the condition is not an error. The bridge's lifetime context does the same teardown on its own when cancelled, and the OS kills every child on the process's abrupt death — this route is the explicit, operator-visible form of that. Answers 501 without the opt-in, 503 when unwired.",
     "x-required-role": "developer",
     "x-dev-opt-in": "GAME_NARRATOR_DEV_DOLPHIN=1",
     "responses": {
@@ -4486,7 +4602,7 @@
      "corrections"
     ],
     "summary": "Record a correction (a label only; it applies no fix).",
-    "description": "The inspector's correction actions and anything else that records a user fix. The label lands as proposed with the caller as actor; a message target must name an existing row of the revision. It never applies the fix \u2014 applying is the corresponding content write (ADR-0052).",
+    "description": "The inspector's correction actions and anything else that records a user fix. The label lands as proposed with the caller as actor; a message target must name an existing row of the revision. It never applies the fix — applying is the corresponding content write (ADR-0052).",
     "x-required-role": "curator",
     "requestBody": {
      "required": true,
@@ -4526,6 +4642,117 @@
      }
     }
    }
+  },
+  "/api/v1/import/disc/images": {
+   "get": {
+    "operationId": "listDiscImportImages",
+    "tags": [
+     "disc-import"
+    ],
+    "summary": "List the disc images in the allowlisted import directory.",
+    "description": "What a curator can import from the directory the operator names with GAME_NARRATOR_IMPORT_DIR: the regular files directly in it, by basename with size and mtime. The API never answers with the directory's own path (AGENTS.md rule 5), and symlinks the operator placed in the directory are listed like any other file. An unconfigured directory is a state, not a fault: the route answers 200 with configured:false and an empty list, and the upload shape of POST /profiles/{id}/import/disc is then the import path. 503 SUBSYSTEM_UNAVAILABLE remains for a build whose dependencies are unwired and for a configured directory that cannot be read.",
+    "x-required-role": "curator",
+    "responses": {
+     "200": {
+      "description": "The regular files directly in the directory, sorted by name.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/DiscImages"
+        }
+       }
+      }
+     },
+     "503": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   }
+  },
+  "/api/v1/profiles/{id}/import/disc": {
+   "post": {
+    "operationId": "importDisc",
+    "tags": [
+     "disc-import"
+    ],
+    "summary": "Import a game's script from a disc image; the hash, parse and write run as a job.",
+    "description": "Two request shapes, one 202 body (ADR-0066). Dir shape: a JSON body {\"image\": \"<basename>\"} (or ?image=<name>) naming a regular file in the allowlisted import directory; the job reads the image in place and never copies it, so a crash resumes against the same on-disk image. Upload shape: multipart/form-data with a file part carrying the raw image (CISO or plain GCM), streamed into the asset store under the shared upload cap with its hash computed while streaming — real GB-scale discs do not fit the cap by design, and the 202 detail says the directory is the full-image path. The target revision must be a draft (409 otherwise, as on the file import). The job (kind import.disc) opens the image, lets the disc-capable adapter verify the game id and extract the message script, and imports it through the same machinery as the file import: the BMG is content-addressed, a re-import of the same image reconciles by hash instead of duplicating, and the result is a DiscImportReport. The image path is never logged or stored; the report and the source row carry the image's SHA-256 and the game id instead.",
+    "x-required-role": "curator",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/ProfileId"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKeyOptional"
+     }
+    ],
+    "requestBody": {
+     "description": "Dir shape: application/json with {\"image\": \"<basename>\"}. Upload shape: multipart/form-data with a file part named `file`.",
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/DiscImportRequest"
+       }
+      },
+      "multipart/form-data": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "file": {
+          "type": "string",
+          "format": "binary",
+          "description": "the raw disc image (CISO or plain GCM)"
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "202": {
+      "description": "Verified and queued.",
+      "headers": {
+       "Location": {
+        "schema": {
+         "type": "string"
+        },
+        "description": "The job's path."
+       }
+      },
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/DiscImportAccepted"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "404": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "409": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "413": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "422": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "503": {
+      "$ref": "#/components/responses/Problem"
+     },
+     "default": {
+      "$ref": "#/components/responses/Problem"
+     }
+    }
+   }
   }
  },
  "components": {
@@ -4546,7 +4773,7 @@
     "type": "http",
     "scheme": "bearer",
     "bearerFormat": "opaque",
-    "description": "Authorization: Bearer gn_\u2026, minted by POST /api/v1/users/{id}/tokens or game-narrator admin token."
+    "description": "Authorization: Bearer gn_…, minted by POST /api/v1/users/{id}/tokens or game-narrator admin token."
    }
   },
   "parameters": {
@@ -5695,7 +5922,7 @@
    },
    "JobDetail": {
     "type": "object",
-    "description": "A job plus the attempt history that makes a crash visible (docs/spec/13). It is spelled out rather than composed with allOf over Job, because the two shapes genuinely disagree on one member: internal/api/jobs.go's jobDetailResponse embeds the list DTO (whose `attempts` is an integer retry counter) and then re-declares `attempts` as the history array, and encoding/json keeps the shallower field \u2014 so the detail response carries the history and *not* the count, which only the list gives. ADR-0017 records that as a deviation owned by the queue milestone's file rather than renaming it from here.",
+    "description": "A job plus the attempt history that makes a crash visible (docs/spec/13). It is spelled out rather than composed with allOf over Job, because the two shapes genuinely disagree on one member: internal/api/jobs.go's jobDetailResponse embeds the list DTO (whose `attempts` is an integer retry counter) and then re-declares `attempts` as the history array, and encoding/json keeps the shallower field — so the detail response carries the history and *not* the count, which only the list gives. ADR-0017 records that as a deviation owned by the queue milestone's file rather than renaming it from here.",
     "required": [
      "id",
      "kind",
@@ -6056,7 +6283,7 @@
    },
    "EditionList": {
     "type": "object",
-    "description": "Every edition of one game. Unpaginated by decision: a title has a handful (region \u00d7 language \u00d7 disc revision), and internal/store/repo_catalog.go reads them as one slice.",
+    "description": "Every edition of one game. Unpaginated by decision: a title has a handful (region × language × disc revision), and internal/store/repo_catalog.go reads them as one slice.",
     "required": [
      "editions"
     ],
@@ -6086,7 +6313,7 @@
    },
    "MessageList": {
     "type": "object",
-    "description": "One page of a revision's dialogue. `profile_etag` is the revision's current If-Match token, so the dialogue browser can edit straight from this page instead of fetching the profile once per keystroke. It is the same integer as the profile's ETag header, from the same row \u2014 a convenience member, not a second token.",
+    "description": "One page of a revision's dialogue. `profile_etag` is the revision's current If-Match token, so the dialogue browser can edit straight from this page instead of fetching the profile once per keystroke. It is the same integer as the profile's ETag header, from the same row — a convenience member, not a second token.",
     "required": [
      "messages",
      "profile_etag"
@@ -6142,9 +6369,52 @@
      }
     }
    },
+   "SpeakerLinkRequest": {
+    "type": "object",
+    "description": "The identification itself: which live character the placeholder is. A self-link is refused with 400.",
+    "required": [
+     "target_character_id"
+    ],
+    "additionalProperties": false,
+    "properties": {
+     "target_character_id": {
+      "type": "string",
+      "description": "The character the placeholder's speaker is identified as."
+     }
+    }
+   },
+   "SpeakerLinkResponse": {
+    "type": "object",
+    "description": "The link's outcome, counts only: which rows were joined and how many lines moved.",
+    "required": [
+     "profile_id",
+     "source_character_id",
+     "target_character_id",
+     "repointed_messages"
+    ],
+    "additionalProperties": false,
+    "properties": {
+     "profile_id": {
+      "type": "string",
+      "description": "The revision the link was recorded on."
+     },
+     "source_character_id": {
+      "type": "string",
+      "description": "The placeholder, now retired; its name is folded into the target's aliases."
+     },
+     "target_character_id": {
+      "type": "string",
+      "description": "The character the placeholder is identified as."
+     },
+     "repointed_messages": {
+      "type": "integer",
+      "description": "The lines that now point at the target, each confirmed at 1.0 with a manual assertion."
+     }
+    }
+   },
    "RegionList": {
     "type": "object",
-    "description": "One revision's region set \u2014 every rectangle text is read from, with the values that may be null because the source did not state them.",
+    "description": "One revision's region set — every rectangle text is read from, with the values that may be null because the source did not state them.",
     "required": [
      "regions"
     ],
@@ -6175,7 +6445,7 @@
    },
    "RegionInput": {
     "type": "object",
-    "description": "One box as the editor sends it. x+w and y+h must stay \u2264 1: the same box-inside-the-frame rule the regions table's CHECK enforces.",
+    "description": "One box as the editor sends it. x+w and y+h must stay ≤ 1: the same box-inside-the-frame rule the regions table's CHECK enforces.",
     "required": [
      "region_type",
      "x",
@@ -6840,7 +7110,8 @@
      "state",
      "created_at",
      "event_cursor",
-     "stats"
+     "stats",
+     "source"
     ],
     "properties": {
      "session_id": {
@@ -6883,9 +7154,131 @@
      "stats": {
       "$ref": "#/components/schemas/PipelineStats"
      },
+     "source": {
+      "description": "The capture source's own self-report: whether it is delivering frames at all, and if not, why (docs/spec/13). The pipeline's downstream counters cannot name this fault: a session whose capture child keeps failing reads running with zero frames delivered, and this field carries the source's state and last failure text.",
+      "$ref": "#/components/schemas/SessionSource"
+     },
      "audio": {
       "description": "Present when the process has a voice workflow wired and this session's sink built; absent on a silent session, where the audio route answers 503 audio_unavailable.",
       "$ref": "#/components/schemas/SessionAudio"
+     }
+    }
+   },
+   "SessionSource": {
+    "type": "object",
+    "description": "The session's capture source self-report (the API view of capture.Stats): the source's own ID and lifecycle state, its delivered count and measured rate, the supervised-restart count that separates a one-time device loss from flapping capture, and the last failure text.",
+    "required": [
+     "id",
+     "state",
+     "delivered",
+     "restarts",
+     "fps"
+    ],
+    "properties": {
+     "id": {
+      "type": "string",
+      "description": "The source's stable identity (e.g. x11::96+0,0 or replay:dialogue-advance-001)."
+     },
+     "state": {
+      "type": "string",
+      "description": "The source lifecycle state: starting, running, reconnecting, stopped or failed."
+     },
+     "delivered": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Frames the source has handed to the session since start."
+     },
+     "restarts": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Supervised (re)starts after the first, including failed spawn attempts."
+     },
+     "fps": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Measured arrival rate over the trailing window; zero until enough frames have arrived."
+     },
+     "last_frame_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "The wall time of the newest delivered frame; absent before the first frame."
+     },
+     "last_error": {
+      "type": "string",
+      "description": "The most recent failure text, kept because docs/spec/13 requires an actionable operator action; absent while healthy."
+     }
+    }
+   },
+   "SessionBottlenecks": {
+    "type": "object",
+    "description": "The GET /api/v1/dev/sessions/{id}/bottlenecks body: the session's own per-stage latency summary (docs/spec/16 M7 \"diagnostics expose bottlenecks\"). The same rows, shares and named slowest stage the support bundle's bottlenecks.json and the developer page read, all computed by the one shared function (runtime.Bottlenecks) from the session's own stats.",
+    "required": [
+     "session_id",
+     "state",
+     "stages",
+     "slowest_stage"
+    ],
+    "properties": {
+     "session_id": {
+      "type": "string"
+     },
+     "state": {
+      "$ref": "#/components/schemas/SessionState"
+     },
+     "stages": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/StageLatency"
+      }
+     },
+     "slowest_stage": {
+      "type": "string",
+      "description": "The proper sub-stage (capture→OCR or OCR→rank) with the largest p95 — the stage that owns the most of the end-to-end latency. The end-to-end stage is the baseline, never a candidate (it contains both sub-stages); when no sub-stage has samples but the end-to-end stage does, it is named instead. Empty string when no stage has samples."
+     }
+    }
+   },
+   "StageLatency": {
+    "type": "object",
+    "description": "One measured stage of one run's own pipeline latency stats (internal/pipeline: frame_to_ocr, ocr_to_ranked, frame_to_committed). p50_ns and p95_ns are histogram bucket edges (the pipeline buckets by design); max_ns is exact. Wall-clock measurement: a diagnostic, not a verdict (ADR-0064).",
+    "required": [
+     "stage",
+     "count",
+     "p50_ns",
+     "p95_ns",
+     "max_ns",
+     "share_of_end_to_end"
+    ],
+    "properties": {
+     "stage": {
+      "type": "string",
+      "enum": [
+       "frame_to_ocr",
+       "ocr_to_ranked",
+       "frame_to_committed"
+      ],
+      "description": "The stage: capture → OCR, OCR → rank, or capture → committed (the end-to-end baseline)."
+     },
+     "count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "How many samples the stage's histogram held."
+     },
+     "p50_ns": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "p95_ns": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "max_ns": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "share_of_end_to_end": {
+      "type": "number",
+      "minimum": 0,
+      "description": "p95(stage) / p95(frame_to_committed): the stage's share of the end-to-end latency at the p95 point. 1 for the end-to-end stage itself; 0 when the stage or the end-to-end stage has no samples. The ratio of two histogram bucket edges over two different sample populations, so it can exceed 1 when both p95s are quantized edges of sub-millisecond intervals (the honest reading: this stage's p95 edge is above the end-to-end p95 edge)."
      }
     }
    },
@@ -6895,7 +7288,7 @@
     "properties": {
      "muted": {
       "type": "boolean",
-      "description": "Skip playback. The voice still resolves and the audio still synthesises (the cache is filled); the utterance ends with result \u201cmuted\u201d instead of starting."
+      "description": "Skip playback. The voice still resolves and the audio still synthesises (the cache is filled); the utterance ends with result “muted” instead of starting."
      },
      "volume": {
       "type": "number",
@@ -6913,7 +7306,7 @@
    },
    "SessionAudio": {
     "type": "object",
-    "description": "The session's audio half: the sink in use, the live controls, the speech counters and the current utterance (docs/spec/07, docs/spec/13 \u201cdid it speak, and why not\u201d).",
+    "description": "The session's audio half: the sink in use, the live controls, the speech counters and the current utterance (docs/spec/07, docs/spec/13 “did it speak, and why not”).",
     "required": [
      "sink",
      "muted",
@@ -6955,7 +7348,7 @@
    },
    "SpeechCounters": {
     "type": "object",
-    "description": "One session's speech decision counters (docs/spec/13): the counts that make \u201cdid it speak, and why not\u201d answerable.",
+    "description": "One session's speech decision counters (docs/spec/13): the counts that make “did it speak, and why not” answerable.",
     "required": [
      "requested",
      "ready",
@@ -6983,7 +7376,7 @@
      },
      "ended": {
       "type": "integer",
-      "description": "Utterances that reached a terminal state \u2014 natural end, failure, skip or mute."
+      "description": "Utterances that reached a terminal state — natural end, failure, skip or mute."
      },
      "cache_hits": {
       "type": "integer",
@@ -7573,7 +7966,7 @@
    },
    "VoiceRevision": {
     "type": "object",
-    "description": "One voice revision. A revision is immutable once approved: the reference bytes, transcript, design model and consent record are frozen (docs/spec/07, ADR-0005). States move forward only: draft \u2192 auditioning \u2192 approved \u2192 retired.",
+    "description": "One voice revision. A revision is immutable once approved: the reference bytes, transcript, design model and consent record are frozen (docs/spec/07, ADR-0005). States move forward only: draft → auditioning → approved → retired.",
     "required": [
      "id",
      "character",
@@ -7974,7 +8367,7 @@
    },
    "DolphinStatus": {
     "type": "object",
-    "description": "The bridge's self-report. It carries host paths only where a trusted developer on the box needs them (user_dir), and the game image by SHA-256 and size \u2014 the image path itself is never present in any response.",
+    "description": "The bridge's self-report. It carries host paths only where a trusted developer on the box needs them (user_dir), and the game image by SHA-256 and size — the image path itself is never present in any response.",
     "required": [
      "state",
      "pipe_connected"
@@ -8086,7 +8479,7 @@
      },
      "base_url": {
       "type": "string",
-      "description": "'<configured>' or '' \u2014 never the actual endpoint."
+      "description": "'<configured>' or '' — never the actual endpoint."
      },
      "reasoning_effort": {
       "type": "string",
@@ -8530,7 +8923,7 @@
      },
      "instruction": {
       "type": "string",
-      "description": "What makes the gate run (the make target plus its prerequisites) \u2014 the actionable form of NOT RUN."
+      "description": "What makes the gate run (the make target plus its prerequisites) — the actionable form of NOT RUN."
      }
     },
     "required": [
@@ -8751,7 +9144,7 @@
    },
    "Correction": {
     "type": "object",
-    "description": "One correction label \u2014 the regression fixture of its target: what was wrong (before_value), what it should be (after_value, the assertion a re-run checks) and who decided (actor). A correction of a message's speech text is recorded by the dialogue editor's save itself; explicit recordings land as proposed (ADR-0052).",
+    "description": "One correction label — the regression fixture of its target: what was wrong (before_value), what it should be (after_value, the assertion a re-run checks) and who decided (actor). A correction of a message's speech text is recorded by the dialogue editor's save itself; explicit recordings land as proposed (ADR-0052).",
     "required": [
      "id",
      "profile_id",
@@ -8792,7 +9185,7 @@
      },
      "after_value": {
       "type": "string",
-      "description": "What it should be \u2014 the assertion a re-run checks. Required for an accepted correction; may be absent on a proposal the reviewer has not settled."
+      "description": "What it should be — the assertion a re-run checks. Required for an accepted correction; may be absent on a proposal the reviewer has not settled."
      },
      "reason": {
       "type": "string"
@@ -8843,7 +9236,7 @@
    },
    "CreateCorrectionRequest": {
     "type": "object",
-    "description": "Record a correction explicitly \u2014 the inspector's \"text incorrect / speaker incorrect\" actions. This records a label only; it never applies a fix. The row lands as proposed with the caller as actor (ADR-0052).",
+    "description": "Record a correction explicitly — the inspector's \"text incorrect / speaker incorrect\" actions. This records a label only; it never applies a fix. The row lands as proposed with the caller as actor (ADR-0052).",
     "required": [
      "profile_id",
      "kind",
@@ -8898,6 +9291,136 @@
       "$ref": "#/components/schemas/Correction"
      }
     }
+   },
+   "DiscImageEntry": {
+    "type": "object",
+    "required": [
+     "name",
+     "size_bytes",
+     "modified_at"
+    ],
+    "properties": {
+     "name": {
+      "type": "string",
+      "description": "The basename the request sends; never a path."
+     },
+     "size_bytes": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "modified_at": {
+      "type": "string"
+     }
+    }
+   },
+   "DiscImages": {
+    "type": "object",
+    "description": "GET /api/v1/import/disc/images: what the allowlisted directory holds, without naming the directory.",
+    "required": [
+     "configured",
+     "images"
+    ],
+    "properties": {
+     "configured": {
+      "type": "boolean",
+      "description": "true when the operator has configured the import directory; a 200 with false and an empty list is the unconfigured answer."
+     },
+     "adapter": {
+      "type": "string",
+      "description": "id@semver of the disc-capable adapter linked into this build, when one is."
+     },
+     "images": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/DiscImageEntry"
+      }
+     }
+    }
+   },
+   "DiscImportRequest": {
+    "type": "object",
+    "description": "The dir shape's body. The image is a basename directly in the allowlisted import directory; anything path-shaped is a 400.",
+    "properties": {
+     "image": {
+      "type": "string"
+     }
+    }
+   },
+   "DiscImportAccepted": {
+    "type": "object",
+    "description": "The image is verified and the import queued; progress and the report are the job's.",
+    "required": [
+     "job_id",
+     "job_kind",
+     "profile_id",
+     "source",
+     "state",
+     "detail"
+    ],
+    "properties": {
+     "job_id": {
+      "type": "string"
+     },
+     "job_kind": {
+      "type": "string",
+      "const": "import.disc"
+     },
+     "profile_id": {
+      "type": "string"
+     },
+     "source": {
+      "type": "string",
+      "enum": [
+       "dir",
+       "upload"
+      ],
+      "description": "Which shape the job will read: the allowlisted file in place, or the upload's content from the asset store."
+     },
+     "image": {
+      "type": "string",
+      "description": "The basename, dir shape only."
+     },
+     "sha256": {
+      "type": "string",
+      "description": "The image's content hash, upload shape only (the dir shape hashes in the job and reports it in its result)."
+     },
+     "state": {
+      "$ref": "#/components/schemas/JobState"
+     },
+     "detail": {
+      "type": "string"
+     }
+    }
+   },
+   "DiscImportReport": {
+    "allOf": [
+     {
+      "$ref": "#/components/schemas/ImportReport"
+     },
+     {
+      "type": "object",
+      "description": "The result_json of a succeeded import.disc job: the file-import counters the review screen reads, plus the disc-side provenance (the image's own hash, the disc's game id and region).",
+      "required": [
+       "image_sha256",
+       "game_id",
+       "disc_region"
+      ],
+      "properties": {
+       "image_sha256": {
+        "type": "string",
+        "description": "The disc image's SHA-256 — provenance in place of the path, which is never stored (AGENTS.md rule 5/6)."
+       },
+       "game_id": {
+        "type": "string",
+        "description": "The disc boot header's game id, e.g. GZLE01."
+       },
+       "disc_region": {
+        "type": "string",
+        "description": "The region the game id maps to; the edition's region is the curator's choice and a mismatch is the review's business."
+       }
+      }
+     }
+    ]
    }
   }
  }

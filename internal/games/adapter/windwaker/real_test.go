@@ -180,3 +180,46 @@ func uint32toStr(v uint32) string {
 	}
 	return string(b[i:])
 }
+
+// TestRealDiscSpeakerCoverage asserts ADR-0070's mapping claim against the
+// user's actual archive: the sidecar is lockstep with the rows, every
+// imported line carries a speaker key (the attribute byte is present on every
+// entry of this layout), the distinct-key count is non-degenerate, and the
+// roster agrees with the sidecar. The assertions and the log line carry
+// counts and the field name only — no key values, no message text (AGENTS.md
+// rule 5).
+func TestRealDiscSpeakerCoverage(t *testing.T) {
+	d := openRealDisc(t)
+	a := New().(Adapter)
+	res, err := a.ParseDisc(context.Background(), d, realOpts())
+	if err != nil {
+		t.Fatalf("parse disc: %v", err)
+	}
+	if len(res.Messages) == 0 {
+		t.Fatal("no imported rows; the coverage assertion would pass vacuously")
+	}
+	if len(res.SpeakerKeys) != len(res.Messages) {
+		t.Fatalf("sidecar carries %d keys for %d rows; the adapter fills it in lockstep", len(res.SpeakerKeys), len(res.Messages))
+	}
+	if len(res.Speakers) == 0 || res.SpeakerColumn == "" {
+		t.Fatal("the parse reported no speakers or no column; the coverage claim is the point of this test")
+	}
+	covered := 0
+	distinct := map[string]bool{}
+	for _, k := range res.SpeakerKeys {
+		if k != "" {
+			covered++
+			distinct[k] = true
+		}
+	}
+	if covered != len(res.Messages) {
+		t.Errorf("%d of %d rows carry a speaker key, want 100%% coverage (the attribute byte is present on every entry)", covered, len(res.Messages))
+	}
+	if len(distinct) < 2 {
+		t.Errorf("%d distinct speaker keys, want a non-degenerate roster (the measurement rests on many speakers)", len(distinct))
+	}
+	if len(distinct) != len(res.Speakers) {
+		t.Errorf("%d distinct keys in the sidecar but %d reported speakers; the roster and the sidecar must agree", len(distinct), len(res.Speakers))
+	}
+	t.Logf("real disc: speaker coverage %d/%d rows, %d distinct keys, column %s", covered, len(res.Messages), len(distinct), res.SpeakerColumn)
+}

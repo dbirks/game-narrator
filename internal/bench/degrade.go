@@ -160,6 +160,27 @@ func cropOffset(dx, dy int) func(image.Image) image.Image {
 	}
 }
 
+// rightClip keeps the left frac of the frame's width and drops the rest —
+// the partial-visibility pass: the OCR region is fixed relative to the frame
+// it receives, so clipping the frame moves the region's right edge left in
+// original coordinates and a line that ran past it is read with its tail
+// missing while its head stays crisp (no noise, no re-encode — the clipped
+// read is a clean truncated prefix, the typewriter-reveal reading shape the
+// hard set needs; see hardset.go). Deterministic: a pure function of the
+// fixture's pixels.
+func rightClip(frac float64) func(image.Image) image.Image {
+	return func(img image.Image) image.Image {
+		b := img.Bounds()
+		w := int(float64(b.Dx()) * frac)
+		if w < 16 || w >= b.Dx() {
+			return img
+		}
+		out := image.NewNRGBA(image.Rect(b.Min.X, b.Min.Y, b.Min.X+w, b.Max.Y))
+		draw.Draw(out, out.Bounds(), img, b.Min, draw.Over)
+		return out
+	}
+}
+
 // clampUint8 clamps the int arithmetic of the noise addition into the byte
 // range (the noise is signed: uint8 addition would wrap, not clamp).
 func clampUint8(v int) uint8 {
@@ -240,21 +261,12 @@ func stripExt(f string) string {
 // degraded-frame render failure is NOT RUN for the whole fit (the same
 // discipline as the synthetic render failure): prepare returns the error and
 // the fit refuses.
-func degradedFitSources(fx *CapturedFixture, samples []Sample, msgs []games.Message, idx *matcher.Index) ([]fitSource, error) {
+func degradedFitSources(fx *CapturedFixture, samples []Sample, msgs []games.Message, idx *matcher.Index, speakerOf func(msgID string) string) ([]fitSource, error) {
 	// The union of the samples' frame files (the segments partition the
 	// fixture's rows, so this is the fixture's whole frame list in its
 	// manifest order).
-	seen := map[string]bool{}
-	files := make([]string, 0, len(fx.Manifest.Frames))
-	for _, s := range samples {
-		for _, f := range s.Frames {
-			if !seen[f.File] {
-				seen[f.File] = true
-				files = append(files, f.File)
-			}
-		}
-	}
-	prof := CapturedProfile(fx, msgs)
+	files := sampleFrameFiles(samples)
+	prof := CapturedProfile(fx, msgs, speakerOf)
 	regions := prof.BuildRegions()
 	var srcs []fitSource
 	for _, v := range DegradedVariants() {

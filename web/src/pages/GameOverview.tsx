@@ -6,10 +6,12 @@ import { Link, useParams } from "react-router";
 import {
   ApiError,
   catalogApi,
+  discImportApi,
   jobsApi,
   portabilityApi,
   refreshProfileEtag,
   type ColumnMapping,
+  type DiscImages,
   type Edition,
   type Job,
   type JobDetail,
@@ -369,6 +371,7 @@ function RevisionRow({
   const [error, setError] = useState<unknown>(null);
   const [refused, setRefused] = useState<string[] | null>(null);
   const [importJob, setImportJob] = useState<string | null>(null);
+  const [discImportJob, setDiscImportJob] = useState<string | null>(null);
 
   const move = useMutation({
     mutationFn: async (to: string) => {
@@ -508,13 +511,22 @@ function RevisionRow({
       ) : null}
 
       {!immutable ? (
-        <ImportForm
-          profileId={profile.id}
-          onAccepted={setImportJob}
-          onError={setError}
-          jobId={importJob}
-          onFinished={() => onChanged()}
-        />
+        <>
+          <ImportForm
+            profileId={profile.id}
+            onAccepted={setImportJob}
+            onError={setError}
+            jobId={importJob}
+            onFinished={() => onChanged()}
+          />
+          <DiscImportForm
+            profileId={profile.id}
+            onAccepted={setDiscImportJob}
+            onError={setError}
+            jobId={discImportJob}
+            onFinished={() => onChanged()}
+          />
+        </>
       ) : null}
 
       <ProblemList problems={refused ?? []} />
@@ -699,6 +711,172 @@ function ImportForm({
 
 function isTerminal(state: Job["state"] | string | undefined): boolean {
   return state === "succeeded" || state === "failed" || state === "cancelled";
+}
+
+/**
+ * The disc-import panel (ADR-0066): the game's script from the user's own disc
+ * image. A select fed by the allowlisted import directory (an upload input
+ * when the operator configured no directory, or as the fallback for a GB-scale
+ * image that does not fit the upload cap), the 202's job polled like the file
+ * import's, and the quality report: rows, inserted and skipped, warnings, and
+ * the disc's provenance — the image's own SHA-256, game id, region and the
+ * adapter that read it. The image's path is never in any of this.
+ */
+export function DiscImportForm({
+  profileId,
+  onAccepted,
+  onError,
+  jobId,
+  onFinished,
+}: {
+  profileId: string;
+  onAccepted: (jobId: string) => void;
+  onError: (error: unknown) => void;
+  jobId: string | null;
+  onFinished: () => void;
+}) {
+  const [image, setImage] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const images = useQuery({
+    queryKey: ["disc-import-images"],
+    queryFn: ({ signal }) => discImportApi.listImages(signal) as Promise<DiscImages>,
+  });
+  // The 503 is a configured state, not a fault: no directory means the upload
+  // shape is the only path, and the panel says so instead of showing an error.
+  const dirConfigured = !images.isError && (images.data?.configured ?? false);
+  const entries: { name: string; size_bytes: number }[] = images.data?.images ?? [];
+
+  const [mode, setMode] = useState<"dir" | "upload">("dir");
+  useEffect(() => {
+    if (images.isSuccess && entries.length === 0) setMode("upload");
+    if (images.isError) setMode("upload");
+  }, [images.isSuccess, images.isError, entries.length]);
+
+  const submit = useMutation({
+    mutationFn: (input: { image?: string; file?: File }) =>
+      input.file
+        ? discImportApi.importUpload(profileId, input.file)
+        : discImportApi.importDir(profileId, input.image ?? ""),
+    onSuccess: (accepted: { job_id: string }) => onAccepted(accepted.job_id),
+    onError,
+  });
+
+  const job = useQuery({
+    queryKey: ["job", jobId, "disc"],
+    queryFn: ({ signal }) => jobsApi.get(jobId as string, signal),
+    enabled: jobId !== null,
+    refetchInterval: (state) => (isTerminal(state.state.data?.state) ? false : 500),
+  });
+  const report = discImportApi.report(job.data);
+
+  const onSubmit = (event: FormEvent) => {
+    event.preventDefault();
+    if (mode === "dir" && !image) {
+      onError(new Error("choose a disc image from the import directory first"));
+      return;
+    }
+    if (mode === "upload" && !file) {
+      onError(new Error("choose a disc image file first"));
+      return;
+    }
+    submit.mutate(mode === "dir" ? { image } : { file: file! });
+  };
+
+  return (
+    <div className="import" data-testid="disc-import-panel">
+      <form onSubmit={onSubmit} className="import-form">
+        <h3>Import script from disc image</h3>
+        {images.isLoading ? <p className="muted">Checking the import directory…</p> : null}
+        {mode === "dir" && dirConfigured ? (
+          <label>
+            Disc image (from the import directory)
+            <select
+              value={image}
+              onChange={(event) => setImage(event.target.value)}
+              data-testid="disc-import-image"
+            >
+              <option value="">choose an image…</option>
+              {entries.map((entry) => (
+                <option key={entry.name} value={entry.name}>
+                  {entry.name} ({Math.round(entry.size_bytes / 1048576)} MiB)
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : (
+          <label>
+            Disc image
+            <input
+              type="file"
+              accept=".gcm,.ciso,.iso,.bin"
+              data-testid="disc-import-file"
+              onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+            />
+          </label>
+        )}
+        {!images.isLoading && mode === "upload" ? (
+          <p className="muted" data-testid="disc-import-upload-note">
+            {dirConfigured
+              ? "The import directory is empty; upload the image instead (small images only — the full-size path is the directory)."
+              : "The import directory is not configured on this appliance; upload the image instead (small images only)."}
+          </p>
+        ) : null}
+        <button type="submit" disabled={submit.isPending} data-testid="disc-import-submit">
+          {submit.isPending ? "Importing…" : "Import from disc image"}
+        </button>
+      </form>
+      {submit.isError ? (
+        <ErrorState error={submit.error} action="The disc import was not accepted" />
+      ) : null}
+      {job.data ? <JobProgress job={job.data} onSettled={onFinished} /> : null}
+      {job.isError ? <ErrorState error={job.error} action="Cannot follow the import job" /> : null}
+      {report ? (
+        <dl className="facts import-report" data-testid="disc-import-report">
+          <div>
+            <dt>Adapter</dt>
+            <dd>
+              {report.adapter} · {report.format}
+            </dd>
+          </div>
+          <div>
+            <dt>Disc</dt>
+            <dd data-testid="disc-import-game">
+              {report.game_id} · {report.disc_region}
+            </dd>
+          </div>
+          <div>
+            <dt>Image SHA-256</dt>
+            <dd data-testid="disc-import-image-sha">{String(report.image_sha256).slice(0, 16)}…</dd>
+          </div>
+          <div>
+            <dt>Rows</dt>
+            <dd>{report.stats.rows}</dd>
+          </div>
+          <div>
+            <dt>Messages inserted</dt>
+            <dd data-testid="disc-import-inserted">{report.messages_inserted}</dd>
+          </div>
+          <div>
+            <dt>Skipped</dt>
+            <dd>{report.stats.skipped}</dd>
+          </div>
+          {report.warnings.length > 0 ? (
+            <div>
+              <dt>Warnings</dt>
+              <dd>
+                {report.warnings.map((warning) => (
+                  <span key={`${warning.line}-${warning.msg}`}>
+                    line {warning.line}: {warning.msg}{" "}
+                  </span>
+                ))}
+                {report.warnings_truncated ? <em>(truncated)</em> : null}
+              </dd>
+            </div>
+          ) : null}
+        </dl>
+      ) : null}
+    </div>
+  );
 }
 
 export function JobProgress({ job, onSettled }: { job: JobDetail; onSettled?: () => void }) {

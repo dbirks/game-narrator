@@ -176,8 +176,11 @@ type capturedSpan struct {
 // where each sample is one standalone run).
 // resolve maps a line's truth text to the imported script's message id
 // ("" when the line is not in the script: a retrieval miss the metrics
-// grade honestly).
-func (f *CapturedFixture) Segments(resolve func(text string) string) []Sample {
+// grade honestly). speakerOf maps a message id to the script's speaker for
+// it ("" when the script left the line unattributed); the sample's truth
+// speaker is the line's, so the named-speaker metric grades commits against
+// the script's own attribution (ADR-0070).
+func (f *CapturedFixture) Segments(resolve func(text string) string, speakerOf func(msgID string) string) []Sample {
 	var (
 		lineStarts  []int
 		prevWasLine bool
@@ -198,7 +201,7 @@ func (f *CapturedFixture) Segments(resolve func(text string) string) []Sample {
 	var spans []capturedSpan
 	if len(lineStarts) == 0 {
 		spans = append(spans, capturedSpan{kind: "empty", start: 0, end: len(f.Rows)})
-		return f.buildSamples(spans, resolve)
+		return f.buildSamples(spans, resolve, speakerOf)
 	}
 	if lineStarts[0] > 0 {
 		spans = append(spans, capturedSpan{kind: "empty", start: 0, end: lineStarts[0]})
@@ -210,11 +213,11 @@ func (f *CapturedFixture) Segments(resolve func(text string) string) []Sample {
 		}
 		spans = append(spans, capturedSpan{kind: "dialogue", text: f.Rows[s].Text, line: f.Rows[s].Line, start: s, end: end})
 	}
-	return f.buildSamples(spans, resolve)
+	return f.buildSamples(spans, resolve, speakerOf)
 }
 
 // buildSamples turns the oracle's spans into bench samples.
-func (f *CapturedFixture) buildSamples(spans []capturedSpan, resolve func(text string) string) []Sample {
+func (f *CapturedFixture) buildSamples(spans []capturedSpan, resolve func(text string) string, speakerOf func(msgID string) string) []Sample {
 	var out []Sample
 	n := 0
 	for _, sp := range spans {
@@ -251,18 +254,26 @@ func (f *CapturedFixture) buildSamples(spans []capturedSpan, resolve func(text s
 		if id := resolve(sp.text); id != "" {
 			id := id
 			s.MessageID = &id
+			if speakerOf != nil {
+				if spk := speakerOf(id); spk != "" {
+					s.Speaker = spk
+				}
+			}
 		}
 		out = append(out, s)
 	}
 	return out
 }
 
-// ImportScript imports the game's canonical messages at run time through the
-// windwaker adapter (the user's image, opened read-only via gcdisc). Nothing
-// is written: the messages live for the run and the report, and the image
-// path is never recorded in any output (AGENTS.md rule 5). The adapter's own
-// game-id check refuses a mislabelled image before any parse.
-func ImportScript(ctx context.Context, imagePath string) ([]games.Message, error) {
+// importScriptParsed imports the game's canonical messages at run time
+// through the windwaker adapter (the user's image, opened read-only via
+// gcdisc) and keeps the full parse result: the speaker sidecar (ADR-0070) is
+// what the captured holdout's named-speaker grading reads, and it rides the
+// ParseResult, not the message rows. Nothing is written: the messages live
+// for the run and the report, and the image path is never recorded in any
+// output (AGENTS.md rule 5). The adapter's own game-id check refuses a
+// mislabelled image before any parse.
+func importScriptParsed(ctx context.Context, imagePath string) (*adapter.ParseResult, error) {
 	d, err := gcdisc.Open(imagePath)
 	if err != nil {
 		return nil, fmt.Errorf("bench: open game image: %v", err)
@@ -274,6 +285,16 @@ func ImportScript(ctx context.Context, imagePath string) ([]games.Message, error
 	})
 	if err != nil {
 		return nil, fmt.Errorf("bench: import script: %v", err)
+	}
+	return res, nil
+}
+
+// ImportScript imports the game's canonical messages at run time through the
+// windwaker adapter.
+func ImportScript(ctx context.Context, imagePath string) ([]games.Message, error) {
+	res, err := importScriptParsed(ctx, imagePath)
+	if err != nil {
+		return nil, err
 	}
 	return res.Messages, nil
 }
@@ -393,10 +414,10 @@ func levenshtein(a, b string) int {
 }
 
 // BuildCapturedIndex compiles the imported script into the matcher index the
-// pipeline and the sidecar share. Speakers: the BMG carries no speaker
-// labels (the adapter reports none), so every line is unattributed — the
-// named-speaker metric is n/a on this holdout by construction, which is the
-// honest reading (unknown cases don't receive a forced speaker).
+// pipeline and the sidecar share. Speakers do not ride the index: the matcher
+// ranks lines by text, and the script's speaker attribution is the sidecar's
+// own business (the scripted decision answers from the bench profile, whose
+// lines carry the adapter's speaker keys, ADR-0070).
 func BuildCapturedIndex(msgs []games.Message) (*matcher.Index, error) {
 	if len(msgs) == 0 {
 		return nil, fmt.Errorf("bench: the imported script has no messages")
@@ -404,10 +425,29 @@ func BuildCapturedIndex(msgs []games.Message) (*matcher.Index, error) {
 	return matcher.Build(msgs, nil, matcher.IndexOptions{})
 }
 
+// speakerKeyOfMessage maps an imported message id to the adapter's speaker
+// sidecar key ("" when the source left the line unattributed). The bench's
+// truth speaker and the scripted decision's answer both read from this one
+// map, so the named-speaker metric grades the pipeline's commits against the
+// script's own attribution (ADR-0070) — and a line the script leaves
+// unattributed stays SpeakerUnknown, which the metric excludes rather than
+// forcing.
+func speakerKeyOfMessage(p *adapter.ParseResult) func(msgID string) string {
+	byID := make(map[string]string, len(p.Messages))
+	for i, m := range p.Messages {
+		if i < len(p.SpeakerKeys) && p.SpeakerKeys[i] != "" {
+			byID[m.ID] = p.SpeakerKeys[i]
+		}
+	}
+	return func(id string) string { return byID[id] }
+}
+
 // CapturedProfile is the bench script the captured run's sidecar answers
-// from: the imported lines, unattributed. It is built in memory, never
+// from: the imported lines, each carrying the adapter's speaker key when the
+// source attributed it (SpeakerUnknown otherwise — the honest reading, since
+// unknown cases don't receive a forced speaker). It is built in memory, never
 // written (AGENTS.md rule 5).
-func CapturedProfile(fx *CapturedFixture, msgs []games.Message) *ScriptProfile {
+func CapturedProfile(fx *CapturedFixture, msgs []games.Message, speakerOf func(msgID string) string) *ScriptProfile {
 	p := &ScriptProfile{
 		SchemaVersion: SchemaVersion,
 		ID:            "captured-" + fx.ID,
@@ -417,7 +457,13 @@ func CapturedProfile(fx *CapturedFixture, msgs []games.Message) *ScriptProfile {
 		Regions:       []Region{fx.Region},
 	}
 	for _, m := range msgs {
-		p.Messages = append(p.Messages, ScriptLine{ID: m.ID, Text: m.OriginalText, Speaker: SpeakerUnknown})
+		spk := SpeakerUnknown
+		if speakerOf != nil {
+			if k := speakerOf(m.ID); k != "" {
+				spk = k
+			}
+		}
+		p.Messages = append(p.Messages, ScriptLine{ID: m.ID, Text: m.OriginalText, Speaker: spk})
 	}
 	return p
 }
@@ -450,20 +496,22 @@ func RunCapturedBench(ctx context.Context, fixtureDir, imagePath, outDir string)
 		return nil, fmt.Errorf("NOT RUN: bench captured holdout: the image's SHA-256 does not match fixture %s's manifest (the fixture was recorded against a different image; re-record it or point GAME_NARRATOR_GAME_IMAGE_PATH at the recorded image)", fx.ID)
 	}
 
-	msgs, err := ImportScript(ctx, imagePath)
+	parsed, err := importScriptParsed(ctx, imagePath)
 	if err != nil {
 		return nil, err
 	}
+	msgs := parsed.Messages
+	speakerOf := speakerKeyOfMessage(parsed)
 	idx, err := BuildCapturedIndex(msgs)
 	if err != nil {
 		return nil, fmt.Errorf("bench: captured matcher index: %v", err)
 	}
-	prof := CapturedProfile(fx, msgs)
+	prof := CapturedProfile(fx, msgs, speakerOf)
 	benchProfile = prof
 	regions := prof.BuildRegions()
 
 	resolve := resolveTruth(msgs)
-	samples := fx.Segments(resolve)
+	samples := fx.Segments(resolve, speakerOf)
 	if len(samples) == 0 {
 		return nil, fmt.Errorf("bench: fixture %s segments into no samples", fx.ID)
 	}

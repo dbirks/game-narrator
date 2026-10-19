@@ -83,7 +83,7 @@ func TestRunSupportBundleEndToEnd(t *testing.T) {
 	}
 	// The preview lists the section hashes before export (docs/spec/13);
 	// the manifest itself is the cover page and lists the other entries.
-	for _, name := range []string{"doctor.json", "store.json", "config.redacted.json", "dev-trace.json"} {
+	for _, name := range []string{"doctor.json", "store.json", "bottlenecks.json", "config.redacted.json", "dev-trace.json"} {
 		if !strings.Contains(out, name) {
 			t.Errorf("preview missing entry %s:\n%s", name, out)
 		}
@@ -92,13 +92,13 @@ func TestRunSupportBundleEndToEnd(t *testing.T) {
 	// The archive on disk is a real tar.gz with exactly the documented
 	// entries, flat names, and a manifest that hashes every other entry.
 	entries := readTarGZ(t, outPath)
-	for _, name := range []string{"manifest.json", "doctor.json", "store.json", "config.redacted.json", "dev-trace.json"} {
+	for _, name := range []string{"manifest.json", "doctor.json", "store.json", "bottlenecks.json", "config.redacted.json", "dev-trace.json"} {
 		if _, ok := entries[name]; !ok {
 			t.Errorf("archive missing %s (has %v)", name, namesOf(entries))
 		}
 	}
-	if len(entries) != 5 {
-		t.Errorf("archive has %d entries, want 5: %v", len(entries), namesOf(entries))
+	if len(entries) != 6 {
+		t.Errorf("archive has %d entries, want 6: %v", len(entries), namesOf(entries))
 	}
 
 	var man struct {
@@ -125,8 +125,8 @@ func TestRunSupportBundleEndToEnd(t *testing.T) {
 	if man.DataDir != filepath.Base(dataDir) || strings.ContainsRune(man.DataDir, '/') {
 		t.Errorf("manifest data_dir = %q, want the basename %q (no path)", man.DataDir, filepath.Base(dataDir))
 	}
-	if len(man.Files) != 4 {
-		t.Fatalf("manifest lists %d files, want 4", len(man.Files))
+	if len(man.Files) != 5 {
+		t.Fatalf("manifest lists %d files, want 5", len(man.Files))
 	}
 	for _, f := range man.Files {
 		data, ok := entries[f.Path]
@@ -152,6 +152,49 @@ func TestRunSupportBundleEndToEnd(t *testing.T) {
 	}
 	if storeDoc.SchemaVersion <= 0 || len(storeDoc.TableCounts) == 0 {
 		t.Errorf("store.json = %+v, want a schema version and table counts", storeDoc)
+	}
+
+	// bottlenecks.json (ADR 0069): valid JSON holding stage names, sample
+	// counts and latency figures only (internal/support/guard_test.go is the
+	// content guard that proves seeded dialogue never survives; a fresh data
+	// dir has no finished sessions, so the rows must be empty). Neither the
+	// archive entry nor any field may carry a path: no "/" anywhere outside
+	// the note's "p50/p95/max" shorthand, and no data-dir component inside
+	// the document.
+	bnRaw := string(entries["bottlenecks.json"])
+	var bn struct {
+		Note     string `json:"note"`
+		Sessions []struct {
+			SessionID  string `json:"session_id"`
+			Event      string `json:"event"`
+			OccurredAt string `json:"occurred_at"`
+			Stages     []struct {
+				Stage string `json:"stage"`
+				Count uint64 `json:"count"`
+				P50NS int64  `json:"p50_ns"`
+				P95NS int64  `json:"p95_ns"`
+				MaxNS int64  `json:"max_ns"`
+			} `json:"stages"`
+			SlowestStage string `json:"slowest_stage"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(entries["bottlenecks.json"], &bn); err != nil {
+		t.Fatalf("bottlenecks.json does not decode: %v", err)
+	}
+	if bn.Note == "" {
+		t.Errorf("bottlenecks.json note = %q, want the section's privacy note", bn.Note)
+	}
+	if len(bn.Sessions) != 0 {
+		t.Errorf("bottlenecks.json has %d sessions, want 0 for a fresh data dir", len(bn.Sessions))
+	}
+	notePathless := strings.ReplaceAll(bnRaw, bn.Note, "")
+	if strings.Contains(notePathless, "/") {
+		t.Errorf("bottlenecks.json carries a path outside the note: %q", bnRaw)
+	}
+	for _, s := range []string{filepath.Base(dataDir)} {
+		if strings.Contains(notePathless, s) {
+			t.Errorf("bottlenecks.json contains the data-dir component %q", s)
+		}
 	}
 
 	// The default output location is the current directory: run without

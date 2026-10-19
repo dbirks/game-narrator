@@ -203,7 +203,7 @@ func (s *Server) handleImportFile(w http.ResponseWriter, r *http.Request) {
 	// answer is the job's identity rather than a remembered body (ADR-0017). The
 	// key is scoped to principal + revision, so two curators who both choose "1"
 	// cannot read each other's job.
-	idemKey, ok := s.importIdempotencyKey(w, r, p.ID)
+	idemKey, ok := s.importIdempotencyKey(w, r, JobKindImportFile, p.ID)
 	if !ok {
 		return
 	}
@@ -528,8 +528,9 @@ func (e errParam) Error() string { return e.field + ": " + e.detail }
 // durable one: kind + principal + revision + key. The prefix is what keeps two
 // unrelated routes that happen to receive the key "1" from answering each
 // other's request, and the principal is what stops one curator's retry being
-// attributed to another's job (ADR-0017).
-func (s *Server) importIdempotencyKey(w http.ResponseWriter, r *http.Request, profileID string) (string, bool) {
+// attributed to another's job (ADR-0017). The kind is a parameter because the
+// disc import reuses the same discipline with its own kind (ADR-0066).
+func (s *Server) importIdempotencyKey(w http.ResponseWriter, r *http.Request, kind, profileID string) (string, bool) {
 	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 	if key == "" {
 		return "", true
@@ -544,7 +545,7 @@ func (s *Server) importIdempotencyKey(w http.ResponseWriter, r *http.Request, pr
 	if id := IdentityFromContext(r.Context()); id != nil && id.User != nil {
 		user = id.User.ID
 	}
-	return JobKindImportFile + "\x00" + user + "\x00" + profileID + "\x00" + key, true
+	return kind + "\x00" + user + "\x00" + profileID + "\x00" + key, true
 }
 
 // sameQueuedImport decides whether the job an idempotent retry landed on is the

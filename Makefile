@@ -242,12 +242,34 @@ test-ui:
 ## gate: it is NOT RUN unless GN_REOCR_FIXTURE names the fixture id, which
 ## would make this gate rc 2 forever — run it on demand instead:
 ##   GN_REOCR_FIXTURE=<fixture id> go test -count=1 -timeout 30m -run 'TestRealReOCRFixture$' ./internal/dolphin/
+## The third phase (task browser-live-play) is the live play path through
+## the REAL UI (AGENTS.md rule 3 class (d)+(e)): internal/e2e TestLivePlayUI
+## serves the in-process API + embedded SPA on a real port (18120–18139 band)
+## with the dev Dolphin bridge wired (the production binary never does),
+## imports the script from the disc image, seeds the region, designs the
+## narrator voice, launches the bridge and runs the Playwright live-play
+## project (web/e2e/live-play.spec.ts, via e2e/live-play.playwright.config.ts)
+## over the real pages: /play start with the Dolphin source, the committed
+## line + speech counters, the /developer?session=… inspector's trace row
+## chain, the Play page's Stop — then asserts the docs/spec/12 live-E2E set
+## (frames, script match, Clef request, TTS bytes, correlation) and writes
+## the evidence bundle (Playwright trace, screenshots, WAVs, timeline,
+## manifest) to artifacts/live-play-ui/<run-id>/ (gitignored). It is NOT RUN
+## (rc 2, with setup lines) without the image, the dev host binaries,
+## pnpm + a Playwright chromium, the built web UI and the live gateway/TTS
+## env — so a host without any of them never turns this gate red. It needs
+## GN_GATE=test-dolphin like the first phase (the test enforces it) and runs
+## AFTER the real-drive phase: one Dolphin at a time, and this phase boots
+## the only emulator of its phase. 60 m: the voice auditions and the
+## screen-driven walk to the opening legend take minutes each.
 test-dolphin:
 	@GN_GATE=test-dolphin scripts/gates/run-go-gate.sh test-dolphin -count=1 -p 1 -timeout 45m -run Real -skip 'TestRealReOCRFixture$$' ./internal/dolphin/... ; \
 	rc1=$$?; \
 	scripts/gates/run-go-gate.sh test-dolphin-scenarios -count=1 -timeout 30m -run TestDolphinScenarios ./internal/scenario/... ; \
 	rc2=$$?; \
-	if [ $$rc1 -eq 1 ] || [ $$rc2 -eq 1 ]; then rc=1; elif [ $$rc1 -eq 2 ] || [ $$rc2 -eq 2 ]; then rc=2; else rc=0; fi; \
+	GN_GATE=test-dolphin scripts/gates/run-go-gate.sh test-dolphin-liveui -count=1 -p 1 -timeout 60m -run 'TestLivePlayUI$$' ./internal/e2e/... ; \
+	rc3=$$?; \
+	if [ $$rc1 -eq 1 ] || [ $$rc2 -eq 1 ] || [ $$rc3 -eq 1 ]; then rc=1; elif [ $$rc1 -eq 2 ] || [ $$rc2 -eq 2 ] || [ $$rc3 -eq 2 ]; then rc=2; else rc=0; fi; \
 	echo $$rc > artifacts/gates/test-dolphin.rc ; exit $$rc
 
 ## test-models: the live provider contract gate (docs/spec/12 "provider

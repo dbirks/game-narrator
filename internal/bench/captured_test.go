@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/games"
+	"github.com/dbirks/game-narrator/internal/games/adapter"
 )
 
 // fixtureDir resolves the external fixture root (env, or the gitignored
@@ -53,7 +54,7 @@ func TestLoadCapturedFixture(t *testing.T) {
 		t.Fatalf("truth rows %d != manifest frames %d", len(fx.Rows), len(fx.Manifest.Frames))
 	}
 
-	segments := fx.Segments(func(text string) string { return "" })
+	segments := fx.Segments(func(text string) string { return "" }, nil)
 	if len(segments) != 3 {
 		t.Fatalf("segments = %d, want 3 (one leading empty + the fixture's two narration lines)", len(segments))
 	}
@@ -142,20 +143,20 @@ func TestSegmentsRegression(t *testing.T) {
 
 	// Line at the very end: the segment run must not outlive the rows.
 	fx := mk([]capturedRow{row("f1", false, "", ""), row("f2", true, "a line", "a"), row("f3", true, "a line", "a")})
-	segs := fx.Segments(resolve)
+	segs := fx.Segments(resolve, nil)
 	if len(segs) != 2 { // leading empty + the line
 		t.Fatalf("segments = %d, want 2 (line at end of capture)", len(segs))
 	}
 	// Trailing empty frame after the last line: it extends the line's span
 	// (the advance frame), it is not a new sample.
 	fx = mk([]capturedRow{row("f1", true, "a line", "a"), row("f2", true, "a line", "a"), row("f3", false, "", "")})
-	segs = fx.Segments(resolve)
+	segs = fx.Segments(resolve, nil)
 	if len(segs) != 1 || len(segs[0].Frames) != 3 {
 		t.Fatalf("segments = %d (frames %d), want 1 sample of 3 frames (trailing empty belongs to the line)", len(segs), len(segs[0].Frames))
 	}
 	// No line at all: the whole capture is one empty sample.
 	fx = mk([]capturedRow{row("f1", false, "", ""), row("f2", false, "", "")})
-	segs = fx.Segments(resolve)
+	segs = fx.Segments(resolve, nil)
 	if len(segs) != 1 || segs[0].TextKind != "empty" {
 		t.Fatalf("segments = %d, want 1 empty sample (no narration lines)", len(segs))
 	}
@@ -166,7 +167,7 @@ func TestSegmentsRegression(t *testing.T) {
 		row("f3", false, "", ""),
 		row("f4", true, "second line", "b"),
 	})
-	segs = fx.Segments(resolve)
+	segs = fx.Segments(resolve, nil)
 	if len(segs) != 2 { // no leading empty (the capture starts on a line)
 		t.Fatalf("segments = %d, want 2 (two line occurrences, no leading empty)", len(segs))
 	}
@@ -197,6 +198,41 @@ func TestLevenshtein(t *testing.T) {
 // TestCapturedBenchNotRun is the honest-skip contract: no image, a
 // non-matching image, and a missing fixture dir are each NOT RUN with an
 // actionable message — never a failure, never a pass.
+// TestCapturedProfileCarriesTheSpeakerSidecar (ADR-0070) locks the bench
+// wiring that makes named_speaker_accuracy gradeable on captured holdouts:
+// the adapter's speaker sidecar flows into the bench script lines, and a
+// parse without one leaves every line unknown — never a guessed value.
+func TestCapturedProfileCarriesTheSpeakerSidecar(t *testing.T) {
+	msgs := []games.Message{
+		{ID: "m1", OriginalText: "invented line one"},
+		{ID: "m2", OriginalText: "invented line two"},
+		{ID: "m3", OriginalText: "invented line three"},
+	}
+	parsed := &adapter.ParseResult{
+		Messages:    msgs,
+		SpeakerKeys: []string{"ww:spk:7", "", "ww:spk:7"},
+	}
+	speakerOf := speakerKeyOfMessage(parsed)
+	if speakerOf("m1") != "ww:spk:7" || speakerOf("m2") != "" || speakerOf("m3") != "ww:spk:7" {
+		t.Fatalf("speakerKeyOfMessage: %q / %q / %q, want the sidecar's keys in order", speakerOf("m1"), speakerOf("m2"), speakerOf("m3"))
+	}
+	fx := &CapturedFixture{ID: "unit-fixture", Region: Region{ID: "textbox"}}
+	prof := CapturedProfile(fx, msgs, speakerOf)
+	if len(prof.Messages) != 3 {
+		t.Fatalf("profile has %d lines, want 3", len(prof.Messages))
+	}
+	if prof.Messages[0].Speaker != "ww:spk:7" || prof.Messages[1].Speaker != SpeakerUnknown || prof.Messages[2].Speaker != "ww:spk:7" {
+		t.Errorf("line speakers = %q / %q / %q, want the sidecar key, unknown for the unattributed line, the key again",
+			prof.Messages[0].Speaker, prof.Messages[1].Speaker, prof.Messages[2].Speaker)
+	}
+	plain := CapturedProfile(fx, msgs, speakerKeyOfMessage(&adapter.ParseResult{Messages: msgs}))
+	for i, l := range plain.Messages {
+		if l.Speaker != SpeakerUnknown {
+			t.Errorf("line %d speaker = %q, want unknown (no sidecar, no guess)", i, l.Speaker)
+		}
+	}
+}
+
 func TestCapturedBenchNotRun(t *testing.T) {
 	dir, ok := fixtureDir()
 	if !ok {

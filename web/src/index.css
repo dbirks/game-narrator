@@ -992,7 +992,8 @@ pre.muted {
 .voice-gate,
 .checks,
 .jobs,
-.diff-changes {
+.diff-changes,
+.stats-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.9rem;
@@ -1009,7 +1010,9 @@ pre.muted {
 .jobs th,
 .jobs td,
 .diff-changes th,
-.diff-changes td {
+.diff-changes td,
+.stats-table th,
+.stats-table td {
   border-bottom: 1px solid var(--line);
   padding: var(--space-2);
   text-align: left;

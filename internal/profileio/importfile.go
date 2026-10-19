@@ -71,6 +71,21 @@ type ImportRequest struct {
 	// Trust is confidence in the source on [0,1]; empty means 1, which is what
 	// bytes the user supplied directly deserve.
 	Trust float64
+
+	// SourceURI overrides the source row's provenance address. Empty means the
+	// upload's file name, rendered as a file:// label; a disc extraction names
+	// the game id and the archive path instead (ADR-0066).
+	SourceURI string
+
+	// SourceKind overrides the source row's type. Empty means user_file; a
+	// disc extraction is game_extract, which is what its provenance URI says.
+	SourceKind games.SourceType
+
+	// CoverageSuffix is appended to the coverage notes after the standard
+	// stats/line: the disc import records the image hash, game id, region and
+	// the importing user there, because the source row's URI names the archive
+	// and nothing else (ADR-0066, AGENTS.md rule 6).
+	CoverageSuffix string
 }
 
 // ImportReport is the outcome of one import, shaped for the onboarding screen
@@ -225,19 +240,30 @@ func ImportFile(ctx context.Context, deps Deps, req ImportRequest) (ImportReport
 	}
 
 	// ── 4. register provenance, then write content ───────────────────────────
+	// The effective URI and kind honour the overrides: a disc extraction names
+	// the game id and the archive path as game_extract; a plain upload keeps
+	// the file:// label and user_file (ADR-0066).
+	srcURI := req.SourceURI
+	if srcURI == "" {
+		srcURI = sourceURI(req.FileName)
+	}
+	srcKind := req.SourceKind
+	if srcKind == "" {
+		srcKind = games.SourceUserFile
+	}
 	if existing.ID == "" {
 		src := games.Source{
 			ID:            sourceID,
 			ProfileID:     req.ProfileID,
-			SourceType:    games.SourceUserFile,
-			URI:           sourceURI(req.FileName),
+			SourceType:    srcKind,
+			URI:           srcURI,
 			RetrievedAt:   nowStamp(),
 			ContentSHA256: committed.SHA256,
 			MimeType:      committed.MediaType,
 			Rights:        rights,
 			Trust:         trust,
 			Parser:        parserID(chosen),
-			CoverageNotes: coverageNotes(parsed.Stats, committed),
+			CoverageNotes: coverageNotes(parsed.Stats, committed) + req.CoverageSuffix,
 		}
 		if err := src.Validate(); err != nil {
 			return report, err
@@ -252,7 +278,7 @@ func ImportFile(ctx context.Context, deps Deps, req ImportRequest) (ImportReport
 		// what "provenance is immutable" costs and buys (docs/spec/01 invariant
 		// 6). Silence here would let a caller believe a re-import had changed
 		// the rights position of a source.
-		if existing.Rights != rights || existing.Trust != trust || existing.SourceType != games.SourceUserFile {
+		if existing.Rights != rights || existing.Trust != trust || existing.SourceType != srcKind {
 			report.Warnings = append(report.Warnings, adapter.Warning{
 				Line:   0,
 				Column: "provenance",

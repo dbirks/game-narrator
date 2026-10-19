@@ -3,6 +3,7 @@ package bench
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,11 +37,39 @@ type Calibration struct {
 	// Sources is the per-source breakdown of the fit's data (one row per
 	// synthetic tuning split and per captured fixture), so a refusal can say
 	// exactly where the samples and the errors are.
-	Sources     []CalibrationSource `json:"sources,omitempty"`
-	NLLAtT1     float64             `json:"nll_at_t1"`
-	NLLAtFit    float64             `json:"nll_at_fit"`
-	SetHash     string              `json:"set_hash"`
-	GeneratedAt string              `json:"generated_at"`
+	Sources  []CalibrationSource `json:"sources,omitempty"`
+	NLLAtT1  float64             `json:"nll_at_t1"`
+	NLLAtFit float64             `json:"nll_at_fit"`
+	// BrierAtT1/BrierAtFit are the multi-class Brier score of the fit's
+	// samples — mean (p_top1 − 1[top-1 correct])² over the returned
+	// candidate set's top-1 probability — at the revision-1 scale (T = 1,
+	// "before") and at the fitted T ("after"). Same convention as the
+	// holdout reports' calibration_brier row, so the numbers are comparable
+	// across the report and this artifact.
+	BrierAtT1  float64 `json:"brier_at_t1"`
+	BrierAtFit float64 `json:"brier_at_fit"`
+	// ECEAtT1/ECEAtFit are the 10-bin expected calibration error on the same
+	// samples (|mean p − mean correct| weighted by bin share, the
+	// holdout reports' calibration_ece_10bin convention); the per-bin rows
+	// are the reliability diagram the operator reads the fit against.
+	ECEAtT1        float64          `json:"ece_10bin_at_t1"`
+	ECEAtFit       float64          `json:"ece_10bin_at_fit"`
+	ReliabilityT1  []CalibrationBin `json:"reliability_bins_at_t1"`
+	ReliabilityFit []CalibrationBin `json:"reliability_bins_at_fit"`
+	SetHash        string           `json:"set_hash"`
+	GeneratedAt    string           `json:"generated_at"`
+}
+
+// CalibrationBin is one 10-bin reliability row of the fit's samples: the bin's
+// probability range, its sample count, the mean top-1 probability stated and
+// the top-1 accuracy achieved. Empty bins are omitted (the ECE weights them
+// by zero either way) so the artifact shows the bins the data actually fills.
+type CalibrationBin struct {
+	Lo       float64 `json:"lo"`
+	Hi       float64 `json:"hi"`
+	N        int     `json:"n"`
+	MeanProb float64 `json:"mean_prob"`
+	Acc      float64 `json:"accuracy"`
 }
 
 // CalibrationSource is one fit source's counts: the samples it contributed
@@ -179,8 +208,8 @@ func checkCapturedImageSHA(fx *CapturedFixture, imagePath string) error {
 // source. The caller loads the fixture and checks the image SHA once (the
 // degraded variants reuse the same load: VerifyFixture hashes every frame,
 // so a second load of the same dir would pay that cost twice).
-func capturedFitSource(fx *CapturedFixture, samples []Sample, msgs []games.Message, idx *matcher.Index) (*fitSource, func(), error) {
-	prof := CapturedProfile(fx, msgs)
+func capturedFitSource(fx *CapturedFixture, samples []Sample, msgs []games.Message, idx *matcher.Index, speakerOf func(msgID string) string) (*fitSource, func(), error) {
+	prof := CapturedProfile(fx, msgs, speakerOf)
 	benchProfile = prof
 	work, err := os.MkdirTemp("", "bench-calibrate-captured-")
 	if err != nil {
@@ -336,12 +365,21 @@ func runFitSource(ctx context.Context, s *fitSource) ([]sampleOutcomes, int) {
 }
 
 // CalibrateCombined fits the matcher's temperature on the combined fit data:
-// the synthetic set's tuning split plus the dialogue segments of the named
-// captured fixtures (their frames replayed through the same real pipeline).
-// The captured data is the "real-frame observations" of the fit — class (b)
-// frames, the synthetic stand-in for the labelled errors a fit needs. The
-// holdout discipline is preserved: no synthetic holdout sample enters the
-// fit (tuningSamples), and a captured sample enters as an observation of the
+// the synthetic set's tuning split plus, for each named captured fixture,
+// its dialogue segments (class b clean frames) replayed through the same
+// real pipeline, the degraded-render variants of those frames (class b′) and
+// the hard-set sources (class b″: the same frames re-degraded at the heavier
+// levels, ranked against the adversarial candidate pool — the script plus
+// the near-duplicate distractors generated from the fixture's truth lines;
+// ADR-0058 amendment 4). The b″ sources are the fit's raw material for the
+// incorrect top-1s: on clean and b′ frames the pipeline reads the truth
+// line near-verbatim and it always ranks first, so the errors must come
+// from the truth competing with its near-duplicates on degraded reads.
+// The fit is always the mixture (never b″ alone, never clean alone): the
+// mixture is what makes a fitted T a statement about the product's
+// operating point rather than about the adversarial pool. The holdout
+// discipline is preserved: no synthetic holdout sample enters the fit
+// (tuningSamples), and a captured sample enters as an observation of the
 // same pipeline, not as a tuned threshold (docs/spec/12: thresholds tuned on
 // the tuning split; the captured holdout itself is graded separately by
 // RunCapturedBench and never feeds a threshold).
@@ -381,11 +419,13 @@ func CalibrateCombined(ctx context.Context, synthSetDir string, fixtureDirs []st
 		if imagePath == "" {
 			return nil, fmt.Errorf("NOT RUN: bench calibrate with captured fixtures needs the game image (set GAME_NARRATOR_GAME_IMAGE_PATH, or pass --image)")
 		}
-		msgs, err := ImportScript(ctx, imagePath)
+		parsed, err := importScriptParsed(ctx, imagePath)
 		if err != nil {
 			cleanupAll()
 			return nil, err
 		}
+		msgs := parsed.Messages
+		speakerOf := speakerKeyOfMessage(parsed)
 		idx, err := BuildCapturedIndex(msgs)
 		if err != nil {
 			cleanupAll()
@@ -401,8 +441,8 @@ func CalibrateCombined(ctx context.Context, synthSetDir string, fixtureDirs []st
 				cleanupAll()
 				return nil, err
 			}
-			samples := fx.Segments(resolveTruth(msgs))
-			src, cleanup, err := capturedFitSource(fx, samples, msgs, idx)
+			samples := fx.Segments(resolveTruth(msgs), speakerOf)
+			src, cleanup, err := capturedFitSource(fx, samples, msgs, idx, speakerOf)
 			if err != nil {
 				cleanupAll()
 				return nil, err
@@ -414,16 +454,29 @@ func CalibrateCombined(ctx context.Context, synthSetDir string, fixtureDirs []st
 			// the same samples replayed over the fixture's frames re-degraded
 			// at bench time (deterministic JPEG / downscale / seeded noise /
 			// crop offset — never stored, labelled b′, never clean captures).
-			// They are the fit's raw material: the labelled frames where the
-			// matcher's top-1 genuinely errs. Their temp frames are prepared
-			// and freed one variant at a time by the fit loop (ADR-0064).
-			dsrcs, err := degradedFitSources(fx, samples, msgs, idx)
+			// Their temp frames are prepared and freed one variant at a time
+			// by the fit loop (ADR-0064).
+			dsrcs, err := degradedFitSources(fx, samples, msgs, idx, speakerOf)
 			if err != nil {
 				cleanupAll()
 				return nil, err
 			}
 			for i := range dsrcs {
 				sources = append(sources, dsrcs[i])
+			}
+			// The hard-set sources (class b″, ADR-0058 amendment 4): the same
+			// samples over the heavier degradation, ranked against the
+			// adversarial candidate pool (the near-duplicate distractors of
+			// the fixture's truth lines). They carry the labelled errors the
+			// fit needs; the pool's generated texts live in memory only
+			// (AGENTS.md rule 5).
+			hsrcs, err := hardsetFitSources(fx, samples, msgs, speakerOf)
+			if err != nil {
+				cleanupAll()
+				return nil, err
+			}
+			for i := range hsrcs {
+				sources = append(sources, hsrcs[i])
 			}
 		}
 	}
@@ -474,18 +527,26 @@ func CalibrateCombined(ctx context.Context, synthSetDir string, fixtureDirs []st
 	if synthSet != nil {
 		set = synthSet.Set
 	}
+	relT1, brierT1, eceT1 := calibReliability(fit, 1.0)
+	relFit, brierFit, eceFit := calibReliability(fit, T)
 	cal := &Calibration{
 		SchemaVersion:       SchemaVersion,
 		Set:                 set,
 		Split:               SplitTuning,
 		Temperature:         T,
 		CalibrationRevision: matcher.CalibrationRevision + 1,
-		Method:              "NLL of the truth candidate over the returned candidate set, deterministic grid fit over T in [0.05, 8] (log-spaced coarse grid + linear refinement)",
+		Method:              "NLL of the truth candidate over the returned candidate set, deterministic grid fit over T in [0.05, 8] (log-spaced coarse grid + linear refinement); fit data is the mixture clean (a + b) + degraded (b′) + hard set (b″: captured frames, adversarial near-duplicate candidate pool, heavier degradation — ADR-0058 amendment 4)",
 		SamplesUsed:         totalUsed,
 		SamplesSkipped:      totalSkipped,
 		Sources:             srcRows,
 		NLLAtT1:             matcher.TemperatureNLL(fit, 1.0),
 		NLLAtFit:            matcher.TemperatureNLL(fit, T),
+		BrierAtT1:           brierT1,
+		BrierAtFit:          brierFit,
+		ECEAtT1:             eceT1,
+		ECEAtFit:            eceFit,
+		ReliabilityT1:       relT1,
+		ReliabilityFit:      relFit,
 		GeneratedAt:         time.Now().UTC().Format(time.RFC3339),
 	}
 	if synthSet != nil && synthSet.Set != "" {
@@ -500,6 +561,72 @@ func CalibrateCombined(ctx context.Context, synthSetDir string, fixtureDirs []st
 		return nil, err
 	}
 	return cal, nil
+}
+
+// calibReliability measures the fit's samples' calibration at temperature t:
+// the multi-class Brier score, the 10-bin expected calibration error and the
+// occupied reliability bins. For each sample the stated confidence is the
+// top-1 candidate's softmax probability at t (scores are in ranking order,
+// so the top-1 is scores[0]) and the label is whether that top-1 is the
+// truth candidate. This is the holdout reports' convention (calibration_brier
+// / calibration_ece_10bin over the top-1 probability and its correctness),
+// applied to the fit's own samples at two temperatures: t = 1 is the
+// revision-1 scale the reports already show ("before"), t = T is the fitted
+// scale ("after"). Because a temperature only rescales the softmax, the
+// top-1 and hence the labels are t-invariant — before and after differ only
+// in the stated probabilities, which is exactly what the calibration is.
+func calibReliability(fit []matcher.TemperatureSample, t float64) (bins []CalibrationBin, brier, ece float64) {
+	const nbins = 10
+	var psum, ysum [nbins]float64
+	var pn [nbins]int
+	var total float64
+	for _, s := range fit {
+		max := s.Scores[0]
+		for _, sc := range s.Scores[1:] {
+			if sc > max {
+				max = sc
+			}
+		}
+		sum := 0.0
+		for _, sc := range s.Scores {
+			sum += math.Exp(sc/t - max/t)
+		}
+		p := math.Exp(s.Scores[0]/t-max/t) / sum
+		y := 0.0
+		if s.Correct == 0 {
+			y = 1
+		}
+		total += (p - y) * (p - y)
+		b := int(p * nbins)
+		if b >= nbins {
+			b = nbins - 1
+		}
+		psum[b] += p
+		pn[b]++
+		ysum[b] += y
+	}
+	n := len(fit)
+	if n == 0 {
+		return nil, 0, 0
+	}
+	brier = total / float64(n)
+	for b := 0; b < nbins; b++ {
+		if pn[b] == 0 {
+			continue
+		}
+		mp := psum[b] / float64(pn[b])
+		my := ysum[b] / float64(pn[b])
+		d := mp - my
+		if d < 0 {
+			d = -d
+		}
+		ece += d * float64(pn[b]) / float64(n)
+		bins = append(bins, CalibrationBin{
+			Lo: float64(b) / nbins, Hi: float64(b+1) / nbins,
+			N: pn[b], MeanProb: mp, Acc: my,
+		})
+	}
+	return bins, brier, ece
 }
 
 // ErrCalibrationInsufficient is the combined fit's refusal: the matcher's

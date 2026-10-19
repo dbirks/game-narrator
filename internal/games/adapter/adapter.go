@@ -29,6 +29,7 @@ import (
 
 	"github.com/dbirks/game-narrator/internal/games"
 	"github.com/dbirks/game-narrator/internal/games/textnorm"
+	"github.com/dbirks/game-narrator/internal/gcdisc"
 )
 
 // Errors every adapter may return from Parse. Callers switch on these with
@@ -384,10 +385,16 @@ const (
 	ColPage    LogicalColumn = "page"
 )
 
-// SpeakerRef is one distinct speaker label a source named itself. It is source
-// evidence, not an adapter's guess: docs/spec/04's "never invent a speaker" rule
-// covers rows without a named speaker, while a speaker the user's own file names
-// is a fact the importer may turn into a characters row.
+// SpeakerRef is one distinct speaker a parse reported. For a source that
+// names its speakers (a script's speaker column) the label is source evidence,
+// not an adapter's guess: docs/spec/04's "never invent a speaker" rule covers
+// rows without a named speaker, while a speaker the user's own file names is a
+// fact the importer may turn into a characters row. For a source that carries
+// only an opaque per-line speaker id (the Wind Waker BMG's per-message
+// attribute byte, ADR-0070), the ref reports the id as an identifier the
+// importer may turn into a placeholder characters row a curator then links:
+// SourceNamed is false and the identity stays unaudited until a reviewer settles
+// it.
 type SpeakerRef struct {
 	// Key is the matching key: the name normalised the same way message text is
 	// normalised (textnorm, case-folded, whitespace-collapsed). Two labels that
@@ -398,12 +405,23 @@ type SpeakerRef struct {
 	// DisplayName is the label exactly as written in the source on its first
 	// occurrence. It becomes the characters.name of a character created for it,
 	// which is why it is not normalised: the roster shows what the script said.
+	// For a synthetic label (SourceNamed false) it is the opaque id itself.
 	DisplayName string
 
 	// Aliases are the other spellings the source used that normalise to Key, in
 	// first-occurrence order, DisplayName excluded. They become characters.aliases
 	// of a created character and are merged into a reused one.
 	Aliases []string
+
+	// SourceNamed reports whether the source itself supplied a name for this
+	// speaker (true: a script column's label; false: an opaque id the adapter
+	// minted from the source's own per-line linkage, e.g. the Wind Waker BMG's
+	// speaker attribute byte, ADR-0070). The importer keeps a source-named
+	// speaker confirmed at full confidence and creates a confirmed character for
+	// it; a synthetic speaker gets a proposed placeholder character and a
+	// proposed attribution, because the source vouches for the line-to-slot
+	// linkage, not for the slot's identity.
+	SourceNamed bool
 }
 
 // ParseResult is what an adapter produces. It is a value, not a live cursor: the
@@ -415,9 +433,11 @@ type ParseResult struct {
 	Warnings []Warning
 	Stats    Stats
 
-	// Speakers lists the distinct speaker labels the source named, in the order
-	// their first-occurring label appears. Adapters that find no speaker labels
-	// leave it empty (a nil slice, which the importer reads as "none").
+	// Speakers lists the distinct speakers the parse reported, in the order their
+	// first-occurring label appears: either labels the source named itself
+	// (SourceNamed true) or opaque ids the adapter derived from the source's own
+	// per-line linkage (SourceNamed false, ADR-0070). Adapters that find no
+	// speakers leave it empty (a nil slice, which the importer reads as "none").
 	Speakers []SpeakerRef
 
 	// SpeakerKeys is a per-message sidecar parallel to Messages: SpeakerKeys[i]
@@ -493,6 +513,22 @@ type EditionIdentifier interface {
 type MarkupDecoder interface {
 	// DecodeMarkup returns the AST and the plain text it renders to.
 	DecodeMarkup(ctx context.Context, raw string) (markup json.RawMessage, plain string, err error)
+}
+
+// DiscExtractor is an optional capability: an adapter that reads a game's
+// message script straight out of a user-supplied disc image (docs/spec/04
+// "parseArchive"; ADR-0066). The runtime finds it by capability assertion,
+// the way it finds the other optional capabilities, and a build without one
+// reports that nothing can read a disc rather than trying the byte parser on
+// an image it was not told about.
+type DiscExtractor interface {
+	// ExtractDiscSource verifies the image is this adapter's game (a wrong
+	// game id is a provenance lie the user could not audit later, so the
+	// refusal lives here, with the adapter's own rules) and returns the
+	// message script's bytes: the content the importer hashes and stores,
+	// the name to record on the source row, and the disc's game id for
+	// provenance. The image is read in place and never copied.
+	ExtractDiscSource(ctx context.Context, d *gcdisc.Disc) (script []byte, name, gameID string, err error)
 }
 
 // Match is one Detect answer in Registry ordering.

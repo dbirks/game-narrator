@@ -24,12 +24,14 @@ const (
 
 	// Version is the adapter semver. It bumps with RulesRevision changes and
 	// any mapping change, so "which adapter produced these rows" and "is the
-	// audio cache stale" are both answerable from the stored strings.
-	Version = "1.0.0"
+	// audio cache stale" are both answerable from the stored strings. 1.1.0
+	// adds the speaker sidecar from the INF1 attribute byte (ADR-0070).
+	Version = "1.1.0"
 
-	// SchemaVersion is the ParseResult shape (1 = base shape; the rules
+	// SchemaVersion is the ParseResult shape (1 = base shape; 2 = the base
+	// shape plus the Speakers/SpeakerKeys/SpeakerColumn sidecar; the rules
 	// revision is carried in Warnings, column "rules").
-	SchemaVersion = 1
+	SchemaVersion = 2
 )
 
 // Source formats Parse accepts (Manifest.SupportedFormats values).

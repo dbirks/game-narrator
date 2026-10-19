@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/dbirks/game-narrator/internal/events"
+	"github.com/dbirks/game-narrator/internal/runtime"
 )
 
 // devEventsPage is the REST snapshot behind the developer inspector's event
@@ -149,6 +150,54 @@ func (s *Server) handleDevTraces(w http.ResponseWriter, r *http.Request) {
 		Events:    matched,
 		NextSeq:   scanSeq,
 		Truncated: truncated,
+	})
+}
+
+// devBottlenecksResponse is the GET /api/v1/dev/sessions/{id}/bottlenecks
+// body: the session's own per-stage latency summary (docs/spec/16 M7
+// "diagnostics expose bottlenecks") — the same rows, shares and named
+// slowest stage the support bundle's bottlenecks.json and the developer page
+// block read, all from runtime.Bottlenecks on the session's own stats.
+type devBottlenecksResponse struct {
+	SessionID string `json:"session_id"`
+	State     string `json:"state"`
+	runtime.BottleneckSummary
+}
+
+// handleDevSessionBottlenecks answers GET /api/v1/dev/sessions/{id}/bottlenecks:
+// one run's stage latencies (p50/p95/max, share of the end-to-end, the named
+// slowest stage) reduced by the shared summary function from the session's own
+// pipeline stats. It is the live-session half of the bottleneck artifact:
+// the numbers are the run's wall-clock stage intervals (the same class as the
+// bench's duration figure, ADR-0064), so the view reports them and names the
+// slow stage instead of pretending to grade on them. A live (still running)
+// session answers with its stats so far — usually all empty until the run
+// settles, which the empty summary says honestly (every stage count 0, no
+// stage named).
+func (s *Server) handleDevSessionBottlenecks(w http.ResponseWriter, r *http.Request) {
+	if s.sessions == nil {
+		s.writeProblem(w, r, http.StatusServiceUnavailable, "sessions-unavailable",
+			"Sessions Unavailable",
+			"no session runtime is wired in this process; the session view has nothing to read")
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		s.writeProblem(w, r, http.StatusBadRequest, "invalid-session-id",
+			"Bad Request", "the session id in the path is empty")
+		return
+	}
+	info, ok := s.sessions.Get(id)
+	if !ok {
+		s.writeProblem(w, r, http.StatusNotFound, "session-not-found",
+			"Session Not Found", fmt.Sprintf("no session with id %q exists in this process", id))
+		return
+	}
+	summary := runtime.Bottlenecks(info.Stats.Latency)
+	writeJSON(w, http.StatusOK, devBottlenecksResponse{
+		SessionID:         info.ID,
+		State:             info.State,
+		BottleneckSummary: summary,
 	})
 }
 

@@ -373,17 +373,16 @@ func naECE(name string, probs []float64, labels []bool, objective string) Metric
 }
 
 // calibrationFitRow is the report's calibration row: whether the matcher's
-// temperature could be fitted on this run's data. The fit's raw material is
-// the run's incorrect top-1 examples (the truth message is not the top
+// temperature could be re-fitted on this run's data. The fit's raw material
+// is the run's incorrect top-1 examples (the truth message is not the top
 // candidate): data that does not meet the fit's sufficiency guards (matcher.
 // DefaultFitOptions — at least MinIncorrect incorrect top-1 examples and
-// MinSamples samples) cannot calibrate a temperature, so the matcher runs the
-// default T (T = 1, calibration revision 1): the calibration_brier and
-// calibration_ece_10bin rows above are that default's numbers, not a fit's.
-// A 100%-correct top-1 is exactly the shape that cannot calibrate — the NLL
-// would run to the fit range's floor and ship a near-certain matcher
-// (ADR-0035 "Calibration"); a real fit needs the Dolphin fixture-factory
-// frames (M6) with labelled errors.
+// MinSamples samples) cannot re-calibrate a temperature, so the matcher keeps
+// the adopted default (T = 0.0728, calibration revision 2, ADR-0058
+// amendment 7): the calibration_brier and calibration_ece_10bin rows above
+// are that default's numbers, not a fit's. A 100%-correct top-1 is exactly
+// the shape that cannot calibrate — the NLL would run to the fit range's
+// floor and ship a near-certain matcher (ADR-0035 "Calibration").
 func calibrationFitRow(top1N, incorrect int) Metric {
 	g := matcher.DefaultFitOptions()
 	m := Metric{Name: "calibration", N: top1N, Kind: "info"}
@@ -399,7 +398,7 @@ func calibrationFitRow(top1N, incorrect int) Metric {
 		return m
 	}
 	m.Met = "informational"
-	m.Detail = fmt.Sprintf("fittable (%d of %d ranked samples had an incorrect top-1; a fit requires ≥%d incorrect top-1 examples and ≥%d samples) — this run still uses the default T = 1 (revision 1); adopting a fit is a separate reviewed step (`bench calibrate`, new calibration revision, ADR numbers)",
+	m.Detail = fmt.Sprintf("fittable (%d of %d ranked samples had an incorrect top-1; a fit requires ≥%d incorrect top-1 examples and ≥%d samples) — this run uses the adopted default T = 0.0728 (revision 2, ADR-0058 amendment 7); a re-fit on new data defines a new revision, a separate reviewed step",
 		incorrect, top1N, g.MinIncorrect, g.MinSamples)
 	return m
 }

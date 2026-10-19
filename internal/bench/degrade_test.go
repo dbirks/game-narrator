@@ -183,7 +183,7 @@ func TestDegradedFitSourcesShape(t *testing.T) {
 		Split:    SplitTuning,
 	}
 	variants := DegradedVariants()
-	srcs, err := degradedFitSources(fx, []Sample{sample}, nil, nil)
+	srcs, err := degradedFitSources(fx, []Sample{sample}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("degradedFitSources: %v", err)
 	}

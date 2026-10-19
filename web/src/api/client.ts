@@ -241,6 +241,7 @@ export const IDEMPOTENT_CREATE_TEMPLATES: readonly string[] = [
   "/api/v1/games",
   "/api/v1/games/{id}/editions",
   "/api/v1/profiles/{id}/import",
+  "/api/v1/profiles/{id}/import/disc",
 ];
 
 /** The non-HttpOnly CSRF twin cookie (ADR-0016 §4). */
@@ -583,6 +584,7 @@ export type Role = Schemas["Role"];
 export type Game = Schemas["Game"];
 export type Edition = Schemas["Edition"];
 export type Character = Schemas["Character"];
+export type SpeakerLinkResponse = Schemas["SpeakerLinkResponse"];
 export type Profile = Schemas["Profile"];
 export type ProfileStatus = Schemas["ProfileStatus"];
 export type Message = Schemas["Message"];
@@ -595,6 +597,9 @@ export type JobDetail = Schemas["JobDetail"];
 export type JobState = Schemas["JobState"];
 export type ImportAccepted = Schemas["ImportAccepted"];
 export type ImportReport = Schemas["ImportReport"];
+export type DiscImages = Schemas["DiscImages"];
+export type DiscImportAccepted = Schemas["DiscImportAccepted"];
+export type DiscImportReport = Schemas["DiscImportReport"];
 export type TextKind = Schemas["TextKind"];
 export type RightsStatus = Schemas["RightsStatus"];
 export type ProfileManifest = Schemas["ProfileManifest"];
@@ -748,6 +753,23 @@ export const catalogApi = {
       signal,
     }) as Promise<{ characters: Character[] }>;
   },
+  /**
+   * The curator's speaker-link action (ADR-0070): the placeholder {characterId}
+   * is identified as {targetCharacterId}. The client sends the profile's
+   * cached ETag as If-Match, so a stale page is a 412, not a second link.
+   */
+  linkSpeaker(
+    profileId: string,
+    characterId: string,
+    targetCharacterId: string,
+    signal?: AbortSignal,
+  ) {
+    return api.post("/api/v1/profiles/{id}/characters/{cid}/speaker-link", {
+      params: { id: profileId, cid: characterId },
+      body: { target_character_id: targetCharacterId },
+      signal,
+    }) as Promise<SpeakerLinkResponse>;
+  },
   createDraft(editionId: string) {
     return api.post("/api/v1/editions/{id}/profiles", { params: { id: editionId } });
   },
@@ -897,6 +919,43 @@ export const portabilityApi = {
   /** A plain link: the browser carries the session cookie and names the file. */
   exportUrl(profileId: string): string {
     return `/api/v1/profiles/${encodeURIComponent(profileId)}/export`;
+  },
+};
+
+/**
+ * The disc-import surface (ADR-0066): the operator's allowlisted directory holds
+ * the user's disc images, the UI chooses one by basename (or uploads a small
+ * image), and the parse runs as the import.disc job whose report is read back
+ * the way the file import's is.
+ */
+export const discImportApi = {
+  /** What the allowlisted directory holds. 200 with configured:false when the operator configured none. */
+  listImages(signal?: AbortSignal) {
+    return api.get("/api/v1/import/disc/images", { signal });
+  },
+  /** Dir shape: a basename from the allowlisted directory, read in place. */
+  importDir(profileId: string, image: string) {
+    return api.post("/api/v1/profiles/{id}/import/disc", {
+      params: { id: profileId },
+      body: { image },
+    });
+  },
+  /** Upload shape: the raw image (CISO or plain GCM) streamed to the asset store. */
+  importUpload(profileId: string, file: File) {
+    const form = new FormData();
+    form.set("file", file);
+    return api.post("/api/v1/profiles/{id}/import/disc", {
+      params: { id: profileId },
+      form,
+    });
+  },
+  /** The disc report is the `result` member of a succeeded `import.disc` job. */
+  report(job: Job | JobDetail | null | undefined): DiscImportReport | null {
+    const result = job?.result as Record<string, unknown> | undefined;
+    if (!result || typeof result !== "object" || !("messages_inserted" in result)) return null;
+    // The Go nil-slice → JSON null normalisation the file import applies; a
+    // report with zero warnings must not crash the render that reads .length.
+    return { ...result, warnings: result.warnings ?? [] } as unknown as DiscImportReport;
   },
 };
 

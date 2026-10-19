@@ -11,6 +11,11 @@
 //	                       skipped unless --probe (offline-safe by default)
 //	store.json             schema version, applied migrations and per-table
 //	                       row COUNTS — never row content (docs/spec/13)
+//	bottlenecks.json       per-session stage latency summary (p50/p95/max,
+//	                       share of the end-to-end, named slowest stage) for
+//	                       the most recent finished sessions, from each
+//	                       session's own terminal-event stats (docs/spec/16
+//	                       M7); stage names, counts and latencies only
 //	config.redacted.json   the effective model-role configuration with every
 //	                       URL reduced to scheme + redacted host and every
 //	                       token/secret replaced by a sentinel; environment
@@ -24,7 +29,8 @@
 // shipping log content.
 //
 // The section builders live in their own files: doctor_section.go,
-// store_section.go, config_section.go, devtrace.go. This file owns the
+// store_section.go, bottlenecks.go, config_section.go, devtrace.go. This file
+// owns the
 // options, the manifest and the archive writer.
 package support
 
@@ -138,7 +144,7 @@ func Build(ctx context.Context, o Options, outPath string) (*Manifest, error) {
 		return nil, fmt.Errorf("support: no database in the data dir (basename %s): run 'game-narrator migrate --data-dir DIR' first; the bundle build never creates or migrates the database", filepath.Base(o.DataDir))
 	}
 
-	files := make(map[string][]byte, 5)
+	files := make(map[string][]byte, 6)
 
 	doctorJSON, mode, err := buildDoctor(ctx, o)
 	if err != nil {
@@ -151,6 +157,12 @@ func Build(ctx context.Context, o Options, outPath string) (*Manifest, error) {
 		return nil, fmt.Errorf("support: store section: %w", err)
 	}
 	files[StorePath] = storeJSON
+
+	bottlenecksJSON, err := buildBottlenecks(ctx, o.DataDir)
+	if err != nil {
+		return nil, fmt.Errorf("support: bottlenecks section: %w", err)
+	}
+	files[BottlenecksPath] = bottlenecksJSON
 
 	configJSON, err := buildConfig()
 	if err != nil {

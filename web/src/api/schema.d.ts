@@ -587,6 +587,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/profiles/{id}/characters/{cid}/speaker-link": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Link an import's speaker placeholder to a character.
+     * @description The curator's identification of an opaque source speaker (ADR-0070): the placeholder {cid} — the row an import created for a speaker id the source names only as an attribute — is identified as the target character. One transaction re-points the placeholder's lines at the target (confirmed at 1.0, the source-field evidence kept and the acting curator added as a reviewer entry), records one manual speaker assertion per re-pointed line, folds the placeholder's name into the target's aliases so a re-import binds the key straight to the target, and retires the placeholder. Draft revisions only, and If-Match carries the revision's row version like every profile write: 428 when absent, 412 when stale. A retired placeholder or a retired target answers 409, a self-link or a missing or malformed target_character_id answers 400, and a character the revision does not have answers 404.
+     */
+    post: operations["linkSpeaker"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/profiles/{id}/regions": {
     parameters: {
       query?: never;
@@ -862,6 +882,26 @@ export interface paths {
      * @description The developer's view of the correction labels as the re-run inputs (docs/spec/08 "fixture recording and browsing", docs/spec/09 "save a fixture and inspect a test report"). Same rows and shape as GET /api/v1/corrections; the reading is the difference (ADR-0052).
      */
     get: operations["listFixtures"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/dev/sessions/{id}/bottlenecks": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * One session's per-stage latency summary: the named bottleneck.
+     * @description The session's own pipeline stage latencies (capture → OCR, OCR → rank, capture → committed) reduced by the shared summary function (runtime.Bottlenecks): p50/p95/max per stage, each stage's share of the end-to-end latency at the p95 point, and the named slowest stage (docs/spec/16 M7 "diagnostics expose bottlenecks"). The intervals are wall-clock measurements of the run (the same class as the bench's duration figure, ADR-0064): the view reports them and names the slow stage, it does not grade on them. A still-running session answers with its stats so far (usually an empty summary until the run settles). Developer-only for the same reason as the other dev inspection routes: the session's run state is developer evidence.
+     */
+    get: operations["devSessionBottlenecks"];
     put?: never;
     post?: never;
     delete?: never;
@@ -1483,6 +1523,46 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/import/disc/images": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List the disc images in the allowlisted import directory.
+     * @description What a curator can import from the directory the operator names with GAME_NARRATOR_IMPORT_DIR: the regular files directly in it, by basename with size and mtime. The API never answers with the directory's own path (AGENTS.md rule 5), and symlinks the operator placed in the directory are listed like any other file. An unconfigured directory is a state, not a fault: the route answers 200 with configured:false and an empty list, and the upload shape of POST /profiles/{id}/import/disc is then the import path. 503 SUBSYSTEM_UNAVAILABLE remains for a build whose dependencies are unwired and for a configured directory that cannot be read.
+     */
+    get: operations["listDiscImportImages"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/profiles/{id}/import/disc": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Import a game's script from a disc image; the hash, parse and write run as a job.
+     * @description Two request shapes, one 202 body (ADR-0066). Dir shape: a JSON body {"image": "<basename>"} (or ?image=<name>) naming a regular file in the allowlisted import directory; the job reads the image in place and never copies it, so a crash resumes against the same on-disk image. Upload shape: multipart/form-data with a file part carrying the raw image (CISO or plain GCM), streamed into the asset store under the shared upload cap with its hash computed while streaming — real GB-scale discs do not fit the cap by design, and the 202 detail says the directory is the full-image path. The target revision must be a draft (409 otherwise, as on the file import). The job (kind import.disc) opens the image, lets the disc-capable adapter verify the game id and extract the message script, and imports it through the same machinery as the file import: the BMG is content-addressed, a re-import of the same image reconciles by hash instead of duplicating, and the result is a DiscImportReport. The image path is never logged or stored; the report and the source row carry the image's SHA-256 and the game id instead.
+     */
+    post: operations["importDisc"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1906,6 +1986,22 @@ export interface components {
     CharacterList: {
       characters: components["schemas"]["Character"][];
     };
+    /** @description The identification itself: which live character the placeholder is. A self-link is refused with 400. */
+    SpeakerLinkRequest: {
+      /** @description The character the placeholder's speaker is identified as. */
+      target_character_id: string;
+    };
+    /** @description The link's outcome, counts only: which rows were joined and how many lines moved. */
+    SpeakerLinkResponse: {
+      /** @description The revision the link was recorded on. */
+      profile_id: string;
+      /** @description The placeholder, now retired; its name is folded into the target's aliases. */
+      source_character_id: string;
+      /** @description The character the placeholder is identified as. */
+      target_character_id: string;
+      /** @description The lines that now point at the target, each confirmed at 1.0 with a manual assertion. */
+      repointed_messages: number;
+    };
     /** @description One revision's region set — every rectangle text is read from, with the values that may be null because the source did not state them. */
     RegionList: {
       regions: components["schemas"]["Region"][];
@@ -2147,8 +2243,53 @@ export interface components {
       /** @description The session.started seq; later session events resume from here. */
       event_cursor: number;
       stats: components["schemas"]["PipelineStats"];
+      /** @description The capture source's own self-report: whether it is delivering frames at all, and if not, why (docs/spec/13). The pipeline's downstream counters cannot name this fault: a session whose capture child keeps failing reads running with zero frames delivered, and this field carries the source's state and last failure text. */
+      source: components["schemas"]["SessionSource"];
       /** @description Present when the process has a voice workflow wired and this session's sink built; absent on a silent session, where the audio route answers 503 audio_unavailable. */
       audio?: components["schemas"]["SessionAudio"];
+    };
+    /** @description The session's capture source self-report (the API view of capture.Stats): the source's own ID and lifecycle state, its delivered count and measured rate, the supervised-restart count that separates a one-time device loss from flapping capture, and the last failure text. */
+    SessionSource: {
+      /** @description The source's stable identity (e.g. x11::96+0,0 or replay:dialogue-advance-001). */
+      id: string;
+      /** @description The source lifecycle state: starting, running, reconnecting, stopped or failed. */
+      state: string;
+      /** @description Frames the source has handed to the session since start. */
+      delivered: number;
+      /** @description Supervised (re)starts after the first, including failed spawn attempts. */
+      restarts: number;
+      /** @description Measured arrival rate over the trailing window; zero until enough frames have arrived. */
+      fps: number;
+      /**
+       * Format: date-time
+       * @description The wall time of the newest delivered frame; absent before the first frame.
+       */
+      last_frame_at?: string;
+      /** @description The most recent failure text, kept because docs/spec/13 requires an actionable operator action; absent while healthy. */
+      last_error?: string;
+    };
+    /** @description The GET /api/v1/dev/sessions/{id}/bottlenecks body: the session's own per-stage latency summary (docs/spec/16 M7 "diagnostics expose bottlenecks"). The same rows, shares and named slowest stage the support bundle's bottlenecks.json and the developer page read, all computed by the one shared function (runtime.Bottlenecks) from the session's own stats. */
+    SessionBottlenecks: {
+      session_id: string;
+      state: components["schemas"]["SessionState"];
+      stages: components["schemas"]["StageLatency"][];
+      /** @description The proper sub-stage (capture→OCR or OCR→rank) with the largest p95 — the stage that owns the most of the end-to-end latency. The end-to-end stage is the baseline, never a candidate (it contains both sub-stages); when no sub-stage has samples but the end-to-end stage does, it is named instead. Empty string when no stage has samples. */
+      slowest_stage: string;
+    };
+    /** @description One measured stage of one run's own pipeline latency stats (internal/pipeline: frame_to_ocr, ocr_to_ranked, frame_to_committed). p50_ns and p95_ns are histogram bucket edges (the pipeline buckets by design); max_ns is exact. Wall-clock measurement: a diagnostic, not a verdict (ADR-0064). */
+    StageLatency: {
+      /**
+       * @description The stage: capture → OCR, OCR → rank, or capture → committed (the end-to-end baseline).
+       * @enum {string}
+       */
+      stage: "frame_to_ocr" | "ocr_to_ranked" | "frame_to_committed";
+      /** @description How many samples the stage's histogram held. */
+      count: number;
+      p50_ns: number;
+      p95_ns: number;
+      max_ns: number;
+      /** @description p95(stage) / p95(frame_to_committed): the stage's share of the end-to-end latency at the p95 point. 1 for the end-to-end stage itself; 0 when the stage or the end-to-end stage has no samples. The ratio of two histogram bucket edges over two different sample populations, so it can exceed 1 when both p95s are quantized edges of sub-millisecond intervals (the honest reading: this stage's p95 edge is above the end-to-end p95 edge). */
+      share_of_end_to_end: number;
     };
     /** @description The live audio controls of POST /api/v1/sessions/{id}/audio. Every field is optional and applied when present; a field left out keeps its current value. */
     SessionAudioSettings: {
@@ -2834,6 +2975,50 @@ export interface components {
     };
     CreateCorrectionResponse: {
       correction: components["schemas"]["Correction"];
+    };
+    DiscImageEntry: {
+      /** @description The basename the request sends; never a path. */
+      name: string;
+      size_bytes: number;
+      modified_at: string;
+    };
+    /** @description GET /api/v1/import/disc/images: what the allowlisted directory holds, without naming the directory. */
+    DiscImages: {
+      /** @description true when the operator has configured the import directory; a 200 with false and an empty list is the unconfigured answer. */
+      configured: boolean;
+      /** @description id@semver of the disc-capable adapter linked into this build, when one is. */
+      adapter?: string;
+      images: components["schemas"]["DiscImageEntry"][];
+    };
+    /** @description The dir shape's body. The image is a basename directly in the allowlisted import directory; anything path-shaped is a 400. */
+    DiscImportRequest: {
+      image?: string;
+    };
+    /** @description The image is verified and the import queued; progress and the report are the job's. */
+    DiscImportAccepted: {
+      job_id: string;
+      /** @constant */
+      job_kind: "import.disc";
+      profile_id: string;
+      /**
+       * @description Which shape the job will read: the allowlisted file in place, or the upload's content from the asset store.
+       * @enum {string}
+       */
+      source: "dir" | "upload";
+      /** @description The basename, dir shape only. */
+      image?: string;
+      /** @description The image's content hash, upload shape only (the dir shape hashes in the job and reports it in its result). */
+      sha256?: string;
+      state: components["schemas"]["JobState"];
+      detail: string;
+    };
+    DiscImportReport: components["schemas"]["ImportReport"] & {
+      /** @description The disc image's SHA-256 — provenance in place of the path, which is never stored (AGENTS.md rule 5/6). */
+      image_sha256: string;
+      /** @description The disc boot header's game id, e.g. GZLE01. */
+      game_id: string;
+      /** @description The region the game id maps to; the edition's region is the curator's choice and a mismatch is the review's business. */
+      disc_region: string;
     };
   };
   responses: {
@@ -4007,6 +4192,41 @@ export interface operations {
       default: components["responses"]["Problem"];
     };
   };
+  linkSpeaker: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: components["parameters"]["ProfileId"];
+        /** @description The placeholder character the import created for the source speaker id. */
+        cid: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["SpeakerLinkRequest"];
+      };
+    };
+    responses: {
+      /** @description Linked. ETag is the revision's new token. */
+      200: {
+        headers: {
+          ETag?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SpeakerLinkResponse"];
+        };
+      };
+      400: components["responses"]["Problem"];
+      404: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
+      412: components["responses"]["Problem"];
+      428: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
   listRegions: {
     parameters: {
       query?: never;
@@ -4527,6 +4747,33 @@ export interface operations {
         };
       };
       400: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  devSessionBottlenecks: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The session id returned by POST /api/v1/sessions (a ULID). */
+        id: components["parameters"]["SessionId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The session's stage summary; slowest_stage is empty when no stage has samples yet. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SessionBottlenecks"];
+        };
+      };
+      400: components["responses"]["Problem"];
+      404: components["responses"]["Problem"];
       503: components["responses"]["Problem"];
       default: components["responses"]["Problem"];
     };
@@ -5424,6 +5671,74 @@ export interface operations {
       };
       400: components["responses"]["Problem"];
       404: components["responses"]["Problem"];
+      422: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  listDiscImportImages: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The regular files directly in the directory, sorted by name. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DiscImages"];
+        };
+      };
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  importDisc: {
+    parameters: {
+      query?: never;
+      header?: {
+        /** @description Honoured durably here rather than in the process's memory: the queue's unique idempotency_key column stores it, scoped to kind + principal + revision, so a retry after a dropped 202 gets the same job back instead of a second parse. Sending the same key with different bytes is a 422. The response cannot be replayed from a cache because the work may still be running; the job resource is the answer (ADR-0017). */
+        "Idempotency-Key"?: components["parameters"]["IdempotencyKeyOptional"];
+      };
+      path: {
+        id: components["parameters"]["ProfileId"];
+      };
+      cookie?: never;
+    };
+    /** @description Dir shape: application/json with {"image": "<basename>"}. Upload shape: multipart/form-data with a file part named `file`. */
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["DiscImportRequest"];
+        "multipart/form-data": {
+          /**
+           * Format: binary
+           * @description the raw disc image (CISO or plain GCM)
+           */
+          file?: string;
+        };
+      };
+    };
+    responses: {
+      /** @description Verified and queued. */
+      202: {
+        headers: {
+          /** @description The job's path. */
+          Location?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DiscImportAccepted"];
+        };
+      };
+      400: components["responses"]["Problem"];
+      404: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
+      413: components["responses"]["Problem"];
       422: components["responses"]["Problem"];
       503: components["responses"]["Problem"];
       default: components["responses"]["Problem"];

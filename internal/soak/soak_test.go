@@ -63,6 +63,16 @@ func runSoak(t *testing.T, cfg soak.Config) soak.Result {
 	if !res.Passed() {
 		t.Fatalf("soak run %s failed: %s", res.RunID, res.FirstFailure())
 	}
+	// The per-stage bottleneck summary is the run's own artifact
+	// (docs/spec/16 M7): a run with commits measured the end-to-end stage,
+	// and the shared function names the slowest stage — visible in the
+	// report, never an assumption.
+	if res.Pipeline.Commits > 0 && res.Bottlenecks.EndToEnd().Count == 0 {
+		t.Fatalf("soak: the end-to-end stage has no samples for a run with %d commits", res.Pipeline.Commits)
+	}
+	if res.Bottlenecks.EndToEnd().Count > 0 && res.Bottlenecks.SlowestStage == "" {
+		t.Fatal("soak: the bottleneck summary names no slowest stage for a run with measured stages")
+	}
 	return res
 }
 

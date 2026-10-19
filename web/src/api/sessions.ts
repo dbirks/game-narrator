@@ -34,6 +34,8 @@ export type UtteranceState = Schemas["UtteranceState"];
 export type EventEnvelope = Schemas["EventEnvelope"];
 export type DevEventsPage = Schemas["DevEventsPage"];
 export type FrameSource = Schemas["FrameSource"];
+export type SessionBottlenecks = Schemas["SessionBottlenecks"];
+export type StageLatency = Schemas["StageLatency"];
 
 export interface StartSessionBody {
   profile_id: string;
@@ -79,6 +81,20 @@ export const devApi = {
       },
       signal,
     }) as Promise<DevEventsPage>;
+  },
+  /**
+   * One session's per-stage latency summary (docs/spec/16 M7 "diagnostics
+   * expose bottlenecks"): p50/p95/max per stage, each stage's share of the
+   * end-to-end latency, and the named slowest stage — the same rows and the
+   * same shared summary function as the support bundle's bottlenecks.json.
+   * A still-running session answers with its stats so far (usually empty
+   * until the run settles).
+   */
+  bottlenecks(id: string, signal?: AbortSignal): Promise<SessionBottlenecks> {
+    return api.get("/api/v1/dev/sessions/{id}/bottlenecks", {
+      params: { id },
+      signal,
+    }) as Promise<SessionBottlenecks>;
   },
   /** Every persisted event carrying one trace id, in seq order. */
   trace(traceId: string, signal?: AbortSignal): Promise<DevEventsPage> {

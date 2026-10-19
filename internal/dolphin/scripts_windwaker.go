@@ -61,9 +61,28 @@ func WindWakerNewGameDrive() ActionTable {
 	// unmeasured side, and a screen that ignores the stick still fails the
 	// loop detector (same key, no change) instead of consuming the budget.
 	var unknownSideStreak int
+	// confirmPending is the 2026-10-19 live-play lost-A recovery: set when the
+	// drive presses A on a MEASURED Yes cursor and the screen is STILL the same
+	// prompt family on the next iteration (the A was lost — dropped on the
+	// dialog's settle after the 900 ms stick). While it holds the drive keeps
+	// trying to confirm the SAME dialog instead of giving up: a measured-Yes A
+	// is resent, and a measured-No reading re-converges with the measured stick
+	// (safe — it converges on Yes, unlike the blind no-side stick). It is
+	// cleared only when the screen leaves the prompt family (the A advanced it)
+	// or after maxConfirmAttempts confirm tries on this prompt (a genuinely
+	// dead dialog then falls back to the normal side logic and fails the loop
+	// detector). This fixes the run where the old policy's blind STICK(no-side)
+	// after the lost A wrapped the cursor and closed the dialog on the NO path
+	// (the screen went to the title and START reopened the same prompt, and the
+	// loop detector killed the re-approach).
+	var confirmPending bool
+	var confirmAttempts int
+	const maxConfirmAttempts = 6
 	return func(screen DriveScreen, side CursorSide, _ DriveScreen, _ bool, frame image.Image) DriveAction {
 		if screen != DriveScreenPrompt && screen != DriveScreenNameConfirm {
-			unknownSideStreak = 0 // a new screen: the blink counter restarts
+			unknownSideStreak = 0  // a new screen: the blink counter restarts
+			confirmPending = false // the confirm dialog was left: the retry chain ends
+			confirmAttempts = 0
 		} else if side != CursorNone {
 			unknownSideStreak = 0 // the side measured: the blink counter restarts
 		}
@@ -82,20 +101,42 @@ func WindWakerNewGameDrive() ActionTable {
 			case CursorRight:
 				// Cursor on No: move it to Yes with the measured main-stick
 				// input (900 ms hold — the measured move; 200 ms is measured
-				// NOT to move the cursor).
+				// NOT to move the cursor). This is a MEASURED stick (it
+				// converges on Yes), so it is safe even mid-confirm: it
+				// re-converges after a lost A rather than closing the dialog on
+				// the No path. confirmPending is kept — the drive is still on the
+				// same confirm dialog, just re-approaching the Yes side.
 				return stickLeftAction()
 			case CursorLeft:
-				// Cursor on Yes (measured): confirm.
+				// Cursor on Yes (measured): confirm. Remember that a confirm A was
+				// just sent, so if the screen is still this prompt next iteration the
+				// A was lost and the blink-off branch resends it.
+				confirmPending = true
+				confirmAttempts++
+				if confirmAttempts > maxConfirmAttempts {
+					// Too many confirm tries on this prompt without advancing:
+					// stop the A retry and let the normal side logic (and the loop
+					// detector) take over a genuinely dead dialog.
+					confirmPending = false
+					confirmAttempts = 0
+				}
 				return pressAction("A", []Button{ButtonA})
 			default:
 				// The cursor is blinked off (the measured prompt blinks: blob
-				// on/off at ~1 s period) and the side is unmeasured: never
-				// guess A onto an unmeasured side. After 3 consecutive
-				// no-side iterations send the measured stick move (it is the
-				// measured cursor input on both measured prompts, and from a
-				// Yes cursor it either stays or wraps to No — the next
-				// measured side converges on Yes-A either way).
+				// on/off at ~1 s period) and the side is unmeasured: never guess A
+				// onto an unmeasured side — except the confirmed retry below, where a
+				// measured-Yes A was already sent to this prompt and did not advance it
+				// (the A was lost). The cursor cannot have moved to No: if it had, the
+				// side would be measured No and the stick branch above would have
+				// re-converged (a measured, safe stick). So the cursor is still on Yes
+				// (the blink-off is the cursor's blink, not a move) and the measured A
+				// is the only safe press. This is the 2026-10-19 live-play recovery:
+				// the old policy sent the blind STICK(no-side) here, which wrapped the
+				// cursor and closed the dialog on the NO path.
 				unknownSideStreak++
+				if confirmPending && confirmAttempts <= maxConfirmAttempts {
+					return pressAction("A", []Button{ButtonA})
+				}
 				if unknownSideStreak >= 3 {
 					return DriveAction{Wire: "STICK(no-side)", Run: stickLeftAction().Run}
 				}

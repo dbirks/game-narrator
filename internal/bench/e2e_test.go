@@ -3,9 +3,11 @@ package bench
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -65,7 +67,11 @@ func TestBenchEndToEnd(t *testing.T) {
 	outDir := filepath.Join(dir, "out")
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
-	rep, err := RunBench(ctx, dir, SplitAll, outDir)
+	// The committed bounds file is the recorded-p95 guard: the run's merged
+	// per-stage p95s are flagged (not gated) when they exceed it; the
+	// assertion below says any exceedance is self-consistent and named in
+	// report.md (a real regression is caught the same way on a quiet host).
+	rep, err := RunBench(ctx, dir, SplitAll, outDir, filepath.Join("..", "..", "testdata", "bench", "latency-bounds.json"))
 	if err != nil {
 		t.Fatalf("RunBench: %v", err)
 	}
@@ -135,6 +141,47 @@ func TestBenchEndToEnd(t *testing.T) {
 		}
 		if lat.Bound < lat.Value {
 			t.Errorf("latency bound %v below its value %v", lat.Bound, lat.Value)
+		}
+	}
+	// The per-stage bottleneck summary is present and self-consistent (the
+	// shared function's shape: three rows in pipeline order, the end-to-end
+	// stage a baseline, a named slowest stage when anything was measured).
+	if len(rep.Bottlenecks.Stages) != 3 {
+		t.Fatalf("bottlenecks = %d stage rows, want 3", len(rep.Bottlenecks.Stages))
+	}
+	if rep.Bottlenecks.EndToEnd().Count == 0 {
+		t.Fatalf("end-to-end stage count = 0 for a run with commits: %+v", rep.Bottlenecks)
+	}
+	if rep.Bottlenecks.SlowestStage == "" {
+		t.Fatal("slowest stage is empty for a run with measured stages")
+	}
+	// The recorded-bounds guard flags (it does not gate): the stage
+	// intervals are wall-clock (ADR-0064) and this package races the other
+	// -race packages under the unit gate, so an exceeded p95 here is the
+	// host-load situation the bounds' provenance note describes — never a
+	// verdict on recognition. The assertion is that any exceedance is
+	// self-consistent, carries its "what to do" note and is named in
+	// report.md; a quiet-host run (make bench) is where a real regression
+	// is caught.
+	reportMD, err := os.ReadFile(filepath.Join(outDir, "report.md"))
+	if err != nil {
+		t.Fatalf("read report.md: %v", err)
+	}
+	for _, c := range rep.LatencyBounds {
+		if c.Exceeded != (c.P95MS > c.BoundMS) {
+			t.Errorf("stage %s exceeded = %v, want %v (p95 %v ms vs bound %v ms)",
+				c.Stage, c.Exceeded, c.P95MS > c.BoundMS, c.P95MS, c.BoundMS)
+		}
+		if !c.Exceeded {
+			continue
+		}
+		t.Logf("flag: stage %s p95 %v ms exceeds the recorded bound %v ms: %s",
+			c.Stage, c.P95MS, c.BoundMS, c.Note)
+		if c.Note == "" {
+			t.Errorf("exceeded stage %s carries no note: the flag must say what to do", c.Stage)
+		}
+		if !strings.Contains(string(reportMD), fmt.Sprintf("`%s` exceeds its recorded bound", c.Stage)) {
+			t.Errorf("report.md does not name the exceeded stage %s in its latency-bounds section", c.Stage)
 		}
 	}
 	t.Logf("report: %s %s — recall %.1f%% (%d/%d), top1 %.1f%%, cer %.1f%%, p50 commit latency %v ms",

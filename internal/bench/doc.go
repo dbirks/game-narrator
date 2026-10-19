@@ -10,6 +10,10 @@
 // run — never as achieved.
 package bench
 
+import (
+	"github.com/dbirks/game-narrator/internal/runtime"
+)
+
 // SchemaVersion is the only report/truth schema this package understands.
 const SchemaVersion = 1
 
@@ -31,11 +35,22 @@ type Report struct {
 	// Class is the AGENTS.md rule-3 provenance class of the run's frames:
 	// "a" synthetic stub, "b" captured-frame replay (docs/spec/11 "Fixture
 	// origins"). The two holdouts are reported separately and never pooled.
-	Class       string      `json:"class"`
-	Samples     int         `json:"samples"`
-	Metrics     []Metric    `json:"metrics"`
-	Diagnostics Diagnostics `json:"diagnostics"`
-	GeneratedAt string      `json:"generated_at"`
+	Class   string   `json:"class"`
+	Samples int      `json:"samples"`
+	Metrics []Metric `json:"metrics"`
+	// Bottlenecks is the run's per-stage latency summary — p50/p95/max per
+	// stage, each stage's share of the end-to-end, and the named slowest
+	// stage — reduced by the one shared function (runtime.Bottlenecks) from
+	// the run's own merged stage stats (docs/spec/16 M7 "diagnostics expose
+	// bottlenecks"). Wall-clock diagnostic, not a verdict (ADR-0064).
+	Bottlenecks runtime.BottleneckSummary `json:"bottlenecks"`
+	// LatencyBounds is the run's merged per-stage p95s checked against the
+	// recorded bounds file (DefaultBoundsPath): a flag with headroom, never
+	// a gate. Absent when the bounds file is missing or no stage had both
+	// samples and a recorded bound.
+	LatencyBounds []LatencyBoundCheck `json:"latency_bounds,omitempty"`
+	Diagnostics   Diagnostics         `json:"diagnostics"`
+	GeneratedAt   string              `json:"generated_at"`
 }
 
 // Metric is one report row: value, sample count, kind, the provisional
@@ -46,9 +61,9 @@ type Report struct {
 // upper bound on the true value and Met reads "resolution-limited". Kind
 // "info" rows carry no numeric value (Value stays 0; Detail is the
 // statement): the calibration row reports the temperature fit's status —
-// Met "not_fitted" when this run's data cannot calibrate a temperature (the
-// ECE/Brier rows are the default T = 1 numbers), "informational" when it
-// could.
+// Met "not_fitted" when this run's data cannot re-calibrate a temperature
+// (the ECE/Brier rows are the adopted default's — revision 2 — numbers),
+// "informational" when it could.
 type Metric struct {
 	Name              string  `json:"name"`
 	Value             float64 `json:"value"`

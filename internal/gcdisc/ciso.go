@@ -61,40 +61,56 @@ func Open(path string) (*Disc, error) {
 		f.Close()
 		return nil, err
 	}
-	if info.Size() < gcmHeaderLen {
+	d, err := openLogical(f, info.Size())
+	if err != nil {
 		f.Close()
-		return nil, fmt.Errorf("gcdisc: file too small (%d bytes) to be a disc image", info.Size())
+		return nil, err
+	}
+	d.f = f
+	return d, nil
+}
+
+// OpenReader opens a disc image from any io.ReaderAt source — an asset-store
+// blob read into memory, an in-memory synthetic image in a test — instead of
+// a path, with the same CISO detection. The returned Disc closes the reader
+// if it also implements io.Closer; a plain bytes.Reader costs nothing.
+func OpenReader(r io.ReaderAt, size int64) (*Disc, error) {
+	return openLogical(r, size)
+}
+
+// openLogical is the shared core: CISO detection, the logical reader and the
+// GCM boot header. Callers own the underlying file's lifetime through Disc.f
+// or the reader's own io.Closer.
+func openLogical(r io.ReaderAt, size int64) (*Disc, error) {
+	if size < gcmHeaderLen {
+		return nil, fmt.Errorf("gcdisc: source too small (%d bytes) to be a disc image", size)
 	}
 	peek := make([]byte, 4)
-	if _, err := f.ReadAt(peek, 0); err != nil {
-		f.Close()
+	if _, err := r.ReadAt(peek, 0); err != nil {
 		return nil, err
 	}
 	var lr logicalReader
 	if bytes.Equal(peek, []byte("CISO")) {
-		c, err := openCISO(f, info.Size())
+		c, err := openCISO(r, size)
 		if err != nil {
-			f.Close()
 			return nil, err
 		}
 		lr = c
 	} else {
-		// Plain GCM image: logical offset == file offset.
-		lr = &plainReader{r: f, size: info.Size()}
+		// Plain GCM image: logical offset == source offset.
+		lr = &plainReader{r: r, size: size}
 	}
 	// The GCM boot header sits at logical offset 0; in a CISO image it
 	// lives inside the first stored block, not at the start of the file.
 	hdrBuf := make([]byte, gcmHeaderLen)
 	if _, err := lr.ReadAt(hdrBuf, 0); err != nil {
-		f.Close()
 		return nil, err
 	}
 	h, err := parseGCMHeader(hdrBuf)
 	if err != nil {
-		f.Close()
 		return nil, err
 	}
-	return &Disc{f: f, readAt: lr, hdr: &h}, nil
+	return &Disc{readAt: lr, hdr: &h}, nil
 }
 
 // plainReader is a logical reader for uncompressed GCM images.
@@ -255,7 +271,17 @@ func (d *Disc) Size() int64 { return d.readAt.Size() }
 func (d *Disc) Header() *Header { return d.hdr }
 
 // Close releases the underlying file.
-func (d *Disc) Close() error { return d.f.Close() }
+// Close releases the underlying source: the file a path Open took, or the
+// reader an OpenReader source closed through io.Closer.
+func (d *Disc) Close() error {
+	if d.f != nil {
+		return d.f.Close()
+	}
+	if c, ok := d.readAt.(io.Closer); ok {
+		return c.Close()
+	}
+	return nil
+}
 
 func parseGCMHeader(hdr []byte) (Header, error) {
 	if len(hdr) < 0x430 {

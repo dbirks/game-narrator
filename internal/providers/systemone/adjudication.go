@@ -82,14 +82,19 @@ type Speaker struct {
 const maxBundleCandidates = MaxOptions - 1
 
 // BuildAdjudication builds the bundled decision request for one observation:
-// is_textbox (noul), text_kind (choice), speaker (choice incl. unknown),
-// candidate_message (choice incl. none, with deterministic candidate ids
-// c1..cN), is_complete (noul), safe_to_speak (noul) — in that order, which is
-// the order the questions object is serialised in.
+// is_textbox (noul), text_kind (choice), speaker (choice incl. unknown, with
+// deterministic speaker ids sp1..spN), candidate_message (choice incl. none,
+// with deterministic candidate ids c1..cN), is_complete (noul),
+// safe_to_speak (noul) — in that order, which is the order the questions
+// object is serialised in.
 //
 // The returned Request has an empty Model; Decide fills it from the client's
 // model. Candidates beyond maxBundleCandidates are dropped (the ranking is
-// the caller's job); empty speaker ids are replaced by unknown.
+// the caller's job). Candidate and speaker options are both positional wire
+// aliases (c1..cN / sp1..spN, ADR-0072): the option-id grammar is
+// [a-z0-9_]{1,32}, and neither message ids nor adapter speaker keys (for
+// example the windwaker dump key "ww:spk:2", ADR-0070) may be assumed to fit
+// it — the caller's ids stay the mapping keys, the wire never carries them.
 func BuildAdjudication(obs Context, candidates []Candidate, speakers []Speaker) Request {
 	questions := make([]Question, 0, 6)
 	questions = append(questions, Question{
@@ -108,12 +113,10 @@ func BuildAdjudication(obs Context, candidates []Candidate, speakers []Speaker) 
 		},
 	})
 	speakerOpts := make([]Option, 0, len(speakers)+1)
-	for _, s := range speakers {
-		id := s.ID
-		if id == "" {
-			id = SpeakerUnknown
-		}
-		speakerOpts = append(speakerOpts, Option{ID: id, Description: s.Description})
+	for i, s := range speakers {
+		// Positional alias, exactly the candidate pattern (ADR-0072): the
+		// speaker's own id is an opaque identity (ADR-0070), not a wire id.
+		speakerOpts = append(speakerOpts, Option{ID: fmt.Sprintf("sp%d", i+1), Description: s.Description})
 	}
 	speakerOpts = append(speakerOpts, Option{ID: SpeakerUnknown, Description: "cannot be established from the frame"})
 	questions = append(questions, Question{
@@ -179,14 +182,15 @@ type Adjudication struct {
 	SafeToSpeak *float64
 }
 
-// Interpret maps a Decision for a BuildAdjudication request back to message
-// ids. The c1..cN candidate option ids are positional: cN is the Nth element
-// of the candidates slice the request was built with, so that slice is the
-// second argument; pass nil (or leave the candidate answer missing) and the
-// raw cN ids come through instead. No threshold is applied anywhere — the
+// Interpret maps a Decision for a BuildAdjudication request back to ids.
+// The c1..cN candidate option ids and the sp1..spN speaker option ids are
+// positional (ADR-0072): cN / spN is the Nth element of the candidates /
+// speakers slice the request was built with, so those slices are the second
+// and third arguments; pass nil (or leave the answer missing) and the raw
+// wire ids come through instead. No threshold is applied anywhere — the
 // floats are the raw model signals (docs/spec/06) and a missing answer simply
 // leaves its field empty.
-func Interpret(d Decision, candidates []Candidate) Adjudication {
+func Interpret(d Decision, candidates []Candidate, speakers []Speaker) Adjudication {
 	out := Adjudication{
 		Model:                  d.Model,
 		Latency:                d.Latency,
@@ -199,8 +203,20 @@ func Interpret(d Decision, candidates []Candidate) Adjudication {
 	for i, c := range candidates {
 		repl[fmt.Sprintf("c%d", i+1)] = c.ID
 	}
+	// The speaker alias map (ADR-0072): spN is the Nth element of the
+	// speakers slice, the same positional contract as cN for candidates.
+	spkRepl := make(map[string]string, len(speakers))
+	for i, s := range speakers {
+		spkRepl[fmt.Sprintf("sp%d", i+1)] = s.ID
+	}
 	mapID := func(opt string) string {
 		if id, ok := repl[opt]; ok {
+			return id
+		}
+		return opt
+	}
+	mapSpeaker := func(opt string) string {
+		if id, ok := spkRepl[opt]; ok {
 			return id
 		}
 		return opt
@@ -230,6 +246,11 @@ func Interpret(d Decision, candidates []Candidate) Adjudication {
 	setNoul(&out.IsTextbox, QIsTextbox)
 	setChoice(&out.TextKind, QTextKind)
 	setChoice(&out.Speaker, QSpeaker)
+	// The spN alias the model picked maps back to the speaker's own id;
+	// unknown and unmapped ids pass through (unknown keeps its meaning).
+	if out.Speaker != "" {
+		out.Speaker = mapSpeaker(out.Speaker)
+	}
 	setNoul(&out.IsComplete, QIsComplete)
 	setNoul(&out.SafeToSpeak, QSafeToSpeak)
 	return out

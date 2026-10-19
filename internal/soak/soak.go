@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/pipeline"
+	"github.com/dbirks/game-narrator/internal/runtime"
 	"github.com/dbirks/game-narrator/internal/session"
 )
 
@@ -146,28 +147,34 @@ type resourceSample struct {
 
 // Result is the soak's verdict for one run.
 type Result struct {
-	RunID           string `json:"run_id"`
-	Mode            string `json:"mode"` // "replay" | "chaos"
-	Seed            int64  `json:"seed,omitempty"`
-	Config          Config `json:"config"`
-	Started         time.Time
-	DurationWall    time.Duration    `json:"duration_wall"`
-	Baseline        resourceSample   `json:"baseline"`
-	Final           resourceSample   `json:"final"`
-	Samples         []sample         `json:"samples"`
-	Faults          map[string]int64 `json:"faults"`
-	FaultEvents     []faultEvent     `json:"fault_events"`
-	ProviderErrors  map[string]int64 `json:"provider_errors"`
-	Pipeline        pipeline.Stats   `json:"pipeline"`
-	Session         session.Stats    `json:"session"`
-	SourceDrops     int64            `json:"source_drops"`
-	Panics          int64            `json:"panics"`
-	PassesEvaluated int              `json:"passes_evaluated"`
-	PassFailures    []string         `json:"pass_failures"`
-	Verdicts        []Verdict        `json:"verdicts"`
-	ReportDir       string           `json:"report_dir"`
-	ReportErr       string           `json:"report_err,omitempty"`
-	RunErr          string           `json:"run_err,omitempty"`
+	RunID          string `json:"run_id"`
+	Mode           string `json:"mode"` // "replay" | "chaos"
+	Seed           int64  `json:"seed,omitempty"`
+	Config         Config `json:"config"`
+	Started        time.Time
+	DurationWall   time.Duration    `json:"duration_wall"`
+	Baseline       resourceSample   `json:"baseline"`
+	Final          resourceSample   `json:"final"`
+	Samples        []sample         `json:"samples"`
+	Faults         map[string]int64 `json:"faults"`
+	FaultEvents    []faultEvent     `json:"fault_events"`
+	ProviderErrors map[string]int64 `json:"provider_errors"`
+	Pipeline       pipeline.Stats   `json:"pipeline"`
+	Session        session.Stats    `json:"session"`
+	// Bottlenecks is the run's per-stage latency summary — p50/p95/max per
+	// stage, each stage's share of the end-to-end, and the named slowest
+	// stage — reduced by the one shared function (runtime.Bottlenecks) from
+	// the run's own stage stats (docs/spec/16 M7 "diagnostics expose
+	// bottlenecks"). Wall-clock diagnostic, not a pass criterion (ADR-0064).
+	Bottlenecks     runtime.BottleneckSummary `json:"bottlenecks"`
+	SourceDrops     int64                     `json:"source_drops"`
+	Panics          int64                     `json:"panics"`
+	PassesEvaluated int                       `json:"passes_evaluated"`
+	PassFailures    []string                  `json:"pass_failures"`
+	Verdicts        []Verdict                 `json:"verdicts"`
+	ReportDir       string                    `json:"report_dir"`
+	ReportErr       string                    `json:"report_err,omitempty"`
+	RunErr          string                    `json:"run_err,omitempty"`
 	// HeapProfiles names the pprof files the opt-in capture
 	// (GAME_NARRATOR_SOAK_HEAPPROFILE) wrote, early then late: the leak diff
 	// is `-diff_base early.pb.gz late.pb.gz` in inuse_space.

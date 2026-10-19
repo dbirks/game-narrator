@@ -7,18 +7,24 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
+	stdruntime "runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/dbirks/game-narrator/internal/pipeline"
+	gnrt "github.com/dbirks/game-narrator/internal/runtime"
 )
 
 // RunBench runs one set's split end-to-end: render the frames into a temp dir,
 // replay every sample through the real pipeline, compute the metrics, and
 // write report.json / report.md / manifest.json into outDir. It returns the
 // report so tests can assert its shape without re-reading the files.
-func RunBench(ctx context.Context, setDir, split, outDir string) (*Report, error) {
+// boundsPath is the recorded per-stage p95 bounds file to flag against
+// ("" takes DefaultBoundsPath; a missing file degrades to no bound checks,
+// never to an invented pass — see bounds.go).
+func RunBench(ctx context.Context, setDir, split, outDir, boundsPath string) (*Report, error) {
 	pinReplayEngineThreads()
 	if split != SplitTuning && split != SplitHoldout && split != SplitAll {
 		return nil, fmt.Errorf("bench: split must be tuning, holdout or all (got %q)", split)
@@ -112,6 +118,23 @@ func RunBench(ctx context.Context, setDir, split, outDir string) (*Report, error
 	}
 
 	metrics := RunMetrics(outcomes)
+	// The per-stage bottleneck summary (docs/spec/16 M7): the run's own
+	// per-sample stage histograms merged across the run (the documented
+	// envelope rule, bounds.go) and reduced by the one shared function the
+	// session API, the support bundle and the developer page use — plus the
+	// recorded-bounds flag. Wall-clock diagnostic, never a verdict (ADR-0064).
+	perSampleLat := make([]pipeline.Latency, len(outcomes))
+	for i := range outcomes {
+		perSampleLat[i] = outcomes[i].stats.Latency
+	}
+	summary := gnrt.Bottlenecks(mergeLatency(perSampleLat))
+	if boundsPath == "" {
+		boundsPath = DefaultBoundsPath
+	}
+	bounds, err := CheckLatencyBounds(summary, boundsPath)
+	if err != nil {
+		return nil, err
+	}
 	rep := &Report{
 		SchemaVersion: SchemaVersion,
 		RunID:         time.Now().UTC().Format("20060102T150405Z"),
@@ -121,10 +144,12 @@ func RunBench(ctx context.Context, setDir, split, outDir string) (*Report, error
 		Class:         ClassSynthetic,
 		Samples:       len(outcomes),
 		Metrics:       metrics,
+		Bottlenecks:   summary,
+		LatencyBounds: bounds,
 		Diagnostics: Diagnostics{
-			GoVersion:          runtime.Version(),
+			GoVersion:          stdruntime.Version(),
 			Tesseract:          tesseractVersion(),
-			OS:                 runtime.GOOS,
+			OS:                 stdruntime.GOOS,
 			SeedBase:           ts.SeedBase,
 			SampleIDs:          sampleIDs(outcomes),
 			CPUTimeSecs:        procCPUTime() - cpuBefore,
@@ -215,6 +240,7 @@ func RenderMarkdown(rep *Report, outcomes []sampleOutcomes) string {
 		}
 		fmt.Fprintf(&b, "| %s | %s | %d | %s | %s |\n", m.Name, formatValue(m), m.N, obj, m.Met)
 	}
+	renderBottlenecks(&b, rep)
 	b.WriteString("\n## Breakdown — exact outcome per render class (dialogue: exact commit; empty box: no commit)\n\n")
 	b.WriteString("| class | correct | total |\n|---|---|---|\n")
 	type cls struct {
@@ -274,6 +300,83 @@ func RenderMarkdown(rep *Report, outcomes []sampleOutcomes) string {
 	b.WriteString("\n## Manifest\n\n")
 	fmt.Fprintf(&b, "go %s · os %s · seed %d · set hash `%s`\n", d.GoVersion, d.OS, d.SeedBase, d.SetHash)
 	return b.String()
+}
+
+// renderBottlenecks is the report's per-stage latency section: the run's own
+// stage intervals merged across the samples and reduced by the shared summary
+// function, with the named slowest stage and the recorded-bounds flag
+// (docs/spec/16 M7 "diagnostics expose bottlenecks").
+func renderBottlenecks(b *strings.Builder, rep *Report) {
+	b.WriteString("\n## Per-stage latency — bottleneck summary\n\n")
+	b.WriteString("Wall-clock stage intervals measured by the pipeline itself (the same numbers the session's stats carry), merged across the run's samples (p50/p95 are the per-sample envelope — the largest per-sample reading, never an optimistic merge) and reduced by the shared summary function (runtime.Bottlenecks, the one the session API, the support bundle and the developer page use). A wall-clock diagnostic, not a verdict: the capture-clock metrics above are the verdicts (ADR-0064).\n\n")
+	unmeasured := true
+	for _, s := range rep.Bottlenecks.Stages {
+		if s.Count > 0 {
+			unmeasured = false
+			break
+		}
+	}
+	if unmeasured {
+		b.WriteString("No stage was measured in this run (no OCR, no ranking, no commit).\n")
+		return
+	}
+	if rep.Bottlenecks.SlowestStage != "" {
+		label := gnrt.StageLabels[rep.Bottlenecks.SlowestStage]
+		fmt.Fprintf(b, "**Slowest stage: %s (`%s`)**\n\n", label, rep.Bottlenecks.SlowestStage)
+	}
+	b.WriteString("| stage | samples | p50 | p95 | max | share of end-to-end (p95) |\n")
+	b.WriteString("|---|---|---|---|---|---|\n")
+	shareAboveOne := false
+	for _, s := range rep.Bottlenecks.Stages {
+		label := gnrt.StageLabels[s.Stage]
+		fmt.Fprintf(b, "| %s (`%s`) | %d | %s | %s | %s | %.2f |\n",
+			label, s.Stage, s.Count, msCell(s.P50NS), msCell(s.P95NS), msCell(s.MaxNS), s.ShareOfEndToEnd)
+		if s.Stage != gnrt.StageFrameToCommitted && s.ShareOfEndToEnd > 1 {
+			shareAboveOne = true
+		}
+	}
+	if shareAboveOne {
+		b.WriteString("\nA share above 1 is the honest ratio of two histogram bucket edges over two different sample populations (the stage's own samples and the commit's): for sub-millisecond intervals the stage's p95 edge can land above the end-to-end's, and the report says that instead of clamping a measurement.\n")
+	}
+
+	b.WriteString("\n## Latency bounds (recorded p95 — flag, not verdict)\n\n")
+	if len(rep.LatencyBounds) == 0 {
+		b.WriteString("No recorded bounds were checked: the bounds file is absent for this run, or no stage had both samples and a recorded bound. The recorded bounds live in `testdata/bench/latency-bounds.json` with their provenance note; the guard flags (it does not gate) an exceeded p95, because the stage intervals are wall-clock and host-load dependent (ADR-0064).\n")
+		return
+	}
+	b.WriteString("| stage | p95 (this run, wall clock) | recorded bound | exceeded |\n")
+	b.WriteString("|---|---|---|---|\n")
+	for _, c := range rep.LatencyBounds {
+		exceeded := "no"
+		if c.Exceeded {
+			exceeded = "**YES**"
+		}
+		fmt.Fprintf(b, "| `%s` | %s ms | %s ms | %s |\n", c.Stage, msNum(c.P95MS), msNum(c.BoundMS), exceeded)
+	}
+	for _, c := range rep.LatencyBounds {
+		if c.Exceeded {
+			fmt.Fprintf(b, "\n`%s` exceeds its recorded bound: %s\n", c.Stage, c.Note)
+		}
+	}
+}
+
+// msCell renders one nanosecond value as a millisecond cell: whole-millisecond
+// edges (the histogram edges) as integers, an exact max that is not a whole
+// millisecond with one decimal — the report never pretends to a finer
+// precision than the measurement has.
+func msCell(ns int64) string {
+	if ns%1_000_000 == 0 {
+		return fmt.Sprintf("%d", ns/1_000_000)
+	}
+	return fmt.Sprintf("%.1f", float64(ns)/1e6)
+}
+
+// msNum renders an already-millisecond figure with at most one decimal.
+func msNum(ms float64) string {
+	if ms == float64(int64(ms)) {
+		return fmt.Sprintf("%d", int64(ms))
+	}
+	return fmt.Sprintf("%.1f", ms)
 }
 
 func classNote(class string) string {

@@ -33,31 +33,42 @@ import (
 // CalibrationRevision numbers the default temperature so a fixture, cache key
 // or report that embeds the matcher's settings can say which probability
 // scale it was produced under: revision 1 is T = 1 (plain softmax, ADR-0035
-// as written). The would-be revision 2 (the NLL fit on the bench-synthetic-001
-// tuning split) was rejected as a degenerate optimum — ADR-0035
-// "Calibration". A fixture scored at one revision must not silently stand in
+// as written); its would-be revision 2 (the NLL fit on the bench-synthetic-001
+// tuning split) was rejected as a degenerate optimum. Revision 2 is the T
+// fitted on the real-content mixture with the class (b″) hard set's labelled
+// errors and adopted 2026-10-19 (ADR-0058 amendment 7, ADR-0035
+// "Calibration"). A fixture scored at one revision must not silently stand in
 // for another.
 const (
 	// CalibrationRevision is the revision of the default temperature the
-	// matcher reports. Revision 1 is T = 1, plain softmax (ADR-0035 as
-	// written). The NLL fit on the synthetic bench set (would-be revision 2)
-	// was rejected as a degenerate optimum (ADR-0035 "Calibration"): the
+	// matcher reports. Revision 1 was T = 1, plain softmax (ADR-0035 as
+	// written). The NLL fit on the synthetic bench set (a would-be revision 2
+	// on the synthetic-only data) was refused as a degenerate optimum: the
 	// synthetic tuning split has no incorrect top-1 examples, so minimising
-	// the NLL drives T to the range floor and would make the matcher
-	// near-certain on real content — which would starve the Clef escalation
-	// path of its trigger. A real fit needs labelled errors: the Dolphin
-	// fixture-factory frames (M6) with known incorrect top-1s.
-	CalibrationRevision = 1
+	// the NLL drives T to the range floor. The revision-2 default adopted
+	// 2026-10-19 is the NLL fit on the real-content mixture — the (a + b) +
+	// b′ + b″ fit data, with the class (b″) hard set's 22 labelled incorrect
+	// top-1 examples — which passed every guard (≥50 samples, ≥10 incorrect
+	// top-1, interior NLL optimum; ADR-0058 amendments 6–7, ADR-0035
+	// "Calibration").
+	CalibrationRevision = 2
 
-	// DefaultTemperature is the revision-1 default: T = 1, plain softmax over
-	// the raw log-linear scores. It is under-confident on the synthetic bench
-	// set (which is what the calibration mechanism exists to fix), but it is
-	// the honest default: a T fitted on synthetic content would be near-
-	// certain on real content, and a default must not ship that (see
-	// CalibrationRevision). A profile may supply a fitted T via
-	// RankOptions.Temperature; the override is sanitised into
-	// [minTemperature, maxTemperature].
-	DefaultTemperature = 1.0
+	// DefaultTemperature is the revision-2 default: the T fitted on the
+	// (a + b) + b′ + b″ mixture (270 fit samples, 101 skipped, 22 labelled
+	// errors, all from the b″ hard set — ADR-0058 amendment 7). It sits
+	// inside the fit range [0.05, 8], 0.0228 above the floor; the
+	// linear-refinement minimum sits at the centre of its ±one-coarse-step
+	// window, so the data, not the range, pins it — with the documented
+	// caveat that it is a heavy-sharpening T (207/270 fit samples sit in the
+	// [0.9, 1.0) reliability bin at mean probability 0.9992). The acceptance
+	// gate is unaffected: score.go keeps its second softmax pinned at T = 1
+	// (revision 1), so a calibration revision can never move an accept/abstain
+	// decision (ADR-0035 "Acceptance gate unchanged"). A profile may override
+	// via RankOptions.Temperature (sanitised into [minTemperature,
+	// maxTemperature]); reverting the adoption is Temperature = 1 — no stored
+	// data is affected, because probabilities are computed at rank time and
+	// the audio cache key does not embed matcher settings (ADR-0035).
+	DefaultTemperature = 0.07280236748934843
 )
 
 // minTemperature and maxTemperature bound every usable T. T → 0 makes the

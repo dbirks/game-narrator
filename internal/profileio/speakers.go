@@ -12,23 +12,33 @@ import (
 	"github.com/dbirks/game-narrator/internal/store"
 )
 
-// Named speakers in a source file are source evidence, not a parser guess: the
+// Speaker labels in a source file are source evidence, not a parser guess: the
 // "never invent a speaker" rule (docs/spec/04 "Generic adapter minimum") covers
 // rows without a label, while a speaker the user's own file names is a fact the
-// importer may turn into a characters row. This file does that binding:
+// importer may turn into a characters row. An opaque speaker id an adapter
+// derives from the dump's own per-line linkage (the Wind Waker BMG's speaker
+// attribute byte, ADR-0070) is a different kind of evidence: the source vouches
+// for the line-to-slot linkage, not for the slot's identity, so it earns a
+// proposed placeholder character and a proposed attribution that a curator's
+// link later settles. This file does both bindings:
 //
-//   - every distinct label the parse reported is matched against the profile's
-//     existing roster by the same textnorm key the parse computed, so a roster
-//     entry and a file label that differ only in case or spacing are one
-//     person;
-//   - unmatched labels create a character (status confirmed: a verified source
-//     row names them, and the source id is recorded in verified_source_refs);
+//   - every distinct label or id the parse reported is matched against the
+//     profile's existing roster by the same textnorm key the parse computed, so
+//     a roster entry and a file label that differ only in case or spacing are
+//     one person (a synthetic id a curator already linked matches the target
+//     through the alias the link folded in);
+//   - unmatched labels create a character: confirmed when the source named the
+//     speaker (a verified source row names them), proposed when it is an opaque
+//     id (a placeholder the curator links); the source id is recorded in
+//     verified_source_refs either way;
 //   - every message the source named is pointed at its character with
 //     attribution confirmed at confidence 1.0 and the source column recorded as
-//     evidence;
-//   - every such message gets a speaker_assertion (method script_order,
-//     posterior 1.0) so the audit trail separates the claim from the resolved
-//     speaker, the way speaker_assertions exists to do (docs/spec/02).
+//     evidence; a synthetic speaker keeps the parser's proposed attribution and
+//     per-row source-field evidence, gaining only the speaker_id;
+//   - every linked message gets a speaker_assertion: method script_order for a
+//     source-named speaker, dump_metadata for an opaque id (posterior 1.0 both),
+//     so the audit trail separates the claim from the resolved speaker, the way
+//     speaker_assertions exists to do (docs/spec/02).
 //
 // Idempotence is per-triple: a re-import of the same bytes finds the same
 // characters, the same message ids (reconciled) and the same (message,
@@ -44,11 +54,23 @@ type speakerResolution struct {
 	characters []games.Character
 	// byKey maps a parse key to the character id its messages point at.
 	byKey map[string]string
-	// evidence is the messages.attribution_evidence for every linked message:
-	// one shared payload, since the whole file came from one source column.
+	// byKeyNamed records, per parse key, whether the source named the speaker
+	// (true) or the adapter reported an opaque id for the dump's own linkage
+	// (false, ADR-0070). The named path confirms; the synthetic path keeps the
+	// parser's proposed attribution, because the source vouches for the
+	// line-to-slot linkage, not for the slot's identity.
+	byKeyNamed map[string]bool
+	// evidence is the messages.attribution_evidence for every linked message
+	// whose speaker the source named: one shared payload, since the whole file
+	// came from one source column. Synthetic speakers keep the parser's own
+	// per-row source-field evidence untouched.
 	evidence json.RawMessage
-	// assertionEvidence is the speaker_assertions.evidence for the same claim.
+	// assertionEvidence is the speaker_assertions.evidence for a source-named
+	// claim.
 	assertionEvidence json.RawMessage
+	// syntheticAssertionEvidence is the speaker_assertions.evidence for a
+	// dump-metadata claim (an opaque speaker id, ADR-0070).
+	syntheticAssertionEvidence json.RawMessage
 	// warnings are roster defects the import survived (an ambiguous match, a
 	// name too long to store) and must report.
 	warnings []adapter.Warning
@@ -64,7 +86,7 @@ type speakerResolution struct {
 // caller owns the write order (characters before messages, messages before
 // assertions — the foreign keys run that way).
 func resolveSpeakers(ctx context.Context, s *store.Store, profileID string, norm textnorm.Options, parsed *adapter.ParseResult, sourceID string) (*speakerResolution, error) {
-	res := &speakerResolution{byKey: map[string]string{}, linkedIDs: map[string]bool{}}
+	res := &speakerResolution{byKey: map[string]string{}, byKeyNamed: map[string]bool{}, linkedIDs: map[string]bool{}}
 	if len(parsed.Speakers) == 0 {
 		return res, nil
 	}
@@ -78,9 +100,15 @@ func resolveSpeakers(ctx context.Context, s *store.Store, profileID string, norm
 	// so a label matches a character through any of its known spellings. Two
 	// roster entries folding to one key is a curator contradiction the import
 	// must not resolve silently: the first (by roster order) stands and the
-	// conflict is reported.
+	// conflict is reported. Retired characters drop out: a speaker linked onto
+	// a live character retires its placeholder (the speaker-link action), and a
+	// re-import must bind the key to the live target, not to the row it was
+	// merged into (ADR-0070).
 	keyByChar := map[string]games.Character{}
 	for _, c := range existing {
+		if c.Status == games.CharacterRetired {
+			continue
+		}
 		keys := rosterKeys(c, norm)
 		for k := range keys {
 			if other, ok := keyByChar[k]; ok {
@@ -98,6 +126,7 @@ func resolveSpeakers(ctx context.Context, s *store.Store, profileID string, norm
 	column := parsed.SpeakerColumn
 	res.evidence = messageEvidence(sourceID, column)
 	res.assertionEvidence = assertionEvidenceJSON(sourceID, column)
+	res.syntheticAssertionEvidence = syntheticAssertionEvidenceJSON(sourceID, column)
 
 	for _, ref := range parsed.Speakers {
 		spellings := append([]string{ref.DisplayName}, ref.Aliases...)
@@ -106,9 +135,13 @@ func resolveSpeakers(ctx context.Context, s *store.Store, profileID string, norm
 			// Reuse: the roster already names this person. New spellings the
 			// file brought, and this source as a verified reference, are merged
 			// in; a second import of the same bytes merges nothing, which is the
-			// idempotence the reconcile-not-duplicate rule asks for.
+			// idempotence the reconcile-not-duplicate rule asks for. A synthetic
+			// key that lands here is one a curator already linked (its id was
+			// folded into the target's aliases), and the binding goes straight to
+			// the target (ADR-0070).
 			bind, changed := mergeCharacter(c, spellings, sourceID)
 			res.byKey[ref.Key] = bind.ID
+			res.byKeyNamed[ref.Key] = ref.SourceNamed
 			if changed {
 				res.characters = append(res.characters, bind)
 			}
@@ -127,13 +160,21 @@ func resolveSpeakers(ctx context.Context, s *store.Store, profileID string, norm
 			})
 			continue
 		}
+		// A speaker the source named is a verified fact and earns a confirmed
+		// roster row; an opaque id the adapter minted from the dump's own
+		// linkage (ADR-0070) is a parser-emitted placeholder until a curator
+		// settles its identity, so it earns a proposed one.
+		status := games.CharacterConfirmed
+		if !ref.SourceNamed {
+			status = games.CharacterProposed
+		}
 		c := games.Character{
 			ID:                 games.NewID(),
 			ProfileID:          profileID,
 			Name:               ref.DisplayName,
 			Aliases:            spellingsJSON(ref.Aliases),
 			VerifiedSourceRefs: json.RawMessage("[" + jsonString(sourceID) + "]"),
-			Status:             games.CharacterConfirmed,
+			Status:             status,
 			CreatedAt:          nowStamp(),
 		}
 		if err := c.Validate(); err != nil {
@@ -141,6 +182,7 @@ func resolveSpeakers(ctx context.Context, s *store.Store, profileID string, norm
 		}
 		res.characters = append(res.characters, c)
 		res.byKey[ref.Key] = c.ID
+		res.byKeyNamed[ref.Key] = ref.SourceNamed
 		res.created++
 	}
 	return res, nil
@@ -201,6 +243,20 @@ func mergeCharacter(c games.Character, spellings []string, sourceID string) (gam
 // stronger than a name printed on screen, which is only a proposal). Rows the
 // source left unnamed are left exactly as the parser left them: unknown
 // attribution, no speaker id, nothing invented.
+// linkSpeakers points every message the source named at its character.
+//
+// A speaker the source named is confirmed at full confidence, with the source
+// column recorded as evidence: the domain's AttributionStatus vocabulary has
+// no "from source" value, and "confirmed" is its definition ("evidence or a
+// reviewer settled it") — the source file itself is the evidence
+// (docs/spec/02: a name the source records is stronger than a name printed on
+// screen, which is only a proposal). A synthetic speaker (an opaque id the
+// adapter derived from the dump's own linkage, ADR-0070) keeps the parser's
+// proposed attribution and per-row source-field evidence untouched: the
+// source vouches for the line-to-slot linkage, not for the slot's identity,
+// which only a curator's link settles. Rows the source left unnamed are left
+// exactly as the parser left them: unknown attribution, no speaker id, nothing
+// invented.
 func linkSpeakers(parsed *adapter.ParseResult, res *speakerResolution) {
 	for i := range parsed.Messages {
 		key := speakerKeyAt(parsed, i)
@@ -210,9 +266,11 @@ func linkSpeakers(parsed *adapter.ParseResult, res *speakerResolution) {
 		}
 		m := &parsed.Messages[i]
 		m.SpeakerID = cid
-		m.AttributionStatus = games.AttributionConfirmed
-		m.AttributionConfidence = 1.0
-		m.AttributionEvidence = res.evidence
+		if res.byKeyNamed[key] {
+			m.AttributionStatus = games.AttributionConfirmed
+			m.AttributionConfidence = 1.0
+			m.AttributionEvidence = res.evidence
+		}
 		res.linked++
 		res.linkedIDs[m.ID] = true
 	}
@@ -228,7 +286,8 @@ func speakerKeyAt(p *adapter.ParseResult, i int) string {
 	return ""
 }
 
-// writeSpeakerAssertions records one script_order assertion per linked message.
+// writeSpeakerAssertions records one assertion per linked message: script_order
+// for a speaker the source named, dump_metadata for an opaque id (ADR-0070).
 //
 // The row id is derived from (message id, character id, method) rather than
 // minted: a re-import recomputes the same id for the same claim, so the store's
@@ -256,7 +315,17 @@ func writeSpeakerAssertions(ctx context.Context, deps Deps, profileID string, pa
 		if !res.linkedIDs[m.ID] {
 			continue
 		}
+		// One method per claim: a source-named speaker is a script-order claim;
+		// an opaque id is the dump's own linkage, which the domain names
+		// dump_metadata (ADR-0070). The two must not share a row: the unique
+		// index keys on (message, character, method), and a re-import must not
+		// let one provenance silently overwrite the other's audit trail.
 		method := games.AssertionScriptOrder
+		evidence := res.assertionEvidence
+		if !res.byKeyNamed[speakerKeyAt(parsed, i)] {
+			method = games.AssertionDumpMetadata
+			evidence = res.syntheticAssertionEvidence
+		}
 		if existing[m.ID+"\x00"+m.SpeakerID+"\x00"+string(method)] {
 			continue
 		}
@@ -267,7 +336,7 @@ func writeSpeakerAssertions(ctx context.Context, deps Deps, profileID string, pa
 			CharacterID: m.SpeakerID,
 			Method:      method,
 			AssertedAt:  now,
-			Evidence:    res.assertionEvidence,
+			Evidence:    evidence,
 			Posterior:   1.0,
 		})
 	}
@@ -348,6 +417,19 @@ func assertionEvidenceJSON(sourceID, column string) json.RawMessage {
 	rec := map[string]string{"kind": "source_column", "ref": sourceID}
 	if column != "" {
 		rec["excerpt"] = "column " + column
+	}
+	return oneElementJSON(rec)
+}
+
+// syntheticAssertionEvidenceJSON is the speaker_assertions.evidence of a
+// dump-metadata claim: an opaque speaker id the adapter derived from the
+// dump's own per-line linkage (ADR-0070). It names the source field the id
+// came from, so the audit trail can answer "where did this attribution come
+// from" without the game having named a person.
+func syntheticAssertionEvidenceJSON(sourceID, column string) json.RawMessage {
+	rec := map[string]string{"kind": "source_field", "ref": sourceID}
+	if column != "" {
+		rec["excerpt"] = "field " + column
 	}
 	return oneElementJSON(rec)
 }

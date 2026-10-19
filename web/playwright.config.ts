@@ -33,6 +33,7 @@ const graphRegionsUrl = `http://127.0.0.1:${ports.graphRegions}`;
 const correctionsUrl = `http://127.0.0.1:${ports.corrections}`;
 const sseUrl = `http://127.0.0.1:${ports.sse}`;
 const curationUrl = `http://127.0.0.1:${ports.curation}`;
+const discUrl = `http://127.0.0.1:${ports.disc}`;
 const routesUrl = `http://127.0.0.1:${ports.routes}`;
 const a11yUrl = `http://127.0.0.1:${ports.a11y}`;
 const developerDecisionUrl = `http://127.0.0.1:${ports.developerDecision}`;
@@ -42,6 +43,9 @@ const embeddedBinary = resolve(import.meta.dirname, "..", "bin", "game-narrator"
 // dev-checkout cwd default, so the synthetic clip is admitted wherever the
 // checkout lives. This config lives in web/, so the repo root is one ".." up.
 const replayRoots = resolve(import.meta.dirname, "..", "testdata");
+// The disc-import walk's import directory (ADR-0066): the repo's synthetic
+// disc (testdata/disc), whose bytes TestSyntheticDiscFixture guards.
+const discImportDir = resolve(import.meta.dirname, "..", "testdata", "disc");
 
 if (!existsSync(embeddedBinary)) {
   throw new Error(
@@ -85,7 +89,7 @@ export default defineConfig({
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
       testIgnore:
-        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|voices-qa\.spec\.ts|m5-part1\.spec\.ts|m5-graph-regions\.spec\.ts|corrections-fixtures\.spec\.ts/,
+        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|voices-qa\.spec\.ts|m5-part1\.spec\.ts|m5-graph-regions\.spec\.ts|corrections-fixtures\.spec\.ts|live-play\.spec\.ts/,
     },
     {
       name: "embedded",
@@ -186,6 +190,15 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"], baseURL: curationUrl },
     },
     {
+      // The disc-import walk (ADR-0066): a fresh appliance whose disc-import
+      // allowlist is the repo's synthetic disc (testdata/disc), so the walk
+      // imports a disc image through the UI without a user's real one
+      // (synthetic fixture with guarded provenance, AGENTS.md rules 3 and 5).
+      name: "disc",
+      testMatch: /(disc-import-walk|speaker-link)\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: discUrl },
+    },
+    {
       // The route × first-run matrix (docs/spec/09 "Routes and page
       // requirements"): a fresh appliance of the packaged binary, so the
       // claim → login → guard redirects can be asserted in their real order.
@@ -214,6 +227,30 @@ export default defineConfig({
       name: "developer-decision",
       testMatch: /developer-decision\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: developerDecisionUrl },
+    },
+    {
+      // The live play path (task browser-live-play, AGENTS.md rule 3 class
+      // (d)+(e)): a real Dolphin emulator and the real gateway driven through
+      // the packaged /play and /developer pages. No webServer here on
+      // purpose — its server is the Go orchestrator's in-process API +
+      // embedded SPA (internal/e2e TestLivePlayUI): the production binary
+      // never wires the dev Dolphin bridge into the process (internal/api/
+      // dolphin.go answers 503 unwired), so only the test process that owns
+      // the bridge can serve a live kind:dolphin session. The Go test runs
+      // the spec through web/e2e/live-play.playwright.config.ts (no
+      // webServer entries: the suite's other servers own ports this run must
+      // not fight for) with the GN_LIVE_UI_* env; without that env the spec
+      // is NOT RUN, which is how this project — and make test-ui / CI —
+      // skip it.
+      name: "live-play",
+      testMatch: /live-play\.spec\.ts/,
+      use: {
+        ...devices["Desktop Chrome"],
+        baseURL: process.env.GN_LIVE_UI_URL,
+        // The trace is the evidence artifact (AGENTS.md rule 9): always on
+        // for this project, copied into the run's bundle by the Go test.
+        trace: "on",
+      },
     },
   ],
   webServer: [
@@ -443,6 +480,19 @@ export default defineConfig({
         GAME_NARRATOR_ROLE_VOICE_CLONE_MODEL: "fake-base",
         GAME_NARRATOR_TTS_BASE_DIRECT_URL: `http://127.0.0.1:${ports.fakeTTS}/v1`,
       },
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The disc-import walk (ADR-0066) on the packaged binary: the disc
+      // import's allowlist is the repo's synthetic disc directory — the
+      // operator-configured directory the dir shape reads from in place.
+      command: `node web/e2e/serve.mjs disc 127.0.0.1:${ports.disc} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${discUrl}/api/v1/health/live`,
+      env: { GAME_NARRATOR_IMPORT_DIR: discImportDir },
       reuseExistingServer: false,
       timeout: 60_000,
       stdout: "ignore",

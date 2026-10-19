@@ -480,3 +480,81 @@ func TestResponseValidationListsEveryProblem(t *testing.T) {
 		}
 	}
 }
+
+// TestAdjudicationBundleOpaqueSpeakerKeys (ADR-0072): the windwaker adapter's
+// speaker identity is the opaque dump key "ww:spk:<n>" (ADR-0070), which
+// fails the option-id grammar. The live run of 2026-10-19 found the
+// consequence: the bundle rendered the raw keys as option ids, every
+// adjudication failed local request validation as bad_schema in 0 ms, and
+// the session committed every line locally with no provider request id. The
+// bundle must render positional spN aliases instead, and Interpret must map
+// the chosen alias back to the caller's key.
+func TestAdjudicationBundleOpaqueSpeakerKeys(t *testing.T) {
+	speakers := []Speaker{
+		{ID: "ww:spk:2", Description: ""},
+		{ID: "ww:spk:7", Description: "another slot"},
+	}
+	candidates := []Candidate{{ID: "m-8", Text: "a line read from the frame"}}
+	bundle := BuildAdjudication(
+		Context{Scene: "outset", OCR: "a line read from the frame", LastMessage: "m-7"},
+		candidates, speakers,
+	)
+
+	// Wire-valid: the raw keys never reach the option ids. Decide fills the
+	// model from the client before validating, so do the same here.
+	bundle.Model = "clef-omni"
+	if err := bundle.validate(limits{}.defaults()); err != nil {
+		t.Fatalf("the bundle with opaque speaker keys is not wire-valid: %v", err)
+	}
+	var speakerQ *Question
+	for i := range bundle.Questions {
+		if bundle.Questions[i].ID == QSpeaker {
+			speakerQ = &bundle.Questions[i]
+		}
+	}
+	if speakerQ == nil {
+		t.Fatalf("no speaker question in the bundle")
+	}
+	wantIDs := []string{"sp1", "sp2", SpeakerUnknown}
+	if len(speakerQ.Criteria) != len(wantIDs) {
+		t.Fatalf("speaker options = %d, want %d (%+v)", len(speakerQ.Criteria), len(wantIDs), speakerQ.Criteria)
+	}
+	for i, opt := range speakerQ.Criteria {
+		if opt.ID != wantIDs[i] {
+			t.Fatalf("speaker option %d id = %q, want %q (the raw keys stay mapping keys, not wire ids)", i, opt.ID, wantIDs[i])
+		}
+	}
+	for _, opt := range speakerQ.Criteria {
+		if opt.ID == "ww:spk:2" || opt.ID == "ww:spk:7" {
+			t.Fatalf("the raw speaker key %q leaked onto the wire", opt.ID)
+		}
+	}
+
+	// The model picks sp2: Interpret maps it back to the caller's key.
+	dec := Decision{
+		Model: "clef-omni",
+		Answers: map[string]Answer{
+			QIsTextbox:   {Type: TypeNoul, Noul: 0.9},
+			QTextKind:    {Type: TypeChoice, Choice: TextKindDialogue, Confidence: 0.9, Probabilities: map[string]float64{TextKindDialogue: 0.9, TextKindSign: 0.05, TextKindNone: 0.05}},
+			QSpeaker:     {Type: TypeChoice, Choice: "sp2", Confidence: 0.8, Probabilities: map[string]float64{"sp1": 0.2, "sp2": 0.8, SpeakerUnknown: 0.0}},
+			QCandidate:   {Type: TypeChoice, Choice: "c1", Confidence: 0.9, Probabilities: map[string]float64{"c1": 0.9, CandidateNone: 0.1}},
+			QIsComplete:  {Type: TypeNoul, Noul: 0.9},
+			QSafeToSpeak: {Type: TypeNoul, Noul: 0.9},
+		},
+	}
+	adj := Interpret(dec, candidates, speakers)
+	if adj.Speaker != "ww:spk:7" {
+		t.Fatalf("Interpret.Speaker = %q, want the mapped-back key %q", adj.Speaker, "ww:spk:7")
+	}
+	if adj.Candidate != "m-8" {
+		t.Fatalf("Interpret.Candidate = %q, want m-8", adj.Candidate)
+	}
+
+	// A model that answers unknown keeps the unknown meaning.
+	unknownAns := dec.Answers[QSpeaker]
+	unknownAns.Choice = SpeakerUnknown
+	dec.Answers[QSpeaker] = unknownAns
+	if adj := Interpret(dec, candidates, speakers); adj.Speaker != SpeakerUnknown {
+		t.Fatalf("Interpret.Speaker = %q, want %q", adj.Speaker, SpeakerUnknown)
+	}
+}

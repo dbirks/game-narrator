@@ -208,6 +208,15 @@ test("m5 part 1: play, characters, publish review, diagnostics", async ({
   expect(sessionId).toBeTruthy();
 
   await expect(page.getByTestId("play-state")).toHaveText("running", { timeout: 60_000 });
+  // The session's capture source self-report (the API view of capture.Stats):
+  // the replay source names its kind and is running with no failure text —
+  // the field that makes a silently dead capture child visible (the 2026-10-19
+  // live-play run: a dolphin source delivered zero frames for 25 minutes and
+  // nothing in the snapshot said why).
+  await expect(page.getByTestId("play-source")).toContainText("replay · running", {
+    timeout: 30_000,
+  });
+  await expect(page.getByTestId("play-source-error")).toHaveCount(0);
   const committedLines = page.locator('[data-testid="recent-lines"] li');
   // Catch the first committed line the instant it renders and reload straight
   // away: the clip is short and this machine fast, so the session may still be

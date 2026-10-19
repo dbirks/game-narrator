@@ -32,8 +32,6 @@ import (
 func be16(b []byte, v uint16) { binary.BigEndian.PutUint16(b, v) }
 func be32(b []byte, v uint32) { binary.BigEndian.PutUint32(b, v) }
 
-func align32(n int) int { return (n + 31) &^ 31 }
-
 // tag builds one control-tag byte sequence: 0x1A, length, group, u16 type,
 // extra args.
 func tag(group, typ int, extra ...byte) []byte {

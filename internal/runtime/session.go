@@ -51,6 +51,31 @@ type Info struct {
 	// alone. nil when the session runs local (DecisionOptions nil, or the
 	// role not configured / not System One).
 	Decision *DecisionStatus `json:"decision,omitempty"`
+	// Source is the capture source's own self-report (the API view of
+	// capture.Stats): whether the source is delivering at all, and if not,
+	// why. The pipeline's downstream counters alone cannot answer it — a
+	// session whose capture child died at start reads "running" with zero
+	// frames delivered and no fault named, and the operator action
+	// docs/spec/13 requires is unfindable (the 2026-10-19 live-play run:
+	// the dolphin x11grab source delivered nothing for 25 minutes and
+	// nothing in the snapshot said why).
+	Source SourceInfo `json:"source"`
+}
+
+// SourceInfo is the session's capture source self-report: the source's own
+// ID and lifecycle state (docs/spec/10 "verify last frame freshness"), the
+// delivered count the source itself keeps (independent of the pipeline's
+// downstream counter), the supervised-restart count that separates "the card
+// was unplugged once" from "capture is flapping", and the last failure text
+// (docs/spec/13's actionable operator action).
+type SourceInfo struct {
+	ID          string    `json:"id"`
+	State       string    `json:"state"`
+	Delivered   uint64    `json:"delivered"`
+	Restarts    uint64    `json:"restarts"`
+	FPS         float64   `json:"fps"`
+	LastFrameAt time.Time `json:"last_frame_at,omitempty"`
+	LastError   string    `json:"last_error,omitempty"`
 }
 
 // session is one pipeline run owned by the Manager. Finished sessions are
@@ -73,15 +98,43 @@ type session struct {
 }
 
 func (s *session) Snapshot() Info {
+	// The pipeline's live counters are read outside the session lock, the same
+	// way the source's self-report is: Stats() is concurrency-safe (it takes
+	// the pipeline's own lock and returns a consistent copy), and the runner is
+	// set at construction and never reassigned. This matters because the stop
+	// path is NOT the only writer of s.info.Stats anymore — a running session's
+	// snapshot must carry the LIVE frames/ocr/commits counters, not the zeros
+	// the struct was initialised with. Before this, the Play page's Frames/OCR/
+	// Commits (and any watchdog reading them) showed 0 for the whole run and
+	// only jumped to the final totals at stop — the 2026-10-19 live-play
+	// "0 frames delivered" page snapshot was this staleness, not a dead source.
+	var live pipeline.Stats
+	if s.runner != nil {
+		live = s.runner.Stats()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	info := s.info
+	info.Stats = live
 	if s.speech != nil {
 		info.Audio = s.speech.audioInfo()
 	}
 	if s.decision != nil {
 		d := s.decision.status()
 		info.Decision = &d
+	}
+	// The source's self-report is read outside the session lock on purpose:
+	// every capture.Source implements Stats concurrency-safe (the interface
+	// contract), and the source's own lock is where its state moves.
+	st := s.src.Stats()
+	info.Source = SourceInfo{
+		ID:          s.src.ID(),
+		State:       string(st.State),
+		Delivered:   st.Delivered,
+		Restarts:    st.Restarts,
+		FPS:         st.FPS,
+		LastFrameAt: st.LastFrameAt,
+		LastError:   st.LastError,
 	}
 	return info
 }

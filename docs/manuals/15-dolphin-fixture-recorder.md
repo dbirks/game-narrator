@@ -13,6 +13,11 @@ M6 fixture factory (docs/spec/11 "Fixture origins"; ADR 0054) and the
 
 - `GAME_NARRATOR_GAME_IMAGE_PATH` set to the user's authorized game image
   (dev-only; the image path is never logged and never recorded in Git).
+  `doctor --dev` verifies the image's SHA-256 against the fixture manifests'
+  `game_image_sha256` (it prints the 12-char prefix only, never the path),
+  and reports `NOT CONFIGURED` with the exact expectation — env var, file
+  kind (CISO/ISO), verification prefix, the gates that need the image — when
+  it is unset or the configured file is missing (ADR-0067).
 - Dev-host tools on PATH: `dolphin-emu`, `Xvfb` (xorg-server-xvfb),
   `ffmpeg`, `x11-utils`, `tesseract` — and `xdotool` for the savestate
   hotkey tests (16-dolphin-savestates.md). `scripts/bootstrap-arch.sh`

@@ -270,7 +270,7 @@ func (w *decisionWiring) Decide(ctx context.Context, req pipeline.DecisionReques
 		return reply
 	}
 
-	adj := systemone.Interpret(dec, scands)
+	adj := systemone.Interpret(dec, scands, speakers)
 	w.mu.Lock()
 	w.answered++
 	recovered := w.degraded

@@ -326,3 +326,279 @@ span (drop the `top1_exact_accuracy`/`top1_last_row` split and restore the
 single last-row row), remove `Config.TraceMax`/`Stats.TraceDropped` and the
 harness's per-sample ring sizing, and un-stamp the ranking trace row. The
 pipeline's runtime default ring size is untouched by this amendment either way.
+
+## Amendment 4 (2026-10-19): the class (b″) hard set — captured frames +
+adversarial candidate pool — is the calibration fit's raw material
+
+> Note on numbering: the dense fixture, the 8-worker scheduler and the class
+> (b′) degraded renders (added between this ADR's original text and
+> amendment 2, and referenced as "amendment 1" by ADR-0064 and the
+> b′/b″ code comments) never received a section in this file; their measured
+> numbers are cited in those references and in `internal/bench` comments.
+
+**Context.** Decision item 5's unblock plan asked for ≥10 labelled incorrect
+top-1 examples from real frames. With the b′ degraded renders added, the
+combined fit data still measured **0 incorrect top-1** (the OCR recipe —
+2× upscale, Otsu, 3×3 median — re-separates the subtitle glyphs from every
+mild degradation b′ applies), so the fit stayed NOT FITTED. The matcher is
+right on clean and mildly degraded frames; a calibrated probability needs
+data where the top-1 is *genuinely* wrong sometimes, in a way no temperature
+can be accused of manufacturing.
+
+**1. Construction.** A hard-set source replays the fixture's real captured
+frames (`internal/bench` `hardset.go`) through the same real pipeline,
+against a profile whose candidate pool is the imported script **augmented
+with synthetic near-duplicate distractor lines generated deterministically
+from each of the fixture's truth lines** — seven constructions, each a pure
+function of the line's text (fixed order, no RNG, so re-benches agree):
+
+- `swap` — first and last word exchange places;
+- `clause-last` / `clause-first` — one clause (`. ; :`-delimited) dropped at
+  the end / the beginning (single-clause lines fall back to the last word);
+- `prefix-half` / `prefix-34` — word-boundary prefixes of half / three
+  quarters of the line's words (amendment 5);
+- `number` — first digit advanced by one (absent when the line has no digit);
+- `punct` — one deterministic punctuation-only edit (its folded key equals
+  the truth line's key on purpose: same-key ties do not win, amendment 5).
+
+Only the fixture's truth lines get distractors; the rest of the script stays
+exactly the product's candidate population. Distractors are appended directly
+after their truth message, so on any exact-key tie the truth's ordinal is
+lower and the matcher's deterministic comparator (score, ordinal, ID) keeps
+the truth on top. Generated texts are a derivation of game text, built in
+memory at bench time, and **never stored, committed or printed** (AGENTS.md
+rule 5): they live only in the run's index and the gitignored artifact.
+
+**2. Variants (heavier than b′ on purpose).** Five deterministic passes,
+composites of the same primitives as b′ (fixed quality, factor, seed, offset
+— reproducible from the fixture alone):
+
+- `hard-clip68` / `hard-clip52` — the frame's right side clipped so the OCR
+  region's right edge lands inside the line: a clean truncated prefix
+  (typewriter shape) with the head still crisp — the partial-visibility pass;
+- `hard-jpeg28-noise12` — low-quality JPEG ringing under uncorrelated noise
+  the Otsu/median recipe cannot re-separate from glyph strokes;
+- `hard-down3-jpeg45` — 3× downscale (amendment 1 measured 5/12 line frames
+  still rankable) plus a q45 re-encode's blockiness;
+- `hard-down4-crop8-noise8` — 4× scale loss (0/12 rankable), crop offset,
+  noise on top.
+
+**3. Provenance and mixture rule.** Each variant is its own fit source,
+labelled class **b″** (captured frames + adversarial candidate pool) in the
+calibration's per-source breakdown — never reported as clean captures (b) or
+as b′ degraded renders. The fit is always the mixture **clean (a + b) + b′ +
+b″** (`CalibrateCombined`): never b″ alone, never clean alone, so a b″-shaped
+optimum cannot be mistaken for the product's calibration. The variant frames
+are rendered at bench time, one variant at a time, and freed (ADR-0064);
+nothing is stored. `make bench` runs the hard set as part of `bench
+calibrate` (its variants count into the run-level wall bound, ADR-0064).
+
+**4. Measured (run 2026-10-19; two fixtures).** Per hard-set source
+(used / incorrect top-1 / skipped):
+
+| source | windwaker-newgame | windwaker-legend-dense |
+|---|---|---|
+| hard-clip68 | 2 / 1 / 1 | 19 / 5 / 1 |
+| hard-clip52 | 2 / 1 / 1 | 19 / 14 / 1 |
+| hard-jpeg28-noise12 | 2 / 0 / 1 | 19 / 0 / 1 |
+| hard-down3-jpeg45 | 1 / 1 / 2 | 3 / 0 / 17 |
+| hard-down4-crop8-noise8 | 0 / 0 / 3 | 0 / 0 / 20 |
+| **b″ total** | **7 / 3 / 8** | **44 / 19 / 76** |
+
+The hard set contributes **22 incorrect top-1** across 51 used samples —
+the labelled errors the fit was missing; both error-producing variants are
+the clips (the partial-visibility shape, amendment 5). The strong-geometric
+variants (down4) remain mostly retrieval misses (skipped, counted, never
+zero-filled — ADR-0035), as measured on b′.
+
+**Reproduction.** `TestHardsetDistractorsDeterministic`,
+`TestHardsetDistractorKinds`, `TestHardsetMessagesAugmentsOnlyTruthLines`,
+`TestHardsetPoolMechanism`, `TestHardsetPoolPrefixMechanism`,
+`TestHardsetVariantsDeterministic` (internal/bench/hardset_test.go).
+
+**Reversal.** Delete `internal/bench/hardset.go`, drop the hard-set sources
+from `CalibrateCombined` and the `HardsetVariants()` term from the bench
+wall bound; the b/b′ sources, the synthetic set and the fit's guards are
+unaffected. No stored data is affected (hard-set frames and distractors are
+never written).
+
+## Amendment 5 (2026-10-19): the prefix near-duplicates are matched to the
+measured clip depths; same-key constructions tie, they do not win
+
+**1. The error-producing shape.** On a truncated read (typewriter reveal,
+tail lost to a partial-visibility frame) the OCR reading matches a strictly
+shorter prefix candidate strictly better than the full line on every text
+component: shared trigrams and tokens over a smaller Dice denominator, a
+shorter edit distance. The nearest prefix is a **real incorrect top-1**
+produced by the real pipeline's own scoring of its own reading — while the
+truth stays retrieved in the set (not a retrieval miss). On a verbatim read
+the truth's exact key keeps it on top: the prefixes compete only on trigrams
+and lose. The prefix constructions are therefore the only ones that can
+outrank the truth, and only on a read that is itself truncated.
+
+**2. Depths matched to the measurement.** Measured on the recorded subtitle
+frames, the 68% clip leaves ~80% of the line's characters readable and the
+52% clip ~55%: the two truncation depths are matched by the two prefix
+lengths (word-boundary half and three-quarters) in the order a truncated
+read is more likely to resemble.
+
+**3. Same-key ties are ties, not wins.** The `punct` construction folds to
+the truth line's key exactly as the OCR-confusion pairs fold (textnorm
+`ocrFold` already rewrites 0/1/i → l, rn → m): identical text component,
+and the deterministic ordinal tie-break (truth appended before its
+distractors) keeps the truth on top. Measured: 0 incorrect top-1 from any
+same-key (punct) or swap/number/clause construction across all b″ sources in
+amendment 4's run — every measured error is a prefix beating a truncated
+truth.
+
+## Amendment 6 (2026-10-19): the calibration fit passes its guards on the
+(a + b) + b′ + b″ mixture — T = 0.0728024, would be calibration revision 2;
+the default stays revision 1 until the adoption step
+
+**1. Verdict: FITTED** (run 2026-10-19, tesseract 5.5.3; the two guards and
+the interior-optimum check all pass — the refusal paths of ADR-0035 are
+untriggered for the first time): ≥50 samples (**270** used, 101 skipped as
+empty-box / retrieval-miss, counted never zero-filled), ≥10 incorrect top-1
+(**22**, all from the b″ sources, amendment 4), and the NLL minimum is
+**interior** to the fit range [0.05, 8] at **T = 0.0728024** (0.0178 above
+the floor: the data, not the documented range, stops the search — the
+boundary case of ADR-0035's Limitation is not present).
+
+**2. Measured numbers (before = T = 1, after = the fit):**
+
+- NLL of the truth candidate over the returned set: 214.328 → 76.288;
+- Brier: 0.221268 → 0.072986;
+- ECE (10 bins): 0.390851 → 0.069667;
+- reliability at T = 1: all 270 samples below 0.9 (the systematic
+  under-confidence ADR-0035 diagnosed, now measured on the mixture that
+  contains real frames); after the fit: 207/270 in [0.9, 1.0) with accuracy
+  99.03%, the 22 b″ errors distributed over the lower bins.
+
+Per-source fit data (class / used / incorrect top-1 / skipped): a 92/0/3;
+b newgame 2/0/1, dense 19/0/1; b′ newgame 8/0/11, dense 77/0/43; b″ newgame
+7/3/8, dense 44/19/76 (the amendment-4 table).
+
+**3. The artifact.** `bench calibrate` wrote
+`artifacts/bench-calibrate/calibration.json` (schema v1: temperature
+0.07280236748934843, `calibration_revision: 2` — "would be", the production
+default is untouched — method string, per-source breakdown, both
+reliability tables, set hash; generated 2026-10-19T12:40:57Z). The artifact
+is under the gitignored `artifacts/` tree (AGENTS.md rule 5): it carries
+numbers, labels and hashes only, no game text.
+
+**4. The production default is unchanged (ADR-0035's reviewed decision,
+applied).** T = 1 remains `DefaultTemperature`, calibration revision 1:
+adopting the fitted T as the default is a separate reviewed step (a new
+`CalibrationRevision` with ADR numbers); until then the fitted T is
+available as the per-profile `RankOptions.Temperature` override. The
+acceptance gate stays on the T = 1 scale exactly as ADR-0035's reviewed
+design decision specifies: the ranker's second softmax at T = 1 (`gateProb`)
+scores `MinProbability`/`MinMargin` and the reported `Margin`, so no
+calibration revision can move an accept/abstain decision; threshold
+re-tuning on the calibrated scale remains deferred with the adoption step.
+
+**5. Reproducibility.** `make bench` runs this exact fit: the hard set is
+generated at run time (deterministic distractor constructions, fixed-seed
+noise, no RNG elsewhere), so a re-bench over the same fixtures and set
+reproduces the same frames, the same per-source counts and the same T.
+Unit tests: amendment 4's list plus `TestCalibrateTuningOnly` and the
+`internal/matcher` fit tests (mixed logit set recovers the interior optimum;
+degenerate and out-of-range sets are refused with their counts).
+
+**Reversal.** Delete the `artifacts/bench-calibrate/` artifact and remove
+the hard-set sources (amendment 4's reversal); the default is revision 1
+either way, so no stored data, cache identity or gate behaviour is affected.
+If revision 2 were later adopted and then reverted, the rollback is
+`RankOptions.Temperature = 1` per profile (or restoring `DefaultTemperature`),
+as ADR-0035 specifies.
+
+## Amendment 7 (2026-10-19): the fitted T is adopted as calibration
+revision 2; the acceptance gate stays on the T = 1 scale
+
+**1. Verdict: ADOPTED** (run 2026-10-19, current tree, tesseract 5.5.3).
+Adoption was required to have the evidence on the **current binary**, not
+the amendment-6 run's: the binary was rebuilt from the tree
+(`go build -o artifacts/bench-bin/game-narrator ./cmd/game-narrator`) and
+the calibrate step re-run with the exact `make bench` flags
+(`bench calibrate --set testdata/bench/bench-synthetic-001 --fixture
+$GAME_NARRATOR_FIXTURE_DIR/windwaker-newgame --fixture
+$GAME_NARRATOR_FIXTURE_DIR/windwaker-legend-dense --image
+$GAME_NARRATOR_GAME_IMAGE_PATH --out artifacts/bench-calibrate`). The fit
+reproduced amendment 6 bit-for-bit — **T = 0.0728024**
+(0.07280236748934843), 270 used / 101 skipped, NLL 214.328 → 76.288 —
+confirming the deterministic hard-set + grid design across tree changes.
+
+**2. Per-class fit data (used / incorrect top-1 / skipped):** a 92/0/3; b
+newgame 2/0/1, dense 19/0/1; b′ newgame 8/0/11, dense 77/0/43; b″ newgame
+7/3/8, dense 44/19/76. Guards: ≥50 samples (270), ≥10 incorrect top-1
+(22, all b″). Fit-set reliability (before = T = 1, after = the fit): Brier
+0.221268 → 0.072986; ECE (10 bins) 0.390851 → 0.069667; at the fitted T
+207/270 sit in [0.9, 1.0) at mean probability 0.9992 / accuracy 99.03%.
+
+**3. Near-boundary evidence (the header's question).** T is **not at a
+bound**: the fitter's boundary refusal (the NLL minimum on [0.05, 8]'s
+edge) did not fire, and the optimum is interior on both grids — the coarse
+log grid (1601 points) locates the minimum at index ≈118/1600 (7.4% up the
+log range), and the linear refinement over the ±one-coarse-step window
+[0.07257, 0.07303] puts the fine minimum at **49.9% of the window**: the
+NLL curves up on both sides within ±0.32%, so the data, not the range,
+stops the search. It **is** a heavy-sharpening T (0.0228 above the floor;
+the bottom 7.4% of the log range) — recorded as a caveat, not a
+non-objection: at the fitted T, 2 of the 22 labelled errors sit in the
+[0.9, 1.0) bin (stated near-certain) and 4 in [0.8, 0.9) (stated ≈ 0.86);
+at T = 1 those same samples were stated ≈ 0.15–0.23. The Clef escalation
+thresholds consume the calibrated `Probability` and are benchmarked per
+game against truth labels (docs/spec/05) once labelled evaluation data
+exists (docs/spec/17) — deferred with the adoption, as ADR-0035 specifies.
+
+**4. Held-out evidence (the adoption condition).** The fitter has no
+held-out split of its own (its reliability rows are over the fit mixture),
+so the held-out half was computed on the b/b′ holdout reports (the
+captured bench reports; class b clean captures — no standalone b′ holdout
+report exists, b′/b″ run inside `bench calibrate` only). Class b: 21
+ranked samples, 21/21 top-1 correct. At T = 1 (the reports' rows): pooled
+Brier 0.120671, ECE 0.343657 (newgame 0.116178/0.340849 n = 1; dense
+0.120908/0.343805 n = 19). At the fitted T: the top-1 is T-invariant and
+every held-out sample is correct, so sharpening (T < 1) strictly raises
+every held-out stated probability toward 1 — Brier and ECE strictly
+improve, with no held-out sample that can get worse. Worst case (all
+residual mass on a single runner-up, from the reports' T = 1 means):
+p_fit ≥ 0.99983, i.e. Brier < 3×10⁻⁸ and ECE < 0.0002 — the condition
+"ECE improves on held-out data" holds (0.343657 → < 0.0002, worst-case
+bound). Measurement limitation, recorded: the held-out reports persist
+only the T = 1 aggregates (no per-sample scores), so the exact fitted-T
+values are bounded, not measured; the only measured fitted-T reliability
+numbers are the fit set's (section 2). Caveat: the held-out set is 100%
+top-1 correct, so the improvement is directional and cannot by itself
+validate the sharpening amount against error cases — the error evidence is
+the fit set's b″ sources (section 3).
+
+**5. What the adoption changes.** `matcher.CalibrationRevision` 1 → 2 and
+`matcher.DefaultTemperature` 1.0 → 0.07280236748934843 (the fitted T;
+`internal/matcher/calibrate.go`); `TestTemperatureDefaultsUnchanged`
+became `TestTemperatureDefaultAdoptsRevision2` (pins the adopted values);
+the report texts that stated the T = 1 default (`internal/bench`
+`metrics.go` / `doc.go`) now name revision 2. `Candidate.Probability` —
+the commit policy's and the Clef escalation thresholds' input, the
+developer UI and the benchmark calibration rows, the trace `TopScore` —
+moves to the calibrated scale. What it **does not** change: the ranking
+order (T-invariant, asserted by `TestTemperatureKeepsRankOrder`), the
+acceptance gate — `score.go`'s second softmax is pinned at T = 1, so
+`MinProbability`/`MinMargin`/`MinPredictiveMargin` and every accept/abstain
+decision are untouched, exactly as ADR-0035's reviewed design decision
+requires (the gate stays on the T = 1 scale) — the audio cache key (does
+not embed matcher settings), or any stored data. `calibration.json` is
+written as designed: `artifacts/bench-calibrate/calibration.json`
+(regenerated by the adopting run, 2026-10-19T14:13:30Z; schema v1,
+per-source breakdown, both reliability tables). `go vet` and the race
+suites of `internal/bench` and `internal/matcher` pass; the report/manifest
+digest (`matcher_calibration`) now reads "temperature 0.072802 (revision
+2)", so a fixture scored at one revision cannot silently stand in for
+another (ADR-0035 "Cache keys and fixtures").
+
+**Reversal.** Restore `DefaultTemperature`/`CalibrationRevision` to
+revision 1 (or `RankOptions.Temperature = 1` per profile) as ADR-0035
+specifies; delete the `artifacts/bench-calibrate/` artifact. No stored
+data, cache identity or gate behaviour is affected by either direction:
+probabilities are computed at rank time and the gate never left the
+T = 1 scale.

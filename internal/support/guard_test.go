@@ -205,7 +205,7 @@ func TestBuildBundleContentGuard(t *testing.T) {
 
 	// 1. The archive holds exactly the documented sections and nothing else
 	// — no database file, no assets, no dev-trace bytes.
-	wantEntries := []string{ManifestPath, DoctorPath, StorePath, ConfigPath, DevTracePath}
+	wantEntries := []string{ManifestPath, DoctorPath, StorePath, BottlenecksPath, ConfigPath, DevTracePath}
 	if len(entries) != len(wantEntries) {
 		t.Fatalf("archive has %d entries, want %d: %v", len(entries), len(wantEntries), entryNames(entries))
 	}

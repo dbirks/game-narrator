@@ -213,7 +213,50 @@ test("the developer inspector over a real replay session", async ({
   expect(session.stats.commits, "the synthetic clip commits its two pages").toBe(2);
   expect(session.stats.ocr_calls).toBeGreaterThan(0);
 
-  // ── 4. the committed rows in the timeline, and the page-1 commit ──────────
+  // ── 4. the named bottleneck: the page block and the API agree (M7) ───────
+  // The run settled, so the page's stage summary is the run's own wall-clock
+  // stats (docs/spec/16 M7 "diagnostics expose bottlenecks"): three rows,
+  // the slowest proper sub-stage named, and the end-to-end baseline at 100%.
+  const bottleneckResponse = await request.get(
+    `${origin}/api/v1/dev/sessions/${sessionId}/bottlenecks`,
+  );
+  expect(bottleneckResponse.status(), `bottlenecks: ${await bottleneckResponse.text()}`).toBe(200);
+  const bottlenecks = (await bottleneckResponse.json()) as {
+    slowest_stage: string;
+    stages: { stage: string; count: number; share_of_end_to_end: number }[];
+  };
+  expect(bottlenecks.slowest_stage, "the e2e stage is the baseline, never the slowest").toMatch(
+    /^(frame_to_ocr|ocr_to_ranked)$/,
+  );
+  expect(bottlenecks.stages.map((stage) => stage.stage)).toEqual([
+    "frame_to_ocr",
+    "ocr_to_ranked",
+    "frame_to_committed",
+  ]);
+  expect(bottlenecks.stages[2].count, "the two commits are the end-to-end samples").toBe(2);
+  expect(bottlenecks.stages[2].share_of_end_to_end).toBe(1);
+
+  await expect(page.getByTestId("bottleneck-panel")).toBeVisible();
+  const SLOWEST_LABELS: Record<string, string> = {
+    frame_to_ocr: "capture → OCR",
+    ocr_to_ranked: "OCR → rank",
+  };
+  await expect(page.getByTestId("bottleneck-slowest")).toHaveText(
+    SLOWEST_LABELS[bottlenecks.slowest_stage],
+    { timeout: 15_000 },
+  );
+  await expect(page.getByTestId("bottleneck-row-frame_to_ocr")).toBeVisible();
+  await expect(page.getByTestId("bottleneck-row-ocr_to_ranked")).toBeVisible();
+  const e2eCells = await page
+    .getByTestId("bottleneck-row-frame_to_committed")
+    .locator("td")
+    .allTextContents();
+  expect(e2eCells[1], "the end-to-end row's sample count is the commit count").toBe("2");
+  expect(e2eCells[3], "the end-to-end p95 renders a latency, not a dash").not.toBe("—");
+  expect(e2eCells[5], "the end-to-end share is 100%").toBe("100%");
+  await shot("04-bottlenecks");
+
+  // ── 5. the committed rows in the timeline, and the page-1 commit ──────────
   const events = (
     (await (
       await request.get(
@@ -243,7 +286,7 @@ test("the developer inspector over a real replay session", async ({
   // detail panel still shows the commit after the terminal event landed.
   await expect(page.getByTestId("commit-message")).toHaveText("demo-page-1");
 
-  // ── 5. an observation from the same page: frame, crop, OCR, candidates ──
+  // ── 6. an observation from the same page: frame, crop, OCR, candidates ──
   const traceId = page1.trace_id as string;
   expect(traceId, "the commit carries its trace id").toBeTruthy();
   const observations = events.filter(
@@ -301,7 +344,7 @@ test("the developer inspector over a real replay session", async ({
   await expect(firstRow).toHaveAttribute("aria-selected", "true");
   await page.getByTestId(`event-row-${observed.seq}`).click(); // re-pin for the record
 
-  // ── 6. a viewer: the page says so, and the API answers 403 ────────────────
+  // ── 7. a viewer: the page says so, and the API answers 403 ────────────────
   await page.getByTestId("nav-logout").click();
   await expect(page).toHaveURL(/\/login/);
   await page.getByTestId("login-username").fill(VIEWER.username);
@@ -321,7 +364,7 @@ test("the developer inspector over a real replay session", async ({
   );
   expect(forbidden.status(), "the dev evidence surfaces are developer-only").toBe(403);
 
-  // ── 7. the browser stayed clean and the default appliance untouched ───────
+  // ── 8. the browser stayed clean and the default appliance untouched ───────
   expect(consoleErrors, `browser console: ${consoleErrors.join("\n")}`).toEqual([]);
   expectDefaultDataDirUntouched(run);
 });

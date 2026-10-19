@@ -1,7 +1,6 @@
 package gcdisc
 
 import (
-	"bytes"
 	"encoding/binary"
 	"io/fs"
 	"os"
@@ -32,73 +31,16 @@ func writeImage(t *testing.T, img []byte) string {
 	return p
 }
 
-// buildSynthDisc assembles a plain GCM logical image: boot header with
-// the FST at fstOff, the FST entries (root first), the NUL-terminated
-// string table right after the entries, and each file's contents at
-// its absolute logical offset. It returns the image path.
+// buildSynthDisc assembles a plain GCM logical image (the exported SynthGCMImage
+// with the "TEST01" game id the FST tests were validated against) and writes it
+// to a temp file, returning its path.
 func buildSynthDisc(t *testing.T, fstOff int64, entries []synthEntry, fileData map[string][]byte) string {
 	t.Helper()
-	var str bytes.Buffer
-	nameOff := make(map[string]int64, len(entries))
-	for _, e := range entries {
-		if e.name == "" {
-			continue
-		}
-		nameOff[e.name] = int64(str.Len())
-		str.WriteString(e.name)
-		str.WriteByte(0)
-	}
-	count := len(entries)
-	fst := make([]byte, count*fstEntrySize)
+	conv := make([]SynthEntry, len(entries))
 	for i, e := range entries {
-		b := fst[i*fstEntrySize : (i+1)*fstEntrySize]
-		if e.isDir {
-			b[0] = 1
-		}
-		no := nameOff[e.name]
-		b[1], b[2], b[3] = byte(no>>16), byte(no>>8), byte(no)
-		switch {
-		case i == 0: // root: third field is the total entry count
-			binary.BigEndian.PutUint32(b[8:12], uint32(count))
-		case e.isDir:
-			binary.BigEndian.PutUint32(b[4:8], uint32(e.parent))
-			binary.BigEndian.PutUint32(b[8:12], uint32(e.end))
-		default:
-			binary.BigEndian.PutUint32(b[4:8], uint32(e.off))
-			binary.BigEndian.PutUint32(b[8:12], uint32(e.size))
-		}
+		conv[i] = SynthEntry{IsDir: e.isDir, Name: e.name, Off: e.off, Size: e.size, Parent: e.parent, End: e.end}
 	}
-	fstLen := int64(count*fstEntrySize) + int64(str.Len())
-	imgSize := fstOff + fstLen
-	if imgSize < gcmHeaderLen {
-		imgSize = gcmHeaderLen
-	}
-	fileOff := make(map[string]int64, len(fileData))
-	for i, e := range entries {
-		if i == 0 || e.isDir {
-			continue
-		}
-		data, ok := fileData[e.name]
-		if !ok {
-			t.Fatalf("missing contents for file %q", e.name)
-		}
-		if int64(len(data)) > e.size {
-			t.Fatalf("contents of %q exceed declared size %d", e.name, e.size)
-		}
-		fileOff[e.name] = e.off
-		if e.off+e.size > imgSize {
-			imgSize = e.off + e.size
-		}
-	}
-	img := make([]byte, imgSize)
-	copy(img[0:6], "TEST01")
-	binary.BigEndian.PutUint32(img[0x424:0x428], uint32(fstOff))
-	binary.BigEndian.PutUint32(img[0x428:0x42C], uint32(fstLen))
-	copy(img[fstOff:fstOff+int64(count*fstEntrySize)], fst)
-	copy(img[fstOff+int64(count*fstEntrySize):], str.Bytes())
-	for name, data := range fileData {
-		copy(img[fileOff[name]:], data)
-	}
+	img := SynthGCMImage("TEST01", fstOff, conv, fileData)
 	return writeImage(t, img)
 }
 

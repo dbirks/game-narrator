@@ -43,7 +43,7 @@ import {
 const DEFAULT_REPLAY_DIR = "testdata/synthetic/replay/dialogue-advance-001";
 
 type SessionMode = "conservative" | "predictive";
-type SourceKind = "replay" | "test_pattern";
+type SourceKind = "replay" | "test_pattern" | "dolphin";
 
 export function PlayPage() {
   const [params] = useSearchParams();
@@ -103,20 +103,40 @@ function SetupForm() {
   });
   const [profileId, setProfileId] = useState("");
   const [sourceKind, setSourceKind] = useState<SourceKind>("replay");
+  // Developer trace stores the sampled frames and ROI crops a developer can
+  // pin in the inspector (docs/spec/13). The server requires the developer
+  // role for it (the route is operator), so the control is developer-only.
+  const [devTrace, setDevTrace] = useState(false);
   const [replayDir, setReplayDir] = useState(DEFAULT_REPLAY_DIR);
   const [mode, setMode] = useState<SessionMode>("conservative");
   const [startError, setStartError] = useState<unknown>(null);
 
   const operator = atLeast("operator");
+  const developer = atLeast("developer");
+
+  // The selected revision's script, listed in the setup panel: after a publish,
+  // "the play page lists the messages" is visible state — the count and the
+  // first lines of the very revision a session would run — not an HTTP 200
+  // (ADR-0066). Only the head is rendered: a 10k-line profile is a count, not a
+  // DOM.
+  const selectedMessages = useQuery({
+    queryKey: ["play", "setup-messages", profileId],
+    queryFn: ({ signal }) => fetchAllMessages(profileId, signal),
+    enabled: Boolean(profileId),
+  });
 
   const start = useMutation({
     mutationFn: () =>
       sessionsApi.start({
         profile_id: profileId,
         frame_source:
-          sourceKind === "replay" ? { kind: "replay", dir: replayDir } : { kind: "test_pattern" },
+          sourceKind === "replay"
+            ? { kind: "replay", dir: replayDir }
+            : sourceKind === "dolphin"
+              ? { kind: "dolphin" }
+              : { kind: "test_pattern" },
         mode,
-        dev_trace: false,
+        dev_trace: devTrace,
       }),
     onSuccess: (session) => setParams({ session: session.session_id }),
     onError: (error) => setStartError(error),
@@ -177,6 +197,7 @@ function SetupForm() {
             >
               <option value="replay">replay clip</option>
               <option value="test_pattern">test pattern</option>
+              <option value="dolphin">dolphin emulator (dev host)</option>
             </select>
           </label>
           {sourceKind === "replay" ? (
@@ -205,6 +226,17 @@ function SetupForm() {
               <option value="predictive">predictive</option>
             </select>
           </label>
+          {developer ? (
+            <label className="row">
+              <input
+                type="checkbox"
+                data-testid="play-dev-trace"
+                checked={devTrace}
+                onChange={(event) => setDevTrace(event.target.checked)}
+              />
+              <span>Developer trace (store sampled frames and ROI crops)</span>
+            </label>
+          ) : null}
           {startError ? <ErrorState error={startError} action="Cannot start the session" /> : null}
           <p>
             <button
@@ -220,6 +252,39 @@ function SetupForm() {
               </span>
             ) : null}
           </p>
+          {profileId ? (
+            <div data-testid="play-profile-messages">
+              {selectedMessages.isLoading ? <p className="muted">Loading the script…</p> : null}
+              {selectedMessages.data ? (
+                <>
+                  <p>
+                    <strong data-testid="play-message-count">{selectedMessages.data.length}</strong>{" "}
+                    messages in this revision
+                  </p>
+                  <ol className="recent-lines" data-testid="play-message-list">
+                    {selectedMessages.data.slice(0, 8).map((message) => (
+                      <li
+                        key={message.id}
+                        data-testid={`play-message-${message.source_message_id}`}
+                      >
+                        {/* original_text: the human-readable line the API lists
+                            ("exactly what the source said"). normalized_text is the
+                            store's matching key (textnorm lowercasing), not a display
+                            field — the list shows the line a user would recognise. */}
+                        {message.original_text}
+                      </li>
+                    ))}
+                  </ol>
+                  {selectedMessages.data.length > 8 ? (
+                    <p className="muted">
+                      … and {selectedMessages.data.length - 8} more; the dialogue page lists all of
+                      them.
+                    </p>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
+          ) : null}
         </form>
       ) : null}
     </section>
@@ -368,7 +433,18 @@ function LiveSession({ sessionId }: { sessionId: string }) {
         </div>
         <div>
           <dt>Frame source</dt>
-          <dd>{session.frame_source}</dd>
+          <dd data-testid="play-source">
+            {session.frame_source}
+            {session.source ? (
+              <span data-testid="play-source-state"> · {session.source.state}</span>
+            ) : null}
+            {session.source?.last_error ? (
+              <span className="error" data-testid="play-source-error" role="alert">
+                {" · "}
+                {session.source.last_error}
+              </span>
+            ) : null}
+          </dd>
         </div>
         <div>
           <dt>Frames</dt>
