@@ -19,44 +19,88 @@ import (
 // "color" normalize to the same token whichever side the variant came from.
 // It is deliberately small: an open thesaurus here would swallow real
 // divergences the QA loop exists to catch.
+//
+// The inflected forms (harbours, organisations, kilometres, ...) are not
+// speculation: the WER-stress measurement (ADR 0061 amendment, 2026-10-19,
+// artifacts/asr-stress/) recorded the endpoint emitting them on genuine clips
+// and scoring them against unmapped expectations at WER 0.05–0.12.
 var spellingMap = map[string]string{
-	"harbour":     "harbor",
-	"colour":      "color",
-	"coloured":    "colored",
-	"colourful":   "colorful",
-	"favour":      "favor",
-	"favourite":   "favorite",
-	"behaviour":   "behavior",
-	"labour":      "labor",
-	"neighbour":   "neighbor",
-	"grey":        "gray",
-	"defence":     "defense",
-	"offence":     "offense",
-	"centre":      "center",
-	"metre":       "meter",
-	"litre":       "liter",
-	"organise":    "organize",
-	"organised":   "organized",
-	"organising":  "organizing",
-	"recognise":   "recognize",
-	"recognised":  "recognized",
-	"recognising": "recognizing",
-	"realise":     "realize",
-	"realised":    "realized",
-	"realising":   "realizing",
-	"travelled":   "traveled",
-	"travelling":  "traveling",
-	"jewellery":   "jewelry",
-	"plough":      "plow",
-	"defenceless": "defenseless",
+	"harbour":       "harbor",
+	"harbours":      "harbors",
+	"harbouring":    "harboring",
+	"colour":        "color",
+	"colours":       "colors",
+	"coloured":      "colored",
+	"colourful":     "colorful",
+	"favour":        "favor",
+	"favourites":    "favorites",
+	"behaviour":     "behavior",
+	"behaviours":    "behaviors",
+	"labour":        "labor",
+	"labours":       "labors",
+	"neighbour":     "neighbor",
+	"neighbours":    "neighbors",
+	"grey":          "gray",
+	"greys":         "grays",
+	"defence":       "defense",
+	"defences":      "defenses",
+	"offence":       "offense",
+	"offences":      "offenses",
+	"centre":        "center",
+	"centres":       "centers",
+	"metre":         "meter",
+	"metres":        "meters",
+	"litre":         "liter",
+	"litres":        "liters",
+	"kilometre":     "kilometer",
+	"kilometres":    "kilometers",
+	"organise":      "organize",
+	"organises":     "organizes",
+	"organised":     "organized",
+	"organising":    "organizing",
+	"organisation":  "organization",
+	"organisations": "organizations",
+	"recognise":     "recognize",
+	"recognises":    "recognizes",
+	"recognised":    "recognized",
+	"recognising":   "recognizing",
+	"realise":       "realize",
+	"realises":      "realizes",
+	"realised":      "realized",
+	"realising":     "realizing",
+	"travelled":     "traveled",
+	"travelling":    "traveling",
+	"traveller":     "traveler",
+	"travellers":    "travelers",
+	"jewellery":     "jewelry",
+	"plough":        "plow",
+	"ploughs":       "plows",
+	"defenceless":   "defenseless",
+}
+
+// numberWordMap folds the endpoint's digit/word notation wobble for small
+// cardinals (measured 2026-10-19, WER stress: the same spoken "eighteen" came
+// back as "eighteen" on one clip and "18" on the next). Both sides fold to
+// the WORD form, so a line written with digits and a transcript with words
+// (or vice versa) compare equal, while a wrong number ("eighteen" vs
+// "nineteen") still counts as an edit. Only one..twenty: beyond that the
+// endpoint was stable in the measurement, and a longer table would start
+// approaching thesaurus territory.
+var numberWordMap = map[string]string{
+	"1": "one", "2": "two", "3": "three", "4": "four", "5": "five",
+	"6": "six", "7": "seven", "8": "eight", "9": "nine", "10": "ten",
+	"11": "eleven", "12": "twelve", "13": "thirteen", "14": "fourteen",
+	"15": "fifteen", "16": "sixteen", "17": "seventeen", "18": "eighteen",
+	"19": "nineteen", "20": "twenty",
 }
 
 // normalizeText reduces one text to its QA comparison form: lowercase, every
 // non-letter/non-digit run collapsed to a single space (the endpoint drops
 // punctuation entirely — a comma or period is a word separator, so it must
 // never count as an edit), with the contraction apostrophe REMOVED (the
-// endpoint turns "Let's" into "lets", not "let s"), and each word passed
-// through spellingMap.
+// endpoint turns "Let's" into "lets", not "let s"), each word passed through
+// spellingMap, and small-cardinal digits folded to their word form
+// (numberWordMap).
 //
 // (No NFKC fold: this Go build strips unicode/norm, and the endpoint's output
 // is ASCII after its own normalization, so case + punctuation + whitespace +
@@ -80,6 +124,10 @@ func normalizeText(s string) string {
 	fields := strings.Fields(b.String())
 	for i, f := range fields {
 		if canon, ok := spellingMap[f]; ok {
+			fields[i] = canon
+			continue
+		}
+		if canon, ok := numberWordMap[f]; ok {
 			fields[i] = canon
 		}
 	}

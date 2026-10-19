@@ -38,6 +38,48 @@ func TestNormalizeText(t *testing.T) {
 	}
 }
 
+// TestNormalizeTextStressCases pins the normalizer cases the WER-stress
+// measurement exposed (ADR 0061 amendment, 2026-10-19, artifacts/asr-stress/):
+// the endpoint's own output on genuine clips diverged from the expected text
+// ONLY by these axes, and each divergence scored WER 0.05–0.12 against the
+// pre-fix normalizer. If a future measurement exposes a new axis, add a case
+// here before touching the maps.
+func TestNormalizeTextStressCases(t *testing.T) {
+	// Measured endpoint drifts (genuine clips, WER stress 2026-10-19):
+	//   "organisation's" -> "organization's", "colours" -> "colors",
+	//   "centres"/"litres" inflections, "kilometres" -> "kilometers",
+	//   spoken "eighteen" -> "18" (digit/word notation wobble).
+	pairs := [][2]string{
+		{"She recognised the organisation's colours", "She recognized the organization's colors"},
+		{"the centre of the square", "the center of the square"},
+		{"a litre of ink", "a liter of ink"},
+		{"four kilometres to the crossing", "four kilometers to the crossing"},
+		{"Mile 18 was where the track split", "Mile eighteen was where the track split"},
+		{"the bell rang 2 times", "the bell rang two times"},
+	}
+	for _, p := range pairs {
+		if a, b := normalizeText(p[0]), normalizeText(p[1]); a != b {
+			t.Errorf("normalizeText diverges on measured drift: %q -> %q vs %q -> %q", p[0], a, p[1], b)
+		}
+	}
+	// The number fold must NOT swallow a wrong number: eighteen vs nineteen
+	// is still an edit, and a spoken digit error stays an edit.
+	if wer(normalizeText("Mile eighteen"), normalizeText("Mile nineteen")) != 0.5 {
+		t.Errorf("wrong number must still count: wer = %f, want 0.5", wer(normalizeText("Mile eighteen"), normalizeText("Mile nineteen")))
+	}
+	if wer(normalizeText("Room 214"), normalizeText("Room 302")) != 0.5 {
+		t.Errorf("digit line numbers must still count: wer = %f, want 0.5", wer(normalizeText("Room 214"), normalizeText("Room 302")))
+	}
+	// Numbers outside the fold table keep their digits (no table bloat).
+	if got := normalizeText("counted 1240 heads"); got != "counted 1240 heads" {
+		t.Errorf("normalizeText(1240) = %q, want digits kept", got)
+	}
+	// Symmetric in effect: whichever side carries the variant, WER is 0.
+	if w := wer(normalizeText("the greys and the harbours"), normalizeText("the grays and the harbors")); w != 0 {
+		t.Errorf("inflection symmetry: wer = %f, want 0", w)
+	}
+}
+
 func TestWERAndCER(t *testing.T) {
 	if got := wer("the road was long", "the road was long"); got != 0 {
 		t.Errorf("identical wer = %f, want 0", got)
