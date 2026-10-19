@@ -311,7 +311,18 @@ if [ "$ok_up" = 1 ]; then
     else
       note "rollback policy outcome: previous binary did not come up on the newer data; restoring the DB backup per docs/release.md §4.4"
       if restore_db_from_backup && restart_service; then
-        ok_rb=1
+        # The pre-flight backup predates the operator token (and, on a fresh
+        # device, the test account) that step 4 created this run, so the
+        # restore removes those rows and the token the game-read check uses
+        # is now invalid (401): re-mint before verifying. On a fresh device
+        # the restored data also lacks the mid-run test game; recreate it so
+        # the persistence check sees the same fixture the run established.
+        if setup_account; then
+          api_get_game || api_create_game || true
+          ok_rb=1
+        else
+          fail "rollback: could not re-mint the operator token after the DB restore"
+        fi
       else
         fail "rollback: service still down after DB restore" \
              "$(sudo journalctl -u game-narrator -n 15 --no-pager 2>/dev/null)"

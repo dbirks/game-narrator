@@ -113,12 +113,92 @@ app, frame previews, the OCR worker and the speech cache — sized so the
 rest of the 4 GB stays free for the OS and the GameCube-side USB stack
 (docs/spec/10 "UNO Q 4 GB must remain stable …"). This is a smoke bound:
 the sustained-play verification (long session, thermal behaviour,
-drop-bound under load) is the separate M8 item tracked in
-[docs/status/blocked.md](../status/blocked.md) and is still NOT VERIFIED
-until it runs on the appliance. A budget FAIL on the appliance means
+drop-bound under load) is the separate M8 item covered by the
+[Sustained play](#sustained-play) section below — it ran on the appliance
+on 2026-10-19 (replay source, PASS; capture and audio remain NOT
+VERIFIED). A budget FAIL on the appliance means
 recheck the measured peak line, confirm the session actually ran (the
 sample log is in the test output), then treat it as a real regression —
 do not raise the bound to make the gate green.
+
+## Sustained play
+
+The M8 sustained-play verification runs on the appliance with
+
+```sh
+scripts/hw/sustained-on-device.sh <user>@<uno-q-host> [--minutes N] [--source replay|capture]
+```
+
+It drives the **running service's API** (no standalone process, no dev
+flags): the committed synthetic clip
+`testdata/synthetic/replay/dialogue-advance-001` (invented text only,
+AGENTS.md rule 5) is placed under the service's replay allowlist and a
+session loop starts replay sessions through `POST /api/v1/sessions` until
+the clip drains, then the next, for N minutes (default 30). Every frame,
+OCR call, ranking and commit goes through the installed `serve` binary.
+Per AGENTS.md rule 3 this is a **replay source on the device** — it is NOT
+capture evidence and NOT hardware acceptance of the capture path. With
+`--source capture` the script refuses with a clear NOT RUN (exit 2) until
+the UVC capture dongle is attached; it never dresses the replay loop up as
+capture.
+
+Every 10 s one sample is recorded: service RSS and CPU % (from
+`/proc/<pid>/stat`, parsed comm-safely), system memory (the 4 GB headroom
+check), load, every thermal zone, storage free on the data dir, the
+session's own counters (frames, OCR calls, commits, queue drops, speech
+counters) and UI responsiveness (wall time of `GET /` and one API call).
+Budgets (PASS/FAIL, the same bounds the 60 s smoke uses):
+
+| Check | Budget |
+| --- | --- |
+| serve RSS peak | ≤ 512 MiB |
+| no RSS growth trend | last-third average ≤ 1.25 × first-third |
+| 4 GB headroom | MemAvailable never below 512 MiB |
+| SoC temperature | max zone < 90 °C |
+| no stalled pipeline | no run of ≥ 3 failed sessions, 0 queue drops, frames advancing in the final minute |
+| UI responsiveness | API p95 ≤ 2000 ms, page p95 ≤ 5000 ms |
+
+**Replay-root operator step (temporary, restored afterwards).** The
+installed appliance ships without `GAME_NARRATOR_REPLAY_ROOTS`, the
+production default admits no replay dir, and the API has no clip-upload
+route — so the product today cannot replay a user clip on an installed
+device without a configuration change (a product gap, reported in the run
+record). The script performs the documented operator step through the
+product's own configuration surface, `/etc/game-narrator/env` (the unit's
+`EnvironmentFile`): back up the file, append
+`GAME_NARRATOR_REPLAY_ROOTS=/var/lib/game-narrator/replay`,
+`systemctl daemon-reload` + restart, verify the running process has the
+value; and at the end (and on any failure, via the runner's EXIT trap)
+restore the pre-run bytes, restart, and verify the variable is gone. The
+env file itself is never printed, catted or copied out — only mode/owner/
+line-count metadata and the single variable name are recorded. The same
+step by hand, if ever needed:
+
+```sh
+sudo cp -a /etc/game-narrator/env /root/env-sustained.bak
+echo 'GAME_NARRATOR_REPLAY_ROOTS=/var/lib/game-narrator/replay' | sudo tee -a /etc/game-narrator/env
+sudo systemctl daemon-reload && sudo systemctl restart game-narrator
+# … later …
+sudo cp -a /root/env-sustained.bak /etc/game-narrator/env
+sudo systemctl daemon-reload && sudo systemctl restart game-narrator
+```
+
+Speech: the device has no audio sink yet, and the session snapshots carry
+the audio block only when a voice workflow is wired — on the appliance that
+means speech is disabled for the run, and the report records it as such
+(not faked with filesink numbers).
+
+**Result (2026-10-19, UNO Q):** 30 min, replay source on the device,
+installed `0.0.0~snapshot.1792414611.gcfd936f` (the FTS5 readiness fix,
+installed the same day by the M8 device lifecycle, 9/9): **PASS** — 180
+samples, 78 session cycles, 1872 frames, 858 OCR calls, 155 commits, 0
+queue drops; RSS peak 71 MiB (≤ 512), no growth trend (56 → 64 MiB across
+thirds), MemAvailable min 3130 MiB of 3.6 GiB, SoC max 41.2 °C (< 90),
+API p95 2 ms / page p95 2 ms. Artifacts:
+`artifacts/hw-sustained/sustained-20261019T134452Z/` (samples, per-session
+stats, ops log, report). Still NOT VERIFIED: capture source (no UVC
+dongle) and audio playback (no sink) — attach the hardware, then re-run
+with `--source capture` and with a configured TTS voice + USB DAC.
 
 ## Device selection
 
