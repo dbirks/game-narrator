@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -354,6 +355,103 @@ func TestDevTestRunDialogueAdvanceReachesTerminal(t *testing.T) {
 }
 
 // mustJSON renders a map for an error message.
+
+// goroutinesWithFrame counts the goroutines whose stack carries frame — the
+// stack sample is the same seam the leak gate (fixture_test.go) uses, only
+// synchronous and per-frame. It overcounts a stack that names the frame
+// twice (a frame line plus its "created by" line), which is fine: the
+// callers test for zero.
+func goroutinesWithFrame(frame string) int {
+	buf := make([]byte, 1<<20)
+	return strings.Count(string(buf[:runtime.Stack(buf, true)]), frame)
+}
+
+// TestScenarioWorkerReleasesAFinishedJob is issue #20's timing assertion: a
+// finished job must not keep the worker's goroutine parked in the heartbeat
+// join for up to one 10 s tick. Both observations start when the job reads
+// terminal (its durable completion has just happened) and both are bounded
+// to 1 s:
+//
+//  1. while the store is still open, the job's execute — and the heartbeat
+//     it spawned, whose stack carries the same frames — are gone: the worker
+//     has returned to its claim loop instead of parking in <-hbDone until
+//     the next tick; and
+//
+//  2. once the store closes, the worker's claim loop exits within the bound:
+//     a closed store is not the transient fault the ten-error budget was
+//     for, so the worker stops on the first answer instead of ~2.5 s later.
+func TestScenarioWorkerReleasesAFinishedJob(t *testing.T) {
+	a := newTestAuth(t)
+	root := testHarnessRoot(t)
+	h := testHarnessServer(t, a, root)
+
+	rec := doReq(t, h, a.as(auth.RoleDeveloper,
+		httptest.NewRequest(http.MethodPost, "/api/v1/dev/tests/scenarios/synthetic/test-blocked/run", nil)))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("run = %d, want 202 (body %s)", rec.Code, rec.Body.String())
+	}
+	var accepted struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &accepted); err != nil || accepted.JobID == "" {
+		t.Fatalf("202 body carries no job id: %s", rec.Body.String())
+	}
+
+	// The worker claims on its own pace; poll the run-status route until the
+	// job is terminal. A blocked scenario still succeeds as a job (the
+	// verdict is in the report), so terminal here is succeeded.
+	deadline := time.Now().Add(20 * time.Second)
+	var state string
+	for {
+		srec := a.get(t, h, auth.RoleDeveloper, "/api/v1/dev/tests/runs/"+accepted.JobID)
+		if srec.Code != http.StatusOK {
+			t.Fatalf("run status = %d, want 200", srec.Code)
+		}
+		var status map[string]any
+		if err := json.Unmarshal(srec.Body.Bytes(), &status); err != nil {
+			t.Fatalf("status body is not JSON: %v", err)
+		}
+		state, _ = status["state"].(string)
+		if state == store.JobSucceeded {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("the run job did not reach succeeded within the bound (state %v)", state)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// 1. The job's worker is released: no goroutine still carries the
+	// execute frames. With the pre-fix defer order (join before cancel) the
+	// worker parks here for up to one full 10 s heartbeat tick per job.
+	release := time.Now().Add(time.Second)
+	for {
+		if goroutinesWithFrame("api.(*scenarioWorker).execute") == 0 {
+			break
+		}
+		if !time.Now().Before(release) {
+			t.Fatalf("the job's worker is still inside execute 1 s after the job finished: it parks in the heartbeat join instead of returning (issue #20)")
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	// 2. Close the store and the claim loop must stop on the first
+	// closed-store answer. The later t.Cleanup closes it again; the second
+	// Close is a harmless no-op answer.
+	if err := a.st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	stop := time.Now().Add(time.Second)
+	for {
+		if goroutinesWithFrame("api.(*scenarioWorker).loop") == 0 {
+			break
+		}
+		if !time.Now().Before(stop) {
+			t.Fatalf("the worker's claim loop is still alive 1 s after the store closed: a closed store must stop it on the first answer, not the ten-error budget (issue #20)")
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
 
 // TestSplitScenariosRunPath pins the wildcard remainder parsing: the id may
 // carry its directory, the action is the final segment, and empty or

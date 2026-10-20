@@ -78,8 +78,15 @@ func (m *memSelection) SetSelection(ctx context.Context, sel stack.Selection) er
 // ID carries the "v4l2:" identity the production V4L2 source has, and each
 // push is a real frame the stack's one-frame grab and N-frame probe consume.
 type capturePush struct {
-	mu     sync.Mutex
-	ch     chan capture.Frame
+	mu sync.Mutex
+	ch chan capture.Frame
+	// stop is closed by Close (issue #18): Start's context watcher exits on
+	// ctx cancellation OR this stop, whichever comes first. The watcher must
+	// not be tied to ctx alone: the preview/probe request context is the
+	// httptest request's context, which is never cancelled, so a ctx-only
+	// watcher survives the source's Close and leaks one goroutine per
+	// preview/probe request.
+	stop   chan struct{}
 	closed bool
 	seq    int64
 	// droppedPerDelivery is stamped on each frame's Dropped field: a test
@@ -93,7 +100,7 @@ type capturePush struct {
 }
 
 func newCapturePush() *capturePush {
-	return &capturePush{ch: make(chan capture.Frame, 256)}
+	return &capturePush{ch: make(chan capture.Frame, 256), stop: make(chan struct{})}
 }
 
 func (c *capturePush) ID() string { return "v4l2:" + stack.FakePath }
@@ -103,8 +110,14 @@ func (c *capturePush) Start(ctx context.Context) (<-chan capture.Frame, error) {
 		return nil, c.fail
 	}
 	go func() {
-		<-ctx.Done()
-		c.Close()
+		select {
+		case <-ctx.Done():
+			c.Close()
+		case <-c.stop:
+			// The source was stopped/closed: the watcher exits with it
+			// (issue #18), so a never-cancelled request context cannot
+			// hold it.
+		}
 	}()
 	return c.ch, nil
 }
@@ -162,6 +175,7 @@ func (c *capturePush) Close() error {
 		return nil
 	}
 	c.closed = true
+	close(c.stop)
 	close(c.ch)
 	return nil
 }

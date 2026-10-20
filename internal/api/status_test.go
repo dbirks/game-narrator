@@ -15,10 +15,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/dbirks/game-narrator/internal/agent/tools"
 	"github.com/dbirks/game-narrator/internal/auth"
 	"github.com/dbirks/game-narrator/internal/events"
 	"github.com/dbirks/game-narrator/internal/games"
@@ -254,13 +256,75 @@ func newStatusEnv(t *testing.T, wire func(*statusTestEnv)) *statusTestEnv {
 		WithAuth(a.svc, a.repo),
 		WithEvents(env.hub),
 		WithStore(a.st),
+		// The store seam the snapshot's setup-run half reads (status.go's
+		// assembleSetupRuns): stopStatusEngine's nudge goes through it.
+		// An env with no active agent run shows no setup run, so the
+		// snapshot every other status test asserts on is unchanged.
+		WithOnboarding(store.NewJobsStore(a.st), store.NewAgentStore(a.st), tools.NewSQLiteApprovals(a.st)),
 	)
 	if wire != nil {
 		wire(env)
 	}
 	env.srv = httptest.NewServer(env.s.Handler())
 	t.Cleanup(env.srv.Close)
+	// The status push engine is process-lived per Server (ADR-0104): its
+	// loop exits only when the hub refuses a publish, and a quiescent engine
+	// (the displayed shape unchanged since its last frame) publishes
+	// nothing — so closing the hub alone would leave it ticking until
+	// process exit (issue #19). stopStatusEngine (registered after the
+	// server close, so it runs first) changes the displayed shape through
+	// the store seam while the store is still open (its Close was registered
+	// in newTestAuth, so it runs last), closes the hub, and waits for the
+	// engine's next tick to publish the changed shape into the closed hub —
+	// the refusal is the loop's exit, bounded by two 500 ms ticks (the
+	// coalescing floor) plus the wait's own 50 ms poll step.
+	t.Cleanup(env.stopStatusEngine)
 	return env
+}
+
+// stopStatusEngine ends the env's status engine, if one is running, by the
+// engine's own shutdown rule (ADR-0104): it records a setup run the bar
+// would display (the snapshot's rollup gains the run's head, read through
+// the store seam), closes the hub, and waits for the engine's next tick to
+// publish the changed shape into the now-closed hub and exit. The wait runs
+// while the store is still open: the moment the store closes the run row
+// is unreadable, the displayed shape reverts, and a quiescent engine
+// publishes nothing again. An env with no running engine (every status
+// test that does not stream status) answers the wait on the first poll.
+func (e *statusTestEnv) stopStatusEngine() {
+	e.t.Helper()
+	run := store.AgentRun{
+		ID:            "status-engine-close-nudge",
+		State:         store.AgentStateQueued,
+		PromptVersion: "test",
+	}
+	if err := store.NewAgentStore(e.st).CreateAgentRun(e.ctx, run); err != nil {
+		e.t.Errorf("record the engine-close nudge run: %v", err)
+		return
+	}
+	if err := e.hub.Close(); err != nil {
+		e.t.Errorf("close the env's hub: %v", err)
+		return
+	}
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for {
+		if !statusEngineGoroutineAlive() {
+			return
+		}
+		if time.Now().After(deadline) {
+			e.t.Errorf("the status engine is still alive 1.5 s after its hub closed: the loop should exit on the refused publish (issue #19)")
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// statusEngineGoroutineAlive reports whether a status engine loop is still
+// running in this process: the loop's own frame, not its children's
+// created-by chain (the engine spawns none), is the tell.
+func statusEngineGoroutineAlive() bool {
+	buf := make([]byte, 1<<20)
+	return strings.Contains(string(buf[:runtime.Stack(buf, true)]), "api.(*statusEngine).run")
 }
 
 // getJSON issues an authenticated GET and answers the parsed body.

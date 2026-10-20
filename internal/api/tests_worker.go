@@ -15,8 +15,9 @@ package api
 // recoverable for the operator's retry: the queue's crash story, unchanged.
 //
 // The worker starts lazily on the first run POST and stops of its own accord
-// when the store stops answering (process shutdown closes the database, and
-// ten consecutive claim errors are the worker's notion of "closed").
+// when the store stops answering: a closed store (the process shutting down)
+// stops it on the very next claim, and ten consecutive claim errors —
+// transient faults the store may still recover from — stop it as a fallback.
 
 import (
 	"bytes"
@@ -24,6 +25,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"strings"
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/assets"
@@ -74,6 +76,16 @@ func (w *scenarioWorker) loop() {
 		job, err := w.s.jobStore.Claim(context.Background(), w.workerID,
 			[]string{JobKindScenarioRun}, scenarioLease)
 		if err != nil {
+			// A closed store is not a transient fault: it is the process's
+			// shutdown, and the ten-error budget would park the worker ~2.5 s
+			// past the moment it is done (issue #20). Stop on the first
+			// closed-store answer; the budget stays only for faults a live
+			// store may recover from.
+			if isClosedStoreErr(err) {
+				w.s.log.Info("scenario worker stopping: the job store is closed",
+					"error", err.Error())
+				return
+			}
 			errs++
 			if errs >= scenarioClaimStopErrs {
 				w.s.log.Info("scenario worker stopping: the job store stopped answering",
@@ -96,10 +108,12 @@ func (w *scenarioWorker) loop() {
 // harness call, the report blobs, the durable completion. Every exit path
 // either finalizes the row (Complete/Fail) or reports why it cannot
 // (cancelled, lease lost) without writing a terminal state a lease is no
-// longer entitled to.
+// longer entitled to. The job's ctx is cancelled before the heartbeat join
+// on every path (issue #20): the heartbeat answers ctx.Done() at once, so a
+// finished job releases its worker goroutine immediately instead of parking
+// it in the join until the next 10 s tick.
 func (w *scenarioWorker) execute(job store.Job) {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Heartbeat until the run ends or the job stops being ours: state !=
 	// running (an out-of-band cancel) or ErrConflict (lease stolen) both
@@ -122,7 +136,15 @@ func (w *scenarioWorker) execute(job store.Job) {
 			}
 		}
 	}()
-	defer func() { <-hbDone }()
+	// Registered after the join it orders: it runs first (LIFO), cancels the
+	// ctx so the heartbeat exits at once, and only then waits for it. The
+	// earlier shape (defer cancel() at the top, defer <-hbDone below) ran
+	// the join before the cancel and left the worker parked up to one full
+	// heartbeat tick after every finished job.
+	defer func() {
+		cancel()
+		<-hbDone
+	}()
 
 	var payload scenarioRunPayload
 	if err := json.Unmarshal(job.Payload, &payload); err != nil || payload.ScenarioID == "" {
@@ -170,6 +192,15 @@ func (w *scenarioWorker) execute(job store.Job) {
 		w.s.log.Warn("scenario run finished but could not finalize its job",
 			"job", job.ID, "state", job.State, "error", err.Error())
 	}
+}
+
+// isClosedStoreErr reports whether err is a query the store refused because
+// its database is closed. database/sql's sentinel for that answer
+// (errDBClosed, "sql: database is closed") is unexported and the store's
+// error mapping only wraps it, so the close is recognised by the sentinel's
+// message — std's stable error text, not driver output.
+func isClosedStoreErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "sql: database is closed")
 }
 
 // fail records the job as failed (not retryable: the reason is a property of
