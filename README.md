@@ -113,6 +113,14 @@ partition, config, first run, upgrade/rollback, purge) is
 [docs/manuals/19-install-on-uno-q.md](docs/manuals/19-install-on-uno-q.md);
 the short path:
 
+> **Agent Skill:** [`skills/uno-q-setup/`](skills/uno-q-setup/SKILL.md) is the
+> agentskills.io-format skill that walks an agent (or a human) from a stock
+> board to a verified appliance: read-only preflight, `.deb` install +
+> migrate + boot enablement (ADR 0081), the `0600` env file, HDMI capture
+> and USB/Bluetooth audio, admin bootstrap, and upgrade/rollback — with
+> idempotent `--apply` scripts. Run its read-only checks first:
+> `skills/uno-q-setup/scripts/preflight.sh <user>@<uno-q-host>`.
+
 1. SSH with a key to the board: `ssh <user>@<uno-q-host>` (passwordless
    `sudo` needed for the lifecycle/smoke scripts).
 2. *(Optional)* Free the small root partition — remove App Lab/Docker/
