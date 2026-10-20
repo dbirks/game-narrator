@@ -51,6 +51,60 @@ func TestJobsEnqueueDefaults(t *testing.T) {
 	}
 }
 
+func TestJobsQueueDepth(t *testing.T) {
+	js := NewJobsStore(migratedStore(t))
+	ctx := testCtx(t)
+
+	// Empty queue: nothing waiting and nothing in flight.
+	if n, err := js.QueueDepth(ctx); err != nil || n != 0 {
+		t.Fatalf("QueueDepth(empty) = %d, %v; want 0", n, err)
+	}
+
+	// Enqueue two: both are queued, so the depth is two.
+	ja, _, err := js.Enqueue(ctx, EnqueueParams{Kind: "a", MaxAttempts: 3})
+	if err != nil {
+		t.Fatalf("enqueue a: %v", err)
+	}
+	jb, _, err := js.Enqueue(ctx, EnqueueParams{Kind: "b", MaxAttempts: 3})
+	if err != nil {
+		t.Fatalf("enqueue b: %v", err)
+	}
+	if n, err := js.QueueDepth(ctx); err != nil || n != 2 {
+		t.Fatalf("QueueDepth(two queued) = %d, %v; want 2", n, err)
+	}
+
+	// Claim one: it moves queued→running, but a running job still counts as
+	// depth (waiting plus in flight).
+	claimed, err := js.Claim(ctx, "worker-1", nil, time.Minute)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if n, err := js.QueueDepth(ctx); err != nil || n != 2 {
+		t.Fatalf("QueueDepth(one running, one queued) = %d, %v; want 2 (running still counts)", n, err)
+	}
+
+	// Complete the running one: one queued remains.
+	if err := js.Complete(ctx, claimed.ID, json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if n, err := js.QueueDepth(ctx); err != nil || n != 1 {
+		t.Fatalf("QueueDepth(after complete) = %d, %v; want 1 (the other is still queued)", n, err)
+	}
+
+	// Cancel the last queued one: terminal states (succeeded, cancelled) do
+	// not count as depth, so the queue is empty.
+	remaining := jb.ID
+	if claimed.ID == jb.ID {
+		remaining = ja.ID
+	}
+	if _, err := js.Cancel(ctx, remaining); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if n, err := js.QueueDepth(ctx); err != nil || n != 0 {
+		t.Fatalf("QueueDepth(terminal states) = %d, %v; want 0", n, err)
+	}
+}
+
 func TestJobsEnqueueIdempotency(t *testing.T) {
 	js := NewJobsStore(migratedStore(t))
 	ctx := testCtx(t)

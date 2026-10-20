@@ -60,6 +60,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/runtime"
 	"github.com/dbirks/game-narrator/internal/speech"
 	"github.com/dbirks/game-narrator/internal/store"
+	"github.com/dbirks/game-narrator/internal/telemetry"
 	"github.com/dbirks/game-narrator/internal/updates"
 	"github.com/dbirks/game-narrator/internal/vision/ocr"
 	"github.com/dbirks/game-narrator/internal/voices"
@@ -270,6 +271,12 @@ const EnvReadinessInterval = "GAME_NARRATOR_READINESS_INTERVAL"
 // contract checks and the Playwright walk run against it; every answer the
 // fake serves is labelled synthetic.
 const EnvBluetoothFake = "GAME_NARRATOR_BT_FAKE"
+
+// EnvMetricsToken is the static bearer token the /metrics scrape accepts in
+// place of an admin session (docs/spec/13 "Metrics", ADR-0106): a monitor that
+// does not want to mint an admin user token. Empty (the default) keeps the
+// scrape admin-only; the developer snapshot endpoint never uses it.
+const EnvMetricsToken = "GAME_NARRATOR_METRICS_TOKEN"
 
 // importDiscGameIDPrefix is the game-id prefix the reference adapter accepts.
 // A disc whose id does not start with it is refused before any parse, so a
@@ -500,6 +507,18 @@ func runServe(args []string, log *slog.Logger, ring *logbuf.Ring) (int, error) {
 	// `running` by the last process becomes `recoverable`/`queued` before any
 	// live lease exists to race it (docs/spec/02 "Transaction workflows").
 	jobsStore := store.NewJobsStore(st)
+
+	// The process's telemetry surface (docs/spec/13 "Metrics", ADR-0106): one
+	// catalog the whole process books into — the pipeline's stages, the voice
+	// wiring's TTS/playback/prewarm and the session count ride on it, and the
+	// two scrape endpoints (GET /metrics, GET /api/v1/dev/metrics) serve it.
+	// The scrape token is operator-supplied (a monitor that does not want to
+	// mint an admin user token); empty keeps the endpoint admin-only.
+	metrics := telemetry.NewProduct()
+	metricsToken := strings.TrimSpace(os.Getenv(EnvMetricsToken))
+	if metricsToken != "" {
+		log.Info("the metrics scrape accepts the configured token (GAME_NARRATOR_METRICS_TOKEN)")
+	}
 	runner, err := jobs.NewRunner(jobsStore, hub, log)
 	if err != nil {
 		return 1, fmt.Errorf("creating job runner: %w", err)
@@ -682,6 +701,10 @@ func runServe(args []string, log *slog.Logger, ring *logbuf.Ring) (int, error) {
 		Speech:      speechOpts,
 		OCRFallback: ocrFallback,
 		Decision:    decisionOpts,
+		// The telemetry surface (ADR-0106): the session's pipeline and voice
+		// stages book their counters and stage latencies here, labelled by the
+		// game the profile's edition belongs to and the profile revision.
+		Metrics: metrics,
 		Capture: &runtime.CaptureOptions{
 			Resolve: capStack.Resolve,
 			Source: func(ctx context.Context, res stack.Resolved) (capture.Source, error) {
@@ -898,6 +921,12 @@ func runServe(args []string, log *slog.Logger, ring *logbuf.Ring) (int, error) {
 		// the routes answer 503 and the page hides the section, never an
 		// empty 200 that would read as "no devices".
 		api.WithBluetoothController(btController),
+		// The telemetry surface (docs/spec/13 "Metrics", ADR-0106): the
+		// Prometheus scrape at /metrics (admin or the configured token, off
+		// until a catalog is wired) and the developer JSON snapshot the
+		// diagnostics and health surfaces read. The same catalog the runtime
+		// books into, so the scrape and the session's own stages agree.
+		api.WithMetrics(metrics, metricsToken),
 	}
 	if voiceSvc != nil {
 		// The queue is what the 202 audition create enqueues onto; the same

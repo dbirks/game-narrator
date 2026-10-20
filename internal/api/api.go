@@ -35,6 +35,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/logbuf"
 	rt "github.com/dbirks/game-narrator/internal/runtime"
 	"github.com/dbirks/game-narrator/internal/store"
+	"github.com/dbirks/game-narrator/internal/telemetry"
 	"github.com/dbirks/game-narrator/internal/updates"
 	"github.com/dbirks/game-narrator/internal/webassets"
 )
@@ -260,6 +261,17 @@ type Server struct {
 	// per-caller budget) and is internal state, like the idempotency store.
 	btController bt.Controller
 	btLimiter    *auth.Limiter
+
+	// metrics is the process's telemetry surface (docs/spec/13 "Metrics",
+	// internal/telemetry): the catalog the hot paths book into and the two
+	// scrape endpoints serve. nil (the default) is the off shape — the
+	// endpoints answer 404 (the scraper endpoint) and 503 (the developer
+	// snapshot) rather than invent numbers, and the hooks the runtime and
+	// pipeline call against it are nil-safe. metricsToken is the optional
+	// static bearer token the scraper endpoint accepts in place of an admin
+	// session, for a monitor that does not want to mint a user token.
+	metrics      *telemetry.Product
+	metricsToken string
 
 	// The status bar's backend (docs/design/plum-peach "Global chrome").
 	// The two caches are internal state like diagRuns — built in New, always
@@ -489,6 +501,23 @@ func WithBluetoothLimiter(l *auth.Limiter) Option {
 	return func(s *Server) { s.btLimiter = l }
 }
 
+// WithMetrics wires the telemetry surface (docs/spec/13 "Metrics",
+// internal/telemetry) behind the two scrape endpoints: GET /metrics in
+// Prometheus text format for a monitor, and GET /api/v1/dev/metrics as the
+// JSON snapshot the diagnostics and health surfaces read. Off by default —
+// a server that never calls this answers 404 at /metrics and 503 at the
+// developer snapshot, so a process that wired no catalog cannot claim to be
+// measuring. When wired, /metrics is gated to an admin principal (the usual
+// session or API token) or the static token (the second argument, empty to
+// require admin only), because a raw metrics stream on a LAN is an
+// unauthenticated read of the appliance's internals (docs/spec/14).
+func WithMetrics(p *telemetry.Product, token string) Option {
+	return func(s *Server) {
+		s.metrics = p
+		s.metricsToken = strings.TrimSpace(token)
+	}
+}
+
 // New constructs an API server. A zero BuildInfo or nil logger is tolerated.
 // By default the UI comes from webassets.FS(), i.e. whatever Vite output was
 // compiled into the binary.
@@ -652,8 +681,18 @@ func (s *Server) Handler() http.Handler {
 	// under the developer-only /api/v1/dev prefix of the scope table: the
 	// payloads carry raw gameplay text, provider details and captured frames.
 	routes.register(mux, http.MethodGet, "/api/v1/dev/events", s.handleDevEvents)
+	// The /metrics scrape (docs/spec/13 "Metrics"): registered on the mux but
+	// deliberately NOT on the route table — the scope table and the OpenAPI
+	// contract track /api/v1 routes and their role grants, and this endpoint
+	// is outside both: its gate (admin or the configured token) is the
+	// handler's own, and the dispatch special-case below keeps the embedded
+	// UI from answering for it. Off by default: with no wired catalog the
+	// handler answers 404.
+	mux.HandleFunc("GET "+metricsPath, s.handleMetrics)
+
 	// The developer's browsing of the recorded corrections as the re-run inputs
 	// (docs/spec/08 "fixture recording and browsing", ADR-0052).
+	routes.register(mux, http.MethodGet, "/api/v1/dev/metrics", s.handleDevMetrics)
 	routes.register(mux, http.MethodGet, "/api/v1/dev/fixtures", s.handleDevFixturesList)
 	routes.register(mux, http.MethodGet, "/api/v1/dev/sessions/{id}/bottlenecks", s.handleDevSessionBottlenecks)
 	routes.register(mux, http.MethodGet, "/api/v1/dev/traces/{trace_id}", s.handleDevTraces)
@@ -837,6 +876,14 @@ func (s *Server) Handler() http.Handler {
 	// therefore dispatched here, ahead of the mux; anything a registered route
 	// claims still goes through it.
 	dispatch := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The /metrics scrape routes ahead of everything: it is not an /api/ route
+		// (so the authorisation middleware skips it, and its gate is the
+		// handler's own) and it is not an embedded asset (the SPA's index.html
+		// is the wrong body for a scraper, and for the not-enabled 404).
+		if s.metricsRoute(r) {
+			mux.ServeHTTP(w, r)
+			return
+		}
 		// The capture device ids (by-id / by-path) are full device paths, so
 		// they contain slashes. The contract is a percent-encoded id in the
 		// path (a %2F-escaped segment the mux routes to {id} and decodes); a

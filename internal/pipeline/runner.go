@@ -14,6 +14,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/matcher"
 	"github.com/dbirks/game-narrator/internal/recognition"
 	"github.com/dbirks/game-narrator/internal/session"
+	"github.com/dbirks/game-narrator/internal/telemetry"
 	"github.com/dbirks/game-narrator/internal/vision/ocr"
 )
 
@@ -24,6 +25,21 @@ import (
 type Runner struct {
 	cfg Config
 	cnt *counters
+
+	// metrics is the process's telemetry surface (docs/spec/13 "Metrics",
+	// internal/telemetry): nil (the default) instruments nothing — every hook
+	// is nil-safe, so a harness that wires no catalog keeps the same runner.
+	// mLabels is this run's bounded label pair (the game the profile belongs
+	// to and the profile revision it runs as), resolved once in New.
+	metrics *telemetry.Product
+	mLabels telemetry.Labels
+	// frameVoiceAnchors is the frame→voice anchor table (metrics.go): a
+	// committed line's frame-entry time, keyed by the dialogue occurrence id
+	// the speech wiring's speech.started event carries back. Its own lock:
+	// the pipeline's writer books on the reduce loop and the voice wiring
+	// completes from the scheduler's goroutine.
+	frameVoiceMu      sync.Mutex
+	frameVoiceAnchors map[string]time.Time
 
 	// gates is allocated per Runner (not per Run) and is only meaningful while a
 	// Run is in flight: it is the retrieval hold described on rankGate.
@@ -84,7 +100,15 @@ func New(cfg Config) (*Runner, error) {
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
-	return &Runner{cfg: c, cnt: newCounters(c.Trace, c.TraceMax), gates: newGates(c.Regions), kindHints: newKindHints(c)}, nil
+	return &Runner{
+		cfg:               c,
+		cnt:               newCounters(c.Trace, c.TraceMax),
+		gates:             newGates(c.Regions),
+		kindHints:         newKindHints(c),
+		metrics:           c.Metrics,
+		mLabels:           telemetry.Labels{Game: c.MetricsGame, ProfileRevision: c.ProfileRevision},
+		frameVoiceAnchors: make(map[string]time.Time, 8),
+	}, nil
 }
 
 // newKindHints maps every region to the text-kind hint its readings score
@@ -136,6 +160,15 @@ func (r *Runner) ObserveAudioUnderrun() { r.cnt.audioUnderrun() }
 // interval from the sink accepting the playback to the device buffer accepting
 // the first samples, ADR-0074).
 func (r *Runner) ObserveAudioOutputLatency(d time.Duration) { r.cnt.audioOutputLatency(d) }
+
+// Telemetry returns the process's telemetry surface (docs/spec/13 "Metrics",
+// internal/telemetry) and this run's label pair, so the session's voice
+// wiring can book its TTS, playback and prewarm samples against the same
+// series the pipeline's stages use. A nil product is the off shape (a process
+// that wired no catalog): every hook the wiring feeds it is nil-safe.
+func (r *Runner) Telemetry() (*telemetry.Product, telemetry.Labels) {
+	return r.metrics, r.mLabels
+}
 
 // Trace returns the retained timeline when Config.Trace is on, oldest first.
 func (r *Runner) Trace() []TraceEntry { return r.cnt.traceSnapshot() }
@@ -307,6 +340,7 @@ func (r *Runner) bridge(ctx context.Context, frames <-chan capture.Frame, wg *sy
 						return
 					}
 					r.cnt.framesDelivered(1)
+					r.metrics.FramesDelivered(r.mLabels, 1)
 					select {
 					case out <- f:
 					case <-ctx.Done():
@@ -329,6 +363,7 @@ func (r *Runner) bridge(ctx context.Context, frames <-chan capture.Frame, wg *sy
 						return
 					}
 					r.cnt.framesDelivered(1)
+					r.metrics.FramesDelivered(r.mLabels, 1)
 					slot.Put(f)
 				case <-ctx.Done():
 					return
@@ -340,12 +375,14 @@ func (r *Runner) bridge(ctx context.Context, frames <-chan capture.Frame, wg *sy
 			case out <- f:
 			case <-ctx.Done():
 				r.cnt.framesDropped(slot.Drops())
+				r.metrics.FramesDropped(r.mLabels, slot.Drops())
 				return
 			}
 		}
 		// Whatever was overwritten in the slot while a worker was behind. Reported
 		// once at the end because LatestSlot's counter is cumulative.
 		r.cnt.framesDropped(slot.Drops())
+		r.metrics.FramesDropped(r.mLabels, slot.Drops())
 	}()
 	return out
 }
@@ -360,6 +397,12 @@ func (r *Runner) ocrWorker(ctx context.Context, jobs <-chan *ocrJob, done chan<-
 				return
 			}
 			res, err := r.recognize(job)
+			// The invocation's wall time, dispatch to outcome, in the same
+			// cfg.Now() domain the pipeline's own latency table uses (a
+			// cancelled or failed read is a real sample of how long the stage
+			// took — the help text says so, and dropping it would make the
+			// histogram optimistic about exactly the reads it exists to catch).
+			r.metrics.OCRDuration(r.mLabels, r.cfg.Now().Sub(job.started))
 			if res.Engine == "" {
 				res.Engine = engineName(r.cfg.OCR)
 			}
@@ -443,6 +486,8 @@ func (r *Runner) rankWorker(ctx context.Context, ranks <-chan rankJob, replies c
 			var reply DecisionReply
 			if r.cfg.Decider != nil && r.cfg.Reducer.NeedsAdjudication(rank) {
 				r.cnt.decisions()
+				r.metrics.Decision(r.mLabels)
+				asked := r.cfg.Now()
 				reply = r.cfg.Decider.Decide(ctx, DecisionRequest{
 					SessionID:       r.cfg.SessionID,
 					ProfileRevision: r.cfg.ProfileRevision,
@@ -457,6 +502,12 @@ func (r *Runner) rankWorker(ctx context.Context, ranks <-chan rankJob, replies c
 					Speakers:        r.cfg.Speakers,
 					LastMessage:     r.lastCommitted(),
 				})
+				// The verdict is the reply's own reason: the bounded enum the
+				// telemetry catalog names (answered / provider_error / not
+				// configured) — a metric name, not a label, so the label pair
+				// stays the only dimension (docs/spec/13).
+				r.metrics.DecisionDuration(r.mLabels, r.cfg.Now().Sub(asked))
+				r.metrics.DecisionVerdict(r.mLabels, reply.Reason)
 			}
 			select {
 			case replies <- rankIn{req: j.req, rank: rank, at: r.cfg.Now(), reply: reply}:

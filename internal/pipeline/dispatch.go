@@ -211,6 +211,8 @@ func (r *Runner) applyOutcome(regions []*regionState, o ocrOutcome) {
 			// answer only confirms it, so counting it again would make one
 			// supersession look like two problems.
 			r.cnt.ocrError()
+
+			r.metrics.OCRError(r.mLabels)
 			if r.cfg.Mode == ModeReplay {
 				// The replay retry policy (ocrWorker) spent its budget and the
 				// frame's text is still missing: the run is no longer the recording
@@ -241,6 +243,8 @@ func (r *Runner) applyOutcome(regions []*regionState, o ocrOutcome) {
 			// out — a cache hit or a rate-limited frame did not bill the
 			// gateway, and the report must say so.
 			r.cnt.ocrFallbackFrames()
+
+			r.metrics.OCRFallback(r.mLabels)
 			if fb.Reason != "secondary_cached" && fb.Reason != "secondary_rate_limited" {
 				r.cnt.ocrFallbackSecondary()
 			}
@@ -347,6 +351,8 @@ func (r *Runner) abort(regions []*regionState) {
 			if p.job != nil && !p.resolved() && !p.job.dead {
 				p.job.kill()
 				r.cnt.ocrCancelled()
+
+				r.metrics.OCRCancelled(r.mLabels)
 			}
 		}
 		rs.pending = nil
@@ -392,6 +398,8 @@ func (r *Runner) ageOut(regions []*regionState) {
 				// A job nobody is riding on any more: cancel it and count it.
 				p.job.kill()
 				r.cnt.ocrCancelled()
+
+				r.metrics.OCRCancelled(r.mLabels)
 			}
 			r.cnt.ocrStale()
 		}
@@ -459,6 +467,8 @@ func (rs *regionState) accept(r *Runner, ctx context.Context, f capture.Frame, i
 			if head.job != nil && head.job != rs.inflight {
 				head.job.kill()
 				r.cnt.ocrCancelled()
+
+				r.metrics.OCRCancelled(r.mLabels)
 			}
 			r.cnt.ocrStale()
 		}
@@ -499,6 +509,8 @@ func (rs *regionState) startJob(r *Runner, ctx context.Context, frameSeq int64, 
 		// this is the number docs/spec/05's "suppress duplicate OCR calls" asserts
 		// against, so it is booked at dispatch, not at completion.
 		r.cnt.ocrCall()
+
+		r.metrics.OCRCall(r.mLabels)
 	case <-ctx.Done():
 		job.kill()
 	}
@@ -524,6 +536,8 @@ func (rs *regionState) discardInflight(r *Runner) {
 	rs.inflight = nil
 	dropped := rs.dropPendingFor(job)
 	r.cnt.ocrCancelled()
+
+	r.metrics.OCRCancelled(r.mLabels)
 	for i := 0; i < dropped; i++ {
 		r.cnt.ocrStale()
 	}

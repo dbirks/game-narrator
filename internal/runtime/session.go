@@ -400,6 +400,12 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 	m.mu.Lock()
 	m.sessions[id] = sess
 	m.mu.Unlock()
+	// The session gauge of docs/spec/13 "Metrics": the count of sessions the
+	// manager is running right now. Booked at registration (the session is
+	// live from here) and dropped in unregister, so the gauge reads the same
+	// number the manager's own map holds. nil-safe: an off process books
+	// nothing.
+	m.metrics.SessionStarted()
 
 	// session.started is the cursor clients poll from: everything the session
 	// publishes afterwards has a higher seq (docs/spec/08 SSE semantics).
@@ -692,6 +698,20 @@ func (m *Manager) pipelineConfig(req StartRequest, published games.Profile, sess
 		// event log remains the durable record and the timeline's cost is the
 		// cost of the feature, not of every session.
 		cfg.Trace = true
+	}
+	// The telemetry surface (docs/spec/13 "Metrics", internal/telemetry): the
+	// pipeline's stages book into it when the process wired a catalog. The
+	// label pair is the bounded game/revision the spec names — the game is
+	// the profile's edition's game, resolved once at session start (a store
+	// read, not the hot path), and an empty edition id or an error degrades
+	// to the "none" label value rather than erroring the session. m.metrics
+	// nil (the default) leaves cfg.Metrics nil and the run unwired: every
+	// hook is nil-safe, so an off process behaves exactly as before.
+	cfg.Metrics = m.metrics
+	if m.metrics != nil && m.opts.Store != nil && published.EditionID != "" {
+		if ed, err := m.opts.Store.GetEdition(context.Background(), published.EditionID); err == nil {
+			cfg.MetricsGame = ed.GameID
+		}
 	}
 	return cfg
 }
@@ -1241,6 +1261,10 @@ func (m *Manager) unregister(s *session) {
 	m.mu.Lock()
 	delete(m.sessions, s.id)
 	m.mu.Unlock()
+	// The session gauge of docs/spec/13 "Metrics" (booked at registration
+	// in Start): the session is gone from the manager's map, so the count
+	// drops by one. nil-safe: an off process books nothing.
+	m.metrics.SessionStopped()
 }
 
 // OpenDevAsset serves one dev-trace blob by content hash from the store of any

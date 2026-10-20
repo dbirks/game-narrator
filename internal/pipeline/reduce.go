@@ -427,6 +427,7 @@ func (r *Runner) applyRanking(ctx context.Context, red *session.Reducer, head *r
 		switch res.Reason {
 		case "stale_observation", "stale_text", "stale_generation", "future_generation", "duplicate_ranking":
 			r.cnt.rankingStale()
+			r.metrics.RankingStale(r.mLabels)
 			// The reading was never usefully answered, so it becomes re-askable.
 			// Without this the pipeline would refuse to re-rank a box whose one
 			// retrieval was refused, and would go silent for the rest of that line.
@@ -435,14 +436,23 @@ func (r *Runner) applyRanking(ctx context.Context, red *session.Reducer, head *r
 		return res, r.bookRanking(rk, res)
 	}
 	r.cnt.ranking()
+	r.metrics.Ranking(r.mLabels)
 	if rk.rank.Abstain {
 		r.cnt.rankingAbstained()
+		r.metrics.RankingAbstained(r.mLabels)
 	}
 	if !rk.req.ocrAt.IsZero() {
 		r.cnt.ocrRank.observe(rk.at.Sub(rk.req.ocrAt))
 	}
 	if a := head.anchors[rk.req.region]; a != nil && !a.entered.IsZero() {
 		r.cnt.frameComm.observe(r.cfg.Now().Sub(a.entered))
+		// The frame→voice anchor (metrics.go): this ranking applied and it
+		// committed — book the frame that entered the pipeline for the line,
+		// so the speech wiring's audio-start event can book the interval on
+		// the telemetry surface (docs/spec/13 "first audible audio").
+		if countCommits(res.Events) > 0 {
+			r.noteFrameVoiceAnchor(res.Events, a.entered)
+		}
 	}
 	return res, r.bookRanking(rk, res)
 }
@@ -497,10 +507,12 @@ func (r *Runner) applyDecision(ctx context.Context, red *session.Reducer, rk ran
 			res.Reason = err.Error()
 		}
 		r.cnt.decisionFenced()
+		r.metrics.DecisionFenced(r.mLabels)
 		return &res
 	}
 	if res.Applied {
 		r.cnt.decisionApplied()
+		r.metrics.DecisionApplied(r.mLabels)
 	} else {
 		// A fenced answer (stale generation, duplicate seq, a superseded
 		// observation) is the session's discard working as designed:
@@ -508,6 +520,7 @@ func (r *Runner) applyDecision(ctx context.Context, red *session.Reducer, rk ran
 		// "Clef said X, it arrived after the page had turned, the commit
 		// stands on the local evidence".
 		r.cnt.decisionFenced()
+		r.metrics.DecisionFenced(r.mLabels)
 	}
 	return &res
 }

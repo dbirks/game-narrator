@@ -3806,6 +3806,35 @@
         }
       }
     },
+    "/api/v1/dev/metrics": {
+      "get": {
+        "operationId": "devMetrics",
+        "tags": [
+          "dev"
+        ],
+        "summary": "The process's telemetry snapshot: the metrics the diagnostics and health surfaces read.",
+        "description": "The JSON snapshot of the process's telemetry registry (docs/spec/13 \"Metrics\", internal/telemetry): the same counters, histograms and gauges the Prometheus scrape at GET /metrics renders, shaped for the appliance's own diagnostics and health surfaces to read without parsing a text stream. Bounded by construction — the label dimensions are the game and the profile revision only (docs/spec/13: aggregate by game/profile revisions, never a per-message label), and each metric keeps at most a fixed number of series. Developer-only, like the other /api/v1/dev inspection routes: the snapshot is the appliance's run state. A process that wired no telemetry catalog answers 503: an empty snapshot would read as \"everything is zero.\"",
+        "x-required-role": "developer",
+        "responses": {
+          "200": {
+            "description": "The current telemetry snapshot.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricsSnapshot"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
     "/api/v1/dev/fixtures": {
       "get": {
         "operationId": "listFixtures",
@@ -7164,6 +7193,112 @@
       }
     },
     "schemas": {
+      "MetricsSnapshot": {
+        "type": "object",
+        "description": "The GET /api/v1/dev/metrics body (docs/spec/13 \"Metrics\", internal/telemetry): the process's telemetry registry as a structured view — the same data the Prometheus exposition at GET /metrics renders, shaped for the diagnostics and health surfaces to read. generated_at is the process wall clock (the freshness of the reading, not a metric).",
+        "required": [
+          "generated_at",
+          "metrics"
+        ],
+        "properties": {
+          "generated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "metrics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MetricSnapshot"
+            }
+          }
+        }
+      },
+      "MetricSnapshot": {
+        "type": "object",
+        "description": "One metric and every series it currently holds. type is the Prometheus kind; the series carry the label pair (game, profile_revision) for counters and histograms and no labels for the process-wide gauges.",
+        "required": [
+          "name",
+          "help",
+          "type",
+          "series"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The full, prefixed metric name (game_narrator_*)."
+          },
+          "help": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "counter",
+              "gauge",
+              "histogram"
+            ]
+          },
+          "series": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MetricSeries"
+            }
+          }
+        }
+      },
+      "MetricSeries": {
+        "type": "object",
+        "description": "One labelled series. A counter or gauge row carries value; a histogram row carries count, sum_seconds and the non-cumulative buckets. Absent fields encode as absent, so a counter row carries no buckets and a histogram row no value.",
+        "properties": {
+          "labels": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The bounded label set (game, profile_revision); absent for a process-wide gauge."
+          },
+          "value": {
+            "type": "number",
+            "description": "The counter total or the gauge reading."
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The histogram sample count."
+          },
+          "sum_seconds": {
+            "type": "number",
+            "description": "The histogram sample sum, in seconds."
+          },
+          "buckets": {
+            "type": "array",
+            "description": "The histogram's non-cumulative slots: one per bucket edge, plus the overflow slot whose le is null (the exposition's le=+Inf row).",
+            "items": {
+              "$ref": "#/components/schemas/MetricHistogramBucket"
+            }
+          }
+        }
+      },
+      "MetricHistogramBucket": {
+        "type": "object",
+        "description": "One histogram slot. le is the bucket edge in seconds; null is the overflow slot (le=+Inf in the exposition).",
+        "required": [
+          "le",
+          "count"
+        ],
+        "properties": {
+          "le": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
       "Problem": {
         "type": "object",
         "description": "An RFC 9457 problem document. `code` is the stable member of docs/spec/08's error contract and is present on every problem the catalog, profile, message and import handlers of ADR-0017 write; the authorization gate and the router's 404/405 (internal/api/middleware.go, ADR-0016) predate it and answer without one, so it is documented here rather than required.",

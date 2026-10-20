@@ -154,6 +154,22 @@ type JobsStore struct {
 // NewJobsStore wires the queue onto an open, migrated store.
 func NewJobsStore(s *Store) *JobsStore { return &JobsStore{s: s} }
 
+// QueueDepth is the durable queue's depth for the telemetry surface
+// (docs/spec/13 "Metrics", internal/telemetry): jobs waiting (queued) plus
+// in flight (running). It is a read of the database at scrape time, not an
+// in-process counter — the database is the authority on job state (the
+// package's first rule), and crash-recovery handoff moves jobs between
+// states outside the enqueue/complete paths, so a counter kept on those
+// paths would drift from the table it exists to describe.
+func (j *JobsStore) QueueDepth(ctx context.Context) (int64, error) {
+	var n int64
+	err := j.s.inRead(ctx, func(ctx context.Context, q queryable) error {
+		return q.queryRow(ctx, "queue depth",
+			"SELECT COUNT(*) FROM jobs WHERE state IN ('queued', 'running')").Scan(&n)
+	})
+	return n, err
+}
+
 // jobColumns is every SELECT list in this file, so Get, List and Claim cannot
 // drift onto different column orders (the classic way a list view and a
 // detail view start disagreeing about the same row).

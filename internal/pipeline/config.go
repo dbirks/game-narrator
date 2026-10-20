@@ -11,6 +11,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/matcher"
 	"github.com/dbirks/game-narrator/internal/recognition"
 	"github.com/dbirks/game-narrator/internal/session"
+	"github.com/dbirks/game-narrator/internal/telemetry"
 	"github.com/dbirks/game-narrator/internal/vision"
 	"github.com/dbirks/game-narrator/internal/vision/ocr"
 )
@@ -188,6 +189,18 @@ type Config struct {
 	// these must name the session the Publisher is serving.
 	SessionID       string
 	ProfileRevision string
+
+	// Metrics is the process's telemetry surface (docs/spec/13 "Metrics",
+	// internal/telemetry): when non-nil the pipeline books its hot-path
+	// counters and stage latencies there, labelled by MetricsGame and
+	// ProfileRevision — the bounded label pair the spec names (game, profile
+	// revision). nil (the default) instruments nothing: the hooks are
+	// nil-safe, so a harness that builds no catalog keeps the same runner.
+	// ProfileRevision is the revision stamp above; MetricsGame is the game
+	// the profile's edition belongs to (the runtime resolves it at session
+	// start; empty exposes as the "none" label value).
+	Metrics     *telemetry.Product
+	MetricsGame string
 
 	// Regions are the ROIs to watch. RegionType and the rect are used; the
 	// rest of the row is the catalogue's business.

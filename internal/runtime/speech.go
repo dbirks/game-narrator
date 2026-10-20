@@ -27,6 +27,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/speech/filesink"
 	"github.com/dbirks/game-narrator/internal/speech/pipewire"
 	"github.com/dbirks/game-narrator/internal/store"
+	"github.com/dbirks/game-narrator/internal/telemetry"
 	"github.com/dbirks/game-narrator/internal/voices"
 )
 
@@ -322,6 +323,16 @@ type speechWiring struct {
 	// (ADR-0074, docs/spec/13).
 	runner *pipeline.Runner
 
+	// metrics is the process's telemetry surface (docs/spec/13 "Metrics",
+	// internal/telemetry): the TTS latency and cache hit/miss, the playback
+	// underrun and the prewarm hit book here, labelled by mLabels — the same
+	// game/revision pair the pipeline's stages use, so a run reads as one
+	// story across the surface. Taken from the runner (which owns the pair);
+	// nil (the runner built no catalog, or the test wiring has no runner) is
+	// the off shape, and every hook it feeds is nil-safe.
+	metrics *telemetry.Product
+	mLabels telemetry.Labels
+
 	// speakerByMessage maps a committed message row id to its assigned
 	// speaker character id (the curator's roster from the published
 	// profile); empty means the line is the narrator's.
@@ -442,6 +453,11 @@ type synthSlot struct {
 // run because audio output is misconfigured.
 func (m *Manager) newSpeechWiring(id string, speakerByMessage map[string]string, narratorFallback bool, runCtx context.Context, runner *pipeline.Runner, idx *matcher.Index, prewarmTexts map[string]string, voiceLat *frameVoiceSampler) *speechWiring {
 	opts := m.opts.Speech
+	var metrics *telemetry.Product
+	var mLabels telemetry.Labels
+	if runner != nil {
+		metrics, mLabels = runner.Telemetry()
+	}
 	w := &speechWiring{
 		id:               id,
 		log:              m.log.Debug,
@@ -449,6 +465,8 @@ func (m *Manager) newSpeechWiring(id string, speakerByMessage map[string]string,
 		voices:           opts.Voices,
 		assets:           opts.Assets,
 		runner:           runner,
+		metrics:          metrics,
+		mLabels:          mLabels,
 		voiceLat:         voiceLat,
 		speakerByMessage: speakerByMessage,
 		narratorFallback: narratorFallback,
@@ -865,6 +883,7 @@ func (w *speechWiring) speak(u *utteranceInfo) {
 		w.mu.Unlock()
 		slot.cancel()
 	}()
+	ttsStart := time.Now()
 	res, err := w.voices.Speech.GetOrGenerate(synthCtx, key, speech.PriorityCurrent, func(ctx context.Context) (tts.Audio, error) {
 		return rv.generate(ctx, u.text)
 	})
@@ -899,6 +918,13 @@ func (w *speechWiring) speak(u *utteranceInfo) {
 			res, err = r, nil
 		}
 	}
+	// The TTS stage of docs/spec/13 "Metrics": request-to-resolved, cache
+	// outcome and all, in the same domain the voice wiring's own status
+	// sampler uses (wall clock). A failed or ended synthesis is not a sample
+	// of the stage's latency — its event says so — and books nothing.
+	if err == nil {
+		w.metrics.TTSResolved(w.mLabels, res.FromCache, time.Since(ttsStart))
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			// The session ended while this line was still synthesising: it
@@ -927,7 +953,9 @@ func (w *speechWiring) speak(u *utteranceInfo) {
 		// was one THIS session prewarmed, so the commit paid no TTS round
 		// trip. (A cache hit on a key this session never prewarmed — filled
 		// by an earlier session — is a plain cache hit, not a prewarm hit.)
-		w.prewarmKeyConsumed(key)
+		if w.prewarmKeyConsumed(key) {
+			w.metrics.PrewarmHit(w.mLabels)
+		}
 	}
 
 	w.mu.Lock()
@@ -1709,6 +1737,14 @@ func (w *speechWiring) noteSchedulerEvent(e events.Envelope) {
 	if e.Name == events.SpeechStarted && w.voiceLat != nil {
 		w.voiceLat.noteVoiceStart(occ, time.Now().UTC())
 	}
+	// The frame→voice half of docs/spec/13 "Metrics" ("first audible audio"): the
+	// pipeline's reduce loop booked this line's frame-entry anchor when it
+	// committed; the audio has started, so the interval completes now. A
+	// line without an anchor (telemetry unwired, or a table reset) books
+	// nothing — the same honest shape the status sampler takes.
+	if e.Name == events.SpeechStarted && w.runner != nil {
+		w.runner.ObserveFrameToVoice(occ)
+	}
 	w.mu.Lock()
 	w.current = &UtteranceState{
 		Phase:       phase,
@@ -1744,11 +1780,15 @@ func (w *speechWiring) noteSchedulerEvent(e events.Envelope) {
 
 // noteAudioUnderrun books one underrun on the run's own stats (nil-safe: a
 // wiring built without a runner — no pipeline in the test — skips the
-// booking rather than panicking).
+// booking rather than panicking). It is also one sample of the playback
+// stage on the telemetry surface (docs/spec/13 "Metrics") — the underrun
+// counter the spec names, booked under the run's labels; a wiring with no
+// catalog books only the stats.
 func (w *speechWiring) noteAudioUnderrun() {
 	if w.runner != nil {
 		w.runner.ObserveAudioUnderrun()
 	}
+	w.metrics.PlaybackUnderrun(w.mLabels)
 }
 
 // noteAudioOutputLatency books one output-latency sample (nil-safe).

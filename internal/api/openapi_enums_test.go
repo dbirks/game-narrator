@@ -174,6 +174,9 @@ var literalEnums = map[string][]string{
 	// (assistant.question events, docs/spec/08).
 	"AssistantTurnView.properties.role":     {"user", "assistant"},
 	"AssistantQuestionView.properties.kind": {"question", "confirmation"},
+	// The metrics snapshot (docs/spec/13 "Metrics", ADR-0106): the three
+	// Prometheus kinds internal/telemetry declares.
+	"MetricSnapshot.properties.type": {"counter", "gauge", "histogram"},
 }
 
 func TestOpenAPIEnumVocabulariesMatchTheDomainEnums(t *testing.T) {

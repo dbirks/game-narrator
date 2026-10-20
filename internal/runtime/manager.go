@@ -16,6 +16,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/pipeline"
 	"github.com/dbirks/game-narrator/internal/recognition"
 	"github.com/dbirks/game-narrator/internal/store"
+	"github.com/dbirks/game-narrator/internal/telemetry"
 	"github.com/dbirks/game-narrator/internal/vision/ocr"
 )
 
@@ -187,6 +188,15 @@ type Options struct {
 	ReplaySpeed   float64
 	DevTraceQuota int64 // 0 = DefaultDevTraceQuota
 
+	// Metrics is the process's telemetry surface (docs/spec/13 "Metrics",
+	// internal/telemetry): when set, every session the manager starts wires
+	// its pipeline and voice stages into it, and the manager's own active
+	// session count rides on it as the session gauge. nil (the default) is
+	// the off shape — no hooks, no gauge — and every caller of the hooks is
+	// nil-safe, so a manager built without a catalog behaves exactly as
+	// before.
+	Metrics *telemetry.Product
+
 	OCR     ocr.Engine
 	Tracker recognition.Config // zero = the mode's documented defaults
 
@@ -277,6 +287,11 @@ type Manager struct {
 	opts  Options
 	log   *slog.Logger
 	quota int64
+	// metrics is the process's telemetry surface (docs/spec/13 "Metrics",
+	// internal/telemetry); nil (the default) is the off shape and every hook
+	// is nil-safe. The manager's active-session count rides on it as the
+	// session gauge.
+	metrics *telemetry.Product
 	// masterVolume is the appliance's device-level master volume (ADR-0074),
 	// initialised from SpeechOptions and updated live by SetMasterVolume. It
 	// is float64 bits in a Uint64 (the stdlib atomic of this toolchain has no
@@ -338,6 +353,7 @@ func New(opts Options) (*Manager, error) {
 		log:      opts.Log,
 		quota:    quota,
 		sessions: map[string]*session{},
+		metrics:  opts.Metrics,
 	}
 	mgr.masterVolume.Store(math.Float64bits(mv))
 	return mgr, nil

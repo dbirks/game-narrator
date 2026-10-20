@@ -1134,6 +1134,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/dev/metrics": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * The process's telemetry snapshot: the metrics the diagnostics and health surfaces read.
+     * @description The JSON snapshot of the process's telemetry registry (docs/spec/13 "Metrics", internal/telemetry): the same counters, histograms and gauges the Prometheus scrape at GET /metrics renders, shaped for the appliance's own diagnostics and health surfaces to read without parsing a text stream. Bounded by construction — the label dimensions are the game and the profile revision only (docs/spec/13: aggregate by game/profile revisions, never a per-message label), and each metric keeps at most a fixed number of series. Developer-only, like the other /api/v1/dev inspection routes: the snapshot is the appliance's run state. A process that wired no telemetry catalog answers 503: an empty snapshot would read as "everything is zero."
+     */
+    get: operations["devMetrics"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/dev/fixtures": {
     parameters: {
       query?: never;
@@ -2359,6 +2379,41 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
   schemas: {
+    /** @description The GET /api/v1/dev/metrics body (docs/spec/13 "Metrics", internal/telemetry): the process's telemetry registry as a structured view — the same data the Prometheus exposition at GET /metrics renders, shaped for the diagnostics and health surfaces to read. generated_at is the process wall clock (the freshness of the reading, not a metric). */
+    MetricsSnapshot: {
+      /** Format: date-time */
+      generated_at: string;
+      metrics: components["schemas"]["MetricSnapshot"][];
+    };
+    /** @description One metric and every series it currently holds. type is the Prometheus kind; the series carry the label pair (game, profile_revision) for counters and histograms and no labels for the process-wide gauges. */
+    MetricSnapshot: {
+      /** @description The full, prefixed metric name (game_narrator_*). */
+      name: string;
+      help: string;
+      /** @enum {string} */
+      type: "counter" | "gauge" | "histogram";
+      series: components["schemas"]["MetricSeries"][];
+    };
+    /** @description One labelled series. A counter or gauge row carries value; a histogram row carries count, sum_seconds and the non-cumulative buckets. Absent fields encode as absent, so a counter row carries no buckets and a histogram row no value. */
+    MetricSeries: {
+      /** @description The bounded label set (game, profile_revision); absent for a process-wide gauge. */
+      labels?: {
+        [key: string]: string;
+      };
+      /** @description The counter total or the gauge reading. */
+      value?: number;
+      /** @description The histogram sample count. */
+      count?: number;
+      /** @description The histogram sample sum, in seconds. */
+      sum_seconds?: number;
+      /** @description The histogram's non-cumulative slots: one per bucket edge, plus the overflow slot whose le is null (the exposition's le=+Inf row). */
+      buckets?: components["schemas"]["MetricHistogramBucket"][];
+    };
+    /** @description One histogram slot. le is the bucket edge in seconds; null is the overflow slot (le=+Inf in the exposition). */
+    MetricHistogramBucket: {
+      le: number | null;
+      count: number;
+    };
     /** @description An RFC 9457 problem document. `code` is the stable member of docs/spec/08's error contract and is present on every problem the catalog, profile, message and import handlers of ADR-0017 write; the authorization gate and the router's 404/405 (internal/api/middleware.go, ADR-0016) predate it and answer without one, so it is documented here rather than required. */
     Problem: {
       /** @description urn:game-narrator:error:<slug> */
@@ -6800,6 +6855,28 @@ export interface operations {
         };
       };
       400: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  devMetrics: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The current telemetry snapshot. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MetricsSnapshot"];
+        };
+      };
       503: components["responses"]["Problem"];
       default: components["responses"]["Problem"];
     };
