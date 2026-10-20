@@ -89,7 +89,9 @@ async function bandFree(base: number): Promise<boolean> {
     base + 33,
     base + 34,
     base + 35,
-  ); // the dev port and the redesign/library/ksearch/agent-dock/setup-board-model/setup-board review ports
+    base + 36,
+    base + 37,
+  ); // the dev port and the redesign/library/ksearch/agent-dock/setup-board-model/setup-board/traces/fake-assistant review ports
   return (await Promise.all(ports.map(isPortFree))).every(Boolean);
 }
 
@@ -363,4 +365,16 @@ export const ports = {
    *  instance, so the board's voicing transition runs through the real
    *  audition job and the real StageObserver. */
   setupBoard: base + 35,
+  /** the packaged binary the Traces screen drives (traces.spec.ts, ADR-0109):
+   *  a replay session with the speech roles at the scripted TTS instance and
+   *  the agent_reasoning role at the scripted assistant gateway
+   *  (web/e2e/fake-assistant.mjs). Same "just past the band" placement as the
+   *  review ports above, one step further out so the review ports stay
+   *  unique per project. */
+  traces: base + 36,
+  /** the scripted in-app assistant gateway (web/e2e/fake-assistant.mjs) the
+   *  traces server's agent_reasoning role speaks to: the UX-05 wrong-speaker
+   *  flow (find_similar_lines → apply_speaker_fix behind the confirmation
+   *  gate) with a synthetic, labelled-stub decision model. */
+  fakeAssistant: base + 37,
 } as const;

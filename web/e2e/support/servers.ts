@@ -236,6 +236,8 @@ export function serverNameForProject(project: string): string {
       return "developer-decision";
     case "developer-actions":
       return "developer-actions";
+    case "traces":
+      return "traces";
     case "settings-restore":
       return "restore";
     case "disc":

@@ -168,12 +168,14 @@ test("the developer inspector over a real replay session", async ({
   expect(storeIds["demo-page-2"], "demo-page-2 is a stored message").toBeTruthy();
 
   // ── 3. the page: sign in, start the replay with dev trace on ──────────────
-  await page.goto("/developer");
+  // The inspector view on the renamed route (ADR-0109, the ADR-0093
+  // rename): /developer redirects here, preserving the query.
+  await page.goto("/traces?view=inspector");
   await expect(page).toHaveURL(/\/login/);
   await page.getByTestId("login-username").fill(ADMIN.username);
   await page.getByTestId("login-password").fill(ADMIN.password);
   await page.getByTestId("login-submit").click();
-  await expect(page).toHaveURL(/\/developer$/);
+  await expect(page).toHaveURL(/\/traces\?view=inspector$/);
   await expect(page.getByTestId("nav-role")).toHaveText("admin");
 
   // The selector lists exactly the published revisions; the import's revision
@@ -370,9 +372,11 @@ test("the developer inspector over a real replay session", async ({
   await page.getByTestId("login-username").fill(VIEWER.username);
   await page.getByTestId("login-password").fill(VIEWER.password);
   await page.getByTestId("login-submit").click();
-  await expect(page).toHaveURL(/\/developer$/);
-  await expect(page.getByTestId("dev-role-required")).toBeVisible();
-  await expect(page.getByTestId("dev-role-required")).toContainText("developer role");
+  await expect(page).toHaveURL(/\/traces\?view=inspector$/);
+  // The role gate moved to the Traces page with the rename (ADR-0109):
+  // both views sit behind the developer role, the testid follows.
+  await expect(page.getByTestId("traces-role-required")).toBeVisible();
+  await expect(page.getByTestId("traces-role-required")).toContainText("developer role");
   await shot("07-viewer-role-required");
 
   const viewerLogin = await request.post(`${origin}/api/v1/auth/login`, {

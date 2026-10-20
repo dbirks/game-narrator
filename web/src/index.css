@@ -1593,3 +1593,334 @@ pre.muted {
     display: none;
   }
 }
+
+/* ── the Traces screen (docs/design/plum-peach 2h; ADR-0109) ───────────────
+ * The line trace: a filterable line list on the left, the selected line's
+ * 5-step reading strip and actions on the right. Tokens only. */
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.traces-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 340px) 1fr;
+  gap: var(--sp-16);
+  align-items: start;
+  margin-top: var(--sp-16);
+}
+
+@media (max-width: 900px) {
+  .traces-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.traces-side {
+  position: sticky;
+  top: 44px;
+}
+
+@media (max-width: 900px) {
+  .traces-side {
+    position: static;
+  }
+}
+
+.traces-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6);
+  margin-bottom: var(--sp-12);
+}
+
+.traces-pill {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  padding: 2px var(--sp-12);
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.traces-pill.active {
+  background: var(--peach);
+  font-weight: 700;
+}
+
+.traces-lines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  /* minmax(0, 1fr): the implicit auto column would size to a card's
+     max-content and overflow at the phone width. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--sp-6);
+}
+
+.traces-line {
+  display: grid;
+  gap: var(--sp-4);
+  width: 100%;
+  text-align: left;
+  padding: var(--sp-10);
+  border: 1.5px solid var(--hair);
+  border-radius: var(--radius-card);
+  background: var(--card);
+  color: var(--fg);
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.traces-line:hover {
+  border-color: var(--ink);
+}
+
+/* The current line: the design's --peach fill (README "Colour", 2h). */
+.traces-line.current {
+  background: var(--peach);
+  border-color: var(--ink);
+}
+
+.traces-line-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-8);
+}
+
+.traces-line-time {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.traces-line-text {
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.traces-main {
+  display: grid;
+  /* minmax(0, 1fr): the implicit auto column would size to the detail's
+     max-content (the 30px title's full width) and overflow the page at the
+     phone width; the track must clamp to the available width so the title
+     and the strip wrap instead (docs/design/plum-peach IA, 390px). */
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--sp-16);
+  align-content: start;
+  min-width: 0;
+}
+
+.traces-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 30px;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+/* The 5-step strip: Saw → Read → Matched → Who → Spoke. The last step is
+   --peach (the design's "current / the one that mattered" marker). */
+.traces-strip {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: var(--sp-8);
+}
+
+@media (max-width: 1100px) {
+  .traces-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .traces-strip {
+    grid-template-columns: 1fr;
+  }
+}
+
+.traces-strip-step {
+  display: grid;
+  gap: var(--sp-4);
+  padding: var(--sp-10);
+  border: 1.5px solid var(--hair);
+  border-radius: var(--radius-card);
+  background: var(--card);
+  color: var(--fg);
+  box-sizing: border-box;
+}
+
+.traces-strip-step.final {
+  background: var(--peach);
+  border-color: var(--ink);
+}
+
+.traces-strip-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.traces-strip-step.final .traces-strip-label {
+  color: var(--ink);
+}
+
+/* The design's no-muted-on-peach rule (the same as .graph-row-selected):
+   --muted holds 4.5:1 against the page background but not against the
+   --peach fill, so the muted text in this screen's three peach contexts —
+   the active filter pill's count, the current line's timestamp, the final
+   strip step's +ms offset — takes ink. Ink on peach holds 4.5:1 in every
+   theme (the token contract inverts in the dark theme). */
+.traces-pill.active .muted,
+.traces-line.current .traces-line-time,
+.traces-strip-step.final .traces-strip-offset {
+  color: var(--ink);
+}
+
+.traces-strip-value {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.95rem;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.traces-strip-offset {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.traces-read,
+.traces-why,
+.traces-actions,
+.traces-agent,
+.traces-inspection {
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-card);
+  background: var(--card);
+  padding: var(--sp-16);
+  display: grid;
+  /* minmax(0, 1fr): the implicit auto column would size to a child's
+     max-content (the long OCR lines) and overflow at the phone width. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--sp-12);
+  box-sizing: border-box;
+}
+
+.traces-read h3,
+.traces-why h3,
+.traces-actions h3,
+.traces-agent h3,
+.traces-inspection h3 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.05rem;
+}
+
+.traces-read-body {
+  display: grid;
+  grid-template-columns: minmax(0, 280px) 1fr;
+  gap: var(--sp-16);
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .traces-read-body {
+    grid-template-columns: 1fr;
+  }
+}
+
+.traces-read-body img {
+  width: 100%;
+  max-width: 280px;
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-tag);
+  image-rendering: pixelated;
+}
+
+.traces-why .stats dd {
+  margin: 0;
+}
+
+.traces-candidates {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--sp-6);
+}
+
+.traces-candidates li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--sp-8);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.traces-candidates .bar {
+  min-width: 60px;
+}
+
+.traces-actions .row {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-10);
+}
+
+.traces-actions audio {
+  max-width: 220px;
+}
+
+.traces-actions canvas {
+  display: block;
+  border: 1px solid var(--hair);
+  border-radius: var(--radius-tag);
+  background: var(--paper);
+}
+
+.traces-agent-messages {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--sp-8);
+}
+
+/* The embedded session inspector's panel (the existing component, rendered
+   unchanged): at the phone width its candidate table (nowrap cells) is
+   wider than the viewport, so the panel scrolls inside its own box — the
+   design's "wide tables scroll inside their own wrapper" rule (docs/design/
+   plum-peach IA, Phase 0), never the page. */
+.traces-inspection .panel {
+  overflow-x: auto;
+}
+
+.traces-agent-question {
+  border: 1.5px solid var(--coral);
+  border-radius: var(--radius-card);
+  background: var(--paper);
+  padding: var(--sp-12);
+  display: grid;
+  gap: var(--sp-8);
+}

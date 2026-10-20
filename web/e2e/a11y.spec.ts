@@ -244,7 +244,14 @@ test("axe: every route of the ui-coverage matrix, WCAG 2.1 A/AA", async ({ page 
         await expect(page.getByTestId("empty-state")).toBeVisible();
       },
     },
-    { name: "developer", url: "/developer", settle: (page) => settled(page, "session-start") },
+    // The ADR-0109 rename: the a11y walk visits the renamed route's
+    // inspector view (the session inspector the /developer surface was),
+    // settled on the same control.
+    {
+      name: "traces",
+      url: "/traces?view=inspector",
+      settle: (page) => settled(page, "session-start"),
+    },
     {
       name: "diagnostics (signed in)",
       url: "/diagnostics",

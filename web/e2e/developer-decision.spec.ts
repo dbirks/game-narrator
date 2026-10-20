@@ -219,12 +219,14 @@ test.describe("the inspector's Clef decision chain", () => {
       }
     ).requests.length;
 
-    await page.goto("/developer");
+    // The inspector view on the renamed route (ADR-0109, the ADR-0093
+    // rename): /developer redirects here, preserving the query.
+    await page.goto("/traces?view=inspector");
     await expect(page).toHaveURL(/\/login/);
     await page.getByTestId("login-username").fill(ADMIN.username);
     await page.getByTestId("login-password").fill(ADMIN.password);
     await page.getByTestId("login-submit").click();
-    await expect(page).toHaveURL(/\/developer$/);
+    await expect(page).toHaveURL(/\/traces\?view=inspector$/);
     await expect(page.getByTestId("session-profile")).toHaveValue(profileId, { timeout: 15_000 });
     await expect(page.getByTestId("session-dev-trace")).toBeChecked();
 
@@ -365,11 +367,13 @@ test.describe("the inspector's Clef decision chain", () => {
       }
     ).requests.length;
 
-    await page.goto("/developer");
+    // The renamed route's inspector view (ADR-0109): the guard sends the
+    // unauthenticated page to the login form, exactly as before the rename.
+    await page.goto("/traces?view=inspector");
     await page.getByTestId("login-username").fill(ADMIN.username);
     await page.getByTestId("login-password").fill(ADMIN.password);
     await page.getByTestId("login-submit").click();
-    await expect(page).toHaveURL(/\/developer$/);
+    await expect(page).toHaveURL(/\/traces\?view=inspector$/);
     // The previous test's profile is the appliance's only published revision;
     // the selector lists exactly those and picks the first.
     await expect(page.getByTestId("session-profile")).toHaveValue(/./, { timeout: 15_000 });

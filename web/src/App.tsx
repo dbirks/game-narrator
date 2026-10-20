@@ -1,4 +1,4 @@
-import { BrowserRouter, Navigate, Route, Routes, useParams } from "react-router";
+import { BrowserRouter, Navigate, Route, Routes, useParams, useSearchParams } from "react-router";
 
 import { AuthProvider, RequireAuth } from "./auth/auth-context";
 import { Shell } from "./components/Shell";
@@ -6,7 +6,6 @@ import { CastPage } from "./pages/Cast";
 import { CharactersPage } from "./pages/Characters";
 import { DialoguePage } from "./pages/Dialogue";
 import { DiagnosticsPage } from "./pages/Diagnostics";
-import { DeveloperPage } from "./pages/developer/DeveloperPage";
 import { DevKitPage } from "./pages/DevKit";
 import { GameOverviewPage } from "./pages/GameOverview";
 import { GraphPage } from "./pages/Graph";
@@ -21,6 +20,7 @@ import { RegionsPage } from "./pages/Regions";
 import { SetupPage } from "./pages/Setup";
 import { SettingsPage } from "./pages/Settings";
 import { TestsPage } from "./pages/Tests";
+import { TracesPage } from "./pages/Traces";
 import { VoicesPage } from "./pages/Voices";
 
 /**
@@ -48,15 +48,35 @@ function CastSeamRedirect() {
  * appliance must be inspectable before an account exists — and an appliance that
  * cannot be inspected is the one you are locked out of.
  */
+
+/**
+ * The /developer → /traces rename (ADR-0109): preserves the query string so a
+ * `?session=` deep link lands in the inspector view on the new route.
+ */
+function TracesRedirect() {
+  const [searchParams] = useSearchParams();
+  const query = searchParams.toString();
+  return <Navigate to={`/traces${query ? `?${query}` : ""}`} replace />;
+}
+
 export function App() {
   return (
     <Shell>
       <Routes>
         <Route path="/" element={<Navigate to="/library" replace />} />
-        {/* Plum & Peach IA seams (ADR-0093 §4): the rename routes. The
-            redirects keep the design's status-bar nav ("traces") live in
-            Phase 0; Phase 1 moves the pages and keeps these redirects. */}
-        <Route path="/traces" element={<Navigate to="/developer" replace />} />
+        {/* Plum & Peach IA seams (ADR-0093 §4, ADR-0109): /traces is the
+            line-trace surface; /developer (the session inspector) redirects
+            to it, preserving the query so ?session= deep links still land in
+            the inspector view. */}
+        <Route
+          path="/traces"
+          element={
+            <RequireAuth>
+              <TracesPage />
+            </RequireAuth>
+          }
+        />
+        <Route path="/developer" element={<TracesRedirect />} />
         <Route path="/health" element={<Navigate to="/diagnostics" replace />} />
         {/* The ⌘K palette's character rows target the Cast page (ADR-0098's
             IA: /games/:id/cast). The merged Cast page lands with plan item 5;
@@ -101,14 +121,6 @@ export function App() {
           element={
             <RequireAuth>
               <ReplayClipsPage />
-            </RequireAuth>
-          }
-        />
-        <Route
-          path="/developer"
-          element={
-            <RequireAuth>
-              <DeveloperPage />
             </RequireAuth>
           }
         />

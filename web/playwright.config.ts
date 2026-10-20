@@ -42,6 +42,8 @@ const redesignUrl = `http://127.0.0.1:${ports.redesign}`;
 const libraryUrl = `http://127.0.0.1:${ports.library}`;
 const ksearchUrl = `http://127.0.0.1:${ports.ksearch}`;
 const agentDockUrl = `http://127.0.0.1:${ports.agentDock}`;
+const tracesUrl = `http://127.0.0.1:${ports.traces}`;
+const fakeAssistantUrl = `http://127.0.0.1:${ports.fakeAssistant}`;
 const playControlsUrl = `http://127.0.0.1:${ports.playControls}`;
 const audioUrl = `http://127.0.0.1:${ports.audio}`;
 const setupBoardUrl = `http://127.0.0.1:${ports.setupBoard}`;
@@ -108,7 +110,7 @@ export default defineConfig({
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
       testIgnore:
-        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|voices-qa\.spec\.ts|m5-part1\.spec\.ts|m5-graph-regions\.spec\.ts|corrections-fixtures\.spec\.ts|live-play\.spec\.ts|play-controls\.spec\.ts|audio-output\.spec\.ts|bluetooth-output\.spec\.ts|capture-device\.spec\.ts|restore-walk\.spec\.ts|a11y\.spec\.ts|setup-wizard\.spec\.ts|redesign-shell\.spec\.ts|library\.spec\.ts|ksearch\.spec\.ts|agent-dock\.spec\.ts|setup-board\.spec\.ts/,
+        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|voices-qa\.spec\.ts|m5-part1\.spec\.ts|m5-graph-regions\.spec\.ts|corrections-fixtures\.spec\.ts|live-play\.spec\.ts|play-controls\.spec\.ts|audio-output\.spec\.ts|bluetooth-output\.spec\.ts|capture-device\.spec\.ts|restore-walk\.spec\.ts|a11y\.spec\.ts|setup-wizard\.spec\.ts|redesign-shell\.spec\.ts|library\.spec\.ts|ksearch\.spec\.ts|agent-dock\.spec\.ts|setup-board\.spec\.ts|traces\.spec\.ts/,
     },
     {
       // The first-run wizard (G9, ADR-0087) on its own packaged-binary
@@ -323,6 +325,17 @@ export default defineConfig({
       name: "setup-board",
       testMatch: /setup-board\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: setupBoardUrl },
+    },
+    {
+      // The Traces screen (docs/design/plum-peach 2h, ADR-0109): a replay
+      // session on the packaged binary — the speech roles at the scripted TTS
+      // instance (the committed lines' audio is real synthetic bytes) and the
+      // agent_reasoning role at the scripted assistant gateway
+      // (web/e2e/fake-assistant.mjs), so the UX-05 wrong-speaker walk runs the
+      // real confirmation gate with a labelled-stub decision model.
+      name: "traces",
+      testMatch: /traces\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: tracesUrl },
     },
     {
       // The developer inspector's decision half (docs/spec/13 "did it speak,
@@ -795,6 +808,45 @@ export default defineConfig({
       cwd: "..",
       url: `${ksearchUrl}/api/v1/health/live`,
       env: {
+        GAME_NARRATOR_GATEWAY_URL: `http://127.0.0.1:${ports.fakeTTS}/v1`,
+        GAME_NARRATOR_GATEWAY_TOKEN: "fake-e2e-token",
+        GAME_NARRATOR_ROLE_VOICE_DESIGN_MODEL: "fake-voicedesign",
+        GAME_NARRATOR_ROLE_VOICE_CLONE_MODEL: "fake-base",
+        GAME_NARRATOR_TTS_BASE_DIRECT_URL: `http://127.0.0.1:${ports.fakeTTS}/v1`,
+      },
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The scripted in-app assistant gateway (web/e2e/fake-assistant.mjs), a
+      // labelled-synthetic decision model. Started before the traces server so
+      // the agent_reasoning role URL it is given is already listening when the
+      // wrong-speaker walk's run executes.
+      command: `node web/e2e/fake-assistant.mjs ${ports.fakeAssistant}`,
+      cwd: "..",
+      url: `http://127.0.0.1:${ports.fakeAssistant}/healthz`,
+      reuseExistingServer: false,
+      timeout: 30_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The Traces screen (docs/design/plum-peach 2h, ADR-0109) on the
+      // packaged binary: the replay allowlist admits the repo's testdata (the
+      // synthetic clip), the speech roles at the scripted TTS instance (the
+      // committed lines' audio is real synthetic bytes the waveform/fixture/
+      // evidence carry) and the agent_reasoning role at the scripted assistant
+      // gateway, so the UX-05 wrong-speaker walk runs the real confirmation
+      // gate end to end.
+      command: `node web/e2e/serve.mjs traces 127.0.0.1:${ports.traces} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${tracesUrl}/api/v1/health/live`,
+      env: {
+        GAME_NARRATOR_REPLAY_ROOTS: replayRoots,
+        GAME_NARRATOR_ROLE_AGENT_REASONING_MODEL: "fake/assistant",
+        GAME_NARRATOR_ROLE_AGENT_REASONING_URL: `${fakeAssistantUrl}/v1`,
         GAME_NARRATOR_GATEWAY_URL: `http://127.0.0.1:${ports.fakeTTS}/v1`,
         GAME_NARRATOR_GATEWAY_TOKEN: "fake-e2e-token",
         GAME_NARRATOR_ROLE_VOICE_DESIGN_MODEL: "fake-voicedesign",

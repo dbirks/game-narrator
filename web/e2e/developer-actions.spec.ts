@@ -190,12 +190,14 @@ test("the inspector's per-event actions over a real replay session", async ({
     expect(registered.status(), `register: ${await registered.text()}`).toBe(200);
 
     // ── 2. the session: the replay with dev trace on, through the page ─────
-    await page.goto("/developer");
+    // The inspector view on the renamed route (ADR-0109, the ADR-0093
+    // rename): /developer redirects here, preserving the query.
+    await page.goto("/traces?view=inspector");
     await expect(page).toHaveURL(/\/login/);
     await page.getByTestId("login-username").fill(ADMIN.username);
     await page.getByTestId("login-password").fill(ADMIN.password);
     await page.getByTestId("login-submit").click();
-    await expect(page).toHaveURL(/\/developer$/);
+    await expect(page).toHaveURL(/\/traces\?view=inspector$/);
 
     await page.getByTestId("session-profile").selectOption(profile.id, { timeout: 15_000 });
     await expect(page.getByTestId("session-dev-trace")).toBeChecked();
