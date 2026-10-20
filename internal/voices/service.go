@@ -93,6 +93,12 @@ type Service struct {
 		AuditionsReady(ctx context.Context, revisionID string)
 		VoiceApproved(ctx context.Context, revisionID string)
 	}
+	// CastProfiles is the auto-cast seam (ADR-0109): the catalogue profile a
+	// voice audition run was created for, its auto_cast dial and its
+	// character roster. Nil is the unwired build (no catalogue in the
+	// process): an audition request that names a cast profile is refused at
+	// the API, and a job whose payload carries one is skipped, not failed.
+	CastProfiles CastProfiles
 }
 
 // New validates the wiring.

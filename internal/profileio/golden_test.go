@@ -207,7 +207,7 @@ func writeHandWrittenFixture(t *testing.T, path string) {
 			Slug: "handwritten-quay", Title: "Handwritten Quay", Platform: "gamecube-like",
 			Region: "US", Language: "en", Revision: "demo",
 		},
-		Publication: PublicationInfo{Status: games.StatusDraft, Revision: 1, NarratorFallback: &[]bool{true}[0]},
+		Publication: PublicationInfo{Status: games.StatusDraft, Revision: 1, NarratorFallback: &[]bool{true}[0], AutoCast: &[]bool{true}[0]},
 		Sources: []SourceInfo{{
 			SourceID: games.NewID(), Type: games.SourceUserFile,
 			SHA256: sha256Bytes([]byte("handwritten fixture payload")),

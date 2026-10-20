@@ -4,7 +4,7 @@
       "aliases": [
         "Keeper"
       ],
-      "id": "01M5C4DFMK5KTQN49H65F3ZWQN",
+      "id": "01M5CEVV06KXB4TAJXECHMJC1N",
       "name": "The Lighthouse Keeper",
       "portrait": null,
       "role": "keeper",
@@ -12,7 +12,7 @@
       "summary": "",
       "verified_source_refs": [],
       "visual": [],
-      "voice_profile_id": "01M5C4DFMK5KTQN49H65F3ZWQP"
+      "voice_profile_id": "01M5CEVV06KXB4TAJXECHMJC1P"
     }
   ],
   "edition": {
@@ -29,24 +29,24 @@
     "tags": [],
     "title": "Handwritten Quay"
   },
-  "manifest_digest": "28e5a263d195d1d7d6cbeda6467c006846e76ce099c3c5e2934d5995f3f84cf1",
+  "manifest_digest": "881450a6b437546a3594e622ccf111d1319c39547c972c4bfb311131395b8b71",
   "message_edges": [
     {
       "condition": "",
       "confidence": 1,
       "evidence": [],
-      "from": "01M5C4DFMK5KTQN49H65F3ZWQR",
+      "from": "01M5CEVV06KXB4TAJXECHMJC1R",
       "source": null,
-      "to": "01M5C4DFMK5KTQN49H65F3ZWQS",
+      "to": "01M5CEVV06KXB4TAJXECHMJC1S",
       "type": "next"
     },
     {
       "condition": "flags.lamp_lit == true",
       "confidence": 0.8,
       "evidence": [],
-      "from": "01M5C4DFMK5KTQN49H65F3ZWQS",
+      "from": "01M5CEVV06KXB4TAJXECHMJC1S",
       "source": null,
-      "to": "01M5C4DFMK5KTQN49H65F3ZWQT",
+      "to": "01M5CEVV06KXB4TAJXECHMJC1T",
       "type": "branch"
     }
   ],
@@ -58,7 +58,7 @@
       },
       "evidence": [],
       "flags": {},
-      "id": "01M5C4DFMK5KTQN49H65F3ZWQV",
+      "id": "01M5CEVV06KXB4TAJXECHMJC1V",
       "kind": "sign",
       "language": "en",
       "markup": [],
@@ -66,8 +66,8 @@
       "original_text": "QUAY CLOSED AFTER THE THIRD BELL",
       "pages": [],
       "redacted_reason": null,
-      "scene_id": "01M5C4DFMK5KTQN49H65F3ZWQK",
-      "source": "01M5C4DFMK5KTQN49H65F3ZWQJ",
+      "scene_id": "01M5CEVV06KXB4TAJXECHMJC1K",
+      "source": "01M5CEVV06KXB4TAJXECHMJC1J",
       "source_message_id": "hand-sign",
       "speaker_id": null,
       "speech_text": "Quay closed after the third bell."
@@ -79,7 +79,7 @@
       },
       "evidence": [],
       "flags": {},
-      "id": "01M5C4DFMK5KTQN49H65F3ZWQR",
+      "id": "01M5CEVV06KXB4TAJXECHMJC1R",
       "kind": "system",
       "language": "en",
       "markup": [],
@@ -104,8 +104,8 @@
         }
       ],
       "redacted_reason": null,
-      "scene_id": "01M5C4DFMK5KTQN49H65F3ZWQK",
-      "source": "01M5C4DFMK5KTQN49H65F3ZWQJ",
+      "scene_id": "01M5CEVV06KXB4TAJXECHMJC1K",
+      "source": "01M5CEVV06KXB4TAJXECHMJC1J",
       "source_message_id": "hand-silent",
       "speaker_id": null,
       "speech_text": ""
@@ -117,7 +117,7 @@
       },
       "evidence": [],
       "flags": {},
-      "id": "01M5C4DFMK5KTQN49H65F3ZWQT",
+      "id": "01M5CEVV06KXB4TAJXECHMJC1T",
       "kind": "tutorial",
       "language": "en",
       "markup": [],
@@ -125,8 +125,8 @@
       "original_text": "Press [BTN_A] to leave the quay.",
       "pages": [],
       "redacted_reason": null,
-      "scene_id": "01M5C4DFMK5KTQN49H65F3ZWQK",
-      "source": "01M5C4DFMK5KTQN49H65F3ZWQJ",
+      "scene_id": "01M5CEVV06KXB4TAJXECHMJC1K",
+      "source": "01M5CEVV06KXB4TAJXECHMJC1J",
       "source_message_id": "hand-narration",
       "speaker_id": null,
       "speech_text": "Press A to leave the quay."
@@ -138,7 +138,7 @@
       },
       "evidence": [],
       "flags": {},
-      "id": "01M5C4DFMK5KTQN49H65F3ZWQS",
+      "id": "01M5CEVV06KXB4TAJXECHMJC1S",
       "kind": "dialogue",
       "language": "en",
       "markup": [],
@@ -155,17 +155,18 @@
         }
       ],
       "redacted_reason": null,
-      "scene_id": "01M5C4DFMK5KTQN49H65F3ZWQK",
-      "source": "01M5C4DFMK5KTQN49H65F3ZWQJ",
+      "scene_id": "01M5CEVV06KXB4TAJXECHMJC1K",
+      "source": "01M5CEVV06KXB4TAJXECHMJC1J",
       "source_message_id": "hand-speaker",
-      "speaker_id": "01M5C4DFMK5KTQN49H65F3ZWQN",
+      "speaker_id": "01M5CEVV06KXB4TAJXECHMJC1N",
       "speech_text": "Keep the log dry and the wick trimmed."
     }
   ],
-  "profile_id": "01M5C4DFMK5KTQN49H65F3ZWQH",
+  "profile_id": "01M5CEVV06KXB4TAJXECHMJC1H",
   "publication": {
     "approved_at": null,
     "author": "",
+    "auto_cast": true,
     "narrator_fallback": true,
     "parent_revision": null,
     "preferred_voice_id": null,
@@ -176,7 +177,7 @@
   "regions": [
     {
       "detect": "manual",
-      "id": "01M5C4DFMK5KTQN49H65F3ZWQM",
+      "id": "01M5CEVV06KXB4TAJXECHMJC1M",
       "kind": "textbox",
       "label": "textbox",
       "mask_assets": [],
@@ -202,7 +203,7 @@
   "scenes": [
     {
       "aliases": [],
-      "id": "01M5C4DFMK5KTQN49H65F3ZWQK",
+      "id": "01M5CEVV06KXB4TAJXECHMJC1K",
       "name": "The Quay"
     }
   ],
@@ -214,7 +215,7 @@
       "parser": "generic@1.0.0",
       "rights": "user_supplied",
       "sha256": "dc6801749196792e33007c4db3349fcb4fa988c59f5b1afd0849b9c420c70696",
-      "source_id": "01M5C4DFMK5KTQN49H65F3ZWQJ",
+      "source_id": "01M5CEVV06KXB4TAJXECHMJC1J",
       "trust": 0,
       "type": "user_file",
       "uri": ""
@@ -225,13 +226,13 @@
     {
       "approved_at": "2025-06-01T00:00:00Z",
       "approved_by": "handwritten-fixture",
-      "character": "01M5C4DFMK5KTQN49H65F3ZWQN",
+      "character": "01M5CEVV06KXB4TAJXECHMJC1N",
       "consent_provenance": "user-supplied recording; consent recorded at approval",
       "design_instruction": "Dry and level, the keeper's own voice.",
       "embedding_mode": "registered",
       "fingerprint": "8786ec3a88c9ba3ea7f6527f2a550bef3498907a253541f11c9501950bc75480",
       "gain": 1,
-      "id": "01M5C4DFMK5KTQN49H65F3ZWQP",
+      "id": "01M5CEVV06KXB4TAJXECHMJC1P",
       "language": "en",
       "model_id": "fixture-model@1",
       "ref_transcript": "Keep the log dry and the wick trimmed.",
@@ -248,7 +249,7 @@
       "embedding_mode": "registered",
       "fingerprint": "5a9896a8329f8e205f5f8641ebf49b3e318369ddf0418ba4aa76f14e6b412de7",
       "gain": 1,
-      "id": "01M5C4DFMK5KTQN49H65F3ZWQQ",
+      "id": "01M5CEVV06KXB4TAJXECHMJC1Q",
       "language": "en",
       "model_id": "fixture-model@1",
       "ref_transcript": "Press A to leave the quay.",

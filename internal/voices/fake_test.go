@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+	"sort"
 	"sync"
 
 	"github.com/dbirks/game-narrator/internal/providers/tts"
@@ -91,6 +92,18 @@ func (f *fakeStore) ListVoiceProfiles(_ context.Context, character string) ([]st
 			out = append(out, p)
 		}
 	}
+	// The real store orders by character, revision DESC, id (the caller's
+	// "current" rule walks that order), so the fake must too: the domain's
+	// undo and auto-cast decisions read that order, not the map's.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Character != out[j].Character {
+			return out[i].Character < out[j].Character
+		}
+		if out[i].Revision != out[j].Revision {
+			return out[i].Revision > out[j].Revision
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out, nil
 }
 
@@ -143,6 +156,8 @@ func (f *fakeStore) ListAuditions(_ context.Context, profileID string) ([]store.
 			out = append(out, a)
 		}
 	}
+	// The real store orders by index; the auto-cast pick walks that order.
+	sort.Slice(out, func(i, j int) bool { return out[i].Index < out[j].Index })
 	return out, nil
 }
 

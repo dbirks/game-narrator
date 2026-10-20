@@ -153,6 +153,7 @@ func Export(ctx context.Context, s *store.Store, profileID string, opts ExportOp
 			Author:           content.Profile.PublicationAuthor,
 			PreferredVoiceID: nilIfEmpty(content.Profile.PreferredVoiceID),
 			NarratorFallback: ptrBool(content.Profile.NarratorFallback),
+			AutoCast:         ptrBool(content.Profile.AutoCast),
 			StoreDigest:      content.Profile.ManifestDigest,
 		},
 		Voices: voiceRows,

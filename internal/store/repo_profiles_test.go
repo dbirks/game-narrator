@@ -666,3 +666,58 @@ func TestSetProfileNarratorFallback(t *testing.T) {
 		t.Fatalf("the snapshot's narrator fallback = on, want the parent's off inherited")
 	}
 }
+
+// TestSetProfileAutoCast is the store half of the per-profile auto-cast dial
+// (ADR-0109, UX-03): the dial defaults on (the product default — a fresh
+// profile casts, migration 0018's DEFAULT 1), a write flips and persists it
+// without touching the row version (an editorial setting, not content), and a
+// revision snapshot inherits the dial it is cut from.
+func TestSetProfileAutoCast(t *testing.T) {
+	f := newRepoFixture(t)
+	ctx := f.ctx
+
+	// The default reads on: a fresh profile casts.
+	p, v, err := f.s.GetProfile(ctx, f.profile.ID)
+	if err != nil {
+		t.Fatalf("GetProfile: %v", err)
+	}
+	if !p.AutoCast {
+		t.Fatalf("a fresh draft's auto_cast = off, want the migration default on")
+	}
+
+	// Off, then back on: the dial follows the write, and the row version
+	// never moves (the same editorial-setting contract as narrator fallback).
+	for _, want := range []bool{false, true} {
+		if err := f.s.SetProfileAutoCast(ctx, f.profile.ID, want); err != nil {
+			t.Fatalf("SetProfileAutoCast(%v): %v", want, err)
+		}
+		p, v2, err := f.s.GetProfile(ctx, f.profile.ID)
+		if err != nil {
+			t.Fatalf("GetProfile after set: %v", err)
+		}
+		if p.AutoCast != want {
+			t.Fatalf("auto_cast = %v after set(%v)", p.AutoCast, want)
+		}
+		if v2 != v {
+			t.Fatalf("row version moved %d -> %d: the dial is an editorial setting, not content", v, v2)
+		}
+	}
+
+	// A missing profile is ErrNotFound, the way the reads answer.
+	if err := f.s.SetProfileAutoCast(ctx, games.NewID(), true); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("set on a missing profile = %v, want ErrNotFound", err)
+	}
+
+	// The snapshot carries the dial it was cut from: a curator who turned this
+	// profile's cast off does not get it back silently on the next revision.
+	if err := f.s.SetProfileAutoCast(ctx, f.profile.ID, false); err != nil {
+		t.Fatalf("set off before snapshot: %v", err)
+	}
+	child, err := f.s.NewRevision(ctx, f.profile.ID)
+	if err != nil {
+		t.Fatalf("NewRevision: %v", err)
+	}
+	if child.AutoCast {
+		t.Fatalf("the snapshot's auto_cast = on, want the parent's off inherited")
+	}
+}

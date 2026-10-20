@@ -615,6 +615,16 @@ func importManifest(ctx context.Context, deps Deps, m Manifest, opts ImportManif
 		if err := deps.Store.SetProfileNarratorFallback(work, draft.ID, fallback); err != nil {
 			return fmt.Errorf("profileio: import manifest: narrator fallback: %w", err)
 		}
+		// The auto-cast dial the manifest carried (ADR-0109): the same absent
+		// means default — on — reading, so a document exported before the
+		// field re-imports with the dial the migration stands up.
+		autoCast := true
+		if m.Publication.AutoCast != nil {
+			autoCast = *m.Publication.AutoCast
+		}
+		if err := deps.Store.SetProfileAutoCast(work, draft.ID, autoCast); err != nil {
+			return fmt.Errorf("profileio: import manifest: auto cast: %w", err)
+		}
 		return nil
 	})
 	if err != nil {

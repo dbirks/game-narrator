@@ -13,6 +13,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -141,6 +142,13 @@ type voiceAuditionsCreateRequest struct {
 	Character string `json:"character"`
 	Brief     string `json:"brief"`
 	Count     int    `json:"count,omitempty"`
+	// ProfileID is the catalogue profile the cast belongs to (ADR-0109,
+	// UX-03): with it, the character is checked against the profile's
+	// roster, the run is one take when the profile's auto_cast dial is on
+	// and the request leaves count unset, and the job auto-approves the take
+	// after its ASR QA read-back (the consent record attributed to the
+	// profile default, not a click). Absent is the manual flow, unchanged.
+	ProfileID string `json:"profile_id,omitempty"`
 }
 
 type voiceAuditionsCreateResponse struct {
@@ -149,6 +157,13 @@ type voiceAuditionsCreateResponse struct {
 	Character string `json:"character"`
 	Revision  int    `json:"revision"`
 	State     string `json:"state"`
+	// CastProfileID echoes the cast context the job carries (ADR-0109): the
+	// auto-cast outcome of the run is on the job's result (auto_approved and
+	// its note), and this field is how the UI ties the 202 back to the dial
+	// it read before enqueue. AutoCast is the dial as the API read it at
+	// enqueue: it only chose the count there — the job re-reads it at the end.
+	CastProfileID string `json:"cast_profile_id,omitempty"`
+	AutoCast      *bool  `json:"auto_cast,omitempty"`
 }
 
 type voiceApproveRequest struct {
@@ -352,6 +367,12 @@ func (s *Server) streamVoiceAsset(w http.ResponseWriter, r *http.Request, sha st
 // is the durable job the response's job_id tracks (docs/spec/08: audition
 // creation is queue-backed; a gateway stall must not hold an HTTP request open
 // for minutes).
+//
+// With profile_id (ADR-0109, UX-03) the run is the cast's: the character must
+// be on the profile's roster (a consent can never be attributed to a profile
+// that does not own the character), the dial's default count is one take when
+// the request leaves count unset, and the job auto-approves the take after its
+// ASR QA read-back. Without it the manual flow is unchanged.
 func (s *Server) handleVoiceAuditionsCreate(w http.ResponseWriter, r *http.Request) {
 	if !s.voiceRequired(w, r) {
 		return
@@ -360,10 +381,25 @@ func (s *Server) handleVoiceAuditionsCreate(w http.ResponseWriter, r *http.Reque
 	if !s.decodeJSONBody(w, r, &req, 1<<16) {
 		return
 	}
-	if req.Count <= 0 {
-		req.Count = len(voices.SyntheticAuditionLines)
+	character := strings.TrimSpace(req.Character)
+	var cast *voices.CastProfile
+	if strings.TrimSpace(req.ProfileID) != "" {
+		c, ok := s.castProfileForRequest(w, r, strings.TrimSpace(req.ProfileID), character)
+		if !ok {
+			return
+		}
+		cast = c
 	}
-	rev, err := s.voices.Service.CreateDraft(r.Context(), strings.TrimSpace(req.Character), strings.TrimSpace(req.Brief), req.Count)
+	if req.Count <= 0 {
+		if cast != nil && cast.AutoCast {
+			// The product promise (UX-03): with auto-cast on and no explicit
+			// count, the run is ONE take. "3 more takes" is an explicit count.
+			req.Count = 1
+		} else {
+			req.Count = len(voices.SyntheticAuditionLines)
+		}
+	}
+	rev, err := s.voices.Service.CreateDraft(r.Context(), character, strings.TrimSpace(req.Brief), req.Count)
 	if err != nil {
 		s.writeCodeProblem(w, r, http.StatusBadRequest, "invalid-parameter", codeInvalidParameter,
 			"Bad Request", err.Error())
@@ -374,9 +410,17 @@ func (s *Server) handleVoiceAuditionsCreate(w http.ResponseWriter, r *http.Reque
 			"Service Unavailable", "the job queue is not configured; audition generation is unavailable")
 		return
 	}
-	payload, err := json.Marshal(voices.JobPayload{ProfileID: rev.ID, Count: req.Count})
+	var autoCastPtr *bool
+	if cast != nil {
+		v := cast.AutoCast
+		autoCastPtr = &v
+	}
+	payload, err := json.Marshal(voices.JobPayload{
+		ProfileID: rev.ID, Count: req.Count,
+		CastProfileID: strings.TrimSpace(req.ProfileID),
+	})
 	if err != nil {
-		s.writeCodeProblem(w, r, http.StatusInternalServerError, "encode-fault", "INTERNAL",
+		s.writeCodeProblem(w, r, http.StatusInternalServerError, "encode-fault", codeInternal,
 			"Internal Server Error", "the audition job could not be prepared")
 		return
 	}
@@ -392,11 +436,44 @@ func (s *Server) handleVoiceAuditionsCreate(w http.ResponseWriter, r *http.Reque
 	}
 	s.auditCatalogWrite(r, "voice.auditions.create", map[string]any{
 		"voice_id": rev.ID, "character": rev.Character, "job_id": job.ID, "count": req.Count,
+		"cast_profile_id": strings.TrimSpace(req.ProfileID),
 	})
 	writeJSON(w, http.StatusAccepted, voiceAuditionsCreateResponse{
 		JobID: job.ID, VoiceID: rev.ID, Character: rev.Character,
 		Revision: rev.Revision, State: rev.State,
+		CastProfileID: strings.TrimSpace(req.ProfileID), AutoCast: autoCastPtr,
 	})
+}
+
+// castProfileForRequest loads the cast context a profile_id audition request
+// names (ADR-0109) and checks the character against the roster. It writes the
+// answer (503/404) on failure and returns ok=false; the dial it returns is the
+// enqueue-time read — authoritative for the default count only, the job
+// re-reads it at the end.
+func (s *Server) castProfileForRequest(w http.ResponseWriter, r *http.Request, profileID, character string) (*voices.CastProfile, bool) {
+	svc := s.voices.Service
+	if svc.CastProfiles == nil {
+		s.writeCodeProblem(w, r, http.StatusServiceUnavailable, "auto-cast-unavailable", "SUBSYSTEM_UNAVAILABLE",
+			"Service Unavailable", "the auto-cast wiring is not configured in this process; the run cannot be tied to a profile")
+		return nil, false
+	}
+	cast, err := svc.CastProfiles.GetCastProfile(r.Context(), profileID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			s.writeCodeProblem(w, r, http.StatusNotFound, "cast-profile-not-found", codeNotFound,
+				"Not Found", fmt.Sprintf("no profile with id %s; the cast cannot be tied to it", profileID))
+			return nil, false
+		}
+		s.storeProblem(w, r, err, "get cast profile", "profile")
+		return nil, false
+	}
+	if !cast.HasCharacter(character) {
+		s.writeCodeProblem(w, r, http.StatusNotFound, "character-not-on-profile", codeNotFound,
+			"Not Found", fmt.Sprintf("no character named %q on profile %s; the cast's characters come from the profile's roster", character, profileID))
+		return nil, false
+	}
+	out := cast
+	return &out, true
 }
 
 // ── POST /api/v1/voices/{id}/approve ────────────────────────────────────────
@@ -492,6 +569,32 @@ func (s *Server) handleVoicePreview(w http.ResponseWriter, r *http.Request) {
 	h.Set("ETag", `"`+res.SHA256+`"`)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(res.WAV)
+}
+
+// ── POST /api/v1/voices/{id}/undo ──────────────────────────────────────────
+
+// handleVoiceUndo serves POST /api/v1/voices/{id}/undo (ADR-0109, UX-03d):
+// the one-step "keep old take" after a regeneration. The named revision must
+// be the character's current approved take and a lower approved take must
+// exist; the move is the current take's approved -> retired, which hands
+// current back to the previous take. It is one-step by construction: the
+// retired take cannot be un-retired, so a second undo is a 409, not a
+// silent no-op.
+func (s *Server) handleVoiceUndo(w http.ResponseWriter, r *http.Request) {
+	if !s.voiceRequired(w, r) {
+		return
+	}
+	id, ok := s.idFromPath(w, r, "id")
+	if !ok {
+		return
+	}
+	rev, err := s.voices.Service.Undo(r.Context(), id)
+	if err != nil {
+		s.voiceProblem(w, r, err)
+		return
+	}
+	s.auditCatalogWrite(r, "voice.undo", map[string]any{"voice_id": id, "state": rev.State})
+	writeJSON(w, http.StatusOK, toVoiceRevisionDTO(rev, nil))
 }
 
 // ── GET /api/v1/voices/{id}/registrations ───────────────────────────────────
@@ -595,6 +698,12 @@ func (s *Server) voiceProblem(w http.ResponseWriter, r *http.Request, err error)
 		// FR-10 / ADR 0061: a flagged audition (ASR transcript beyond the
 		// bound) is refused until a human reviews the evidence on the row.
 		s.writeCodeProblem(w, r, http.StatusConflict, "audition-flagged", "AUDITION_FLAGGED",
+			"Conflict", err.Error())
+	case errors.Is(err, voices.ErrNothingToUndo):
+		// ADR-0109: undo is offered only to the character's current take with
+		// a previous approved take to restore; anything else is a state
+		// answer, not a 404 (the revision exists, it is just not undoable).
+		s.writeCodeProblem(w, r, http.StatusConflict, "nothing-to-undo", "NOTHING_TO_UNDO",
 			"Conflict", err.Error())
 	default:
 		s.storeProblem(w, r, err, "voice operation", "voice")

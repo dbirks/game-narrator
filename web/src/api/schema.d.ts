@@ -1413,6 +1413,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/voices/{id}/undo": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * One-step undo: restore the character's previous approved take as current (ADR-0109, UX-03d).
+     * @description The named revision must be the character's current approved take (the highest approved revision with a reference) and a lower approved take must exist. The move is the current take's approved -> retired; the previous take becomes current again and both revisions keep their audio. One-step by construction: a retired take cannot be un-retired, so a second undo is a 409 NOTHING_TO_UNDO, and undoing a revision that is not current is a 409 too.
+     */
+    post: operations["undoVoice"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/voices/{id}/gain": {
     parameters: {
       query?: never;
@@ -2459,6 +2479,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/profiles/{id}/auto-cast": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Set the profile's auto-cast dial (ADR-0109, UX-03).
+     * @description Decides whether a voice audition run created for one of this profile's characters auto-approves its take once the ASR QA read-back is not failed. On by default (the profile row's DEFAULT 1): auto-cast is the product default for new setups. The consent the approval records is the profile-level consent default ("original_synthetic_design") attributed to the profile, not a per-click consent; a QA that failed stays pending review for a human.
+     */
+    post: operations["setAutoCast"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/games/{id}/disable": {
     parameters: {
       query?: never;
@@ -2648,6 +2688,8 @@ export interface components {
       publication_author?: string;
       /** @description profiles.narrator_fallback (ADR-0101): whether a line whose speaker has no approved voice is spoken by the narrator voice. Always present; on by default. */
       narrator_fallback?: boolean;
+      /** @description profiles.auto_cast (ADR-0109, UX-03): with it on, a voice audition run created for one of this profile's characters auto-approves its take once the ASR QA read-back is not failed, the consent record attributed to the profile-level consent default ("original_synthetic_design") instead of a per-click prompt. Always present; on by default (the profile row's DEFAULT 1). */
+      auto_cast?: boolean;
       /** @description The lifecycle moves this revision can still make, from the transition table. */
       next_states: components["schemas"]["ProfileStatus"][];
       /**
@@ -3702,6 +3744,8 @@ export interface components {
       brief: string;
       /** @description How many synthetic lines to audition; defaults to 3. */
       count?: number;
+      /** @description The catalogue profile the cast belongs to (ADR-0109, UX-03): the character is checked against the profile's roster, the run is one take when the profile's auto_cast dial is on and count is absent, and the job auto-approves the take after its ASR QA read-back (consent attributed to the profile default, not a click). Absent is the manual flow, unchanged. */
+      profile_id?: string;
     };
     /** @description The draft revision exists at 202; the clips arrive when the job finishes. Poll the job or GET the revision. */
     VoiceAuditionsCreateResponse: {
@@ -3710,6 +3754,10 @@ export interface components {
       character: string;
       revision: number;
       state: string;
+      /** @description Echo of the request's profile_id when given (ADR-0109): the cast context the job carries. The auto-cast outcome of the run is on the job's result (auto_approved, auto_approval_note). */
+      cast_profile_id?: string;
+      /** @description The profile's auto_cast dial as the API read it at enqueue (ADR-0109). Present only when profile_id was given; the dial only chose the count there — the job re-reads it at the end and a later toggle is honoured. */
+      auto_cast?: boolean | null;
     };
     /** @description Freezes one audition as the canonical reference. consent is required and must be meaningful (docs/spec/14); an empty consent is a 400 CONSENT_REQUIRED. */
     VoiceApproveRequest: {
@@ -7520,6 +7568,48 @@ export interface operations {
       default: components["responses"]["Problem"];
     };
   };
+  undoVoice: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The voice revision to undo (the new, current take). */
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The undo is done: the named revision is retired and the previous take is current again. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["VoiceRevision"];
+        };
+      };
+      /** @description no such voice revision (not-found). */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description the revision is not undoable: not current, no previous approved take, or already retired (voice-state / NOTHING_TO_UNDO). */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      default: components["responses"]["Problem"];
+    };
+  };
   setVoiceGain: {
     parameters: {
       query?: never;
@@ -9386,6 +9476,41 @@ export interface operations {
       };
       404: components["responses"]["Problem"];
       409: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  setAutoCast: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: components["parameters"]["ProfileId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": {
+          enabled: boolean;
+        };
+      };
+    };
+    responses: {
+      /** @description The dial is set. ETag is the profile's row_version (the write does not bump it, but the token still answers against the revision you last read). */
+      200: {
+        headers: {
+          ETag?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Profile"];
+        };
+      };
+      400: components["responses"]["Problem"];
+      404: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
+      412: components["responses"]["Problem"];
+      428: components["responses"]["Problem"];
       default: components["responses"]["Problem"];
     };
   };

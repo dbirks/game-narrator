@@ -55,8 +55,13 @@ type profileDTO struct {
 	// present — the flag is on by default and "absent" would mean two things
 	// (never set, off) that the store cannot tell apart — so the field never
 	// omits.
-	NarratorFallback bool     `json:"narrator_fallback"`
-	NextStates       []string `json:"next_states"`
+	NarratorFallback bool `json:"narrator_fallback"`
+	// AutoCast is the per-profile auto-cast dial (ADR-0109, UX-03): with it
+	// on, a voice audition run created for one of this profile's characters
+	// auto-approves its take once the ASR QA read-back is not failed. Always
+	// present, for the same reason narrator_fallback is.
+	AutoCast   bool     `json:"auto_cast"`
+	NextStates []string `json:"next_states"`
 	// DeletedAt and PurgeAfter are the soft-delete mark (ADR-0107): empty for
 	// every live revision, filled in together on the DELETE receipt and on the
 	// rows the store's own reads keep returning during the retention window.
@@ -80,6 +85,7 @@ func toProfileDTO(p games.Profile) profileDTO {
 		PreferredVoiceID:  p.PreferredVoiceID,
 		PublicationAuthor: p.PublicationAuthor,
 		NarratorFallback:  p.NarratorFallback,
+		AutoCast:          p.AutoCast,
 		NextStates:        make([]string, 0, len(next)),
 		DeletedAt:         p.DeletedAt,
 		PurgeAfter:        p.PurgeAfter,
@@ -577,6 +583,62 @@ func (s *Server) handleNarratorFallback(w http.ResponseWriter, r *http.Request) 
 	setETag(w, fresh)
 	s.auditCatalogWrite(r, "catalog.profile.narrator_fallback", map[string]any{
 		"profile_id": p.ID, "enabled": p.NarratorFallback,
+	})
+	writeJSON(w, http.StatusOK, toProfileDTO(p))
+}
+
+// autoCastRequest is the body of the per-profile auto-cast toggle (ADR-0109,
+// UX-03): one boolean, its presence asserted — a missing enabled would decode
+// to the zero value the caller never typed and silently turn auto-cast off.
+type autoCastRequest struct {
+	Enabled *bool `json:"enabled"`
+}
+
+// handleAutoCast serves POST /api/v1/profiles/{id}/auto-cast with If-Match
+// (ADR-0109, UX-03): the per-profile dial that decides whether a voice audition
+// run created for one of its characters auto-approves its take once the ASR QA
+// read-back is not failed, the consent record attributed to the profile-level
+// consent default instead of a per-click prompt.
+//
+// The token contract is the profile-write one (428 absent, 412 stale) even
+// though the store write does not bump the row version: the If-Match still
+// answers "was this dial set against the revision you last read", and the 200
+// answers with the unchanged token. The dial is on by default (the profile row's
+// DEFAULT 1): auto-cast is the product default for new setups, so a fresh
+// profile casts and only an explicit false opts out.
+func (s *Server) handleAutoCast(w http.ResponseWriter, r *http.Request) {
+	if !s.catalogRequired(w, r) {
+		return
+	}
+	prof, version, ok := s.resolveProfile(w, r, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	id := prof.ID
+	var req autoCastRequest
+	if !s.decodeJSONBody(w, r, &req, maxJSONBodyBytes) {
+		return
+	}
+	if req.Enabled == nil {
+		s.writeCodeProblem(w, r, http.StatusBadRequest, "missing-field", codeInvalidParameter,
+			"Bad Request", "enabled is required: the dial is set to a value, not to an absence")
+		return
+	}
+	if _, ok := s.ifMatchRowVersion(w, r, version); !ok {
+		return
+	}
+	if err := s.store.SetProfileAutoCast(r.Context(), id, *req.Enabled); err != nil {
+		s.profileWriteProblem(w, r, err, "set profile auto cast")
+		return
+	}
+	p, fresh, err := s.store.GetProfile(r.Context(), id)
+	if err != nil {
+		s.storeProblem(w, r, err, "get profile", "profile")
+		return
+	}
+	setETag(w, fresh)
+	s.auditCatalogWrite(r, "catalog.profile.auto_cast", map[string]any{
+		"profile_id": p.ID, "enabled": p.AutoCast,
 	})
 	writeJSON(w, http.StatusOK, toProfileDTO(p))
 }

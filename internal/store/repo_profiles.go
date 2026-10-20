@@ -41,7 +41,7 @@ import (
 // these columns; anything that will be compared against a caller's token uses
 // profileRowColumns, which adds the version so the row and its guard are read in
 // one statement and cannot come from different instants.
-const profileColumns = "id, edition_id, revision_num, parent_revision, status, manifest_digest, published_at, preferred_voice_id, publication_author, narrator_fallback, deleted_at, purge_after"
+const profileColumns = "id, edition_id, revision_num, parent_revision, status, manifest_digest, published_at, preferred_voice_id, publication_author, narrator_fallback, deleted_at, purge_after, auto_cast"
 
 // profileRowColumns is profileColumns plus the optimistic-locking counter.
 const profileRowColumns = profileColumns + ", row_version"
@@ -81,6 +81,10 @@ func (s *Store) CreateDraftProfile(ctx context.Context, editionID string) (games
 			// speakers with the narrator voice, the runtime's historical
 			// behaviour (ADR-0101), until somebody says otherwise.
 			NarratorFallback: true,
+			// The auto-cast dial's default is on too (ADR-0109, UX-03):
+			// auto-cast is the product default for new setups, and a fresh
+			// profile's cast is one auto-approved take per character.
+			AutoCast: true,
 		}
 		if err := p.Validate(); err != nil {
 			return err
@@ -231,11 +235,11 @@ func (tx *Tx) nextRevisionNum(ctx context.Context, editionID string) (int, error
 func (tx *Tx) insertProfile(ctx context.Context, p games.Profile) error {
 	const op = "insert profile"
 	if _, err := tx.exec(ctx, op,
-		`INSERT INTO profiles (id, edition_id, revision_num, parent_revision, status, manifest_digest, published_at, preferred_voice_id, publication_author, narrator_fallback, deleted_at, purge_after)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO profiles (id, edition_id, revision_num, parent_revision, status, manifest_digest, published_at, preferred_voice_id, publication_author, narrator_fallback, deleted_at, purge_after, auto_cast)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID, p.EditionID, p.RevisionNum, nullIntPtr(p.ParentRevision), string(p.Status),
 		p.ManifestDigest, nullStr(p.PublishedAt), nullStr(p.PreferredVoiceID), p.PublicationAuthor,
-		boolInt(p.NarratorFallback), nullStr(p.DeletedAt), nullStr(p.PurgeAfter)); err != nil {
+		boolInt(p.NarratorFallback), nullStr(p.DeletedAt), nullStr(p.PurgeAfter), boolInt(p.AutoCast)); err != nil {
 		return err
 	}
 	return nil
@@ -384,6 +388,26 @@ func (s *Store) SetProfileNarratorFallback(ctx context.Context, profileID string
 	})
 }
 
+// SetProfileAutoCast flips the per-profile auto-cast dial (ADR-0109, UX-03):
+// with it on, a voice audition run created for one of this profile's
+// characters auto-approves its take once the ASR QA read-back is not failed.
+//
+// The write is the narrator-fallback one (ADR-0101) for the same reason the
+// dial is its neighbour: an editorial setting about how this profile's cast
+// is voiced, never content the revision digest covers, so it does not bump
+// row_version.
+func (s *Store) SetProfileAutoCast(ctx context.Context, profileID string, enabled bool) error {
+	const op = "set profile auto cast"
+	return s.inWrite(ctx, func(ctx context.Context, tx *Tx) error {
+		res, err := tx.exec(ctx, op,
+			`UPDATE profiles SET auto_cast = ? WHERE id = ?`, boolInt(enabled), profileID)
+		if err != nil {
+			return mapWriteError(op, err)
+		}
+		return errFromAffected(res, op, 1)
+	})
+}
+
 // ── revision snapshots ──────────────────────────────────────────────────────
 
 // ProfileContent is one revision's whole body: sources, characters, scenes,
@@ -514,6 +538,9 @@ func (tx *Tx) NewRevision(ctx context.Context, parentProfileID string) (games.Pr
 		// An editorial decision about how this profile narrates unknown
 		// speakers follows the lineage it was made for (ADR-0101).
 		NarratorFallback: parent.NarratorFallback,
+		// And how its cast is voiced (ADR-0109): the dial is per-profile,
+		// so a snapshot revision keeps the dial it was made from.
+		AutoCast: parent.AutoCast,
 	}
 	if err := fresh.Validate(); err != nil {
 		return parent, err
@@ -812,10 +839,11 @@ func scanProfileRow(r scanner, op string) (games.Profile, int64, error) {
 		fallback   sql.NullInt64
 		deletedAt  sql.NullString
 		purgeAfter sql.NullString
+		autoCast   sql.NullInt64
 		rev        int64
 	)
 	if err := r.Scan(&p.ID, &p.EditionID, &p.RevisionNum, &parent, &status,
-		&p.ManifestDigest, &pubAt, &voice, &p.PublicationAuthor, &fallback, &deletedAt, &purgeAfter, &rev); err != nil {
+		&p.ManifestDigest, &pubAt, &voice, &p.PublicationAuthor, &fallback, &deletedAt, &purgeAfter, &autoCast, &rev); err != nil {
 		return p, 0, mapReadError(op, err)
 	}
 	p.Status = games.ProfileStatus(status)
@@ -829,6 +857,9 @@ func scanProfileRow(r scanner, op string) (games.Profile, int64, error) {
 	// written together by the store, so neither column is backfilled.
 	p.DeletedAt = deletedAt.String
 	p.PurgeAfter = purgeAfter.String
+	// The auto-cast column is NOT NULL DEFAULT 1 (0018): a fresh or
+	// pre-migration profile casts, and only an explicit 0 opts out.
+	p.AutoCast = !autoCast.Valid || autoCast.Int64 == 1
 	return p, rev, nil
 }
 

@@ -28,15 +28,20 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/assets"
+	"github.com/dbirks/game-narrator/internal/jobs"
 	"github.com/dbirks/game-narrator/internal/providers"
+	"github.com/dbirks/game-narrator/internal/providers/asr"
 	"github.com/dbirks/game-narrator/internal/providers/tts"
 	"github.com/dbirks/game-narrator/internal/speech"
+	"github.com/dbirks/game-narrator/internal/store"
 )
 
 const liveConsent = "original_synthetic_design (game-narrator automated test)"
@@ -220,4 +225,122 @@ func TestLiveVoiceWorkflow(t *testing.T) {
 	if !found {
 		t.Fatalf("instance does not list %s after registering it", name)
 	}
+}
+
+// TestLiveAutoCast is the live half of the auto-cast test (ADR-0109, run only
+// under GN_GATE=test-models): one REAL design take through the VoiceDesign
+// checkpoint, the auto-cast step the job runs after the fill, and the
+// profile-default consent frozen onto the row. The cast seam is fixed (on, one
+// roster name): the dial, the roster and the undo are local-store concerns the
+// hermetic tests cover — the live gate proves the take the real checkpoints
+// produce auto-approves with the attributed consent. The ASR read-back runs
+// for real when the speech_asr role is configured; without it the take is
+// not-run and still casts (ADR 0061's degraded mode).
+func TestLiveAutoCast(t *testing.T) {
+	designCfg, cloneCfg, directURL, ok := liveVoiceEnv(t)
+	if !ok {
+		return
+	}
+	roles, err := providers.LoadRoles(os.LookupEnv)
+	if err != nil {
+		t.Fatalf("LoadRoles: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	t.Cleanup(cancel)
+
+	designClient, err := tts.NewFromRole(designCfg)
+	if err != nil {
+		t.Fatalf("design client: %v", err)
+	}
+	cloneClient, err := tts.NewFromRole(cloneCfg)
+	if err != nil {
+		t.Fatalf("clone client: %v", err)
+	}
+	registry, err := tts.NewRegistry(directURL, cloneCfg.Token())
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	st, err := store.Open(ctx, store.DBPath(filepath.Join(t.TempDir(), "data")))
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if _, err := st.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	assetStore, err := assets.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatalf("assets: %v", err)
+	}
+	// The read-back, when the role is configured: a real transcription of the
+	// take the design checkpoint produced.
+	var asrClient speech.ASRClient
+	if cfg := roles[providers.RoleSpeechASR]; cfg.Configured() {
+		asrClient, err = asr.NewFromRole(cfg)
+		if err != nil {
+			t.Fatalf("asr client: %v", err)
+		}
+		t.Logf("qa: asr model=%s bound=%g", cfg.Model, speech.WERBound())
+	} else {
+		t.Log("qa: speech_asr role not configured; the read-back is not-run (ADR 0061)")
+	}
+	const castProfileID = "live-cast"
+	svc := &Service{
+		Store: st, Assets: assetStore, Design: designClient, Base: cloneClient,
+		Registry: registry, Speech: speech.New(assetStore, speech.NewMemIndex(), 1),
+		BaseModelID: cloneCfg.Model, BackendDigest: "live-autocast-v1", Language: "English",
+		ASR:          asrClient,
+		CastProfiles: &fixedCastSeam{profile: CastProfile{AutoCast: true, CharacterNames: []string{"cast"}}},
+	}
+	if err := New(svc); err != nil {
+		t.Fatalf("voices.New: %v", err)
+	}
+
+	// One real take: the product promise is one take per cast character.
+	const brief = "A calm narrator voice, warm and unhurried, for an original synthetic character."
+	rev, err := svc.CreateDraft(ctx, "cast", brief, 1)
+	if err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+	payload, _ := json.Marshal(JobPayload{ProfileID: rev.ID, Count: 1, CastProfileID: castProfileID})
+	start := time.Now()
+	raw, err := JobHandler(svc)(ctx, jobs.Job{ID: "job-live-autocast", Kind: JobKind, Payload: payload},
+		func(pct float64, msg string) { t.Logf("job %2.0f%%: %s", pct*100, msg) })
+	if err != nil {
+		t.Fatalf("job handler: %v", err)
+	}
+	var result JobResult
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("job result: %v", err)
+	}
+	if !result.AutoApproved || result.State != store.VoiceStateApproved {
+		t.Fatalf("live auto-cast = %+v, want auto-approved and approved (the real take, the real checkpoints)", result)
+	}
+	fresh, err := st.GetVoiceRevision(ctx, rev.ID)
+	if err != nil {
+		t.Fatalf("GetVoiceRevision: %v", err)
+	}
+	if fresh.ConsentProvenance != AutoCastConsent(castProfileID) {
+		t.Fatalf("consent provenance = %q, want %q (the profile default attributed to the profile)",
+			fresh.ConsentProvenance, AutoCastConsent(castProfileID))
+	}
+	if fresh.ApprovedBy != AutoCaster {
+		t.Fatalf("approved_by = %q, want %q", fresh.ApprovedBy, AutoCaster)
+	}
+	auditions, err := st.ListAuditions(ctx, rev.ID)
+	if err != nil || len(auditions) != 1 {
+		t.Fatalf("auditions = %d (err=%v), want the one real take", len(auditions), err)
+	}
+	t.Logf("auto-cast live: model=%s qa_state=%d wer=%g (wall %s)",
+		auditions[0].ModelID, int(auditions[0].AsrState), auditions[0].AsrWER,
+		time.Since(start).Round(time.Millisecond))
+}
+
+// fixedCastSeam is the live test's cast seam: the dial and roster are fixed,
+// because the live gate exercises the checkpoints, not the store (the hermetic
+// tests cover both sides of the seam).
+type fixedCastSeam struct{ profile CastProfile }
+
+func (f *fixedCastSeam) GetCastProfile(_ context.Context, _ string) (CastProfile, error) {
+	return f.profile, nil
 }

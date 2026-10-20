@@ -4491,6 +4491,63 @@
         }
       }
     },
+    "/api/v1/voices/{id}/undo": {
+    "post": {
+      "operationId": "undoVoice",
+      "tags": [
+        "voices"
+      ],
+      "summary": "One-step undo: restore the character's previous approved take as current (ADR-0109, UX-03d).",
+      "description": "The named revision must be the character's current approved take (the highest approved revision with a reference) and a lower approved take must exist. The move is the current take's approved -> retired; the previous take becomes current again and both revisions keep their audio. One-step by construction: a retired take cannot be un-retired, so a second undo is a 409 NOTHING_TO_UNDO, and undoing a revision that is not current is a 409 too.",
+      "x-required-role": "curator",
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "description": "The voice revision to undo (the new, current take)."
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "The undo is done: the named revision is retired and the previous take is current again.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceRevision"
+              }
+            }
+          }
+        },
+        "404": {
+          "description": "no such voice revision (not-found).",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Problem"
+              }
+            }
+          }
+        },
+        "409": {
+          "description": "the revision is not undoable: not current, no previous approved take, or already retired (voice-state / NOTHING_TO_UNDO).",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Problem"
+              }
+            }
+          }
+        },
+        "default": {
+          "$ref": "#/components/responses/Problem"
+        }
+      }
+    }
+    },
     "/api/v1/voices/{id}/gain": {
       "post": {
         "operationId": "setVoiceGain",
@@ -7196,6 +7253,77 @@
         }
       }
     },
+    "/api/v1/profiles/{id}/auto-cast": {
+    "post": {
+      "operationId": "setAutoCast",
+      "tags": [
+        "profiles"
+      ],
+      "summary": "Set the profile's auto-cast dial (ADR-0109, UX-03).",
+      "description": "Decides whether a voice audition run created for one of this profile's characters auto-approves its take once the ASR QA read-back is not failed. On by default (the profile row's DEFAULT 1): auto-cast is the product default for new setups. The consent the approval records is the profile-level consent default (\"original_synthetic_design\") attributed to the profile, not a per-click consent; a QA that failed stays pending review for a human.",
+      "x-required-role": "curator",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ProfileId"
+        }
+      ],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "enabled"
+              ],
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "The dial is set. ETag is the profile's row_version (the write does not bump it, but the token still answers against the revision you last read).",
+          "headers": {
+            "ETag": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Profile"
+              }
+            }
+          }
+        },
+        "400": {
+          "$ref": "#/components/responses/Problem"
+        },
+        "404": {
+          "$ref": "#/components/responses/Problem"
+        },
+        "409": {
+          "$ref": "#/components/responses/Problem"
+        },
+        "412": {
+          "$ref": "#/components/responses/Problem"
+        },
+        "428": {
+          "$ref": "#/components/responses/Problem"
+        },
+        "default": {
+          "$ref": "#/components/responses/Problem"
+        }
+      }
+    }
+    },
     "/api/v1/games/{id}/disable": {
       "post": {
         "operationId": "disableGame",
@@ -7950,6 +8078,10 @@
           "narrator_fallback": {
             "type": "boolean",
             "description": "profiles.narrator_fallback (ADR-0101): whether a line whose speaker has no approved voice is spoken by the narrator voice. Always present; on by default."
+          },
+          "auto_cast": {
+            "type": "boolean",
+            "description": "profiles.auto_cast (ADR-0109, UX-03): with it on, a voice audition run created for one of this profile's characters auto-approves its take once the ASR QA read-back is not failed, the consent record attributed to the profile-level consent default (\"original_synthetic_design\") instead of a per-click prompt. Always present; on by default (the profile row's DEFAULT 1)."
           },
           "next_states": {
             "type": "array",
@@ -11164,6 +11296,10 @@
             "minimum": 1,
             "maximum": 3,
             "description": "How many synthetic lines to audition; defaults to 3."
+          },
+          "profile_id": {
+            "type": "string",
+            "description": "The catalogue profile the cast belongs to (ADR-0109, UX-03): the character is checked against the profile's roster, the run is one take when the profile's auto_cast dial is on and count is absent, and the job auto-approves the take after its ASR QA read-back (consent attributed to the profile default, not a click). Absent is the manual flow, unchanged."
           }
         }
       },
@@ -11192,6 +11328,17 @@
           },
           "state": {
             "type": "string"
+          },
+          "cast_profile_id": {
+            "type": "string",
+            "description": "Echo of the request's profile_id when given (ADR-0109): the cast context the job carries. The auto-cast outcome of the run is on the job's result (auto_approved, auto_approval_note)."
+          },
+          "auto_cast": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The profile's auto_cast dial as the API read it at enqueue (ADR-0109). Present only when profile_id was given; the dial only chose the count there — the job re-reads it at the end and a later toggle is honoured."
           }
         }
       },

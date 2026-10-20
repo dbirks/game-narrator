@@ -1234,6 +1234,10 @@ func newVoiceWiring(st *store.Store, assetStore *assets.Local, log *slog.Logger,
 	} else {
 		log.Info("speech_asr QA not wired: the role is not configured; the ASR checks degrade to not-run (ADR 0061)")
 	}
+	// Auto-cast (ADR-0109, UX-03): the dial and roster the voice job reads
+	// come straight off the store the voice service already owns — the same
+	// catalogue the onboarding run wrote the characters into.
+	svc.CastProfiles = voices.NewStoreCastProfiles(st)
 	if err := voices.New(svc); err != nil {
 		return nil, nil, fmt.Errorf("voice service: %w", err)
 	}

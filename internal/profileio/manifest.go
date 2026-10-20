@@ -97,6 +97,12 @@ type PublicationInfo struct {
 	// and the reader applies the default, on — the same reading a pre-0015
 	// profile row gets from the column's DEFAULT 1.
 	NarratorFallback *bool `json:"narrator_fallback"`
+	// AutoCast is the per-profile auto-cast dial (ADR-0109, UX-03): with it on,
+	// a voice audition run for one of this profile's characters auto-approves
+	// its take once the ASR QA read-back is not failed. nil means the document
+	// predates the field and the reader applies the default, on — the same
+	// reading a pre-0018 profile row gets from the column's DEFAULT 1.
+	AutoCast *bool `json:"auto_cast"`
 	// StoreDigest is profiles.manifest_digest as the store computed it at
 	// publication. It is carried for audit only: it hashes row ids and so
 	// cannot survive a re-import, unlike manifest_digest. Naming both would be

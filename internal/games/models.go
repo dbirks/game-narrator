@@ -110,6 +110,14 @@ type Profile struct {
 	// purge window is closed.
 	DeletedAt  string
 	PurgeAfter string
+	// AutoCast is the per-profile auto-cast dial (ADR-0109, UX-03): with it
+	// on, a voice audition run created for one of this profile's characters
+	// auto-approves its take once the ASR QA read-back is not failed, the
+	// consent record attributed to the profile-level consent default rather
+	// than a per-click prompt. Same writer discipline as NarratorFallback: a
+	// fresh draft is on (the column's default) and NewRevision carries it
+	// from the parent.
+	AutoCast bool
 }
 
 // Validate mirrors the profiles table's constraints, including the rule that

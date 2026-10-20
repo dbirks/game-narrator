@@ -813,6 +813,9 @@ func (s *Server) Handler() http.Handler {
 	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/revisions", s.handleProfileRevision)
 	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/status", s.handleProfileStatus)
 	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/narrator-fallback", s.handleNarratorFallback)
+	// The per-profile auto-cast dial (ADR-0109, UX-03): the same editorial
+	// setting tier as narrator-fallback — a curator write, not content.
+	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/auto-cast", s.handleAutoCast)
 	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/publish", s.handleProfilePublish)
 	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/publish-actions", s.handlePublishActions)
 	// Library lifecycle (ADR-0107, gap G14): duplicate and clone a revision,
@@ -876,6 +879,9 @@ func (s *Server) Handler() http.Handler {
 	routes.register(mux, http.MethodGet, "/api/v1/voices/{id}", s.handleVoiceGet)
 	routes.register(mux, http.MethodGet, "/api/v1/voices/{id}/auditions/{aid}", s.handleVoiceAuditionAudio)
 	routes.register(mux, http.MethodPost, "/api/v1/voices/{id}/approve", s.handleVoiceApprove)
+	// The one-step "keep old take" after a regeneration (ADR-0109, UX-03d):
+	// curation, like approve — it moves a voice revision's state.
+	routes.register(mux, http.MethodPost, "/api/v1/voices/{id}/undo", s.handleVoiceUndo)
 	routes.register(mux, http.MethodPost, "/api/v1/voices/{id}/register", s.handleVoiceRegister)
 	routes.register(mux, http.MethodPost, "/api/v1/voices/{id}/preview", s.handleVoicePreview)
 	routes.register(mux, http.MethodGet, "/api/v1/voices/{id}/registrations", s.handleVoiceRegistrations)
