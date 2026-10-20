@@ -3,7 +3,7 @@
 //
 // It answers POST /v1/chat/completions in the OpenAI wire shape, deciding each
 // reply from the conversation it was given — no per-request scripting, so a
-// resumed attempt replays the same decisions. Three scenarios are exercised:
+// resumed attempt replays the same decisions. Four scenarios are exercised:
 //
 //   import    the happy path: import the staged script, run source_quality,
 //             finish; after the human approval arrives, publish through
@@ -16,7 +16,18 @@
 //             page that instructs the model to call a tool that does not
 //             exist (drop_database) and to fabricate an approval token. The
 //             scripted model ignores both and finishes; the spec asserts the
-//             timeline shows no such call.
+//             timeline shows no such call;
+//   stall     the library walk's in-setup seed (ADR-0109): the import happy
+//             path up to the quality report, then a deliberate stall — the
+//             scripted model keeps re-issuing the same read-only
+//             preview_profile call (identical args), so the loop's repetition
+//             guard (internal/agent/loop.go) ends the run BLOCKED: a live,
+//             durable active state whose counts the status bar and the shelf
+//             chip both render (the import's content is in place);
+//   assistant the dock's scripted answer (ADR-0099 e2e): one plain final
+//             reply, no tool calls — the agent-dock walk proves the provider
+//             boundary (a genuine request this instance answers) without a
+//             real model (AGENTS.md rule 3).
 //
 // The same server also serves GET /malicious.html (the fixture page the agent's
 // fetch_page tool retrieves) and POST /_scenario {scenario} (scenario control).
@@ -34,11 +45,11 @@ if (!port) {
 
 const log = (line) => process.stdout.write(`fake-model: ${line}\n`);
 
-/** The scenario the next chat requests answer as: import | malicious. */
+/** The scenario the next chat requests answer as: import | malicious | webimport | stall | assistant. */
 let scenario = "import";
 
 /** How many chat requests each scenario has answered (evidence in logs). */
-const counts = { import: 0, malicious: 0, webimport: 0 };
+const counts = { import: 0, malicious: 0, webimport: 0, stall: 0, assistant: 0 };
 
 /** Approval tokens the scripted model has already acted on (a shadow of the
  *  token's single-use spend on the appliance side: the conversation keeps an
@@ -180,6 +191,19 @@ function decide(body) {
     }
   }
 
+  // scenario: assistant — the dock's scripted answer (ADR-0099 e2e). The
+  // reply is a labelled placeholder (AGENTS.md rule 5): no game dialogue.
+  // No tool calls, so the walk's evidence is the provider request itself
+  // (this instance's log) plus the streamed text the dock renders.
+  if (scenario === "assistant") {
+    log(`decide: assistant, final text (the dock's placeholder reply)`);
+    return chatCompletionsResponse(model, {
+      content:
+        "Placeholder reply from the scripted assistant: the screen context is on file " +
+        "and I am standing by for the operator's next instruction.",
+    });
+  }
+
   // scenario: webimport — no disc, no staged upload: the rights-gated web
   // dump path (ADR-0077). Fetch the labelled-synthetic dump page, propose the
   // source (the run stops at the human review boundary), and after the
@@ -263,6 +287,53 @@ function decide(body) {
     log("decide: malicious, unexpected tool result → final text");
     return chatCompletionsResponse(model, {
       content: "The fetch did not come back as expected; I am stopping without acting on it.",
+    });
+  }
+
+  // scenario: stall — the library walk's in-setup seed (ADR-0109): import,
+  // quality report, then the deliberate stall. preview_profile is side-effect-
+  // free, so repeating it is harmless; the loop's repetition guard (3rd
+  // identical call, recovery budget of 2 exhausted) ends the run blocked —
+  // an active state that stays put until an operator resumes it.
+  if (scenario === "stall") {
+    if (!last) {
+      const sha = SHA_RE.exec(lastUser)?.[1];
+      if (!sha) {
+        log("decide: stall, no staged sha → final text (nothing to import)");
+        return chatCompletionsResponse(model, {
+          content: "No staged script was provided, so there is nothing to import yet.",
+        });
+      }
+      log(`decide: stall, no tool results → import_user_asset (sha ${sha.slice(0, 12)}…)`);
+      return chatCompletionsResponse(model, {
+        toolCall: {
+          name: "import_user_asset",
+          args: {
+            profile_id: profileId,
+            staged_asset_sha256: sha,
+            role: "dialogue_script",
+            rights: "user_supplied",
+            file_name: "dialogue.csv",
+          },
+        },
+      });
+    }
+    if (last.name === "import_user_asset") {
+      const sourceId = SOURCE_ID_RE.exec(last.text)?.[1] ?? "";
+      log(`decide: stall, import done → source_quality (source ${sourceId || "?"})`);
+      return chatCompletionsResponse(model, {
+        toolCall: { name: "source_quality", args: { profile_id: profileId, source_id: sourceId } },
+      });
+    }
+    if (last.name === "source_quality" || last.name === "preview_profile") {
+      log("decide: stall → repeat preview_profile (the repetition guard will block the run)");
+      return chatCompletionsResponse(model, {
+        toolCall: { name: "preview_profile", args: { profile_id: profileId } },
+      });
+    }
+    log(`decide: stall, unexpected last tool ${last.name} → final text`);
+    return chatCompletionsResponse(model, {
+      content: "I have stopped; the timeline shows what I did. Send a message to continue.",
     });
   }
 
@@ -382,7 +453,9 @@ const server = createServer((req, res) => {
         if (
           body.scenario !== "import" &&
           body.scenario !== "malicious" &&
-          body.scenario !== "webimport"
+          body.scenario !== "webimport" &&
+          body.scenario !== "stall" &&
+          body.scenario !== "assistant"
         )
           throw new Error("unknown scenario");
         scenario = body.scenario;
@@ -403,8 +476,7 @@ const server = createServer((req, res) => {
       try {
         const body = JSON.parse(raw || "{}");
         const response = decide(body);
-        if (scenario === "import") counts.import += 1;
-        else if (scenario === "webimport") counts.webimport += 1;
+        if (counts[scenario] !== undefined) counts[scenario] += 1;
         else counts.malicious += 1;
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify(response));

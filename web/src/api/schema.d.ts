@@ -491,6 +491,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/games/{id}/library": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * The /library screen's per-game read: the actionable revision and its counts.
+     * @description The shelf tile and the list row are one read, not three (ADR-0109): profile is the edition's published revision when any edition has one (the newest publication wins - the revision a session would pin), otherwise the edition's newest revision (a draft an onboarding run is still filling), otherwise absent; lines, characters and voiced are that revision's indexed counts. A game with no profile answers 200 with the empty view, the same honest-empty shape the catalogue lists use.
+     */
+    get: operations["getGameLibrary"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/editions/{id}/profiles": {
     parameters: {
       query?: never;
@@ -3022,6 +3042,19 @@ export interface components {
     /** @description Every edition of one game. Unpaginated by decision: a title has a handful (region × language × disc revision), and internal/store/repo_catalog.go reads them as one slice. */
     EditionList: {
       editions: components["schemas"]["Edition"][];
+    };
+    /** @description GET /api/v1/games/{id}/library (docs/design/plum-peach 2a, ADR-0109): the one read behind the /library hero and tiles. The profile members are the actionable revision's identity, all absent together when the game has no profile; lines, characters and voiced are its counts, zero in that case. characters and voiced agree with the status bar's setup-run progress (the store's ProfileCharacterVoiceCounts), so the tile chip and the bar cannot disagree about how much of a game has a voice. */
+    GameLibrary: {
+      game_id: string;
+      profile_id?: string;
+      edition_id?: string;
+      profile_status?: components["schemas"]["ProfileStatus"];
+      revision?: number;
+      /** Format: date-time */
+      published_at?: string;
+      lines: number;
+      characters: number;
+      voiced: number;
     };
     /** @description Every revision of one edition, lowest revision_num first. */
     ProfileList: {
@@ -6049,6 +6082,31 @@ export interface operations {
       404: components["responses"]["Problem"];
       409: components["responses"]["Problem"];
       422: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  getGameLibrary: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Game ULID or slug. */
+        id: components["parameters"]["GameId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The library view. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["GameLibrary"];
+        };
+      };
+      404: components["responses"]["Problem"];
       default: components["responses"]["Problem"];
     };
   };

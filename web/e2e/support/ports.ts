@@ -17,7 +17,7 @@
 //   <number> that base, used as-is — an explicit base is an operator choice,
 //            so it is validated and never probed.
 //   auto     probe for a free band at config load: the first candidate base
-//            (18090, 18190, 18290, ...) whose whole band (base .. base+29)
+//            (18090, 18190, 18290, ...) whose whole band (base .. base+31)
 //            and whose dev-server port (base + WEB_PORT_OFFSET) answer no
 //            connection wins, and is then CLAIMED atomically (a mkdir lock
 //            under os.tmpdir(), so two auto runs that probe the same instant
@@ -81,7 +81,7 @@ function isPortFree(port: number): Promise<boolean> {
 async function bandFree(base: number): Promise<boolean> {
   const ports: number[] = [];
   for (let offset = 0; offset < PORT_BAND; offset++) ports.push(base + offset);
-  ports.push(base + WEB_PORT_OFFSET, base + 30); // the dev port and the redesign review port
+  ports.push(base + WEB_PORT_OFFSET, base + 30, base + 31, base + 32, base + 33); // the dev port and the redesign/library/ksearch/agent-dock review ports
   return (await Promise.all(ports.map(isPortFree))).every(Boolean);
 }
 
@@ -318,4 +318,29 @@ export const ports = {
    *  binds under its explicit hardware gate, which never runs inside the
    *  Playwright suite. */
   redesign: base + 30,
+  /** the packaged binary the Plum & Peach Library screen review drives
+   *  (library.spec.ts, plan.md Phase 1 item 1): a fresh appliance with the
+   *  agent_reasoning role at the scripted gateway, so the in-setup seed is a
+   *  live (labelled-synthetic) onboarding run. Like the redesign port just
+   *  past the 30-port band, base+31 (18121 at the default base) sits inside
+   *  the Dolphin live-play band — safe here because that band only binds
+   *  under its explicit hardware gate, which never runs inside the Playwright
+   *  suite. */
+  library: base + 31,
+  /** the packaged binary the ⌘K palette walk drives (ksearch.spec.ts,
+   *  docs/design/plum-peach plan.md Phase 1 item 2, ADR-0098): a fresh
+   *  appliance the spec claims and seeds with the synthetic game, so the
+   *  grouped results, the row actions and the Tab handoff run against a
+   *  real catalogue. Same "just past the band" placement as the redesign
+   *  review port above, one step further out so the review ports stay
+   *  unique per project. */
+  ksearch: base + 32,
+  /** the packaged binary the agent-dock walk drives (agent-dock.spec.ts,
+   *  ADR-0099, docs/design/plum-peach plan.md Phase 1 item 3): a fresh
+   *  appliance whose agent_reasoning role is the scripted model gateway
+   *  (fake-model.mjs) in its assistant scenario, so the dock's send proves
+   *  the provider boundary without a real model. Same "just past the band"
+   *  placement as the review ports above, one step further out so the
+   *  review ports stay unique per project. */
+  agentDock: base + 33,
 } as const;

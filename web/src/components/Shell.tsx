@@ -1,16 +1,18 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type KeyboardEvent,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router";
 
 import { fetchSystemInfo } from "../api/system";
 import { useAuth } from "../auth/auth-context";
+import { subscribeAgentQuery } from "../lib/search";
+import {
+  agentChipText,
+  routeContextChip,
+  selectionFromLocation,
+  useSelectionLabel,
+} from "./agent/agentContext";
+import { AgentDock } from "./agent/AgentDock";
 import { useLiveStatus } from "../lib/liveStatus";
+import { KSearchPalette } from "../pages/KSearch";
 
 /**
  * `src/components/Shell.tsx` — the global chrome of the Plum & Peach
@@ -18,8 +20,8 @@ import { useLiveStatus } from "../lib/liveStatus";
  * status bar — the one nav — with the wordmark, the primary nav, the
  * developer entry, the signed-in principal and the server-rendered live
  * string (ADR-0100), the 3-row dither fade, the page container, the
- * ask-the-agent pill (⌘J) with its docked stub, and the ⌘K command
- * palette stub.
+ * ask-the-agent pill (⌘J) with its docked panel (the agent dock, Phase 1
+ * item 3, over the ADR-0099 wire), and the ⌘K command palette.
  *
  * The legacy second nav row is gone: the design has exactly one nav (the
  * status bar). The principal (name, role chip, sign-out) moved to the bar's
@@ -28,11 +30,20 @@ import { useLiveStatus } from "../lib/liveStatus";
  * visible to developer-and-up. The moved elements keep their pre-redesign
  * data-testids, which the e2e suite addresses.
  *
- * The pill and palette are clean seams: their chrome, keyboard contract
- * (⌘J / ⌘K from anywhere, Esc to close, focus into the palette input) and
- * context chip are real; the agent backend (ADR-0099) and the search
- * backend (ADR-0098) arrive in Phase 1, and the stubs say so.
+ * The palette is the real ⌘K overlay (plan item 2; ADR-0098): one debounced
+ * `GET /api/v1/search` per keystroke, grouped results, ↑↓/↵/Tab/Esc. The
+ * dock is the real agent dock (plan item 3; ADR-0099): the pill and the
+ * dock read one chip seam (agentContext) — the bare screen name, or
+ * `screen › selection` once the URL's selection has resolved (UX-01 — the
+ * chip follows the selection, and the outgoing message carries the same
+ * context payload the chip shows). The ⌘K Tab key dispatches
+ * `gn:agent-query` (src/lib/search.ts) and the dock listens — opening and
+ * pre-filling its input with the normalised query (UX-02).
  */
+
+// Re-exported for the pre-redesign imports (the seam now lives with the
+// dock: web/src/components/agent/agentContext.ts).
+export { routeContextChip };
 
 /** The nav of the design's status bar. Phase 0 seam: "traces" and the old
  *  inspector paths coexist — /traces redirects to /developer until the
@@ -51,44 +62,6 @@ function activeNavId(pathname: string): (typeof NAV_ITEMS)[number]["id"] | null 
   if (pathname.startsWith("/traces") || pathname.startsWith("/developer")) return "traces";
   if (pathname.startsWith("/settings")) return "settings";
   return null;
-}
-
-/** The agent pill's context chip: one word for the current screen
- *  (docs/design/plum-peach "Ask the agent"). Phase 1 deepens it with the
- *  selection (`cast › Grandma`); the seam is the chip's text, not its place. */
-export function routeContextChip(pathname: string): string {
-  const segments = pathname.split("/").filter(Boolean);
-  const head = segments[0] ?? "";
-  if (head === "games") {
-    if (segments[1] === "new") return "setup";
-    const kind = segments[2];
-    if (kind === "cast" || kind === "characters" || kind === "voices") return "cast";
-    if (
-      kind === "overview" ||
-      kind === "dialogue" ||
-      kind === "graph" ||
-      kind === "regions" ||
-      kind === "publish"
-    ) {
-      return "game";
-    }
-    return "game";
-  }
-  const names: Record<string, string> = {
-    library: "library",
-    play: "play",
-    traces: "traces",
-    developer: "traces",
-    diagnostics: "health",
-    health: "health",
-    settings: "settings",
-    tests: "tests",
-    "replay-clips": "clips",
-    login: "sign in",
-    setup: "setup",
-  };
-  if (head === "dev" && segments[1] === "kit") return "dev kit";
-  return names[head] ?? (head === "" ? "home" : head);
 }
 
 interface ShellProps {
@@ -115,9 +88,12 @@ export function Shell({ children }: ShellProps) {
   const { text: statusText } = useLiveStatus();
   const [agentOpen, setAgentOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // The ⌘K Tab handoff (UX-02): the query the palette handed to the dock.
+  // The dock mounts fresh each time it opens and seeds its input from this
+  // value, so the pre-fill is the event (gn:agent-query) plus this state.
+  const [agentDraft, setAgentDraft] = useState("");
   const [footerLine, setFooterLine] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
-  const paletteInputRef = useRef<HTMLInputElement>(null);
 
   // Sign-out ends the session on the server, then lands on the sign-in form
   // (the remembered-target behaviour of /login?next= is the page's, not the
@@ -133,7 +109,13 @@ export function Shell({ children }: ShellProps) {
   }, [logout, navigate]);
 
   const active = activeNavId(location.pathname);
-  const chip = routeContextChip(location.pathname);
+  // The pill's chip: the dock's seam (agentContext), so the pill and the
+  // docked header — and the outgoing message's context payload — read the
+  // same words (UX-01).
+  const selection = selectionFromLocation(location);
+  const pillProfileId = new URLSearchParams(location.search).get("profile");
+  const pillSelectionName = useSelectionLabel(selection, pillProfileId);
+  const chip = agentChipText(routeContextChip(location.pathname), pillSelectionName);
 
   const togglePalette = useCallback(() => setPaletteOpen((open) => !open), []);
   const toggleAgent = useCallback(() => setAgentOpen((open) => !open), []);
@@ -155,11 +137,15 @@ export function Shell({ children }: ShellProps) {
     return () => window.removeEventListener("keydown", onKey);
   }, [togglePalette, toggleAgent]);
 
-  // The palette takes focus into its input the moment it opens (keyboard
-  // contract: ↑↓/↵/Esc; Phase 0 the input is the only control).
+  // The ⌘K palette's Tab key (and its "Ask the agent: …" row) dispatches
+  // the handoff event; the dock reacts by opening and pre-filling its input
+  // (UX-02). The real dock (plan item 3) subscribes to the same event.
   useEffect(() => {
-    if (paletteOpen) paletteInputRef.current?.focus();
-  }, [paletteOpen]);
+    return subscribeAgentQuery((detail) => {
+      setAgentDraft(detail.query);
+      setAgentOpen(true);
+    });
+  }, []);
 
   // The footer's build line: one public read, no polling (it never changes
   // without a restart, and a restart reloads the page).
@@ -170,13 +156,6 @@ export function Shell({ children }: ShellProps) {
       .catch(() => undefined); // offline dev shell: the footer line just waits
     return () => controller.abort();
   }, []);
-
-  const onPaletteKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      setPaletteOpen(false);
-    }
-  };
 
   return (
     <>
@@ -256,6 +235,11 @@ export function Shell({ children }: ShellProps) {
         <span>{footerLine ?? "Build: · · ·"}</span>
       </footer>
 
+      {/* The pill is the dock's launcher; while the panel is open the pill is
+          its docked form — the panel's header carries the same chip and its
+          own close control, so the launcher drops out of the layer (it would
+          otherwise sit over the panel's input row, bottom-right). ⌘J still
+          toggles from the window handler, so hiding never strands the close. */}
       <button
         type="button"
         className="agent-pill offset-shadow"
@@ -263,6 +247,7 @@ export function Shell({ children }: ShellProps) {
         aria-haspopup="dialog"
         aria-expanded={agentOpen}
         aria-controls="agent-dock"
+        hidden={agentOpen}
         onClick={() => toggleAgent()}
       >
         <span className="agent-pill-context" data-testid="agent-pill-context">
@@ -279,66 +264,11 @@ export function Shell({ children }: ShellProps) {
           data-testid="agent-dock"
           aria-label="Ask the agent"
         >
-          <h2>
-            Ask the agent
-            <span className="agent-pill-context" data-testid="agent-dock-context">
-              {chip}
-            </span>
-          </h2>
-          <p className="muted" data-testid="agent-dock-stub">
-            The agent dock arrives in Phase 1 (ADR-0099): NEEDS YOU, tool cards and chat with the
-            {` `}
-            <code>{"{route, gameId, profileId, selection, visibleIds}"}</code> context payload on
-            every message.
-          </p>
-          <button
-            type="button"
-            className="link-button"
-            data-testid="agent-dock-close"
-            onClick={() => setAgentOpen(false)}
-          >
-            Close (Esc)
-          </button>
+          <AgentDock onClose={() => setAgentOpen(false)} initialQuery={agentDraft} />
         </aside>
       ) : null}
 
-      {paletteOpen ? (
-        <>
-          <div
-            className="palette-backdrop"
-            data-testid="palette-backdrop"
-            onClick={() => setPaletteOpen(false)}
-          />
-          <div
-            className="palette"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Search"
-            data-testid="palette"
-          >
-            <h2>Search</h2>
-            <input
-              ref={paletteInputRef}
-              type="search"
-              placeholder="Search games, characters, lines, traces, settings and actions"
-              data-testid="palette-input"
-              onKeyDown={onPaletteKeyDown}
-            />
-            <p className="palette-note" data-testid="palette-note">
-              The result groups land with the search backend (ADR-0098): games · characters · lines
-              · traces · settings · actions — ↑↓ move, ↵ open, Tab hands the query to the agent.
-            </p>
-            <button
-              type="button"
-              className="link-button"
-              data-testid="palette-close"
-              onClick={() => setPaletteOpen(false)}
-            >
-              Close (Esc)
-            </button>
-          </div>
-        </>
-      ) : null}
+      {paletteOpen ? <KSearchPalette onClose={() => setPaletteOpen(false)} /> : null}
     </>
   );
 }

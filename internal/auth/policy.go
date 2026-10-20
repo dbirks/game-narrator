@@ -198,6 +198,11 @@ func DefaultPolicy() *Policy {
 		// viewer is (docs/spec/09): a viewer page has to be able to read the
 		// library, an edition's revisions and a revision's dialogue.
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/games/{id}/editions", Access: Require(RoleViewer)},
+		// The /library screen's per-game read (ADR-0109): the shelf is the
+		// kiosk's front door, so the actionable revision and the counts are
+		// viewer reads like the rest of the library browser, spelled out
+		// before the curator wildcard below.
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/games/{id}/library", Access: Require(RoleViewer)},
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/editions/{id}/profiles", Access: Require(RoleViewer)},
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/editions/{id}/published", Access: Require(RoleViewer)},
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/profiles/{id}", Access: Require(RoleViewer)},

@@ -582,6 +582,8 @@ export const api = new ApiClient();
 export type User = Schemas["User"];
 export type Role = Schemas["Role"];
 export type Game = Schemas["Game"];
+/** The /library screen's per-game read (ADR-0109): the actionable revision's identity plus its counts. */
+export type GameLibrary = Schemas["GameLibrary"];
 export type Edition = Schemas["Edition"];
 export type Character = Schemas["Character"];
 export type SpeakerLinkResponse = Schemas["SpeakerLinkResponse"];
@@ -705,6 +707,15 @@ export const catalogApi = {
   },
   getGame(id: string, signal?: AbortSignal) {
     return api.get("/api/v1/games/{id}", { params: { id }, signal });
+  },
+  /** The Library's shelf tile and list row read (ADR-0109): the actionable
+   *  revision (published preferred, else the newest revision, else absent) plus
+   *  the lines / characters / voiced counts of that revision. */
+  gameLibrary(id: string, signal?: AbortSignal): Promise<GameLibrary> {
+    return api.get("/api/v1/games/{id}/library", {
+      params: { id },
+      signal,
+    }) as Promise<GameLibrary>;
   },
   createGame(
     body: {

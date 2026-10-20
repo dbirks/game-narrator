@@ -763,6 +763,24 @@ func (s *Store) ListMessages(ctx context.Context, profileID string, f MessageFil
 	return out, next, nil
 }
 
+// ProfileMessageCount is one revision's dialogue length for the surfaces that
+// summarise a profile without paging it (the Library's "4,212 lines" column,
+// docs/design/plum-peach 2a): an indexed COUNT on the profile predicate, the
+// same shape as ListMessages' window and never a client-side page walk.
+func (s *Store) ProfileMessageCount(ctx context.Context, profileID string) (int, error) {
+	const op = "profile message count"
+	var count int
+	err := s.inRead(ctx, func(ctx context.Context, q queryable) error {
+		return q.queryRow(ctx, op,
+			"SELECT COUNT(*) FROM messages WHERE profile_id = ?", profileID,
+		).Scan(&count)
+	})
+	if err != nil {
+		return 0, mapReadError(op, err)
+	}
+	return count, nil
+}
+
 func loadProfileMessages(ctx context.Context, q queryable, profileID string) ([]games.Message, error) {
 	const op = "list profile messages"
 	rows, err := q.query(ctx, op, "SELECT "+messageColumns+" FROM messages WHERE profile_id = ? ORDER BY id", profileID)

@@ -98,6 +98,19 @@ function renderShell(
           text: async () => JSON.stringify(status),
         } as Response;
       }
+      if (url.includes("/api/v1/search")) {
+        // The ⌘K palette's debounced read (ADR-0098): the empty-query
+        // recents answer with no groups — the unit tests only need the
+        // dialog's chrome and keyboard contract, not the results.
+        const search = { query: "", agent_prompt: "", groups: [] };
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ "content-type": "application/json" }),
+          json: async () => search,
+          text: async () => JSON.stringify(search),
+        } as Response;
+      }
       if (url.includes("/api/v1/auth/logout")) {
         return {
           ok: true,
@@ -194,6 +207,22 @@ describe("Shell", () => {
 
     fireEvent.keyDown(screen.getByTestId("palette-input"), { key: "Escape" });
     expect(screen.queryByTestId("palette")).toBeNull();
+  });
+
+  it("hands the ⌘K query to the agent dock on Tab (UX-02)", async () => {
+    renderShell("/library");
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    const input = await screen.findByTestId("palette-input");
+    expect(input).toHaveFocus();
+
+    fireEvent.change(input, { target: { value: "boy" } });
+    fireEvent.keyDown(input, { key: "Tab" });
+
+    // The overlay closes and the dock opens with the query pre-filled.
+    expect(screen.queryByTestId("palette")).toBeNull();
+    const dock = await screen.findByTestId("agent-dock");
+    expect(dock).toBeInTheDocument();
+    expect(screen.getByTestId("agent-dock-input")).toHaveValue("boy");
   });
 
   it("opens the ⌘J agent dock with the context chip", async () => {

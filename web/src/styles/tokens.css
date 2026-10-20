@@ -504,10 +504,14 @@ textarea:focus-visible,
   }
 }
 
-/* ── the ask-the-agent pill (⌘J) and its docked stub ───────────────────────
- * Phase 0 seam: the pill is real (opens, closes, names its context chip);
- * the docked panel body is a labelled stub — the agent backend lands in
- * Phase 1 (ADR-0099 owns the wire; this is the chrome only). */
+/* ── the ask-the-agent pill (⌘J) and its docked panel ───────────────────────
+ * The pill is the chrome (ink, offset shadow, the peach context chip, the
+ * ⌘J hint); the dock is the docked form of the pill (docs/design/plum-peach
+ * "Ask the agent"): a 360px right panel — header with the chip, the coral
+ * NEEDS-YOU block, the condensed tool cards, the user/agent chat and the
+ * input — over the ADR-0099 wire (the context payload on every message).
+ * The chip seam is one: the pill and the docked header read the same words.
+ */
 
 .agent-pill {
   position: fixed;
@@ -526,6 +530,14 @@ textarea:focus-visible,
   font-size: 12px;
   box-shadow: var(--offset-shadow);
   cursor: pointer;
+}
+
+/* The pill is the dock's launcher (the panel is its docked form): while the
+   panel is open the Shell hides it with the `hidden` attribute, and this rule
+   restores the attribute's display: none — the display: inline-flex above
+   would otherwise let the launcher keep painting over the panel's input row. */
+.agent-pill[hidden] {
+  display: none;
 }
 
 .agent-pill-context {
@@ -552,30 +564,247 @@ textarea:focus-visible,
   z-index: 45;
   width: 360px;
   max-width: 100vw;
-  display: grid;
-  grid-template-rows: auto 1fr;
-  gap: var(--sp-16);
+  display: flex;
+  flex-direction: column;
   background: var(--card);
   color: var(--fg);
   border-left: 1.5px solid var(--ink);
-  padding: var(--sp-16);
-  overflow-y: auto;
   box-sizing: border-box;
 }
 
-.agent-dock h2 {
-  margin: 0;
-  font-size: 1.1rem;
+.agent-dock-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-16);
+  padding: var(--sp-16);
+  height: 100%;
+  box-sizing: border-box;
+}
+
+.agent-dock-header {
   display: flex;
   align-items: center;
   gap: var(--sp-8);
   flex-wrap: wrap;
 }
 
-/* ── the ⌘K command palette stub ───────────────────────────────────────────
- * Phase 0 seam: the overlay and its keyboard contract (↵/Esc, focus into the
- * input) exist; the result groups arrive with the search backend (ADR-0098
- * owns /api/v1/search). */
+.agent-dock-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.agent-dock-close {
+  margin-left: auto;
+}
+
+/* The scrollable middle: NEEDS-YOU, tool cards, chat and the problem card.
+   The input row below stays put while this scrolls. */
+.dock-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  gap: var(--sp-16);
+  align-content: start;
+}
+
+.dock-section h3 {
+  margin: 0 0 var(--sp-8);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* NEEDS-YOU (coral, non-blocking — UX-04): the question card with its
+   answer pills and the "or keep going" escape. */
+.dock-needs-you {
+  border: 1.5px solid var(--coral);
+  border-radius: var(--radius-card);
+  background: color-mix(in srgb, var(--coral) 8%, var(--card));
+  padding: var(--sp-12);
+  display: grid;
+  gap: var(--sp-8);
+}
+
+.dock-needs-you-prompt {
+  margin: 0;
+}
+
+.dock-needs-you-pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-8);
+}
+
+.dock-keep-going {
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.dock-needs-you-answer {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* Tool cards: condensed (✓ name · result · duration). An in-flight card is
+   dashed with a dither dot — the recipe's 12% dither, not a spinner. */
+.dock-tool-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--sp-6);
+}
+
+.dock-tool-card {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-8);
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-pill);
+  padding: var(--sp-4) var(--sp-10);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.dock-tool-running {
+  border-style: dashed;
+  background-image: radial-gradient(var(--ink) 0.6px, transparent 1px);
+  background-size: 3px 3px;
+  background-color: var(--paper);
+}
+
+.dock-tool-name {
+  font-weight: 700;
+}
+
+.dock-tool-state {
+  color: var(--muted);
+}
+
+.dock-tool-duration {
+  margin-left: auto;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.dock-tool-error {
+  color: var(--coral);
+  overflow-wrap: anywhere;
+}
+
+/* The conversation: user turns right on ink, agent turns left on paper.
+   Long placeholder copy wraps, never overflows the panel. */
+.dock-chat {
+  display: grid;
+  gap: var(--sp-8);
+  align-content: start;
+}
+
+.dock-bubble {
+  margin: 0;
+  max-width: 94%;
+  border-radius: var(--radius-card);
+  padding: var(--sp-8) var(--sp-12);
+  font-size: 0.95rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.dock-bubble-user {
+  justify-self: end;
+  background: var(--ink);
+  color: var(--paper);
+  border: 1.5px solid var(--ink);
+}
+
+.dock-bubble-agent {
+  justify-self: start;
+  background: var(--paper);
+  color: var(--fg);
+  border: 1.5px solid var(--hair);
+}
+
+.dock-working {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* The problem card: the design's error state (coral border, the problem,
+   the request_id). */
+.dock-problem {
+  border: 1.5px solid var(--coral);
+  border-radius: var(--radius-card);
+  background: color-mix(in srgb, var(--coral) 8%, var(--card));
+  padding: var(--sp-12);
+  display: grid;
+  gap: var(--sp-8);
+}
+
+.dock-problem-message {
+  margin: 0;
+}
+
+.dock-problem-request-id {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* The input row: the textarea grows, the send is the ink pill. */
+.dock-input-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: var(--sp-8);
+}
+
+.dock-input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: none;
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-card);
+  padding: var(--sp-8) var(--sp-10);
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  background: var(--paper);
+  color: var(--fg);
+}
+
+/* The screen-reader label the input's placeholder does not double. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── the ⌘K command palette (plan item 2; ADR-0098) ──────────────────────
+ * The overlay is the design's mock 2b: one input, grouped results with mono
+ * group headers, the active row --peach, and the footnote bar. The active
+ * row is the focused row (real buttons, keyboard-driven), so the --peach
+ * fill and the 2px coral focus ring come from the shared focus rule.
+ * ADR-0011: tokens only, no inline styles. */
 
 .palette-backdrop {
   position: fixed;
@@ -587,22 +816,38 @@ textarea:focus-visible,
 .palette {
   position: fixed;
   z-index: 61;
-  top: 12vh;
+  top: 10vh;
   left: 50%;
   transform: translateX(-50%);
   width: min(36rem, calc(100vw - 2rem));
+  max-height: 78vh;
+  display: grid;
+  grid-template-rows: auto auto auto 1fr auto;
+  gap: var(--sp-12);
   background: var(--card);
   color: var(--fg);
   border: 1.5px solid var(--ink);
   border-radius: var(--radius-card);
   padding: var(--sp-16);
-  display: grid;
-  gap: var(--sp-12);
+  box-sizing: border-box;
 }
 
 .palette h2 {
   margin: 0;
   font-size: 1.1rem;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+}
+
+.palette-kbd {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  border: 1px solid var(--hair);
+  border-radius: var(--radius-tag);
+  padding: 0 4px;
+  color: var(--muted);
 }
 
 .palette input {
@@ -610,6 +855,7 @@ textarea:focus-visible,
   box-sizing: border-box;
 }
 
+/* Mono note text inside the dialog (loading, empty-state hints, dock labels). */
 .palette-note {
   margin: 0;
   font-family: var(--font-mono);
@@ -617,6 +863,144 @@ textarea:focus-visible,
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--muted);
+}
+
+/* The action-execution result line: queued (ok) / failed (coral). */
+.palette-result {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+.palette-result-ok {
+  color: var(--ok);
+}
+
+.palette-result-err {
+  color: var(--coral);
+}
+
+.palette-result-meta {
+  color: var(--muted);
+  font-size: 11px;
+  word-break: break-all;
+}
+
+/* The results list: scrollable inside the fixed-height dialog so the
+   footnote bar (the keyboard contract) never leaves the screen. */
+.palette-results {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--sp-12);
+  overflow-y: auto;
+  min-height: 0;
+}
+
+/* Group header: mono, uppercase, muted (the design's mono group headers). */
+.palette-group-header {
+  margin: 0 0 var(--sp-4);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* One result row: title (display face) over the mono subtitle, the line id
+   in mono at the right. The whole row is the button; the active (focused)
+   row is --peach with the 2px coral focus ring from the global rule. */
+.palette-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px var(--sp-12);
+  align-items: baseline;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: var(--radius-tag);
+  padding: var(--sp-8) var(--sp-10);
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  box-sizing: border-box;
+}
+
+.palette-row:focus-visible {
+  background: var(--peach);
+}
+
+.palette-row-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.95rem;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette-row-subtitle {
+  grid-column: 1;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Line rows show the line id in mono (the design's mock 2b). */
+.palette-row-id {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.palette-row:focus-visible .palette-row-subtitle,
+.palette-row:focus-visible .palette-row-id {
+  color: var(--ink);
+}
+
+/* The footnote bar: the keyboard contract, spelled out. */
+.palette-footnote {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-8);
+  padding-top: var(--sp-8);
+  border-top: 1px solid var(--hair);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.palette-footnote kbd {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  border: 1px solid var(--hair);
+  border-radius: var(--radius-tag);
+  padding: 0 4px;
+}
+
+/* The footnote's right side (state + the live query echo): truncate rather
+   than let a long query push the bar past the dialog at phone width. */
+.palette-footnote-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ── the shared component kit (src/components/kit) ─────────────────────────

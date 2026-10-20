@@ -385,3 +385,47 @@ func TestPutMessagesReconcilesInsteadOfDuplicating(t *testing.T) {
 			m.Revision, after.Messages[0].Revision+1)
 	}
 }
+
+// TestProfileMessageCountCountsPerRevision is the Library's "N lines" column
+// (ADR-0109) at the store level: an indexed COUNT scoped to one revision —
+// the dialogue browser's length is never a page walk, and a revision's lines
+// are never another revision's.
+func TestProfileMessageCountCountsPerRevision(t *testing.T) {
+	f := newRepoFixture(t)
+	ctx := f.ctx
+
+	second, err := f.s.CreateDraftProfile(ctx, f.edition.ID)
+	if err != nil {
+		t.Fatalf("CreateDraftProfile(second): %v", err)
+	}
+	other := f.editionWithRegion("EU")
+	third, err := f.s.CreateDraftProfile(ctx, other.ID)
+	if err != nil {
+		t.Fatalf("CreateDraftProfile(third): %v", err)
+	}
+
+	msgs := make([]games.Message, 0, 3)
+	for i := 0; i < 3; i++ {
+		msgs = append(msgs, f.message(fmt.Sprintf("Counted line %d of the first revision", i)))
+	}
+	if err := f.s.PutMessages(ctx, f.profile.ID, msgs, nil); err != nil {
+		t.Fatalf("PutMessages(first): %v", err)
+	}
+	one := f.message("The single line of the second revision")
+	one.ProfileID = second.ID
+	if err := f.s.PutMessages(ctx, second.ID, []games.Message{one}, nil); err != nil {
+		t.Fatalf("PutMessages(second): %v", err)
+	}
+
+	if got, err := f.s.ProfileMessageCount(ctx, f.profile.ID); err != nil || got != 3 {
+		t.Fatalf("first revision counted %d (%v), want 3", got, err)
+	}
+	if got, err := f.s.ProfileMessageCount(ctx, second.ID); err != nil || got != 1 {
+		t.Fatalf("second revision counted %d (%v), want 1", got, err)
+	}
+	// An empty profile is an honest zero, not an error: the shelf renders
+	// its count column from it.
+	if got, err := f.s.ProfileMessageCount(ctx, third.ID); err != nil || got != 0 {
+		t.Fatalf("an empty profile counted %d (%v), want 0", got, err)
+	}
+}

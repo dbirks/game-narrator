@@ -826,6 +826,12 @@ func (s *Server) Handler() http.Handler {
 	routes.register(mux, http.MethodGet, "/api/v1/games/{id}", s.handleGameGet)
 	routes.register(mux, http.MethodPatch, "/api/v1/games/{id}", s.handleGamePatch)
 	routes.register(mux, http.MethodGet, "/api/v1/games/{id}/editions", s.handleEditionList)
+	// The /library screen's per-game read (docs/design/plum-peach 2a,
+	// ADR-0109): the actionable revision plus the counts the shelf tiles
+	// and list rows render. A viewer read — the shelf is the kiosk's front
+	// door — and the scope table grants it before the curator wildcard
+	// that owns the rest of the game subtree.
+	routes.register(mux, http.MethodGet, "/api/v1/games/{id}/library", s.handleGameLibrary)
 	routes.register(mux, http.MethodPost, "/api/v1/games/{id}/editions", s.handleEditionCreate)
 	routes.register(mux, http.MethodGet, "/api/v1/editions/{id}/profiles", s.handleProfileListForEdition)
 	routes.register(mux, http.MethodPost, "/api/v1/editions/{id}/profiles", s.handleProfileDraftCreate)

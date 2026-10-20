@@ -39,6 +39,9 @@ const clipsUrl = `http://127.0.0.1:${ports.clips}`;
 const routesUrl = `http://127.0.0.1:${ports.routes}`;
 const a11yUrl = `http://127.0.0.1:${ports.a11y}`;
 const redesignUrl = `http://127.0.0.1:${ports.redesign}`;
+const libraryUrl = `http://127.0.0.1:${ports.library}`;
+const ksearchUrl = `http://127.0.0.1:${ports.ksearch}`;
+const agentDockUrl = `http://127.0.0.1:${ports.agentDock}`;
 const playControlsUrl = `http://127.0.0.1:${ports.playControls}`;
 const audioUrl = `http://127.0.0.1:${ports.audio}`;
 const captureUrl = `http://127.0.0.1:${ports.capture}`;
@@ -104,7 +107,7 @@ export default defineConfig({
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
       testIgnore:
-        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|voices-qa\.spec\.ts|m5-part1\.spec\.ts|m5-graph-regions\.spec\.ts|corrections-fixtures\.spec\.ts|live-play\.spec\.ts|play-controls\.spec\.ts|audio-output\.spec\.ts|bluetooth-output\.spec\.ts|capture-device\.spec\.ts|restore-walk\.spec\.ts|a11y\.spec\.ts|setup-wizard\.spec\.ts|redesign-shell\.spec\.ts/,
+        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|voices-qa\.spec\.ts|m5-part1\.spec\.ts|m5-graph-regions\.spec\.ts|corrections-fixtures\.spec\.ts|live-play\.spec\.ts|play-controls\.spec\.ts|audio-output\.spec\.ts|bluetooth-output\.spec\.ts|capture-device\.spec\.ts|restore-walk\.spec\.ts|a11y\.spec\.ts|setup-wizard\.spec\.ts|redesign-shell\.spec\.ts|library\.spec\.ts|ksearch\.spec\.ts|agent-dock\.spec\.ts/,
     },
     {
       // The first-run wizard (G9, ADR-0087) on its own packaged-binary
@@ -276,6 +279,34 @@ export default defineConfig({
       name: "redesign",
       testMatch: /redesign-shell\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: redesignUrl },
+    },
+    {
+      // The Plum & Peach Library screen (plan.md Phase 1 item 1): a fresh
+      // packaged-binary appliance with the agent_reasoning role at the
+      // scripted gateway (the in-setup seed is a live labelled-synthetic
+      // onboarding run at its publish review), screenshots at the design's
+      // three widths plus axe, and a real session start through the hero's
+      // ▶ (the test_pattern frame source, ADR-0109).
+      name: "library",
+      testMatch: /library\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: libraryUrl },
+    },
+    {
+      name: "ksearch",
+      testMatch: /ksearch\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: ksearchUrl },
+    },
+    {
+      // The agent dock (ADR-0099, docs/design/plum-peach plan.md Phase 1
+      // item 3): the packaged binary with the agent_reasoning role at the
+      // scripted model gateway's assistant scenario, so the dock's send makes
+      // a genuine provider request the scripted instance answers. The spec
+      // asserts the outgoing context payload (UX-01) through a redacted
+      // capture of its own request, the chip against the selection, and the
+      // ⌘J reachability over the six primary routes.
+      name: "agent-dock",
+      testMatch: /agent-dock\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: agentDockUrl },
     },
     {
       // The developer inspector's decision half (docs/spec/13 "did it speak,
@@ -681,6 +712,47 @@ export default defineConfig({
       stderr: "pipe",
     },
     {
+      // The Plum & Peach Library screen on the packaged binary: the
+      // agent_reasoning role at the scripted gateway (the same wiring as the
+      // onboarding server), so the spec's in-setup seed is a live onboarding
+      // run the status bar and the tile chip both read. No private-endpoint
+      // allowlist: the scenario's import is a staged file, not a fetch.
+      command: `node web/e2e/serve.mjs library 127.0.0.1:${ports.library} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${libraryUrl}/api/v1/health/live`,
+      env: {
+        GAME_NARRATOR_ROLE_AGENT_REASONING_MODEL: "fake/onboarding",
+        GAME_NARRATOR_ROLE_AGENT_REASONING_URL: `http://127.0.0.1:${ports.fakeModel}/v1`,
+      },
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The ⌘K command-palette walk on the packaged binary: a fresh appliance
+      // the spec claims and seeds (create → edition → draft → import) so the
+      // palette's grouped results run against a real catalogue. The voice
+      // roles are the project's fake (synthetic stub, named for what it is):
+      // the regenerate-action row's assertion is the 202 that queues the
+      // audition, and the fake gateway lets the queued job run without a real
+      // model (AGENTS.md rule 3).
+      command: `node web/e2e/serve.mjs ksearch 127.0.0.1:${ports.ksearch} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${ksearchUrl}/api/v1/health/live`,
+      env: {
+        GAME_NARRATOR_GATEWAY_URL: `http://127.0.0.1:${ports.fakeTTS}/v1`,
+        GAME_NARRATOR_GATEWAY_TOKEN: "fake-e2e-token",
+        GAME_NARRATOR_ROLE_VOICE_DESIGN_MODEL: "fake-voicedesign",
+        GAME_NARRATOR_ROLE_VOICE_CLONE_MODEL: "fake-base",
+        GAME_NARRATOR_TTS_BASE_DIRECT_URL: `http://127.0.0.1:${ports.fakeTTS}/v1`,
+      },
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
       // The scripted System One / Clef-Omni instance (web/e2e/fake-clef.mjs),
       // a synthetic stub named for what it is. Started before the
       // developer-decision server so the decision role URL it is given is
@@ -828,6 +900,26 @@ export default defineConfig({
       command: `node web/e2e/serve.mjs setup-wizard 127.0.0.1:${ports.wizard} ${embeddedBinary} serve`,
       cwd: "..",
       url: `${wizardUrl}/api/v1/health/live`,
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The agent-dock walk on the packaged binary (ADR-0099): the
+      // agent_reasoning role is the scripted model gateway's assistant
+      // scenario — one plain final reply, no tool calls — so the dock's send
+      // proves the provider boundary with no real model (AGENTS.md rule 3).
+      // The gateway is the suite's shared fake-model.mjs (started earlier in
+      // this list); its scenario is global, so each spec sets its own before
+      // the first chat request and the one-worker run keeps the specs serial.
+      command: `node web/e2e/serve.mjs agent-dock 127.0.0.1:${ports.agentDock} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${agentDockUrl}/api/v1/health/live`,
+      env: {
+        GAME_NARRATOR_ROLE_AGENT_REASONING_MODEL: "fake/assistant",
+        GAME_NARRATOR_ROLE_AGENT_REASONING_URL: `http://127.0.0.1:${ports.fakeModel}/v1`,
+      },
       reuseExistingServer: false,
       timeout: 60_000,
       stdout: "ignore",

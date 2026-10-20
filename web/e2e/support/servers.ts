@@ -224,6 +224,14 @@ export function serverNameForProject(project: string): string {
       return "routes";
     case "a11y":
       return "a11y";
+    case "redesign":
+      return "redesign";
+    case "library":
+      return "library";
+    case "ksearch":
+      return "ksearch";
+    case "agent-dock":
+      return "agent-dock";
     case "developer-decision":
       return "developer-decision";
     case "developer-actions":

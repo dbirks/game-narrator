@@ -1590,6 +1590,40 @@
         }
       }
     },
+    "/api/v1/games/{id}/library": {
+      "get": {
+        "operationId": "getGameLibrary",
+        "tags": [
+          "games"
+        ],
+        "summary": "The /library screen's per-game read: the actionable revision and its counts.",
+        "description": "The shelf tile and the list row are one read, not three (ADR-0109): profile is the edition's published revision when any edition has one (the newest publication wins - the revision a session would pin), otherwise the edition's newest revision (a draft an onboarding run is still filling), otherwise absent; lines, characters and voiced are that revision's indexed counts. A game with no profile answers 200 with the empty view, the same honest-empty shape the catalogue lists use.",
+        "x-required-role": "viewer",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/GameId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The library view.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GameLibrary"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
     "/api/v1/editions/{id}/profiles": {
       "get": {
         "operationId": "listProfiles",
@@ -9181,6 +9215,50 @@
             "items": {
               "$ref": "#/components/schemas/Edition"
             }
+          }
+        }
+      },
+      "GameLibrary": {
+        "type": "object",
+        "description": "GET /api/v1/games/{id}/library (docs/design/plum-peach 2a, ADR-0109): the one read behind the /library hero and tiles. The profile members are the actionable revision's identity, all absent together when the game has no profile; lines, characters and voiced are its counts, zero in that case. characters and voiced agree with the status bar's setup-run progress (the store's ProfileCharacterVoiceCounts), so the tile chip and the bar cannot disagree about how much of a game has a voice.",
+        "required": [
+          "game_id",
+          "lines",
+          "characters",
+          "voiced"
+        ],
+        "properties": {
+          "game_id": {
+            "type": "string"
+          },
+          "profile_id": {
+            "type": "string"
+          },
+          "edition_id": {
+            "type": "string"
+          },
+          "profile_status": {
+            "$ref": "#/components/schemas/ProfileStatus"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "published_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lines": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "characters": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "voiced": {
+            "type": "integer",
+            "minimum": 0
           }
         }
       },

@@ -1266,3 +1266,330 @@ pre.muted {
   padding: 0.2rem 0.4rem;
   text-align: left;
 }
+
+/* ── /library — the design's 2a (docs/design/plum-peach; ADR-0109) ────────
+ * Tokens only (ADR-0011 / ADR-0093): no raw colours, no inline styles.
+ * The hero, the "All games" row, the shelf grid and the list table are
+ * page-specific compositions of the kit pieces (DitherCover, Chip, the
+ * pill, the segmented toggle, the progress bar, the table). */
+
+/* The hero card: --card surface, 1.5px ink line, the cover on the left. */
+.lib-hero {
+  display: flex;
+  gap: var(--sp-24);
+  align-items: center;
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-card);
+  background: var(--card);
+  padding: var(--sp-16);
+  box-sizing: border-box;
+}
+
+/* The settled-in state of the same frame while the reads resolve: a
+ * dithered placeholder, not a blank. */
+.lib-hero.lib-hero-loading {
+  min-height: 180px;
+  --dither-ink: var(--ink);
+  --dither-bg: var(--paper);
+  background-image: radial-gradient(var(--dither-ink) 0.6px, transparent 1px);
+  background-size: 3px 3px;
+  background-color: var(--dither-bg);
+  image-rendering: pixelated;
+}
+
+.lib-hero-cover {
+  flex: 0 0 300px;
+  width: 300px;
+  aspect-ratio: 3 / 4;
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-portrait);
+  overflow: hidden;
+}
+
+.lib-hero-body {
+  min-width: 0;
+  display: grid;
+  gap: var(--sp-8);
+  align-content: center;
+}
+
+.lib-hero-eyebrow {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.lib-hero-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: clamp(1.7rem, 3.2vw, 2.75rem);
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.lib-hero-summary {
+  margin: 0;
+  font-size: 1.125rem;
+  color: var(--fg);
+}
+
+.lib-hero-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-10);
+  margin-top: var(--sp-8);
+}
+
+.lib-hero-note {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+/* The "All games" row: the section title, the ⌘K pill, the view toggle. */
+.lib-all-games {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-12);
+  margin: var(--sp-32) 0 var(--sp-16);
+}
+
+.lib-all-games h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.625rem;
+  line-height: 1.2;
+}
+
+.lib-kbd-hint {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  opacity: 0.75;
+}
+
+/* The shelf: the design's 5-column grid; the column floor keeps the tiles
+ * honest on narrow screens (two at 390) instead of scrolling sideways. */
+.lib-shelf {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: var(--sp-16);
+}
+
+.lib-shelf-tile {
+  position: relative;
+  display: grid;
+  gap: var(--sp-8);
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-card);
+  background: var(--card);
+  padding: var(--sp-10);
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.lib-shelf-add {
+  border-style: dashed;
+  display: grid;
+  place-items: center;
+  min-height: 260px;
+}
+
+.lib-shelf-add-btn {
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-8);
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1rem;
+  line-height: 1.3;
+  cursor: pointer;
+  padding: var(--sp-8);
+}
+
+.lib-add-plus {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-pill);
+  background: var(--coral);
+  border: 1.5px solid var(--ink);
+  position: relative;
+}
+
+.lib-add-plus::before,
+.lib-add-plus::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--ink);
+}
+
+.lib-add-plus::before {
+  width: 14px;
+  height: 2.5px;
+}
+
+.lib-add-plus::after {
+  width: 2.5px;
+  height: 14px;
+}
+
+.lib-tile-cover {
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  border: 1px solid var(--hair);
+  border-radius: var(--radius-portrait);
+  overflow: hidden;
+}
+
+.lib-tile-body {
+  display: grid;
+  gap: var(--sp-6);
+  min-width: 0;
+}
+
+.lib-tile-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.0625rem;
+  line-height: 1.25;
+  color: var(--ink);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.lib-tile-title:hover {
+  text-decoration: underline;
+}
+
+/* The ▶ circle (design 2a): an ink disc, the paper glyph. */
+.lib-play-circle {
+  position: absolute;
+  top: var(--sp-10);
+  right: var(--sp-10);
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-pill);
+  border: 1.5px solid var(--ink);
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: var(--offset-shadow);
+}
+
+.lib-play-circle:hover:not(:disabled) {
+  background: var(--coral);
+  color: var(--ink);
+}
+
+.lib-play-circle:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* The list view: the kit table with the design's columns. The cover is
+ * 44px; the voiced column carries the count over the dithered bar. */
+.lib-list-cover {
+  width: 44px;
+  aspect-ratio: 3 / 4;
+  border: 1px solid var(--hair);
+  border-radius: var(--radius-tag);
+  overflow: hidden;
+}
+
+.lib-list-game {
+  display: grid;
+  gap: var(--sp-4);
+  justify-items: start;
+  min-width: 0;
+}
+
+.lib-list-game a {
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-weight: 600;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.lib-list-game a:hover {
+  text-decoration: underline;
+}
+
+.lib-list-voiced {
+  display: grid;
+  gap: var(--sp-4);
+  justify-items: start;
+  min-width: 120px;
+  max-width: 200px;
+}
+
+.lib-list-voiced-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+/* The list's play cell is not positioned (the table row is the frame): the
+ * circle sits in flow there. */
+.kit-table .lib-play-circle {
+  position: static;
+  box-shadow: none;
+}
+
+/* The list table's frame: a hairline border around the whole table. */
+.lib-list {
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-card);
+  background: var(--card);
+  padding: var(--sp-8) var(--sp-12);
+}
+
+/* Narrow screens (≤ 640px, the chrome's own wrap point): the list keeps
+ * cover · game · voiced · play; the platform / lines / cast columns yield
+ * to the shelf view rather than scroll the page sideways. */
+@media (max-width: 640px) {
+  .lib-hero {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .lib-hero-cover {
+    flex-basis: auto;
+    width: min(300px, 100%);
+  }
+
+  .lib-all-games {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .lib-list .kit-table th:nth-child(3),
+  .lib-list .kit-table td:nth-child(3),
+  .lib-list .kit-table th:nth-child(4),
+  .lib-list .kit-table td:nth-child(4),
+  .lib-list .kit-table th:nth-child(5),
+  .lib-list .kit-table td:nth-child(5) {
+    display: none;
+  }
+}
