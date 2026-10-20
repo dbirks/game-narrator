@@ -1,4 +1,4 @@
-# ADR-0112: The scenario lock — serialising the shared scripted-model gateway's walks at two workers
+# ADR-0120: The scenario lock — serialising the shared scripted-model gateway's walks at two workers
 
 Date: 2026-10-20
 Status: accepted

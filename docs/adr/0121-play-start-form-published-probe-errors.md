@@ -1,10 +1,10 @@
-# ADR-0113: The /play start form's published probe — 404 is a state, every other probe error is a fault
+# ADR-0121: The /play start form's published probe — 404 is a state, every other probe error is a fault
 
 Date: 2026-10-20
 Status: accepted
 Owners: redesign-b3 (Health/Settings merge integration)
 Related requirements/tests: docs/spec/09 (visible-state assertions), AGENTS.md rules 4 and 9, `web/src/pages/Play.tsx` (`fetchRunOptions`), `web/e2e/ksearch.spec.ts` (the ⌘K walk's /play stop), `web/e2e/disc-import-walk.spec.ts` (the /play stop on the shared disc appliance)
-Links/references: ADR-0094 (per-run e2e isolation), ADR-0110 §1 (the "machine's answer" convention for honest non-ok responses), ADR-0112 (the same post-merge `--workers=2` suite pass that surfaced this)
+Links/references: ADR-0094 (per-run e2e isolation), ADR-0110 §1 (the "machine's answer" convention for honest non-ok responses), ADR-0120 (the same post-merge `--workers=2` suite pass that surfaced this)
 Supersedes / superseded by: —
 
 ## Context

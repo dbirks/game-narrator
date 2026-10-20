@@ -179,7 +179,7 @@ test("library: hero, status chip, view persistence and a real session start", as
   // renders that 503 as its own "no capture layer" note.
   const consoleErrors = trackConsoleErrors(page, [401, 503]);
 
-  // The scenario lock (ADR-0112): the in-setup seed drives the shared
+  // The scenario lock (ADR-0120): the in-setup seed drives the shared
   // fake-model gateway's one global scenario (stall), so this walk is serial
   // with the other scenario walks across the run's workers.
   const releaseScenario = await acquireScenarioLock(testInfo, "stall");

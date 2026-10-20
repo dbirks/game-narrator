@@ -35,7 +35,7 @@ import type { TestInfo } from "@playwright/test";
  * parallelism contests its once-per-run claim) and keeps the lock until the
  * test ends (the run's chat conversation spans the walk).
  *
- * ADR-0112.
+ * ADR-0120.
  */
 
 const LOCK_NAME = ".scenario-lock.json";
@@ -110,7 +110,7 @@ export async function acquireScenarioLock(
         `scenario lock: waited ${WAIT_MS} ms for the scenario walk held by ` +
           `${holder ? `pid ${holder.pid} (scenario "${holder.scenario}", test "${holder.test}", expires ${new Date(holder.expiresAt).toISOString()})` : "another worker"}; ` +
           `see ${path}. The shared fake-model gateway's global scenario is ` +
-          `only safe while the scenario-dependent walks are serial (ADR-0112).`,
+          `only safe while the scenario-dependent walks are serial (ADR-0120).`,
       );
     }
     await new Promise((resolve) => setTimeout(resolve, POLL_MS));

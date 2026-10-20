@@ -130,7 +130,7 @@ test("agent dock: context payload, the selection chip and ⌘J reachability (UX-
   // The scripted model: the assistant scenario — one plain final reply, no
   // tool calls. The scenario is global to the shared gateway, so the spec
   // sets its own before the first chat request (the onboarding spec does
-  // the same for its scenarios; the scenario lock — ADR-0112 — keeps these
+  // the same for its scenarios; the scenario lock — ADR-0120 — keeps these
   // walks serial across the run's workers).
   const releaseScenario = await acquireScenarioLock(testInfo, "assistant");
   try {

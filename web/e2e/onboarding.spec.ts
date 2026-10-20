@@ -76,7 +76,7 @@ async function signIn(page: Page) {
 }
 
 /** Point the scripted gateway at a scenario. The gateway's scenario is global
- *  to every spec that shares it; the scenario lock (ADR-0112) keeps the
+ *  to every spec that shares it; the scenario lock (ADR-0120) keeps the
  *  scenario-dependent walks serial across the run's workers, so a set here
  *  cannot land inside another walk's chat conversation. */
 async function setScenario(request: APIRequestContext, scenario: string) {
@@ -92,7 +92,7 @@ test("onboarding: staged import, quality report, approve, published in the libra
   await expectIsolatedDataDir(serverNameForProject("onboarding"));
   const consoleErrors = trackConsoleErrors(page, [401]);
 
-  // The scenario lock (ADR-0112): the appliance is claimed once per run and
+  // The scenario lock (ADR-0120): the appliance is claimed once per run and
   // the shared fake-model gateway holds one global scenario, so the walk is
   // serial across the run's workers from its first page step to its last.
   const releaseScenario = await acquireScenarioLock(testInfo, "import");
@@ -171,7 +171,7 @@ test("malicious page: untrusted source shown, the non-existent tool is never cal
   request,
 }, testInfo) => {
   test.setTimeout(180_000);
-  // The scenario lock (ADR-0112): the walk shares the run's appliance and the
+  // The scenario lock (ADR-0120): the walk shares the run's appliance and the
   // gateway's one global scenario, so it runs serial with the other
   // onboarding walks across the run's workers.
   const releaseScenario = await acquireScenarioLock(testInfo, "malicious");
@@ -252,7 +252,7 @@ test("web import: no disc, approved web dump → publishable profile", async ({
   await expectIsolatedDataDir(serverNameForProject("onboarding"));
   const consoleErrors = trackConsoleErrors(page, [401]);
 
-  // The scenario lock (ADR-0112): same reason as the other onboarding walks.
+  // The scenario lock (ADR-0120): same reason as the other onboarding walks.
   const releaseScenario = await acquireScenarioLock(testInfo, "webimport");
   try {
     await setScenario(request, "webimport");
