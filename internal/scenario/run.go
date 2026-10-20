@@ -240,8 +240,10 @@ func runScenarioCore(ctx context.Context, repoRoot string, sc *Scenario, framesD
 	// The harness grades the merged timeline declaring its own OCR engine:
 	// layer A reads through the truth stub (truthocr.go), so an assertion
 	// scoped to the real engine (engines: tesseract) is a property of a
-	// different run and is reported not-applicable, never graded here.
-	report := sc.EvaluateWithOCREngine(truthEngineName, evs, run.pipelineStats, run.truth)
+	// different run and is reported not-applicable, never graded here. The
+	// corpus is the profile's own: message_detected anchors on it, engine-
+	// free, exactly as the real-engine gate does.
+	report := sc.EvaluateWith(evs, run.pipelineStats, run.truth, EvaluateOpts{OCREngine: truthEngineName, Corpus: run.profile.CorpusFold()})
 	// The implicit check against the playback half (TTS scenarios): the
 	// sink's directory carries exactly one evidence WAV per started
 	// utterance and no temporary file. It is appended like

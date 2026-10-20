@@ -179,6 +179,92 @@ func (t Tesseract) Recognize(ctx context.Context, img image.Image) (Result, erro
 	return res, nil
 }
 
+// probeSlotProtocol runs one small read through the engine's stdin slot
+// protocol — the pool's exact `tesseract stdin stdout <args>` argv, one image
+// on the process's stdin — in a THROWAWAY process, and reports whether the
+// engine answered with the TSV the wrapper parses. It is the pool's startup
+// capability check (ADR-0100): a property of the engine, measured
+// independently of the pool's slots, so the check never perturbs the pool's
+// operational state (slot count, the degrade count, the backoff) — a pool
+// that starts on a healthy engine is exactly the pool the reads expect.
+//
+// The verdicts, in the wrapper's typed kinds:
+//
+//   - a settled answer that parses as the TSV (an empty answer is fine):
+//     nil — the protocol holds.
+//   - a clean exit whose stdout is not the TSV the wrapper's argv asked for:
+//     a Failure wrapping ErrTSVUnparseable — the engine lacks the protocol;
+//     the pool serves every read on the per-process fallback.
+//   - a non-zero exit, a crash, a deadline, an unstartable binary: the
+//     ordinary read failures (ErrFailed/ErrTimeout/ErrEngineUnavailable).
+//     The engine may still speak the protocol; it failed this read, and the
+//     pool's ordinary machinery owns a failing engine.
+func (t Tesseract) probeSlotProtocol(ctx context.Context, pngBytes []byte, budget time.Duration) error {
+	bin, err := t.binary()
+	if err != nil {
+		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrPermission) || errors.Is(err, os.ErrNotExist) {
+			return &Failure{Kind: ErrEngineUnavailable, Engine: t.Name(), Err: err}
+		}
+		return &Failure{Kind: ErrFailed, Engine: t.Name(), Err: err}
+	}
+	runCtx, cancel := context.WithTimeoutCause(ctx, budget, ErrTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(runCtx, bin, append([]string{"stdin", "stdout"}, t.args()...)...)
+	supervise(cmd)
+	limit := t.StdoutCap
+	if limit <= 0 {
+		limit = DefaultStdoutCap
+	}
+	tail := t.StderrTail
+	if tail <= 0 {
+		tail = DefaultStderrTail
+	}
+	var stdout bytes.Buffer
+	stdout.Grow(1 << 14)
+	out := &stdoutWriter{buf: &stdout, cap: uint64(limit)}
+	errW := &tailWriter{limit: tail}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return &Failure{Kind: ErrFailed, Engine: t.Name(), Err: err}
+	}
+	cmd.Stdout = out
+	cmd.Stderr = errW
+
+	if startErr := cmd.Start(); startErr != nil {
+		if errors.Is(startErr, exec.ErrNotFound) || errors.Is(startErr, os.ErrPermission) || errors.Is(startErr, os.ErrNotExist) {
+			return &Failure{Kind: ErrEngineUnavailable, Engine: t.Name(), Args: t.args(), Err: startErr}
+		}
+		return &Failure{Kind: ErrFailed, Engine: t.Name(), Args: t.args(), Err: startErr}
+	}
+	// The slot protocol's shape: one image on stdin, then EOF. A write that
+	// fails is the engine dying before it read the image; Wait says so.
+	if _, werr := stdin.Write(pngBytes); werr == nil {
+		werr = stdin.Close()
+	} else {
+		stdin.Close()
+	}
+	waitErr := cmd.Wait()
+
+	if cause := context.Cause(runCtx); cause != nil {
+		kind := ErrCancelled
+		if errors.Is(cause, ErrTimeout) {
+			kind = ErrTimeout
+		}
+		return &Failure{Kind: kind, Engine: t.Name(), Args: t.args(), Stderr: errW.String(), Err: cause}
+	}
+	if out.over {
+		return &Failure{Kind: ErrOutputTooLarge, Engine: t.Name(), Args: t.args(), Stderr: errW.String(), Err: fmt.Errorf("stdout exceeded %d bytes", limit)}
+	}
+	if waitErr != nil {
+		return &Failure{Kind: ErrFailed, Engine: t.Name(), Args: t.args(), Stderr: errW.String(), Err: waitErr}
+	}
+	if _, perr := ParseTSV(stdout.Bytes()); perr != nil {
+		return &Failure{Kind: ErrFailed, Engine: t.Name(), Args: t.args(), Stderr: errW.String(), Err: perr}
+	}
+	return nil
+}
+
 // deadline resolves the per-recognition bound.
 func (t Tesseract) deadline() time.Duration {
 	if t.Timeout > 0 {
@@ -329,7 +415,9 @@ func (w *tailWriter) String() string {
 
 // ParseTSV turns Tesseract's TSV into a Result. It is exported for the recorded
 // output test and for replaying a captured engine response without the binary
-// (docs/spec/12 "captured-frame replay").
+// (docs/spec/12 "captured-frame replay"). A stream that cannot be read as that
+// TSV comes back wrapped in ErrTSVUnparseable (see the sentinel's comment for
+// the pool probe that reads it).
 //
 // Row roles come from the numbering columns, not from `level`. Tesseract's level
 // values shifted when the page row was introduced — 4.x/5.x emit 1=page … 5=word,
@@ -347,10 +435,10 @@ func (w *tailWriter) String() string {
 func ParseTSV(data []byte) (Result, error) {
 	lines := splitTSVLines(data)
 	if len(lines) == 0 {
-		return Result{}, errors.New("vision/ocr: empty tsv output")
+		return Result{}, fmt.Errorf("%w: empty tsv output", ErrTSVUnparseable)
 	}
 	if head := strings.Split(lines[0], "\t"); len(head) == 0 || strings.TrimSpace(head[0]) != "level" {
-		return Result{}, fmt.Errorf("vision/ocr: tsv header missing level column: %q", firstLine(data))
+		return Result{}, fmt.Errorf("%w: tsv header missing level column: %q", ErrTSVUnparseable, firstLine(data))
 	}
 
 	var res Result

@@ -254,16 +254,90 @@ func msg(id, text string) games.Message {
 // stall at the recognition stage while the source is observed to have delivered
 // the whole clip, so a drop count the test asserts on no longer depends on which
 // side of a wall-clock race the machine happened to be on.
+//
+// quiescent, when non-nil, is kicked (non-blocking) after every recognition
+// returns. It is a wake-up, not the truth: the predicate a waiter must check is
+// InFlight() == 0, and the kick only re-runs that check. A lost kick (buffer
+// full) is harmless because the check reads the count under the same mutex the
+// counter updates under, so a waiter that sees 0 is done and a waiter that
+// waits is woken by the next counter change.
+//
+// settled counts every returned recognition (success, error, or cancellation)
+// under the same mutex as inFlight. With one worker (MaxConcurrentOCR = 1)
+// recognitions are strictly serial, so (settled, inFlight) is a consistent
+// watermark a gate can wait on: a gate that observes inFlight == 0 after the
+// last box frame has been accepted knows every job the box frames dispatched
+// has either returned (counted in settled) or is owed an answer that will kick
+// quiescent on the way out — a job cannot be dispatched after the last box
+// frame's accept, and a job dispatched before it is visible as inFlight until
+// its return.
 type fakeOCR struct {
 	script     map[string]string
 	delay      func(text string) time.Duration
 	respectCtx bool
 	gate       chan struct{}
+	quiescent  chan struct{}
 
 	calls    atomic.Int64
 	misses   atomic.Int64
 	mu       sync.Mutex
 	inFlight map[string]int
+	settled  int
+}
+
+// InFlight reports how many Recognize calls are inside the engine right now.
+func (f *fakeOCR) InFlight() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.inFlightCount()
+}
+
+// Settled reports how many recognitions have fully returned. It advances under
+// the same lock as InFlight, so a gate that reads both sees one snapshot.
+func (f *fakeOCR) Settled() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.settled
+}
+
+func (f *fakeOCR) inFlightCount() int {
+	n := 0
+	for _, c := range f.inFlight {
+		n += c
+	}
+	return n
+}
+
+// kickQuiescent wakes waiters that are checking InFlight(). Non-blocking: a kick
+// lost to a full buffer is a no-op, because the waiter re-checks the predicate
+// on every wake and the next counter change kicks again.
+func (f *fakeOCR) kickQuiescent() {
+	if f.quiescent == nil {
+		return
+	}
+	select {
+	case f.quiescent <- struct{}{}:
+	default:
+	}
+}
+
+// waitQuiescent blocks until the engine reports zero in-flight recognitions.
+// It is the channel-sync half of the tail gating: the clip's tail is delivered
+// only once the reads the box frames started have settled, so a box-absent
+// frame is never accepted mid-read on a scheduler whim. ctx bounds a wedged
+// engine.
+func waitQuiescent(t *testing.T, f *fakeOCR, ctx context.Context) {
+	t.Helper()
+	for {
+		if f.InFlight() == 0 {
+			return
+		}
+		select {
+		case <-f.quiescent:
+		case <-ctx.Done():
+			t.Fatalf("fake OCR never went quiescent (ctx done while a call is in flight): the engine wedged")
+		}
+	}
 }
 
 func (f *fakeOCR) Name() string { return "fake" }
@@ -272,6 +346,19 @@ func (f *fakeOCR) Recognize(ctx context.Context, img image.Image) (ocr.Result, e
 	if img == nil || img.Bounds().Empty() {
 		return ocr.Result{}, &ocr.Failure{Kind: ocr.ErrFailed, Engine: "fake", Err: context.DeadlineExceeded}
 	}
+	f.mu.Lock()
+	if f.inFlight == nil {
+		f.inFlight = map[string]int{}
+	}
+	f.inFlight["all"]++
+	f.mu.Unlock()
+	defer func() {
+		f.mu.Lock()
+		f.inFlight["all"]--
+		f.settled++
+		f.mu.Unlock()
+		f.kickQuiescent()
+	}()
 	n := f.calls.Add(1)
 	_ = n
 	key := vision.ImageHash(img)

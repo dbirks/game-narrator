@@ -56,6 +56,38 @@ func TestEvalMessageDetected(t *testing.T) {
 	}
 }
 
+// TestEvalMessageDetectedCorpusAnchor pins the engine-free anchor (the CI
+// version drift: the CI distro's tesseract 5.3 and the dev host's 5.5 read
+// the same preprocessed fixture crop differently — "crossing" vs
+// "crossina" on the Black Water clip — same fixture, same commit decision,
+// different glyphs): with the profile's corpus, the committed corpus line
+// anchors the truth match, not the run's OCR text; without it, or for a
+// commit the corpus cannot name, the OCR text is the anchor, as before.
+func TestEvalMessageDetectedCorpusAnchor(t *testing.T) {
+	a := Assertion{Type: "message_detected", MessageID: "bw-a", MaxDelayMS: 1500}
+	truth := []Truth{{File: "frame-005.png", TsNS: 500_000_000, Text: "You paid the ferryman. The crossing is done now.", Line: "a", Full: true}}
+	corpus := map[string]string{"bw-a": fold("You paid the ferryman. The crossing is done now.")}
+	// A commit whose OCR text the truth never shows: the engine's glyph
+	// error on the fixture's line.
+	misread := []events.Envelope{commitEventWithText("bw-a", "you paid the ferryman. the crossina is done now.", 1_500_000_000)}
+
+	// Without the corpus the OCR text is the anchor: the truth never showed
+	// it, so the check fails — the version-sensitive shape.
+	if r := sc(a).Evaluate(misread, pipeline.Stats{}, truth); r.Passed {
+		t.Fatalf("without the corpus, the misread OCR text must not match the truth: %+v", r.Results)
+	}
+	// With the corpus, the committed corpus line is the anchor: the truth
+	// shows it in full and the commit lands 1000 ms after it — pass.
+	if r := sc(a).EvaluateWith(misread, pipeline.Stats{}, truth, EvaluateOpts{Corpus: corpus}); !r.Passed {
+		t.Fatalf("the corpus line must anchor the commit regardless of the engine's read: %+v", r.Results)
+	}
+	// A commit the corpus cannot name keeps the OCR text as its anchor.
+	unknown := []events.Envelope{commitEventWithText("unknown", "you paid the ferryman. the crossina is done now.", 1_500_000_000)}
+	if r := sc(a).EvaluateWith(unknown, pipeline.Stats{}, truth, EvaluateOpts{Corpus: corpus}); r.Passed {
+		t.Fatalf("a commit the corpus cannot name must still anchor on the OCR text: %+v", r.Results)
+	}
+}
+
 func TestEvalCommittedCount(t *testing.T) {
 	a := Assertion{Type: "message_committed_count", MessageID: "demo-page-1", Count: 1}
 	two := []events.Envelope{

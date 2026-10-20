@@ -147,6 +147,12 @@ var (
 	// ErrOutputTooLarge means stdout exceeded the configured cap; the result is
 	// untrustworthy, so it is an error rather than a truncation.
 	ErrOutputTooLarge = errors.New("vision/ocr: engine output exceeded the cap")
+	// ErrTSVUnparseable means the engine settled with a clean exit but its
+	// stdout is not the TSV the wrapper's argv asked for. It is the pool's
+	// startup probe (ADR-0100) verdict signal: the engine lacks the slot
+	// protocol the pool is built on — a different shape from a read that
+	// failed (a non-zero exit or a crash, ErrFailed/ErrTimeout).
+	ErrTSVUnparseable = errors.New("vision/ocr: unreadable tsv output")
 )
 
 // Failure carries the engine's own words alongside the kind. Stderr is truncated

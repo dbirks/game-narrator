@@ -47,6 +47,26 @@ import (
 // Privacy (docs/spec/14) is unchanged from the per-process path: a slot
 // receives exactly the crop bytes that path would have written to its 0600
 // temp file, and nothing else crosses the pipe.
+//
+// The slot protocol is a capability, measured at startup, not an assumption
+// (ADR-0100, capability probe): NewPooled settles one small real read
+// through the slot protocol in a THROWAWAY process (runProbe →
+// Tesseract.probeSlotProtocol) — one image on the process's stdin, the TSV
+// answer on its stdout, the process's exit. The throwaway shape is deliberate:
+// the verdict is a property of the engine, so measuring it must not perturb
+// the pool's operational state (no slot consumed, no degrade count, no
+// backoff) — the reads find exactly the pool NewPooled built. An engine
+// whose settled answer is not the TSV the wrapper parses lacks the protocol
+// the pool is built on (a tesseract build without stdin input, a wrapper
+// around another engine); the pool then serves every read on the per-process
+// fallback (decision 3's shape for a capability the engine lacks, not a
+// crash) and stops spending read deadlines on slots that cannot settle. A
+// read that races the unsettled probe runs the slot path as normal — worst
+// case one read's deadline, one typed failure — after which the verdict is
+// final and every read takes the fallback. An engine that merely fails the
+// probe (a broken tessdata, a crash, the probe's own budget under load) may
+// still speak the protocol; it failed one read, and decision 3's ordinary
+// machinery owns a failing engine.
 type Pooled struct {
 	// Tesseract is the shared engine configuration (Path, Lang, PSM, OEM,
 	// Whitelist, Timeout, caps) and the per-process fallback this pool runs
@@ -71,6 +91,16 @@ type Pooled struct {
 	// capped). A read that owns no slot spawns anyway: the read's deadline is
 	// its bound, and a broken engine fails fast either way.
 	backoffUntil time.Time
+	// probeDone is closed once the startup capability probe (runProbe) has
+	// settled or given up. A read never parks on it (it checks the verdict,
+	// probeUnsupported — see Recognize's comment); it is the liveness handle
+	// Close and the tests observe.
+	probeDone chan struct{}
+	// probeUnsupported is the verdict the probe records (under mu, final
+	// once probeDone is closed): the engine's settled probe answer was not
+	// the TSV the wrapper parses — the engine lacks the slot protocol. Every
+	// read then runs the per-process fallback.
+	probeUnsupported bool
 	// readGate serialises OCR execution: one in-flight read (ADR-0100
 	// decision 2). It is a one-slot semaphore, not a queue — the waiter is the
 	// pipeline's own bounded worker, and its deadline is the wait bound
@@ -108,7 +138,7 @@ const DefaultDegradeFails = 4
 type pooledSlot struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
-	stdout io.ReadCloser // cmd.StdoutPipe(), taken before Start
+	stdout *stdoutWriter // cmd.Stdout, owned by Wait's copy goroutine until done
 	stderr *tailWriter   // the engine's stderr tail (exec drains it for us)
 	born   time.Time
 	dead   bool // exited (consumed or died while warm)
@@ -131,7 +161,11 @@ type pooledSlot struct {
 // NewPooled returns a pool ready to accept reads. The warm spawns start in
 // the background immediately: a read arriving within ~0.6 s of construction
 // still finds its slot loading (it pays the startup inline — exactly the
-// per-process cost, never worse), and later reads find it warm.
+// per-process cost, never worse), and later reads find it warm. The startup
+// capability probe (runProbe) settles in the background too, in a
+// throwaway process that touches none of the pool's slots: a read that
+// races it runs the slot path as normal, and once the verdict is settled on
+// an unsupported engine every read takes the per-process path.
 // Construction never blocks and never fails: a missing binary is the read's
 // typed ErrEngineUnavailable, the wrapper's contract (ADR-0012).
 func NewPooled(t Tesseract, slots int) *Pooled {
@@ -145,11 +179,17 @@ func NewPooled(t Tesseract, slots int) *Pooled {
 		Tesseract: t,
 		Slots:     slots,
 		readGate:  make(chan struct{}, 1),
+		probeDone: make(chan struct{}),
 	}
 	p.readGate <- struct{}{} // one in-flight read at a time
 	for i := 0; i < slots; i++ {
 		p.spawnLocked()
 	}
+	// The probe runs the slot protocol end to end with one small real read —
+	// the measured basis of the pool (ADR-0100) is verified on this engine,
+	// not assumed for it.
+	p.spawnWg.Add(1)
+	go p.runProbe()
 	return p
 }
 
@@ -197,6 +237,24 @@ func (p *Pooled) Recognize(ctx context.Context, img image.Image) (Result, error)
 		return Result{}, &Failure{Kind: ErrFailed, Engine: p.Name(), Err: errors.New("no pixels to read")}
 	}
 	deadline := p.deadline()
+
+	// The startup capability verdict (ADR-0100, capability probe): if the
+	// probe has already settled on "the engine does not speak the slot
+	// protocol", the per-process path is the only one it does (decision 3's
+	// shape for a capability the engine lacks, not a crash — the probe's
+	// typed verdict, not the crash-loop count, got the pool here). A read
+	// that races the unsettled probe runs the slot path as normal: it
+	// settles with the probe — worst case one read's deadline, one typed
+	// failure — and every read after the verdict takes the fallback. The
+	// read never parks on the verdict: the probe holds the one-read gate
+	// while settling, and a read holding the gate while waiting for it would
+	// deadlock the probe (the read's deadline and the probe's budget would
+	// run out together).
+	if p.unsupported() {
+		fb := p.Tesseract
+		fb.Timeout = deadline - time.Since(start)
+		return fb.Recognize(ctx, img)
+	}
 
 	// The one-read gate (ADR-0100 decision 2): the waiter is the pipeline's
 	// own bounded worker; its deadline bounds the wait (docs/spec/13).
@@ -286,6 +344,95 @@ func (p *Pooled) Recognize(ctx context.Context, img image.Image) (Result, error)
 	return res, nil
 }
 
+// probeUnsupported reports the probe's verdict (under mu). It is final once
+// probeDone is closed: the probe sets it and never clears it.
+func (p *Pooled) unsupported() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.probeUnsupported
+}
+
+// probeImage is the probe read's input: a small blank crop. The engine has
+// nothing to read (the answer is an empty TSV); the probe verifies the slot
+// protocol — spawn, one image on stdin, the TSV answer, the slot's exit —
+// not a recognition. The 16×16 shape is the ADR-0100 fixed-startup probe's.
+func probeImage() image.Image { return image.NewGray(image.Rect(0, 0, 16, 16)) }
+
+// runProbe settles one small real read through the engine's slot protocol and
+// records the capability verdict (the type comment above): does the engine
+// take one image on its stdin stream and answer with the TSV the wrapper
+// parses?
+//
+// The check runs in a THROWAWAY process, not a pool slot (ADR-0100, capability
+// probe): the verdict is a property of the engine, and measuring it must not
+// perturb the pool's operational state — no slot consumed, no degrade count,
+// no backoff. The pool the reads find is the pool NewPooled built, healthy or
+// not. The probe still holds the one-read gate while it runs: it runs the
+// model, and a model load overlapping a read is the measured hazard
+// (ADR-0100 decision 2), so the probe serialises with reads exactly as a read
+// does. Its bound is the engine's own deadline (p.deadline): the probe settles
+// with any read, and a probe the deadline outruns has the engine merely slow,
+// which the ordinary machinery owns.
+//
+// The verdict:
+//
+//   - a settled, parseable TSV: the protocol holds; nothing is recorded and
+//     every read runs the slot path as normal.
+//   - a settled, unparseable answer (ErrTSVUnparseable): the engine lacks the
+//     protocol; the probeUnsupported flag is set (under mu, final once
+//     probeDone closes) and every read runs the per-process fallback. No
+//     failure count follows — the engine is not crashing, it is answering in
+//     a language the wrapper does not speak, and the crash-loop machinery
+//     must not also own it.
+//   - everything else (a non-zero exit, a crash, the deadline under load, an
+//     unstartable binary): the engine may still speak the protocol; it failed
+//     this read, and the verdict simply is not "the protocol is missing".
+//
+// probeDone closes on every path — including a pool closed before the probe
+// settled — so a reader observing the verdict is never parked forever.
+func (p *Pooled) runProbe() {
+	defer p.spawnWg.Done()
+	defer close(p.probeDone)
+
+	budget := p.deadline()
+	runCtx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+
+	// Serialise with reads (ADR-0100 decision 2): the probe runs the model,
+	// and a model load overlapping a read degrades the read. The probe's own
+	// deadline bounds the gate wait, so the probe never parks a reader past
+	// the engine's deadline.
+	select {
+	case <-p.readGate:
+	case <-runCtx.Done():
+		// The budget ran out on the gate (a reader held it for its whole
+		// deadline): no verdict, and the readers that wanted one run the slot
+		// path on their own deadlines. The probe is done; nothing is retried
+		// (the first real read retries the engine on its own deadline anyway).
+		return
+	}
+	defer func() { p.readGate <- struct{}{} }()
+
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
+	p.mu.Unlock()
+
+	pngBytes, err := encodePNG(probeImage())
+	if err != nil {
+		return
+	}
+	err = p.Tesseract.probeSlotProtocol(runCtx, pngBytes, budget)
+	var f *Failure
+	if err != nil && errors.As(err, &f) && errors.Is(f.Err, ErrTSVUnparseable) {
+		p.mu.Lock()
+		p.probeUnsupported = true
+		p.mu.Unlock()
+	}
+}
+
 // pickSlotLocked returns a slot for one read, or nil when the fallback must
 // serve. Callers hold p.mu.
 func (p *Pooled) pickSlotLocked() *pooledSlot {
@@ -342,13 +489,23 @@ func (p *Pooled) spawnLocked() *pooledSlot {
 	cmd := exec.Command(bin, args...)
 	superviseSlot(cmd)
 	cmd.Stderr = &tailWriter{limit: tail} // exec drains the engine's stderr into the bounded tail
+	// The TSV travels through a Wait-owned buffer, not a StdoutPipe the read
+	// drains: Wait closes a StdoutPipe's read end "after seeing the command
+	// exit", so a drain racing that close can observe a clean exit with the
+	// answer still unread in the pipe buffer — an empty-output failure on a
+	// child that answered correctly (ADR-0100 correction). The buffer's
+	// single owner is Wait's copy goroutine (the wrapper's and
+	// probeSlotProtocol's proven pattern), and its cap is the wrapper's
+	// StdoutCap, which bounds a misbehaving child's heap growth (docs/spec/13).
+	limit := p.StdoutCap
+	if limit <= 0 {
+		limit = DefaultStdoutCap
+	}
+	var stdoutBuf bytes.Buffer
+	stdoutBuf.Grow(1 << 14)
+	cmd.Stdout = &stdoutWriter{buf: &stdoutBuf, cap: uint64(limit)}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return p.spawnFailureLocked(err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		stdin.Close()
 		return p.spawnFailureLocked(err)
 	}
 	if err := cmd.Start(); err != nil {
@@ -364,7 +521,7 @@ func (p *Pooled) spawnLocked() *pooledSlot {
 	s := &pooledSlot{
 		cmd:    cmd,
 		stdin:  stdin,
-		stdout: stdout,
+		stdout: cmd.Stdout.(*stdoutWriter),
 		stderr: cmd.Stderr.(*tailWriter),
 		born:   time.Now(),
 		done:   make(chan error, 1),
@@ -436,11 +593,6 @@ func (p *Pooled) runSlotRead(ctx context.Context, slot *pooledSlot, pngBytes []b
 	}()
 	defer close(settled)
 
-	limit := p.StdoutCap
-	if limit <= 0 {
-		limit = DefaultStdoutCap
-	}
-
 	if _, err := slot.stdin.Write(pngBytes); err != nil {
 		// EPIPE before the first byte: the slot died between selection and
 		// the write. The typed failure carries what its stderr holds.
@@ -459,24 +611,21 @@ func (p *Pooled) runSlotRead(ctx context.Context, slot *pooledSlot, pngBytes []b
 		_ = slot.stdin.Close()
 	}
 
-	var stdout bytes.Buffer
-	stdout.Grow(1 << 14)
-	out := &stdoutWriter{buf: &stdout, cap: uint64(limit)}
-	// Drain to EOF: the pipe closes when the process exits (naturally, or via
-	// the deadline kill above), so this returns either way. A pipe that is not
-	// drained is how a child wedges forever (ADR-0012).
-	if _, copyErr := io.Copy(out, slot.stdout); copyErr != nil && !errors.Is(copyErr, io.EOF) {
-		// A short drain the exit status will explain below.
-	}
+	// The watcher's Wait owns the TSV: it copies the slot's stdout into
+	// slot.stdout (the wrapper's cap-carrying writer) and — with no
+	// StdoutPipe left for it to close — cannot race the read's view of the
+	// buffer. done is the happens-after edge: by the time it fires, the copy
+	// has completed (or was abandoned at the 250 ms WaitDelay, in which case
+	// the exit status below says so). The buffer's cap is the wrapper's
+	// StdoutCap, so a misbehaving child cannot grow the heap unboundedly
+	// (docs/spec/13); the over flag is checked after done, under the same
+	// happens-after.
 	var waitErr error
 	select {
 	case waitErr = <-slot.done:
 	case <-killed:
 		waitErr = errors.New("vision/ocr: the engine slot was killed at its deadline")
 	}
-	// Close the read side of the stdout pipe: the watcher's Wait (exec's
-	// pipe-copy goroutine) can only finish once both ends are done.
-	_ = slot.stdout.Close()
 
 	elapsed := time.Since(start)
 	if cause := context.Cause(runCtx); cause != nil {
@@ -492,13 +641,13 @@ func (p *Pooled) runSlotRead(ctx context.Context, slot *pooledSlot, pngBytes []b
 			Err:    cause,
 		}
 	}
-	if out.over {
+	if slot.stdout.over {
 		return Result{}, &Failure{
 			Kind:   ErrOutputTooLarge,
 			Engine: p.Name(),
 			Args:   p.Tesseract.args(),
 			Stderr: slot.stderr.String(),
-			Err:    fmt.Errorf("stdout exceeded %d bytes", limit),
+			Err:    fmt.Errorf("stdout exceeded %d bytes", slot.stdout.cap),
 		}
 	}
 	if waitErr != nil {
@@ -510,7 +659,7 @@ func (p *Pooled) runSlotRead(ctx context.Context, slot *pooledSlot, pngBytes []b
 			Err:    waitErr,
 		}
 	}
-	res, perr := ParseTSV(stdout.Bytes())
+	res, perr := ParseTSV(slot.stdout.buf.Bytes())
 	if perr != nil {
 		return Result{}, &Failure{
 			Kind:   ErrFailed,

@@ -180,6 +180,19 @@ func LoadProfile(path string) (*Profile, error) {
 	return &p, nil
 }
 
+// CorpusFold is the message-id to normalized-text map the evaluator needs to
+// anchor message_detected to the committed message's corpus line (the
+// engine-free comparison, evaluate.go): the ground truth and the corpus are
+// generated from the same sentences (docs/spec/11 "Fixture origins"), so the
+// corpus line is the run-independent identity of what a page showed.
+func (p *Profile) CorpusFold() map[string]string {
+	out := make(map[string]string, len(p.Messages))
+	for _, m := range p.Messages {
+		out[m.ID] = fold(m.OriginalText)
+	}
+	return out
+}
+
 // Messages renders the rows as games.Message: original text is kept for
 // display, normalized text is the retrieval key (docs/spec/02 stores the
 // renderings side by side), speech text is what a narrator would say, and

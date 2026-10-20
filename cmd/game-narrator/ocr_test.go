@@ -25,6 +25,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/games"
 	"github.com/dbirks/game-narrator/internal/scenario"
 	"github.com/dbirks/game-narrator/internal/store"
+	"github.com/dbirks/game-narrator/internal/vision/ocr"
 )
 
 const (
@@ -40,6 +41,16 @@ func ocrLog() *slog.Logger { return slog.New(slog.NewJSONHandler(io.Discard, nil
 func ocrHasTesseract() bool {
 	_, err := exec.LookPath("tesseract")
 	return err == nil
+}
+
+// scaleOCRTestBudget scales the one-shot command's engine budget for the
+// real-Tesseract tests: the 5× (or 1×) comes from the package's
+// race_on_test.go / race_off_test.go — the unscaled 4 s default timed out
+// a region read on the 2-core -race runner (CI run 39424864849, this
+// package's profile test; the pipeline and vision/ocr packages' 39090252213
+// precedent). Call it before any run in the test.
+func scaleOCRTestBudget() {
+	ocrEngineBudget = ocr.DefaultTimeout * time.Duration(ocrEngineBudgetScale)
 }
 
 // TestRunOCRUsage pins the command's contract: exactly one of --device /
@@ -78,6 +89,7 @@ func TestRunOCRImageJSON(t *testing.T) {
 	if !ocrHasTesseract() {
 		t.Skip("NOT RUN: tesseract is not installed on this host; the --image path needs the real engine (install it and re-run, docs/spec/10)")
 	}
+	scaleOCRTestBudget()
 	log := ocrLog()
 	dataDir := t.TempDir()
 	captured := captureStdout(t, func() int {
@@ -158,6 +170,7 @@ func TestRunOCRImageSaveDebug(t *testing.T) {
 	if !ocrHasTesseract() {
 		t.Skip("NOT RUN: tesseract is not installed on this host (install it and re-run, docs/spec/10)")
 	}
+	scaleOCRTestBudget()
 	log := ocrLog()
 	dataDir := t.TempDir()
 	debugDir := filepath.Join(t.TempDir(), "debug")
@@ -337,6 +350,7 @@ func TestRunOCRGameRanksAgainstThePublishedProfile(t *testing.T) {
 	if !ocrHasTesseract() {
 		t.Skip("NOT RUN: tesseract is not installed on this host (install it and re-run, docs/spec/10)")
 	}
+	scaleOCRTestBudget()
 	log := ocrLog()
 	dataDir := t.TempDir()
 

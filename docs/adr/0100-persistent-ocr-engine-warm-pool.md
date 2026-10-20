@@ -132,6 +132,41 @@ and the only hazard is overlapping a model load with an in-flight read.
    the one-shot command now runs the pooled engine). The controlled 400×100
    crop is the gate's self-contained input (game crops cannot be committed);
    the dialogue-crop p50/p95 evidence is the board measurement above.
+8. **The slot protocol is a capability the pool detects at startup, not an
+   assumption (capability probe).** The pool's slots run the engine's
+   `stdin` operand — one image on the slot's stdin, the TSV answer on its
+   stdout, the slot's exit — a protocol measured on the engine ADR-0100
+   ships with (stock tesseract, ADR-0012 §1), not a contract every
+   `Engine`-shaped binary carries. `NewPooled` therefore settles one small
+   real read through the slot protocol in a **throwaway process** at
+   construction (`Tesseract.probeSlotProtocol`, `Pooled.runProbe`), bounded
+   by the engine's own deadline and serialised on the pool's one-read gate
+   (the probe runs the model; a model load overlapping a read is the
+   decision-2 hazard). The verdict:
+
+   - a settled answer that parses as the wrapper's TSV (empty is fine):
+     the protocol holds; nothing is recorded.
+   - a settled answer that is **not** the TSV the wrapper's argv asks for
+     (`ErrTSVUnparseable`, a clean exit with an unparseable stream): the
+     engine lacks the protocol. `Pooled` records the verdict and serves
+     **every** read on the per-process fallback — decision 3's shape for a
+     capability the engine lacks, triggered by the probe's typed verdict
+     rather than the crash-loop count. An engine that cannot read `stdin`
+     would otherwise fail every slot read with a typed error while the pool
+     churned spawn/crash/backoff for a protocol the engine never had.
+   - anything else (non-zero exit, crash, the deadline, an unstartable
+     binary): the engine may still speak the protocol; it failed this read,
+     and decision 3's ordinary machinery owns a failing engine.
+
+   The throwaway shape is deliberate: the verdict is a property of the
+   engine, and measuring it must not perturb the pool's operational state —
+   no slot consumed, no degrade count, no backoff — so the reads find
+   exactly the pool `NewPooled` built. A read that races the unsettled probe
+   runs the slot path as normal (worst case: one read's deadline, one typed
+   failure); once the verdict is settled on an unsupported engine, every
+   read takes the fallback. The probe's image is the ADR's fixed-startup
+   16×16 probe: the probe verifies the protocol (spawn, one image on stdin,
+   the TSV answer, the exit), not a recognition.
 
 ## Alternatives considered
 
@@ -210,6 +245,13 @@ and the only hazard is overlapping a model load with an in-flight read.
   the TSV on its stdout is parsed, the argv is `stdin stdout <engine args>`,
   and a second read on the pool runs a replacement slot (the model is kept
   loaded across reads: both reads settle, the stub records two invocations).
+- `TestPooledFallsBackToPerProcessWhenSlotProtocolUnsupported` (decision 8,
+  the capability probe): a fake engine that lacks the slot protocol — its
+  `stdin` operand answers in a shape the wrapper does not parse (a clean
+  exit, not the TSV) while its file-operand path speaks TSV. The startup
+  probe records the verdict, and every read after it runs the per-process
+  path: the reads settle with the fallback's text, and the argv log proves
+  no read after the verdict ever used the slot protocol.
 - `TestPooledCrashRecoversWithBackoff` / `TestPooledDegradedPoolFallsBackToPerProcess`:
   a stub that dies on its first N reads (SIGKILL itself) — the next read is
   served by a replacement (recovery), and after four consecutive failures
@@ -259,3 +301,26 @@ is replaced by the next release.
 - **A libtesseract-linked helper** remains the only path below the ~0.57 s
   inference floor; it needs a release-pipeline ADR (second native artifact)
   and is out of scope while the inference-only read beats the 700 ms target.
+
+## Correction (2026-10-20): the slot's TSV is Wait-owned, not reader-drained
+
+Decision 4's "stdout pipes are drained to EOF before the read returns"
+shipped with a race: the slot's stdout was a `StdoutPipe` the read drained
+with `io.Copy`, while the slot's watcher — the only legal `cmd.Wait` caller
+— runs `Wait` concurrently. `Wait` closes a StdoutPipe's read end "after
+seeing the command exit" (os/exec), so a drain descheduled between the
+child's exit and its pipe-buffer read loses the TSV: the read then parses
+empty output on a clean exit — `empty tsv output` on a child that answered
+correctly. Observed once under full parallel `-race` load
+(`TestPooledReadsThroughTheSlotProtocol`), never in isolation: it needs the
+reader descheduled at the exact exit moment.
+
+Fixed the way `Tesseract.Recognize` and `probeSlotProtocol` already do it:
+the slot's stdout is a `Wait`-owned, `StdoutCap`-bounded buffer
+(`stdoutWriter`), and the read waits on the watcher's `done` — the
+happens-after edge that makes the buffer's contents readable — instead of
+draining a pipe it does not own. This also closes the one gap the decision's
+cap claim had: the drain path's buffer was unbounded, so a misbehaving
+child's heap growth was not actually bounded by the wrapper's 8 MiB cap;
+the Wait-owned buffer is. Decision 4's drain sentence is superseded by this
+correction; the rest of the decision stands.

@@ -218,6 +218,18 @@ func TestLiveOCRNeverRunsMoreThanTheCap(t *testing.T) {
 // well-behaved engine dies on its own deadline (OCRTimeout) before the belt
 // (OCRTimeout+250ms) can fire, and the belt exists precisely for an engine
 // that ignores cancellation and answers late.
+//
+// The clip's tail is deterministic by construction (channel sync, not wall
+// clock): the 500 ms read spans exactly five 100 ms frames, so a box-ABSENT
+// tail — delivered 600 ms after the last box frame — landed mid-read whenever
+// the scheduler let the tail's accept outrun the last settle, and
+// discardInflight's legitimate kill was counted against the run. The tail is
+// instead a FROZEN copy of the last box frame (staticTailScene): box-present
+// frames ride the shared read or dedupe, they never kill it. And the tail is
+// delivered only after the box frames' reads have settled — the gate below
+// releases it on the engine's own quiescence signal (fakeOCR.quiescent / InFlight),
+// never on a wall-clock guess — so the run's tail cannot outrun the last read
+// either.
 func TestAgeOutDropsStaleObservationNotTheSharedRead(t *testing.T) {
 	// Script: every box frame's preprocessed crop to its line (the churn clip
 	// from the pacing test: a box over an always-moving picture, stable text).
@@ -229,15 +241,43 @@ func TestAgeOutDropsStaleObservationNotTheSharedRead(t *testing.T) {
 	// (OCRTimeout 100ms + 250ms) so the belt fires while the read is in flight,
 	// and the engine ignores the job's deadline so the read settles at 500 ms
 	// with the riders still waiting on it.
-	eng := &fakeOCR{script: script, delay: func(string) time.Duration { return 500 * time.Millisecond }, respectCtx: false}
+	eng := &fakeOCR{
+		script:     script,
+		delay:      func(string) time.Duration { return 500 * time.Millisecond },
+		respectCtx: false,
+		quiescent:  make(chan struct{}, 4),
+	}
 	reg := games.Region{ID: "churnbox", RegionType: games.RegionTextbox,
 		RectX: churnBoxX, RectY: churnBoxY, RectW: churnBoxW, RectH: churnBoxH}
 	h := newHarness(t, eng, func(c *pipeline.Config) {
 		c.Regions = []games.Region{reg}
 		c.Queue = pipeline.QueueLatest
 		c.OCRTimeout = 100 * time.Millisecond
+		// Serial reads: the test's subject is the belt vs the shared read, not
+		// the concurrency cap, and one worker makes the engine's quiescence
+		// watermark the exact ledger of "every box-frame read has returned".
+		c.MaxConcurrentOCR = 1
 	})
-	st, _, err := h.run(t, &churnSource{interval: churnInterval})
+	// The gate: once every box frame is delivered, wait for the engine to go
+	// quiescent (every read the box frames started has returned) and only then
+	// release the frozen tail. Channel sync, not a sleep: the release rides on
+	// the engine's own settle signal, so the tail's accept can never race the
+	// last read on scheduler slack.
+	hold := make(chan struct{})
+	boxDone := make(chan struct{})
+	src := &churnSource{
+		interval: churnInterval,
+		scene:    staticTailScene,
+		hold:     hold,
+		holdAt:   20,
+		boxDone:  boxDone,
+	}
+	go func() {
+		<-boxDone // the source has delivered every box frame (k=0..19)
+		waitQuiescent(t, eng, context.Background())
+		close(hold)
+	}()
+	st, _, err := h.run(t, src)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

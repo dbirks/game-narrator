@@ -104,8 +104,28 @@ func churnCrop(k int) image.Image {
 // churnSource delivers the synthetic clip at a steady interval — the live-feed
 // shape (the bridge's x11grab at N fps), unlike a recording's bursty
 // timestamps.
+//
+// scene, when non-nil, builds each frame's image; nil uses churnScene. The age-out
+// test points it at a frozen tail (staticTailScene): a box-absent tail is what
+// makes the test's verdict scheduler-dependent — the last box read takes 500 ms
+// and the first box-absent frame lands 600 ms after the last box frame, so
+// whether that frame is ACCEPTED mid-read (discardInflight's legitimate kill,
+// counted against the run) or after the read settles is a ~100 ms knife-edge of
+// scheduler slack. A static box tail can never hit that branch: a box-present
+// frame rides the in-flight read or dedupes, it is never killed, and the read it
+// rides settles inside the EOF drain budget (3 tail frames at 100 ms + the
+// 300 ms budget > the 500 ms read), so the run still ends cleanly.
+//
+// When hold is non-nil the source delivers frames k < holdAt, closes boxDone,
+// blocks until hold is closed, and only then delivers the rest — the channel
+// sync that releases the tail only after the box frames' reads have settled
+// (waitQuiescent), so the run's tail never outruns the last read either.
 type churnSource struct {
 	interval time.Duration
+	scene    func(k int) image.Image
+	hold     chan struct{} // nil: deliver the whole clip back to back
+	holdAt   int           // deliver frames k < holdAt, then wait on hold
+	boxDone  chan struct{} // closed once frames k < holdAt are delivered
 }
 
 func (s *churnSource) ID() string           { return "synthetic:churn" }
@@ -113,10 +133,24 @@ func (s *churnSource) Stats() capture.Stats { return capture.Stats{} }
 func (s *churnSource) Close() error         { return nil }
 
 func (s *churnSource) Start(ctx context.Context) (<-chan capture.Frame, error) {
+	scene := s.scene
+	if scene == nil {
+		scene = churnScene
+	}
 	out := make(chan capture.Frame, 16)
 	go func() {
 		defer close(out)
 		for k := 0; k < churnFrames; k++ {
+			if s.hold != nil && k == s.holdAt {
+				if s.boxDone != nil {
+					close(s.boxDone)
+				}
+				select {
+				case <-s.hold:
+				case <-ctx.Done():
+					return
+				}
+			}
 			select {
 			case <-ctx.Done():
 				return
@@ -135,7 +169,7 @@ func (s *churnSource) Start(ctx context.Context) (<-chan capture.Frame, error) {
 				CaptureTimestampNS: int64(k+1) * s.interval.Nanoseconds(),
 				Width:              320,
 				Height:             240,
-				Image:              churnScene(k),
+				Image:              scene(k),
 			}
 			select {
 			case out <- f:
@@ -145,6 +179,18 @@ func (s *churnSource) Start(ctx context.Context) (<-chan capture.Frame, error) {
 		}
 	}()
 	return out, nil
+}
+
+// staticTailScene is the age-out test's clip: the churn box frames, then a FROZEN
+// copy of the last box frame (k = holdAt-1 = 19) instead of the box vanishing.
+// Identical pixels mean an identical crop hash, so the tail frames dedupe-ride
+// the last read instead of hitting the box-absent discardInflight branch that
+// made the test's verdict depend on scheduler slack.
+func staticTailScene(k int) image.Image {
+	if k >= 20 {
+		return churnScene(19)
+	}
+	return churnScene(k)
 }
 
 func TestLiveOCRReadSettlesUnderFrameChurn(t *testing.T) {

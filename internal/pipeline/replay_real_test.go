@@ -177,7 +177,12 @@ func TestSyntheticFrameReplayRealTesseract(t *testing.T) {
 			}
 		}
 
-		rep := sc.Evaluate(all, st, truth)
+		// The corpus is the anchor message_detected matches the truth against:
+		// the profile's own lines, engine-free, so the assertion grades the
+		// run's decision and promptness, never the engine's glyph accuracy
+		// (the runner's tesseract build is a per-host fact, CI ships the
+		// distro's).
+		rep := sc.EvaluateWith(all, st, truth, scenario.EvaluateOpts{Corpus: profile.CorpusFold()})
 		for _, r := range rep.Results {
 			status := "PASS"
 			if !r.Passed {

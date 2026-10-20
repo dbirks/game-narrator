@@ -36,11 +36,34 @@ type Result struct {
 // invariant 1) with the first truth row that shows the full line. A replay run
 // takes seconds of wall time but its timestamps are the recording's, which is
 // exactly what makes the delay assertion meaningful.
-func (s *Scenario) Evaluate(evs []events.Envelope, stats pipeline.Stats, truth []Truth) Report {
-	return s.evaluate(evs, stats, truth, "")
+// EvaluateOpts is the optional context a harness passes EvaluateWith. A zero
+// value is exactly Evaluate: no engine scope, no corpus.
+type EvaluateOpts struct {
+	// OCREngine is the OCR engine the run used (the EvaluateWithOCREngine
+	// argument): an assertion scoped with engines: to another engine is
+	// reported not-applicable.
+	OCREngine string
+	// Corpus carries the scenario profile's normalized message texts
+	// (message id to fold(original text), Profile.CorpusFold). When present
+	// and the commit names a corpus message, message_detected anchors the
+	// commit to the corpus line instead of the run's OCR text — the
+	// engine-free comparison the assertion's purpose needs: the fixture
+	// ground truth and the corpus are generated from the same sentences
+	// (docs/spec/11 "Fixture origins"), so the corpus line is what the page
+	// showed, and the engine's glyph errors (the CI distro's tesseract 5.3
+	// and the dev host's 5.5 read the same preprocessed crop differently:
+	// "crossing" vs "crossina" on the Black Water clip) must not decide
+	// which truth line a commit belongs to. The ranking already made the
+	// message decision; the message_committed_count assertion pins it.
+	// Commits the corpus cannot name keep the OCR text as their anchor.
+	Corpus map[string]string
 }
 
-// EvaluateWithOCREngine is Evaluate for a harness that declares the OCR
+func (s *Scenario) Evaluate(evs []events.Envelope, stats pipeline.Stats, truth []Truth) Report {
+	return s.EvaluateWith(evs, stats, truth, EvaluateOpts{})
+}
+
+// EvaluateWithOCREngine is EvaluateWith for a harness that declares the OCR
 // engine it ran (the M7 truth stub, or the real engine of an M2 replay). An
 // assertion scoped with engines: to other engines is reported not-applicable
 // — a passing row that says why it was not graded, never a silent skip and
@@ -49,21 +72,29 @@ func (s *Scenario) Evaluate(evs []events.Envelope, stats pipeline.Stats, truth [
 // not a defect of a run whose scripted engine answers from the clip's truth,
 // and grading it there would turn the harness into a lie about OCR quality.
 func (s *Scenario) EvaluateWithOCREngine(ocrEngine string, evs []events.Envelope, stats pipeline.Stats, truth []Truth) Report {
-	return s.evaluate(evs, stats, truth, ocrEngine)
+	return s.EvaluateWith(evs, stats, truth, EvaluateOpts{OCREngine: ocrEngine})
 }
 
-func (s *Scenario) evaluate(evs []events.Envelope, stats pipeline.Stats, truth []Truth, ocrEngine string) Report {
+// EvaluateWith is the general entry point: opts.OCREngine scopes the
+// engine-scoped assertions, and opts.Corpus gives message_detected the
+// engine-free anchor (see EvaluateOpts.Corpus). Evaluate and
+// EvaluateWithOCREngine are its thin wrappers.
+func (s *Scenario) EvaluateWith(evs []events.Envelope, stats pipeline.Stats, truth []Truth, opts EvaluateOpts) Report {
+	return s.evaluate(evs, stats, truth, opts)
+}
+
+func (s *Scenario) evaluate(evs []events.Envelope, stats pipeline.Stats, truth []Truth, opts EvaluateOpts) Report {
 	rep := Report{Results: make([]Result, 0, len(s.Assertions)+1)}
 	for _, a := range s.Assertions {
-		if len(a.Engines) > 0 && ocrEngine != "" && !sliceContains(a.Engines, ocrEngine) {
+		if len(a.Engines) > 0 && opts.OCREngine != "" && !sliceContains(a.Engines, opts.OCREngine) {
 			rep.Results = append(rep.Results, Result{
 				Type:   a.Type,
 				Passed: true,
-				Detail: fmt.Sprintf("not applicable: scoped to OCR engine(s) %s, run used OCR engine %q", strings.Join(a.Engines, ", "), ocrEngine),
+				Detail: fmt.Sprintf("not applicable: scoped to OCR engine(s) %s, run used OCR engine %q", strings.Join(a.Engines, ", "), opts.OCREngine),
 			})
 			continue
 		}
-		passed, detail := evaluateAssertion(a, evs, stats, truth)
+		passed, detail := evaluateAssertion(a, evs, stats, truth, opts)
 		rep.Results = append(rep.Results, Result{Type: a.Type, Passed: passed, Detail: detail})
 	}
 	// The implicit check is appended, not authorable: a scenario that forgot to
@@ -92,10 +123,10 @@ func sliceContains(s []string, v string) bool {
 
 // evaluateAssertion dispatches one assertion. Load has already validated the
 // shape, so an unknown type here is a bug, not author input.
-func evaluateAssertion(a Assertion, evs []events.Envelope, stats pipeline.Stats, truth []Truth) (bool, string) {
+func evaluateAssertion(a Assertion, evs []events.Envelope, stats pipeline.Stats, truth []Truth, opts EvaluateOpts) (bool, string) {
 	switch a.Type {
 	case "message_detected":
-		return evalMessageDetected(a, evs, truth)
+		return evalMessageDetected(a, evs, truth, opts.Corpus)
 	case "message_committed_count":
 		return evalCommittedCount(a, evs)
 	case "committed_kind":
@@ -182,7 +213,7 @@ func commitTimeNS(p committedPayload) (int64, bool) {
 
 // evalMessageDetected: from the first truth row that shows the committed line
 // in full to the commit's capture time, at most max_delay_ms.
-func evalMessageDetected(a Assertion, evs []events.Envelope, truth []Truth) (bool, string) {
+func evalMessageDetected(a Assertion, evs []events.Envelope, truth []Truth, corpus map[string]string) (bool, string) {
 	var (
 		p     committedPayload
 		found bool
@@ -208,10 +239,22 @@ func evalMessageDetected(a Assertion, evs []events.Envelope, truth []Truth) (boo
 
 	// The first truth row that shows this exact line in full. Both sides go
 	// through the retrieval fold, so a dropped terminal period or a case
-	// difference does not read as "the line never appeared".
+	// difference does not read as "the line never appeared". The anchor is
+	// the committed line's identity, not the run's OCR text: when the
+	// harness carries the profile's corpus and the commit names a corpus
+	// message, the anchor is the corpus line (see EvaluateOpts.Corpus for
+	// why the engine's read must not be the anchor). Both sides of the
+	// comparison are fixture artifacts, so the check is a fact about the
+	// clip and the commit, never about which tesseract build the runner
+	// happens to ship.
 	target := fold(p.NormalizedText)
 	if target == "" {
 		target = fold(p.Text)
+	}
+	if corpus != nil {
+		if ct := corpus[p.MessageID]; ct != "" {
+			target = ct
+		}
 	}
 	var base int64
 	haveBase := false

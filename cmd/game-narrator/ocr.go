@@ -83,8 +83,19 @@ exit status: 0 on a report (including a read of nothing), 1 on failure
 const ocrGrabTimeout = 15 * time.Second
 
 // ocrTotalTimeout bounds the whole command: grab (≤ ocrGrabTimeout) plus
-// one engine call per region (≤ ocr.DefaultTimeout each) has real slack.
+// one engine call per region (≤ ocrEngineBudget each) has real slack.
 const ocrTotalTimeout = 2 * time.Minute
+
+// ocrEngineBudget is the engine's per-read budget for this command: the pool
+// read's deadline AND the one-shot region read's call deadline (they nest at
+// the same bound). It is a var, not a const, because the real-Tesseract
+// tests scale it under -race (the package's race_on_test.go / race_off_test.go;
+// the pipeline and vision/ocr packages' convention — a race-instrumented
+// binary on a 2-core runner makes the same crop take several times longer,
+// and CI run 39090252213 measured the unscaled 4 s default timing out on a
+// controlled-image read on the same step). Production takes the engine's
+// production default.
+var ocrEngineBudget = ocr.DefaultTimeout
 
 // deviceBusyHints are the FFmpeg/v4l2 error tails a held device produces.
 // The UVC bus is single-consumer (ADR-0078): a running session holds the
@@ -142,7 +153,7 @@ func runOCR(args []string, log *slog.Logger) (int, error) {
 	// per-read measurement below then costs the inference, not startup +
 	// inference (~1.1 s on the A53 per ADR-0096). The per-process
 	// Tesseract the pool embeds is still the fallback for a broken slot.
-	pool := ocr.NewPooled(ocr.Tesseract{}, ocr.DefaultPoolSlots)
+	pool := ocr.NewPooled(ocr.Tesseract{Timeout: ocrEngineBudget}, ocr.DefaultPoolSlots)
 	defer pool.Close()
 
 	st, err := openDataStore(ctx, cfg.DataDir, log)
@@ -204,6 +215,7 @@ func runOCR(args []string, log *slog.Logger) (int, error) {
 		Regions:     regions,
 		Index:       index,
 		Engine:      pool,
+		Timeout:     ocrEngineBudget,
 		RankOptions: matcher.RankOptions{TopK: *top, Weights: matcher.DefaultWeights()},
 		// Every other field zero: the one-shot path then takes exactly the
 		// defaults the live pipeline takes (its normalize mirrors
@@ -223,9 +235,34 @@ func runOCR(args []string, log *slog.Logger) (int, error) {
 	// is an answer). Failure is when no region produced a read at all: the
 	// engine failed everywhere, or the frame had nothing the regions cover.
 	if !anyRegionRead(rep.Regions) {
-		return 1, fmt.Errorf("no region produced a read (per-region errors above)")
+		return 1, fmt.Errorf("no region produced a read: %s", regionErrorSummary(rep.Regions))
 	}
 	return 0, nil
+}
+
+// regionErrorSummary folds the report's per-region errors into the
+// command's failure message: the regions' failures live in the report
+// (oneshot.Run reports them per region and never returns them as an error),
+// and this message is where the diagnosis must land — the operator's
+// stderr and the test's error, both of which are the report-independent
+// surfaces (the text report's per-region lines precede the message only in
+// text mode, and the test's logger discards the slog copy).
+func regionErrorSummary(regions []oneshot.RegionReport) string {
+	var parts []string
+	for _, r := range regions {
+		if r.OCRError == "" {
+			continue
+		}
+		id := r.ID
+		if id == "" {
+			id = r.Label
+		}
+		parts = append(parts, fmt.Sprintf("%s: %s", id, r.OCRError))
+	}
+	if len(parts) == 0 {
+		return "every region read nothing"
+	}
+	return strings.Join(parts, "; ")
 }
 
 // readImageFile decodes one image file. The stdlib decoders (PNG, JPEG, GIF)

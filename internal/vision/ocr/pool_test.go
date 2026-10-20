@@ -168,7 +168,10 @@ func TestPooledReadsThroughTheSlotProtocol(t *testing.T) {
 // the pool stops spending reads on churn and the per-process fallback serves.
 func TestPooledCrashRecoversWithBackoff(t *testing.T) {
 	t.Setenv("FAKE_ARGV", filepath.Join(t.TempDir(), "argv"))
-	setCounter(t, "FAKE_CRASHES", 3)
+	// FAKE_CRASHES=4: the startup capability probe (a throwaway read) spends
+	// one crash, leaving the three the test's own reads need; read 4 then
+	// settles on the spent counter.
+	setCounter(t, "FAKE_CRASHES", 4)
 	stub := fakeEngine(t)
 
 	pool := NewPooled(Tesseract{Path: stub, Timeout: 5 * time.Second}, 1)
@@ -210,12 +213,13 @@ func TestPooledDegradedPoolFallsBackToPerProcess(t *testing.T) {
 	t.Setenv("FAKE_ARGV", filepath.Join(t.TempDir(), "argv"))
 	stub := fakeEngine(t)
 
-	// Arm 5 crashes BEFORE the pool spawns its warm slots: the stubs inherit
+	// Arm 6 crashes BEFORE the pool spawns its warm slots: the stubs inherit
 	// the environment at spawn, so the counter must be visible then (the
-	// check itself happens at image time, after the crop arrives). Four of
-	// them degrade the pool; the fifth (and any later) read must come from
-	// the per-process fallback, which consumes the last one.
-	setCounter(t, "FAKE_CRASHES", 5)
+	// check itself happens at image time, after the crop arrives). The startup
+	// capability probe spends one, leaving 5 for the test: four of them
+	// degrade the pool; the fifth (and any later) read must come from the
+	// per-process fallback, which consumes the last one.
+	setCounter(t, "FAKE_CRASHES", 6)
 
 	pool := NewPooled(Tesseract{Path: stub, Timeout: 5 * time.Second}, 1)
 	defer pool.Close()
@@ -292,7 +296,9 @@ func TestPooledDegradedPoolFallsBackToPerProcess(t *testing.T) {
 // served by the per-process fallback, which is how the operator gets the
 // typed failure a broken engine always had.
 func TestPooledHealsAfterDegradation(t *testing.T) {
-	setCounter(t, "FAKE_CRASHES", 6)
+	// FAKE_CRASHES=7: the startup capability probe spends one, leaving 6 —
+	// four to degrade the pool and two for the crash-loop probe reads below.
+	setCounter(t, "FAKE_CRASHES", 7)
 	stub := fakeEngine(t)
 
 	pool := NewPooled(Tesseract{Path: stub, Timeout: 5 * time.Second}, 1)
@@ -301,7 +307,8 @@ func TestPooledHealsAfterDegradation(t *testing.T) {
 	defer cancel()
 
 	// Degrade the pool: four consecutive slot failures (the counter drops
-	// 6→2). The settle sleeps let each replacement spawn and warm.
+	// 6→2 after the startup probe's 7→6). The settle sleeps let each
+	// replacement spawn and warm.
 	for i := 1; i <= DefaultDegradeFails; i++ {
 		if _, err := pool.Recognize(ctx, poolTinyImage()); err == nil {
 			t.Fatalf("degrade read %d: want failure, got success", i)
@@ -396,15 +403,27 @@ func TestPooledDeadlineKillsOnlyTheCallerSlot(t *testing.T) {
 func TestPooledCancelledReadKillsOnlyItsSlot(t *testing.T) {
 	pidPath := filepath.Join(t.TempDir(), "pids")
 	t.Setenv("FAKE_PIDS", pidPath)
-	stub := fakeEngine(t)
-
+	// The hold counter's env is armed before construction (stubs capture the
+	// environment at spawn); the counter FILE is armed after the probe has
+	// settled — the stub reads it per image (absent file = no hold), so the
+	// probe's own slot read does not spend the hold: caller A's read gets it.
 	// One hold: caller A's read blocks in its slot (the stub sleeps 30 s
 	// after the image); caller B's read (counter spent) answers.
-	setCounter(t, "FAKE_HOLDS", 1)
+	holdPath := filepath.Join(t.TempDir(), "FAKE_HOLDS")
+	t.Setenv("FAKE_HOLDS", holdPath)
+	stub := fakeEngine(t)
 
 	pool := NewPooled(Tesseract{Path: stub, Timeout: 30 * time.Second}, 2)
 	defer pool.Close()
 	time.Sleep(200 * time.Millisecond) // both slots warm (no load in this stub)
+	select {
+	case <-pool.probeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the probe did not settle")
+	}
+	if err := os.WriteFile(holdPath, []byte("1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	ctxA, cancelA := context.WithCancel(context.Background())
 	defer cancelA()
@@ -535,5 +554,101 @@ func TestPooledSlotCountIsClamped(t *testing.T) {
 	defer pool.mu.Unlock()
 	if len(pool.slots) != 1 {
 		t.Errorf("pool has %d slots, want 1", len(pool.slots))
+	}
+}
+
+// noSlotProtocolEngine writes a fake engine that lacks the slot protocol the
+// pool is built on (ADR-0100's capability probe exists for exactly this
+// shape): the `stdin` input operand answers in a shape the wrapper does not
+// parse (a clean exit, not the TSV), while the file-operand path — the
+// per-process path the wrapper's own argv contract defines — speaks TSV
+// exactly. It models an engine build whose stdin mode is not the one-image-
+// and-exit protocol the pool measured on the engine it ships with.
+func noSlotProtocolEngine(t *testing.T) string {
+	t.Helper()
+	body := "#!/bin/sh\n"
+	body += "if [ -n \"$FAKE_ARGV\" ]; then echo \"$*\" >> \"$FAKE_ARGV\"; fi\n"
+	body += "if [ \"$1\" = \"stdin\" ]; then\n"
+	body += "  cat > /dev/null\n"
+	body += "  printf 'no stdin support in this build\\n'\n"
+	body += "  exit 0\n"
+	body += "fi\n"
+	body += "printf 'level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\\n5\t1\t1\t1\t1\t1\t1\t1\t4\t4\t99\thello\\n'"
+	stub := filepath.Join(t.TempDir(), "fake-tesseract")
+	if err := os.WriteFile(stub, []byte(body), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	return stub
+}
+
+// TestPooledFallsBackToPerProcessWhenSlotProtocolUnsupported is the
+// capability probe's guarantee (ADR-0100 decision 8): an engine that lacks
+// the slot protocol is detected at startup by the probe's throwaway
+// slot-protocol read (one image on stdin, a settled answer that is not the
+// TSV the wrapper parses), and every read then runs the per-process path —
+// the engine's own documented shape — instead of spending each read's
+// deadline on a slot that cannot settle. The reads settle (the fallback
+// speaks TSV), and the argv log is the proof of the shape: the probe ran the
+// slot protocol, and no read after the verdict ever did.
+func TestPooledFallsBackToPerProcessWhenSlotProtocolUnsupported(t *testing.T) {
+	argPath := filepath.Join(t.TempDir(), "argv")
+	t.Setenv("FAKE_ARGV", argPath)
+	stub := noSlotProtocolEngine(t)
+
+	pool := NewPooled(Tesseract{Path: stub, Timeout: 5 * time.Second}, 2)
+	defer pool.Close()
+
+	// The probe settles its throwaway slot-protocol read (milliseconds in
+	// this stub). A read that races the unsettled probe runs the slot path
+	// as normal — one read's deadline, one typed failure, the worst case the
+	// contract allows; the reads below wait for the verdict first
+	// (same-package handle) so they run the post-verdict contract
+	// deterministically.
+	select {
+	case <-pool.probeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the probe did not settle within its own budget")
+	}
+	if !pool.unsupported() {
+		t.Fatal("the probe's settled answer is not the TSV the wrapper parses, so the verdict must be unsupported")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	for i := 1; i <= 2; i++ {
+		res, err := pool.Recognize(ctx, poolTinyImage())
+		if err != nil {
+			t.Fatalf("read %d (must be served on the per-process fallback): %v", i, err)
+		}
+		if res.Text != "hello" {
+			t.Fatalf("read %d text = %q, want hello (the fallback's read)", i, res.Text)
+		}
+	}
+
+	argv, err := os.ReadFile(argPath)
+	if err != nil {
+		t.Fatalf("read argv log: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(argv)), "\n")
+	// Two warm slots at construction plus the probe's throwaway read — the
+	// probe touches no pool slot (ADR-0100 decision 8), so the pool still
+	// holds its two warm slots when the reads run — then one per-process
+	// read per Recognize: a read that had taken a pool slot would have added
+	// a fourth `stdin` invocation.
+	if len(lines) != 5 {
+		t.Fatalf("engine invocations = %d (%v), want the three slot-protocol spawns plus two per-process reads", len(lines), lines)
+	}
+	for i, l := range lines[:3] {
+		if !strings.HasPrefix(l, "stdin ") {
+			t.Fatalf("slot-protocol spawn %d is not the slot argv (one image on stdin): %q", i+1, l)
+		}
+	}
+	for i, l := range lines[3:5] {
+		if strings.HasPrefix(l, "stdin ") {
+			t.Fatalf("read %d used the slot protocol after the probe's verdict: %q", i+1, l)
+		}
+		if !strings.HasSuffix(l, " stdout --psm 6 -l eng tsv") || !strings.Contains(l, ".png ") {
+			t.Fatalf("read %d argv %q is not the per-process argv shape (file operand, the wrapper's contract)", i+1, l)
+		}
 	}
 }
