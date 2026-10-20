@@ -42,6 +42,10 @@ Implement targets; **do not** mark pending targets green by printing a success m
 - Restart tests demonstrate persistent games/voices/cache and resumed or safely failed jobs.
 - Failure-injection tests cover dropped frames, delayed/duplicated model responses, endpoint loss, voice missing on a replica, and rapid textbox advances.
 
+## File improvements as GitHub issues
+
+When you notice an improvement that is outside the current task — a missing one-shot CLI command, a diagnostic that would have saved time, an awkward manual step, a tool that lies on real hardware, a doc gap — do not let it vanish into a chat log or a report. File a GitHub issue (`gh issue create --label enhancement` or `--label bug`) with: what you were doing, what was missing or wrong, the evidence (commands and output, redacted), and a suggested shape for the fix. Search open issues first (`gh issue list --search`) to avoid duplicates. The repository is public: issues follow rule 5 — no hostnames, IPs, tokens, private endpoint URLs, game text, or frames. Fix it in the current change instead when it is small and in scope.
+
 ## Engineering choices not to reopen casually
 
 Go + React/TypeScript/Vite; SQLite; embedded SPA assets; provider adapters; Arch development + Dolphin; Debian ARM64 UNO Q release target; external UVC capture and USB audio; user-supplied content; GoReleaser; developer mode; ADRs; testing first-class. Revisit only with quantified evidence and an ADR.
