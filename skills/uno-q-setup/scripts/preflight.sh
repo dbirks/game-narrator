@@ -72,6 +72,22 @@ else
 	echo "T:env:unreadable"
 fi
 if [ -d /var/lib/game-narrator ]; then echo "T:datadir:present"; else echo "T:datadir:missing"; fi
+# audio-DSP row (ADR 0118, issue #24): the cold-boot ADSP race leaves the
+# board without its built-in sound card. Read-only: card presence from
+# /proc/asound/cards, the deferred-probe signature from dmesg (the ssh user
+# is in adm on the stock image; when dmesg is unreadable the signature is
+# simply unverified).
+if tr '\0' ' ' < /proc/device-tree/compatible 2>/dev/null | grep -q "arduino,imola"; then
+    if grep -q "ArduinoImolaHPH" /proc/asound/cards 2>/dev/null; then
+        echo "T:audiodsp:present"
+    elif dmesg 2>/dev/null | grep -q "Failed to get clk 'audio'"; then
+        echo "T:audiodsp:absent-deferred"
+    else
+        echo "T:audiodsp:absent"
+    fi
+else
+    echo "T:audiodsp:not-unoq"
+fi
 REMOTE
 )
 then
@@ -160,6 +176,24 @@ esac
 case "$(field datadir)" in
 present) row data-dir PASS "/var/lib/game-narrator" ;;
 *) row data-dir WARN "absent — systemd creates it at service start (StateDirectory); normal before first start" ;;
+esac
+
+case "$(field audiodsp)" in
+present)
+	row audiodsp PASS "sound card ArduinoImolaHPH present"
+	;;
+absent-deferred)
+	row audiodsp FAIL "no sound card + the lpass deferred-probe signature in dmesg — the ADSP's APR services never registered (issue #24): sudo systemctl start game-narrator-audiodsp-recover (the package oneshot restarts the ADSP once and waits for the card), then re-run"
+	;;
+absent)
+	row audiodsp FAIL "no sound card ArduinoImolaHPH and no deferred-probe signature (dmesg unreadable or a different fault) — check dmesg, then reboot"
+	;;
+not-unoq)
+	row audiodsp WARN "not a UNO Q (no arduino,imola in the device tree) — the built-in sound card row does not apply"
+	;;
+*)
+	row audiodsp WARN "audio-DSP state not probed (no T:audiodsp tag — script version skew?)"
+	;;
 esac
 
 # --- HDMI chain via the repo's own read-only preflight ---------------------

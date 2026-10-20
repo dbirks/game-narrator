@@ -1,0 +1,31 @@
+# UNO Q audio-DSP recovery (issue #24 / ADR 0118).
+#
+# Once per boot, after a short settle (inside the helper): if the built-in
+# sound card (ArduinoImolaHPH, the hub-HDMI audio via the ANX7625 bridge) is
+# absent from /proc/asound/cards AND dmesg carries the lpass deferred-probe
+# signature ("Failed to get clk 'audio'" — the ADSP booted but its APR
+# services never registered), the helper restarts the ADSP remoteproc ONCE
+# and waits up to 20 s for the card. Bounded and idempotent: on healthy
+# boots and on non-UNO Q hardware it is a logged no-op. The helper carries
+# the decision (systemd has no file-content Condition) and logs the outcome
+# to the journal.
+#
+# ConditionPathExists= lines: a no-op at the systemd level on hosts without
+# the ALSA procfs or the remoteproc sysfs class (other hardware entirely).
+[Unit]
+Description=Game Narrator - UNO Q cold-boot audio-DSP recovery (ADSP APR registration race, issue #24)
+Documentation=https://github.com/dbirks/game-narrator
+After=sound.target
+Wants=sound.target
+ConditionPathExists=/proc/asound/cards
+ConditionPathExists=/sys/class/remoteproc
+
+[Service]
+Type=oneshot
+# The helper writes /sys/class/remoteproc/*/state: root, no sandboxing (it
+# must reach the real /sys and the real dmesg — ProtectProc/ProtectKernelLogs
+# would blind the very evidence it reads).
+ExecStart=/usr/libexec/game-narrator/audiodsp-recover.sh
+
+[Install]
+WantedBy=multi-user.target

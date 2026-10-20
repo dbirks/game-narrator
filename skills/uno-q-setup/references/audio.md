@@ -191,3 +191,40 @@ is badged "needs repair" and its repair button re-pairs it; and the
 distinct case of *connected, A2DP unit present, no node at all* is the
 override missing: `doctor` names it and `bluetooth-audio.sh --apply` (or
 the package postinst on a deb install) writes the file.
+
+## "No sound card after a cold boot" (issue #24)
+
+After the first power-on following a power cut, the board can come up
+**without its built-in sound card**: `cat /proc/asound/cards` has no
+`ArduinoImolaHPH` (the hub-HDMI audio path via the ANX7625 bridge), the
+ADSP booted ("adsp is now up" in `dmesg`), but its APR services never
+registered, so the lpass pinctrl → soundwire → codecs → sound probe
+chain stays deferred. The `dmesg` signature of the hang is the lpass
+deferral line `qcom-sm6115-lpass-lpi-pinctrl: Failed to get clk 'audio'`
+(it can also appear transiently on HEALTHY boots — the card's absence is
+the fault, the signature is the cause).
+
+- **Automatic fix (the package ships it):** the oneshot
+  `game-narrator-audiodsp-recover.service` runs once per boot (ADR 0118):
+  after a short settle, on a UNO Q with the card absent and the signature
+  present, it restarts the ADSP remoteproc once and waits up to 20 s for
+  the card. Healthy boots and other hardware are logged no-ops. Check the
+  outcome: `journalctl -u game-narrator-audiodsp-recover.service`.
+- **Manual fix (the proven one, issue #24):** find the ADSP remoteproc
+  (`/sys/class/remoteproc/*/name` is `adsp`; on the board it is
+  `remoteproc1` — never `remoteproc0`, the modem) and restart it:
+  ```sh
+  echo stop  > /sys/class/remoteproc/remoteproc1/state
+  echo start > /sys/class/remoteproc/remoteproc1/state
+  ```
+  The APR services register at once and card 1 `ArduinoImolaHPH`
+  appears; verify with `cat /proc/asound/cards` and the doctor row
+  `audio.dsp` (OK).
+- **Diagnostics:** `sudo game-narrator doctor` — the `audio.dsp` row is
+  FAIL with the cause and this remedy when the signature is present,
+  BLOCKED when the card is absent without it (a different fault: check
+  `dmesg` for the deferral chain, then reboot). The skill preflight's
+  `audiodsp` row reports the same three-way state read-only.
+- If it reproduces, file an upstream report (Arduino image / kernel):
+  likely a cold-boot race between the in-kernel PDR notification for the
+  ADSP audio PD and APR (issue #24, item 4).

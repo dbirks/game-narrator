@@ -580,6 +580,48 @@ gn-data.mount`).
 - `df -h /var/lib/game-narrator` reports the large partition (when Step 2
   was done).
 
+## Troubleshooting
+
+### No sound card after a cold boot (issue #24, ADR 0118)
+
+After the first power-on following a power cut, the board can come up
+without its built-in sound card: `cat /proc/asound/cards` has no
+`ArduinoImolaHPH` (the hub HDMI audio path via the ANX7625 bridge), the
+ADSP booted ("adsp is now up" in `dmesg`), but its APR services never
+registered, so the lpass pinctrl → soundwire → codecs → sound probe
+chain stayed deferred. The `dmesg` signature is the lpass deferral line
+`qcom-sm6115-lpass-lpi-pinctrl: Failed to get clk 'audio'` (it can also
+appear transiently on healthy boots — the card's absence is the fault,
+the signature is the cause).
+
+- **Automatic fix:** the package ships the oneshot
+  `game-narrator-audiodsp-recover.service` (enabled on first install),
+  which runs once per boot: on a UNO Q with the card absent and the
+  signature present it restarts the ADSP remoteproc once and waits up to
+  20 s for the card. Healthy boots and other hardware are logged no-ops.
+  Check the outcome: `journalctl -u
+  game-narrator-audiodsp-recover.service`.
+- **Manual fix (the proven one):** find the ADSP remoteproc — the entry
+  whose `/sys/class/remoteproc/<n>/name` is `adsp` (on the board it is
+  `remoteproc1`; never `remoteproc0`, the modem) — and restart it:
+
+  ```sh
+  echo stop  > /sys/class/remoteproc/remoteproc1/state
+  echo start > /sys/class/remoteproc/remoteproc1/state
+  ```
+
+  The APR services register at once and card 1 `ArduinoImolaHPH`
+  appears; verify with `cat /proc/asound/cards` and the `audio.dsp`
+  doctor row (OK).
+- **Diagnostics:** `sudo game-narrator doctor` — the `audio.dsp` row is
+  FAIL with the cause and this remedy when the signature is present,
+  BLOCKED when the card is absent without it (a different fault: check
+  `dmesg` for the deferral chain, then reboot). The skill preflight's
+  `audiodsp` row reports the same three-way state read-only.
+- **Upstream:** likely a cold-boot race between the in-kernel PDR
+  notification for the ADSP audio PD and APR; if it reproduces, report
+  it to the Arduino image / kernel (issue #24, item 4).
+
 ## What NOT to do
 
 - Do not report the install as hardware-verified: capture and audio are

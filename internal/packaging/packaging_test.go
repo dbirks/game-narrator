@@ -265,6 +265,7 @@ func TestTmpfilesAndScriptsLint(t *testing.T) {
 		"packaging/arch/post_install.sh",
 		"packaging/arch/post_upgrade.sh",
 		"packaging/arch/post_remove.sh",
+		"packaging/scripts/audiodsp-recover.sh",
 	} {
 		full := filepath.Join(repoRoot(t), p)
 		if out, err := exec.Command("sh", "-n", full).CombinedOutput(); err != nil {

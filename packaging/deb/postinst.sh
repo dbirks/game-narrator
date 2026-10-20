@@ -76,6 +76,12 @@ fi
 # creates /etc/game-narrator/env first (manual 19, Step 5) and starts it.
 if [ "$1" = "install" ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
     systemctl enable game-narrator.service >/dev/null 2>&1 || true
+    # The audio-DSP recovery oneshot (ADR 0118, issue #24): on the UNO Q it
+    # runs once per boot and restarts the ADSP remoteproc only when the
+    # cold-boot APR registration race left the sound card behind. Same
+    # first-install-only enablement contract as the service above (ADR 0081):
+    # upgrade/replace/configure never re-enable a unit an admin disabled.
+    systemctl enable game-narrator-audiodsp-recover.service >/dev/null 2>&1 || true
 fi
 
 echo "game-narrator: install complete. The service is enabled at boot (first install only; an admin-disabled unit stays disabled across upgrades)."

@@ -276,7 +276,7 @@ func TestRunReportsEveryComponentExactlyOnce(t *testing.T) {
 		"storage.data_dir", "storage.database",
 		"tools.ffmpeg", "tools.v4l2_ctl", "tools.tesseract",
 		"ocr.controlled_image", "capture.devices", "audio.sinks", "audio.selected",
-		"audio.hdmi_bridge",
+		"audio.hdmi_bridge", "audio.dsp",
 		"bluetooth.audio", "updates.check",
 		"providers.agent_reasoning", "providers.fast_reasoning",
 		"providers.vision_ocr_fallback", "providers.decision",
@@ -317,6 +317,7 @@ func TestGroupsAreDerivedFromIDs(t *testing.T) {
 		"storage.data_dir": "Storage", "tools.ffmpeg": "Tools",
 		"ocr.controlled_image": "OCR", "capture.devices": "Capture",
 		"audio.sinks": "Audio", "audio.selected": "Audio", "audio.hdmi_bridge": "Audio",
+		"audio.dsp":          "Audio",
 		"providers.decision": "Providers",
 	}
 	rep := h.run()

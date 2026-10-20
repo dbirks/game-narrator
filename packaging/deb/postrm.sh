@@ -13,6 +13,9 @@ set -eu
 if [ "${1:-}" = "3" ]; then
     if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
         systemctl disable game-narrator.service >/dev/null 2>&1 || true
+        # The audio-DSP recovery oneshot (ADR 0118, issue #24) goes with the
+        # package: its helper script leaves the package tree on removal.
+        systemctl disable game-narrator-audiodsp-recover.service >/dev/null 2>&1 || true
         systemctl daemon-reload >/dev/null 2>&1 || true
     fi
     # The lingering user session (ADR 0091) goes with the package: with the

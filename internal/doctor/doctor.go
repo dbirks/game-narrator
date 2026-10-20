@@ -180,6 +180,12 @@ type Options struct {
 	// at a fabricated tree so the suite never depends on the host's USB bus.
 	SysfsRoot string
 
+	// ProcRoot is the /proc root the UNO Q rows read (device-tree compatible
+	// and asound/cards; issue #24); empty means the real /proc. Tests point
+	// it at a fabricated tree so the suite never depends on the host's
+	// device tree.
+	ProcRoot string
+
 	// Roles overrides providers.LoadRoles (tests); nil resolves from
 	// LookupEnv.
 	Roles map[providers.Role]providers.RoleConfig
@@ -269,6 +275,9 @@ func (o *Options) withDefaults() Options {
 	if d.SysfsRoot == "" {
 		d.SysfsRoot = usb.DefaultSysfsRoot
 	}
+	if d.ProcRoot == "" {
+		d.ProcRoot = "/proc"
+	}
 	if d.Now == nil {
 		d.Now = time.Now
 	}
@@ -341,6 +350,10 @@ func Run(ctx context.Context, o Options) Report {
 	// card presence plus the two switches that decide whether the ANX7625
 	// bridge receives the MultiMedia4 stream at all.
 	r.add(ctx, "audio.hdmi_bridge", r.opts.Timeout, func(ctx context.Context) Check { return r.checkHDMIBridge(ctx) })
+	// The UNO Q audio-DSP row (issue #24 / ADR 0118): is the built-in sound
+	// card present? If absent with the deferred-probe signature, the row says
+	// why (APR never registered) and names the shipped recover oneshot.
+	r.add(ctx, "audio.dsp", r.opts.Timeout, func(ctx context.Context) Check { return r.checkAudioDSP(ctx) })
 	// The Bluetooth output row (ADR 0091): the radio plus the session
 	// prerequisites; it degrades rather than fails (a radio-less host is
 	// a DEGRADED appliance, not a broken one).

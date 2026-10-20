@@ -240,6 +240,16 @@ nfpms:
             dst: /usr/lib/systemd/system/game-narrator.service
             file_info:
               mode: 0o644
+          # The UNO Q cold-boot audio-DSP recovery oneshot (ADR 0118, issue
+          # #24) and its helper (env-overridable roots for the tests).
+          - src: packaging/systemd/game-narrator-audiodsp-recover.service
+            dst: /usr/lib/systemd/system/game-narrator-audiodsp-recover.service
+            file_info:
+              mode: 0o644
+          - src: packaging/scripts/audiodsp-recover.sh
+            dst: /usr/libexec/game-narrator/audiodsp-recover.sh
+            file_info:
+              mode: 0o755
           # Explicit dir entry: the hook sets root:game-narrator 0750 on
           # /etc/game-narrator; without this the implicit entry records
           # root:root 0755 and pacman warns "directory permissions differ"
@@ -284,6 +294,18 @@ nfpms:
         dst: /lib/systemd/system/game-narrator.service
         file_info:
           mode: 0o644
+      # The UNO Q cold-boot audio-DSP recovery oneshot (ADR 0118, issue #24):
+      # enabled on first install by the deb postinst (the ADR 0081 contract),
+      # runs once per boot, and is a logged no-op on healthy boots and on
+      # non-UNO Q hardware.
+      - src: packaging/systemd/game-narrator-audiodsp-recover.service
+        dst: /lib/systemd/system/game-narrator-audiodsp-recover.service
+        file_info:
+          mode: 0o644
+      - src: packaging/scripts/audiodsp-recover.sh
+        dst: /usr/libexec/game-narrator/audiodsp-recover.sh
+        file_info:
+          mode: 0o755
       - src: examples/config/config.example.yaml
         dst: /etc/game-narrator/config.yaml
         type: config|noreplace
