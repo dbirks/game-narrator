@@ -175,3 +175,103 @@ the class b′ frames are "generated at bench time, never stored"
   drop the `OMP_NUM_THREADS` pins — returning the bench to the load-sensitive
   scheduler documented in the Context. Nothing outside `internal/bench`,
   `cmd/game-narrator/bench.go` and the Makefile `bench` recipe is touched.
+
+## Amendment 2 (issue #17, 2026-10-20): deterministic bench replay — the remaining wall-clock belts are removed in a named mode
+
+Supersedes nothing in the original ADR (no per-sample deadline, bounded
+workers and pinned threads all stand); it closes the load sensitivity the
+original left open by design — the pipeline's own wall-clock belts, which
+ADR-0096's live-mode age-out/coalescing made reachable from the bench path.
+
+### Context
+
+GitHub issue #17: the same snapshot, binary and set (bench-synthetic-001
+holdout) gave `recognition_recall` 93.8% (45/48, three missed narrations) at
+host load ~13 during a full gate run, and 97.9% (47/48) twice at load 4–6. The
+original ADR removed the harness's own wall timers, but the pipeline still
+carried three wall-clock belts that a slow host can trip:
+
+1. **The probe-tick age-out** (`Runner.ageOut`): a pending observation
+   unresolved for `ReplayOCRMaxAttempts × ReplayOCRTimeout + 250 ms` of wall
+   time is dropped and counted (`ocr_stale`). Under load an OCR call that
+   inflates past the retry budget loses the frame's text — a missed box.
+2. **The retrieval-hold budget** (`holdIfGateClosed`): the ROI stage holds
+   the region's next observation behind an outstanding ranking reply for at
+   most `OCRTimeout` of wall time; when the budget expires the observation
+   flows first and the late reply is fenced stale — the commit lands late or
+   is lost.
+3. **The end-of-stream grace** (`reduceLoop`): an in-flight ranking reply at
+   the end of the recording gets `OCRTimeout + 500 ms` of wall time to land;
+   after that the run ends with the last line unranked.
+
+Coalescing itself (a newer frame riding an in-flight read) is already
+unreachable in `ModeReplay` — `waitInflight` serializes each region's OCR in
+frame order, so every frame is OCRed in order and nothing supersedes —
+which is why the fix removes the belts rather than changing the frame path.
+
+### Decision
+
+`pipeline.Config.Deterministic` (ModeReplay-only; `Validate` refuses it in
+`ModeLive`) selects the load-invariant replay: `ageOut` is a no-op, the
+retrieval hold has no wall budget (the run's context bounds it), and the
+end-of-stream grace is not armed. The bounds that remain are exactly the
+load-independent ones this ADR already sanctioned — the per-OCR-call
+deadline with the replay retry budget (the wedge guard: a dead engine still
+fails the frame and the failure is counted) and the caller's context (the
+run's patience, `ReplayRunBound`). The measured stage latencies
+(`Stats.Latency`, the report's per-stage section and the recorded-bounds
+flag) remain wall-clock in every mode and are reported separately, never
+graded on — the ADR's original division of labour. `internal/bench.runSample`
+(the one pipeline construction the bench uses: synthetic, captured and
+calibrate all run through it) sets `Deterministic: true`, so the Makefile
+`bench` recipe and every bench entry point get the mode without a flag.
+Live mode is untouched (the belts are its freshness guarantee, docs/spec/01),
+and plain `ModeReplay` outside the bench keeps its belts, so no other caller
+changes behaviour.
+
+### Validation
+
+- `TestDeterministicReplaySlowRankReplyDoesNotFence` (internal/pipeline):
+  the same clip, fast engine, through (a) plain replay with no Decider
+  (reference), (b) deterministic replay and (c) plain replay, each with the
+  rank reply path slowed 5× past its hold budget via a blocking
+  `pipeline.Decider` (adjudication forced with `AdjudicateMargin`). The
+  deterministic run commits the reference's messages at the reference's
+  capture timestamps with `ranking_stale = 0`; the plain run commits one
+  line late and loses the other, with `ranking_stale ≥ 1` — the wall-clock
+  dependence, measured, and what the mode removes.
+  `TestDeterministicIsReplayOnly`: the config is replay-only.
+- **The issue's own proof, re-run.** `game-narrator bench --set
+  testdata/bench/bench-synthetic-001 --split holdout` twice on the bench
+  host (8 cores): once idle and once under 4 parallel
+  `go test -race ./internal/api/` loops (load average 16.15 at the run's end;
+  stress-ng was not installed). Every capture-clock metric is identical —
+  `recognition_recall` 97.9% (47/48) and `top1_exact_accuracy` 100% (47/47)
+  in both runs, same `sample_ids`, no NOT RUN — while the wall-clock
+  diagnostic diverges exactly where ADR-0064 says it may: `frame_to_ocr` p95
+  2000 ms (idle) vs 5000 ms (loaded), `frame_to_committed` p95 75 ms vs
+  150 ms, flagged against the recorded bounds (a flag, not a verdict) and
+  reported separately. Wall 4m07s idle vs 7m01s loaded.
+- Regression: `go test -race ./internal/pipeline/ ./internal/bench/` green
+  (replay-determinism suite included); `go vet` clean on the touched
+  packages.
+
+### Consequences and reversal
+
+- A bench verdict can no longer change with host load through the pipeline's
+  belt paths: a frame outrun by OCR is waited for (and a dead engine still
+  fails its frame through the retry budget, counted), so `recognition_recall`
+  and `top1_exact_accuracy` are properties of the frames and the engine.
+  The residual load dependence is the one this ADR always accepted — the
+  per-call deadline's retry budget under extreme starvation (a call that
+  cannot read a 100 ms crop in 3 × 30 s), which is a wedge, not a load.
+- Deterministic mode trades the belts' wedge protection for the caller's
+  context: a wedged rank worker or an unbounded Decider now bounds the run
+  through `ctx` (the run-level bound) rather than a wall timer. The bench's
+  Decider is scripted and bounded by construction; live mode keeps its
+  belts.
+- Reversal: delete `Config.Deterministic` and the three `if r.cfg.Deterministic`
+  branches (`ageOut`, `holdIfGateClosed`, `drainAtEOF` in
+  `internal/pipeline/dispatch.go`; the grace arming in `reduceLoop`), and the
+  field in `internal/bench/run.go`. Nothing else in this amendment touches
+  live behaviour.

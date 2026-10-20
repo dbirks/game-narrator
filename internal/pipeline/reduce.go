@@ -142,10 +142,19 @@ func (r *Runner) reduceLoop(ctx context.Context, red *session.Reducer, in <-chan
 					if outstanding == 0 {
 						return nil
 					}
-					// Replies already in flight get one bounded grace window to land.
-					// One timer, armed exactly once: re-arming per iteration would
-					// allocate in a loop that spins until the timer fires.
-					graceC = time.NewTimer(r.cfg.OCRTimeout + 500*time.Millisecond).C
+					// Replies already in flight get one bounded grace window to
+					// land. One timer, armed exactly once: re-arming per iteration
+					// would allocate in a loop that spins until the timer fires.
+					// The deterministic replay (ADR-0064 amendment 2) arms no wall
+					// grace at all: a reply in flight at the end of the recording
+					// is the recording's own tail, and ending the run over it would
+					// drop the last line on a slow host. The reply always lands (the
+					// rank worker is local CPU, or the Decider's own bounded
+					// deadline) or the run's context cancels; either way the run
+					// returns.
+					if !r.cfg.Deterministic {
+						graceC = time.NewTimer(r.cfg.OCRTimeout + 500*time.Millisecond).C
+					}
 				}
 				continue
 			}

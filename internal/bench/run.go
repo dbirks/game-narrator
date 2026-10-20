@@ -111,6 +111,12 @@ type truthSample struct {
 // real Tesseract, real matcher) and then drives the speech sidecar over the
 // pipeline's own per-frame readings. Deterministic: same frames, same engine,
 // same answer — the property the M2 replay test asserts across three runs.
+// The pipeline runs in Deterministic mode (issue #17, ADR-0064 amendment 2):
+// the replay's wall-clock belts (age-out, retrieval-hold budget, end-of-stream
+// grace) are removed, so the recognition outcome is independent of host load
+// while the per-OCR-call deadline and retry budget stay the wedge guard. The
+// measured stage latencies remain wall-clock and are reported separately (the
+// report's latency section and the recorded-bounds flag), never graded on.
 // timestampsFile is the replay source's manifest override ("" = the default
 // <dir>/timestamps.json); the captured holdout points it at a per-sample
 // segment of the fixture's frame manifest without touching the fixture.
@@ -125,6 +131,7 @@ func runSample(ctx context.Context, framesDir, timestampsFile string, s Sample, 
 		Trace:           true,
 		TraceMax:        benchTraceMax(len(s.Frames)),
 		Mode:            pipeline.ModeReplay,
+		Deterministic:   true,
 		OCRTimeout:      ocr.DefaultTimeout,
 		Tracker:         benchTracker,
 	}

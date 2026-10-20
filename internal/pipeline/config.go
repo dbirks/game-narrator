@@ -163,6 +163,26 @@ type Config struct {
 	// forces Queue to QueueLossless in normalize, so a caller cannot ask for a
 	// replay that drops frames.
 	Mode Mode
+	// Deterministic selects the bench's load-invariant replay semantics
+	// (issue #17, ADR-0064 amendment 2, ADR-0096 amendment 1): ModeReplay with
+	// the wall-clock belts removed. ModeReplay already delivers every frame in
+	// order and OCRs each region strictly sequentially in frame order
+	// (waitInflight — coalescing and supersede-cancel never fire in replay), so
+	// the remaining paths by which host load could change a replay's outcome
+	// are the wall-clock bounds that drop or fence a frame's evidence: the
+	// probe-tick age-out (an observation outrun by its read is dropped and
+	// counted), the retrieval-hold budget (a slow reply is let past and then
+	// fenced stale) and the end-of-stream grace (an in-flight reply at the tail
+	// is abandoned). In Deterministic mode none of those fires: a read is
+	// waited for, never dropped on a timer, and a reply is applied before the
+	// next observation of its region, so it cannot land stale. The bounds that
+	// remain are the load-independent ones — the per-OCR-call deadline with the
+	// replay retry budget (the wedge guard: a dead engine still fails the frame
+	// and the failure is counted) and the caller's context (the run's
+	// patience). The measured stage latencies (Stats.Latency) are wall-clock
+	// in every mode and are reported separately, never graded on. Valid only
+	// with ModeReplay; Validate refuses it elsewhere.
+	Deterministic bool
 	// SessionID and ProfileRevision stamp every message the pipeline produces.
 	// The reducer fences messages from another session or another revision, so
 	// these must name the session the Publisher is serving.
@@ -552,6 +572,8 @@ func (c Config) Validate() error {
 		return ErrNoIndex
 	case len(c.Regions) == 0:
 		return ErrNoRegion
+	case c.Deterministic && c.Mode != ModeReplay:
+		return errors.New("pipeline: deterministic is a ModeReplay-only semantic (the bench's load-invariant replay, ADR-0064 amendment 2); live mode keeps its wall-clock belts")
 	case c.SessionID == "":
 		return errors.New("pipeline: session_id is required")
 	case c.TraceMax < 0:

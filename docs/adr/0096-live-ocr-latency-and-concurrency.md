@@ -253,3 +253,62 @@ on-device binary is replaced by the next release.
   unresolved.
 - The ready probe's pure-Go integrity-check deadline on the A53 (board-run
   blocker 1, `internal/api`) is a separate issue and out of scope here.
+
+## Amendment 1 (issue #17, 2026-10-20): the age-out/coalescing belts stay live-only; the bench replay runs deterministic
+
+Supersedes the Consequences claim "Replay determinism is untouched" only in
+scope: the Decision-2 age-out change (drop the stale observation, kill the
+shared read only when nothing rides it) did not weaken replay, but the
+age-out *belt itself* — the probe tick that drops a pending observation once
+its recognition outruns the wall budget — is reachable in `ModeReplay` and,
+under host load, turns a slow OCR into a counted drop and a missed narration
+(GitHub issue #17: recall 93.8% at load ~13 vs 97.9% at load 4–6, same
+snapshot and set). Coalescing (riding the in-flight read) was already
+unreachable in replay, where `waitInflight` serializes each region's OCR in
+frame order; the belt was the hole.
+
+### Decision
+
+`pipeline.Config.Deterministic` (ModeReplay-only; `Validate` refuses it in
+`ModeLive`, so the appliance's live path keeps the age-out and coalescing
+semantics this ADR measured in) disables the wall-clock belts: the
+probe-tick age-out no-ops, the retrieval hold has no wall budget, and the
+end-of-stream grace is not armed. Every frame is still OCRed in order (the
+replay serialization this ADR's "replay keeps the pool width" note already
+guaranteed); what changes is that a frame outrun by a slow read is waited
+for, not dropped or fenced. The per-call deadline and the replay retry
+budget remain the wedge guard, and the measured stage latencies remain
+wall-clock diagnostics reported separately — the split ADR-0064 amendment 2
+owns in detail (this ADR is amended only so its live-OCR machinery is not
+read as live-mode-only by omission). `internal/bench.runSample` — the one
+pipeline construction behind `make bench`, `bench captured` and
+`bench calibrate` — sets the mode, so the bench's recognition verdicts
+(recall, top-1) are load-invariant while its latency section still reports
+the measured wall-clock cost.
+
+### Validation
+
+Issue #17's proof (ADR-0064 amendment 2 carries the numbers): the
+bench-synthetic-001 holdout run idle and under 4 parallel
+`go test -race ./internal/api/` loops (load average 16.15) gives identical
+capture-clock verdicts (`recognition_recall` 97.9% (47/48),
+`top1_exact_accuracy` 100% (47/47)) and divergent wall-clock latency flags
+(`frame_to_ocr` p95 2000 ms vs 5000 ms) — the load-dependence the issue
+reported is out of the verdict and inside the diagnostic, as this ADR's
+Decision 2 intended for live mode. `TestDeterministicReplaySlowRankReplyDoesNotFence`
+(internal/pipeline) proves the belt removal against a reply 5× slower than
+its hold budget; live-mode belt tests
+(`TestAgeOutDropsStaleObservationNotTheSharedRead`,
+`TestLiveOCRNeverRunsMoreThanTheCap`) pass unchanged.
+
+### Consequences and reversal
+
+- The live session on the UNO Q behaves exactly as this ADR documents:
+  one read at a time, coalescing, age-out that drops the stale observation
+  but not the shared read. The change is confined to the bench's named
+  replay mode.
+- Reversal: drop `Config.Deterministic` and its three belt branches
+  (`internal/pipeline/dispatch.go` `ageOut`/`holdIfGateClosed`/`drainAtEOF`,
+  `reduce.go` grace arming) and the flag in `internal/bench/run.go` — the
+  bench returns to the load-sensitive replay of issue #17, the live path is
+  unaffected either way.

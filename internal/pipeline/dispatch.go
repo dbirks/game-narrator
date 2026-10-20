@@ -287,14 +287,24 @@ func regionFor(regions []*regionState, job *ocrJob) *regionState {
 // (reduceLoop's outstanding count). Holding this loop on a retrieval would just
 // add a second, slower fence over the same reply.
 func (r *Runner) drainAtEOF(ctx context.Context, regions []*regionState, in chan<- *obsIn, done <-chan ocrOutcome) {
-	budget := r.cfg.OCRTimeout + 200*time.Millisecond
-	if r.cfg.Mode == ModeReplay {
-		// A replay read is allowed its whole retry budget before EOF gives up
-		// on it; the live bound would interrupt a second retry attempt.
-		budget = ReplayOCRMaxAttempts*r.cfg.ReplayOCRTimeout + 200*time.Millisecond
+	var deadline <-chan time.Time
+	if r.cfg.Deterministic {
+		// The deterministic replay (ADR-0064 amendment 2) has no wall budget
+		// at end of stream: the outstanding reads are the recording's own
+		// tail, and a read that outlives a timer is waited for, not dropped.
+		// The per-call deadline and retry budget still bound a wedged engine;
+		// the run's context bounds the rest.
+	} else {
+		budget := r.cfg.OCRTimeout + 200*time.Millisecond
+		if r.cfg.Mode == ModeReplay {
+			// A replay read is allowed its whole retry budget before EOF gives
+			// up on it; the live bound would interrupt a second retry attempt.
+			budget = ReplayOCRMaxAttempts*r.cfg.ReplayOCRTimeout + 200*time.Millisecond
+		}
+		timer := time.NewTimer(budget)
+		defer timer.Stop()
+		deadline = timer.C
 	}
-	deadline := time.NewTimer(budget)
-	defer deadline.Stop()
 	for {
 		if err := r.emitAll(regions, ctx, in); err != nil {
 			return
@@ -320,7 +330,7 @@ func (r *Runner) drainAtEOF(ctx context.Context, regions []*regionState, in chan
 				return
 			}
 			r.applyOutcome(regions, o)
-		case <-deadline.C:
+		case <-deadline:
 			r.abort(regions)
 			return
 		case <-ctx.Done():
@@ -354,6 +364,15 @@ func (r *Runner) abort(regions []*regionState) {
 // job, and when the read settles fillPending resolves them; a read that settles
 // with no riders left still books lastOK, so the dedupe remembers the pixels.
 func (r *Runner) ageOut(regions []*regionState) {
+	if r.cfg.Deterministic {
+		// The bench's deterministic replay (ADR-0064 amendment 2): a
+		// wall-clock belt is exactly the load dependency the mode exists to
+		// remove. The per-call deadline and the retry budget already bound a
+		// wedged engine, and an observation whose read is still running is
+		// waited for (waitInflight), not dropped — a frame lost here on a slow
+		// host is a recognition miss the bench's verdicts would absorb.
+		return
+	}
 	limit := r.cfg.OCRTimeout + 250*time.Millisecond
 	if r.cfg.Mode == ModeReplay {
 		// The retry policy legitimately spends several per-call budgets on one
@@ -554,6 +573,22 @@ func (rs *regionState) holdIfGateClosed(r *Runner, ctx context.Context) error {
 	if !rs.gate.closed() {
 		rs.heldAt = time.Time{}
 		return nil
+	}
+	if r.cfg.Deterministic {
+		// The deterministic replay's hold has no wall budget (ADR-0064
+		// amendment 2): the reply must land before the region's next
+		// observation, so the hold is the run's context, not a timer. A reply
+		// that a budget would have expired is applied in time instead, and the
+		// outcome no longer depends on how fast the rank worker ran. The rank
+		// worker is local CPU (or the Decider's own bounded deadline), and the
+		// run's context bounds the hold either way.
+		select {
+		case <-rs.gate.opened():
+			rs.heldAt = time.Time{}
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	now := r.cfg.Now()
 	if rs.heldAt.IsZero() {
