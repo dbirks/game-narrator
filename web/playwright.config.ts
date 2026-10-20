@@ -44,6 +44,7 @@ const ksearchUrl = `http://127.0.0.1:${ports.ksearch}`;
 const agentDockUrl = `http://127.0.0.1:${ports.agentDock}`;
 const playControlsUrl = `http://127.0.0.1:${ports.playControls}`;
 const audioUrl = `http://127.0.0.1:${ports.audio}`;
+const setupBoardUrl = `http://127.0.0.1:${ports.setupBoard}`;
 const captureUrl = `http://127.0.0.1:${ports.capture}`;
 const developerDecisionUrl = `http://127.0.0.1:${ports.developerDecision}`;
 const developerActionsUrl = `http://127.0.0.1:${ports.developerActions}`;
@@ -107,7 +108,7 @@ export default defineConfig({
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
       testIgnore:
-        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|voices-qa\.spec\.ts|m5-part1\.spec\.ts|m5-graph-regions\.spec\.ts|corrections-fixtures\.spec\.ts|live-play\.spec\.ts|play-controls\.spec\.ts|audio-output\.spec\.ts|bluetooth-output\.spec\.ts|capture-device\.spec\.ts|restore-walk\.spec\.ts|a11y\.spec\.ts|setup-wizard\.spec\.ts|redesign-shell\.spec\.ts|library\.spec\.ts|ksearch\.spec\.ts|agent-dock\.spec\.ts/,
+        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|voices-qa\.spec\.ts|m5-part1\.spec\.ts|m5-graph-regions\.spec\.ts|corrections-fixtures\.spec\.ts|live-play\.spec\.ts|play-controls\.spec\.ts|audio-output\.spec\.ts|bluetooth-output\.spec\.ts|capture-device\.spec\.ts|restore-walk\.spec\.ts|a11y\.spec\.ts|setup-wizard\.spec\.ts|redesign-shell\.spec\.ts|library\.spec\.ts|ksearch\.spec\.ts|agent-dock\.spec\.ts|setup-board\.spec\.ts/,
     },
     {
       // The first-run wizard (G9, ADR-0087) on its own packaged-binary
@@ -307,6 +308,21 @@ export default defineConfig({
       name: "agent-dock",
       testMatch: /agent-dock\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: agentDockUrl },
+    },
+    {
+      // The setup board (docs/design/plum-peach plan.md Phase 1 item 4,
+      // ADR-0093 / ADR-0108, UX-06): the packaged binary with the
+      // agent_reasoning role at the scripted setup gateway (web/e2e/
+      // fake-setup-model.mjs) and the speech roles at the scripted TTS
+      // instance, so the board's live half runs through the real SSE stream
+      // (setup.character_stage / setup.progress) and the real audition job
+      // (the StageObserver's voicing and done transitions). One project,
+      // one server, one data directory: the walk signs in, starts the run,
+      // watches the cards glide, approves the publish boundary and lands
+      // on the Cast seam.
+      name: "setup-board",
+      testMatch: /setup-board\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: setupBoardUrl },
     },
     {
       // The developer inspector's decision half (docs/spec/13 "did it speak,
@@ -552,6 +568,44 @@ export default defineConfig({
       url: `${playUrl}/api/v1/health/live`,
       env: {
         GAME_NARRATOR_REPLAY_ROOTS: replayRoots,
+        GAME_NARRATOR_GATEWAY_URL: `http://127.0.0.1:${ports.fakeTTS}/v1`,
+        GAME_NARRATOR_GATEWAY_TOKEN: "fake-e2e-token",
+        GAME_NARRATOR_ROLE_VOICE_DESIGN_MODEL: "fake-voicedesign",
+        GAME_NARRATOR_ROLE_VOICE_CLONE_MODEL: "fake-base",
+        GAME_NARRATOR_TTS_BASE_DIRECT_URL: `http://127.0.0.1:${ports.fakeTTS}/v1`,
+      },
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The scripted setup gateway (web/e2e/fake-setup-model.mjs): the
+      // onboarding agent's scripted flow for the setup-board walk (import →
+      // source quality → stage two characters → the first voice brief →
+      // stop, plus the publish token branch). Started before the
+      // setup-board server so the role URL it is given is already listening.
+      command: `node web/e2e/fake-setup-model.mjs ${ports.setupBoardModel}`,
+      cwd: "..",
+      url: `http://127.0.0.1:${ports.setupBoardModel}/healthz`,
+      reuseExistingServer: false,
+      timeout: 30_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The setup-board server (setup-board.spec.ts): the agent_reasoning role
+      // is the scripted setup gateway above; the speech roles are the scripted
+      // TTS instance the voices walk uses, so the Marla audition that drives
+      // the board's voicing → done card moves runs the real job-backed voice
+      // workflow (ADR-0108's StageObserver). No ASR role: the QA gate stays
+      // off and the approval path is the walk's.
+      command: `node web/e2e/serve.mjs setup-board 127.0.0.1:${ports.setupBoard} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${setupBoardUrl}/api/v1/health/live`,
+      env: {
+        GAME_NARRATOR_ROLE_AGENT_REASONING_MODEL: "fake/setup-board",
+        GAME_NARRATOR_ROLE_AGENT_REASONING_URL: `http://127.0.0.1:${ports.setupBoardModel}/v1`,
         GAME_NARRATOR_GATEWAY_URL: `http://127.0.0.1:${ports.fakeTTS}/v1`,
         GAME_NARRATOR_GATEWAY_TOKEN: "fake-e2e-token",
         GAME_NARRATOR_ROLE_VOICE_DESIGN_MODEL: "fake-voicedesign",

@@ -81,7 +81,15 @@ function isPortFree(port: number): Promise<boolean> {
 async function bandFree(base: number): Promise<boolean> {
   const ports: number[] = [];
   for (let offset = 0; offset < PORT_BAND; offset++) ports.push(base + offset);
-  ports.push(base + WEB_PORT_OFFSET, base + 30, base + 31, base + 32, base + 33); // the dev port and the redesign/library/ksearch/agent-dock review ports
+  ports.push(
+    base + WEB_PORT_OFFSET,
+    base + 30,
+    base + 31,
+    base + 32,
+    base + 33,
+    base + 34,
+    base + 35,
+  ); // the dev port and the redesign/library/ksearch/agent-dock/setup-board-model/setup-board review ports
   return (await Promise.all(ports.map(isPortFree))).every(Boolean);
 }
 
@@ -343,4 +351,16 @@ export const ports = {
    *  placement as the review ports above, one step further out so the
    *  review ports stay unique per project. */
   agentDock: base + 33,
+  /** the scripted model gateway (web/e2e/fake-setup-model.mjs) the setup-board
+   *  server's agent_reasoning role speaks: import → source quality → stage two
+   *  characters → the first voice brief → stop. Same "just past the band"
+   *  placement as the review ports above, one step further out so the
+   *  review ports stay unique per project. */
+  setupBoardModel: base + 34,
+  /** the packaged binary the setup-board walk drives (setup-board.spec.ts,
+   *  docs/design/plum-peach plan.md Phase 1 item 4): the onboarding agent
+   *  (scripted gateway) plus the speech design role at the scripted TTS
+   *  instance, so the board's voicing transition runs through the real
+   *  audition job and the real StageObserver. */
+  setupBoard: base + 35,
 } as const;

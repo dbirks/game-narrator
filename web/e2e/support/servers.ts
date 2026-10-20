@@ -246,6 +246,8 @@ export function serverNameForProject(project: string): string {
       return "play-controls";
     case "audio":
       return "audio";
+    case "setup-board":
+      return "setup-board";
     default:
       throw new Error(`playwright project "${project}" has no webServer in playwright.config.ts`);
   }

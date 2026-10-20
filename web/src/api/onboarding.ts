@@ -26,6 +26,16 @@ export type OnboardingDraftView = components["schemas"]["OnboardingDraftView"];
 export type OnboardingAttemptResult = components["schemas"]["OnboardingAttemptResult"];
 export type OnboardingUploadAccepted = components["schemas"]["OnboardingUploadAccepted"];
 
+/** The setup board's snapshot half (ADR-0108, UX-06). */
+export type SetupBoard = components["schemas"]["SetupBoard"];
+export type SetupBoardCharacter = components["schemas"]["SetupBoardCharacter"];
+export type SetupRailCell = components["schemas"]["SetupRailCell"];
+export type SetupProgress = components["schemas"]["SetupProgress"];
+
+/** The board's four columns, in board order (UX-06). */
+export const SETUP_STAGES = ["finding", "brief", "voicing", "done"] as const;
+export type SetupStage = (typeof SETUP_STAGES)[number];
+
 export const onboardingApi = {
   /** Start a run (202: accepted, executing as an agent.run job). */
   create(body: OnboardingRunRequest, signal?: AbortSignal) {
@@ -95,6 +105,16 @@ export const onboardingApi = {
       signal,
     }) as Promise<OnboardingUploadAccepted>;
   },
+
+  /** The setup board snapshot (ADR-0108): the page load that cannot trust
+   *  the stream rebuilds the board from this body. It equals the board a
+   *  client assembles by replaying the setup.* SSE events. */
+  board(runId: string, signal?: AbortSignal) {
+    return api.get("/api/v1/onboarding/runs/{id}/board", {
+      params: { id: runId },
+      signal,
+    }) as Promise<SetupBoard>;
+  },
 };
 
 /** The SSE frame the event stream sends: the envelope under `data`. */
@@ -103,4 +123,26 @@ export interface EventFrame {
   name: string;
   seq: number;
   data: Record<string, unknown>;
+}
+
+/** The typed payload of a setup.character_stage SSE event (ADR-0108):
+ *  one card's move, with everything the board needs to place it. */
+export interface CharacterStagePayload {
+  run_id: string;
+  character_id: string;
+  name: string;
+  stage: SetupStage;
+  lines: number;
+  at: string;
+}
+
+/** The typed payload of a setup.progress SSE event (ADR-0108). */
+export interface ProgressPayload {
+  run_id: string;
+  lines_read: number;
+  characters: number;
+  voiced: number;
+  total: number;
+  elapsed: number;
+  stage_rail: SetupRailCell[];
 }

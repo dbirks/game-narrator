@@ -1322,6 +1322,430 @@ textarea:focus-visible,
   overflow: hidden;
 }
 
+/* ── the setup board screen (docs/design/plum-peach 2c; ADR-0093; ADR-0108) ─
+ * Header 36/600 with Pause/Trace pills, the six-cell stage rail, the three
+ * stat tiles, the four-column live board with gliding cards, and the right
+ * agent panel (the docked form of the ⌘J pill). The cards are absolutely
+ * positioned; their place comes from the stylesheet's position table
+ * (data-col / data-row) — the stylesheet, not the markup, is the geometry —
+ * and the glide is the design's 1.1s cubic-bezier (ADR-0093 2c). A card in
+ * VOICING carries the coral border; under prefers-reduced-motion the
+ * universal rule below settles every card instantly. */
+
+.setup-page {
+  display: grid;
+  gap: var(--sp-16);
+}
+
+.setup-header h1 {
+  font-size: 36px;
+  font-weight: 600;
+  line-height: 1.1;
+}
+
+.setup-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  flex-wrap: wrap;
+}
+
+/* The stage rail: six equal cells in one bordered strip (2c). */
+.setup-rail {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+  background: var(--card);
+}
+
+.setup-rail-cell {
+  display: grid;
+  gap: 2px;
+  padding: var(--sp-12) var(--sp-14);
+  border-left: 1.5px solid var(--ink);
+  min-width: 0;
+}
+
+.setup-rail-cell:first-child {
+  border-left: 0;
+}
+
+/* active = the run's frontier: the design's "selected / current" marker. */
+.setup-rail-cell[data-state="active"] {
+  background: var(--peach);
+}
+
+.setup-rail-num {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.setup-rail-cell[data-state="done"] .setup-rail-num {
+  color: var(--ok);
+  font-weight: 700;
+}
+
+/* The active cell's peach ground: muted (5.5:1 on card) drops to ~3.6:1 on
+   peach, below the AA floor — the active cell reads its mono in ink. */
+.setup-rail-cell[data-state="active"] .setup-rail-num,
+.setup-rail-cell[data-state="active"] .setup-rail-value {
+  color: var(--ink);
+}
+
+.setup-rail-label {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.setup-rail-value {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The three stat tiles (lines read · characters · voiced). */
+.setup-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--sp-12);
+}
+
+/* Board + the right agent panel (360px, the docked ⌘J form). */
+.setup-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: var(--sp-16);
+  align-items: start;
+}
+
+/* The live board: the four columns and their mono counts, then the card
+   layer. The geometry variables live on the board so the position table
+   below resolves against it. */
+.setup-board {
+  --setup-rows: 6;
+  --setup-card-h: 64px;
+  --setup-card-gap: 8px;
+  position: relative;
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-card);
+  background: var(--card);
+  padding: var(--sp-12);
+}
+
+.setup-board-cols {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--setup-card-gap);
+}
+
+.setup-board-col {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-6);
+  min-width: 0;
+}
+
+.setup-board-col-head {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
+.setup-board-col-count {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.setup-board-stage-layer {
+  position: relative;
+  margin-top: var(--sp-10);
+  height: calc(
+    var(--setup-rows) * (var(--setup-card-h) + var(--setup-card-gap)) - var(--setup-card-gap)
+  );
+}
+
+/* One card: absolutely positioned, gliding between columns on state
+   change. left = its column's slice of the four-column grid (the same gap
+   the header grid carries), top = its row in the table. The width matches
+   the column's slice so a card never overruns its column. */
+.setup-card {
+  position: absolute;
+  width: calc(25% - var(--setup-card-gap) / 2);
+  height: var(--setup-card-h);
+  display: grid;
+  gap: 4px;
+  align-content: start;
+  box-sizing: border-box;
+  padding: var(--sp-8);
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-portrait);
+  background: var(--card);
+  transition:
+    left 1.1s cubic-bezier(0.65, 0, 0.35, 1),
+    top 1.1s cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+/* VOICING is the one hot column: the coral border while a take is live. */
+.setup-card[data-stage="voicing"] {
+  border-color: var(--coral);
+}
+
+.setup-card .kit-name-tab {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.setup-card-lines {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.setup-board-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  margin: 0;
+}
+
+/* The position table: columns are slices of the four-column grid, rows are
+   card-height + gap. The axes are independent, so the two tables compose.
+   (A card past the clamped row shares the last row: the board stays
+   bounded, the roster is small.) */
+.setup-card[data-col="0"] {
+  left: 0;
+}
+.setup-card[data-col="1"] {
+  left: calc(25% + var(--setup-card-gap) / 2);
+}
+.setup-card[data-col="2"] {
+  left: calc(50% + var(--setup-card-gap));
+}
+.setup-card[data-col="3"] {
+  left: calc(75% + (var(--setup-card-gap) * 3) / 2);
+}
+
+.setup-card[data-row="0"] {
+  top: 0;
+}
+.setup-card[data-row="1"] {
+  top: calc(var(--setup-card-h) + var(--setup-card-gap));
+}
+.setup-card[data-row="2"] {
+  top: calc(2 * (var(--setup-card-h) + var(--setup-card-gap)));
+}
+.setup-card[data-row="3"] {
+  top: calc(3 * (var(--setup-card-h) + var(--setup-card-gap)));
+}
+.setup-card[data-row="4"] {
+  top: calc(4 * (var(--setup-card-h) + var(--setup-card-gap)));
+}
+.setup-card[data-row="5"] {
+  top: calc(5 * (var(--setup-card-h) + var(--setup-card-gap)));
+}
+
+/* The completion handoff (ADR-0093 (a)): the prominent Start narrating. */
+.setup-complete {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-16);
+  flex-wrap: wrap;
+  border: 1.5px solid var(--coral);
+  border-radius: var(--radius-card);
+  background: var(--peach);
+  padding: var(--sp-16);
+}
+
+.setup-complete p {
+  margin: 0;
+}
+
+/* The right agent panel (the docked ⌘J form): context chip, NEEDS YOU,
+   narrative, tool cards, chat, input. */
+.setup-agent {
+  display: grid;
+  gap: var(--sp-16);
+  align-content: start;
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-card);
+  background: var(--card);
+  padding: var(--sp-16);
+  max-height: calc(100vh - 140px);
+  position: sticky;
+  top: 56px;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+.setup-agent-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+}
+
+.setup-needs-you {
+  border: 1.5px solid var(--coral);
+  border-radius: var(--radius-card);
+  padding: var(--sp-12);
+  display: grid;
+  gap: var(--sp-8);
+  background: color-mix(in srgb, var(--coral) 8%, var(--card));
+}
+
+/* Ink, not coral: coral on the near-white card ground is ~2.9:1, below the
+   AA floor for this 11px caption; the coral lives on the block's border. */
+.setup-needs-you-head {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--ink);
+}
+
+.setup-review-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--sp-12);
+}
+
+.setup-review-item {
+  display: grid;
+  gap: var(--sp-8);
+}
+
+.setup-review-provenance {
+  display: grid;
+  gap: 2px;
+}
+
+.setup-review-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  flex-wrap: wrap;
+}
+
+.setup-keep-going {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.setup-narrative-text {
+  margin: 0;
+}
+
+/* The compact tool cards: the panel's condensed tool timeline. */
+.setup-tool-cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--sp-8);
+}
+
+.setup-conversation {
+  max-height: 240px;
+}
+
+.setup-chat {
+  display: flex;
+  gap: var(--sp-8);
+  align-items: center;
+}
+
+.setup-draft {
+  padding: var(--sp-12);
+}
+
+/* The cast seam (ADR-0093 (a)): the landing with the prominent start. */
+.cast-page {
+  display: grid;
+  gap: var(--sp-16);
+  max-width: 46rem;
+}
+
+.cast-page h1 {
+  font-size: 36px;
+  font-weight: 600;
+}
+
+.cast-cta {
+  display: grid;
+  gap: var(--sp-10);
+  justify-items: start;
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-card);
+  background: var(--card);
+  padding: var(--sp-16);
+}
+
+.cast-cta p {
+  margin: 0;
+}
+
+.cast-review,
+.cast-roster {
+  display: grid;
+  gap: var(--sp-8);
+}
+
+.cast-review h2,
+.cast-roster h2 {
+  margin: 0;
+}
+
+/* Narrow screens: the agent panel stacks under the board, the rail wraps
+   to two rows of three, and the board's four columns stay (their cards
+   shrink; the names ellipsize). Nothing may scroll horizontally (390). */
+@media (max-width: 1024px) {
+  .setup-main {
+    grid-template-columns: 1fr;
+  }
+
+  .setup-agent {
+    position: static;
+    max-height: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .setup-rail {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .setup-rail-cell:nth-child(4) {
+    border-left: 0;
+  }
+
+  .setup-header h1 {
+    font-size: 26px;
+  }
+
+  .cast-page h1 {
+    font-size: 26px;
+  }
+}
+
 /* ── reduced motion: every animated surface settles instantly ─────────────
  * Universal (docs/design/plum-peach "Accessibility", plan.md Phase 0 item
  * 1): a dither fade or a progress foot that never settles is worse than

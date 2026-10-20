@@ -469,6 +469,10 @@ func (e *Emitter) Board(ctx context.Context, runID string) (Board, error) {
 		RunID:     f.run.ID,
 		State:     f.run.State,
 		CreatedAt: f.run.CreatedAt.UTC().Format(time.RFC3339),
+		// An empty roster answers [], never null: the OpenAPI contract names
+		// characters a required array, and a client that merges the snapshot
+		// must not special-case a run with no characters yet.
+		Characters: []BoardCharacter{},
 	}
 	for i := range f.characters {
 		ch := f.characters[i]

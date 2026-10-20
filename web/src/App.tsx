@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes, useParams } from "react-router"
 
 import { AuthProvider, RequireAuth } from "./auth/auth-context";
 import { Shell } from "./components/Shell";
+import { CastPage } from "./pages/Cast";
 import { CharactersPage } from "./pages/Characters";
 import { DialoguePage } from "./pages/Dialogue";
 import { DiagnosticsPage } from "./pages/Diagnostics";
@@ -140,6 +141,14 @@ export function App() {
           element={
             <RequireAuth>
               <DialoguePage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/games/:id/cast"
+          element={
+            <RequireAuth>
+              <CastPage />
             </RequireAuth>
           }
         />
