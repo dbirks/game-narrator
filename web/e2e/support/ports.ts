@@ -81,7 +81,7 @@ function isPortFree(port: number): Promise<boolean> {
 async function bandFree(base: number): Promise<boolean> {
   const ports: number[] = [];
   for (let offset = 0; offset < PORT_BAND; offset++) ports.push(base + offset);
-  ports.push(base + WEB_PORT_OFFSET);
+  ports.push(base + WEB_PORT_OFFSET, base + 30); // the dev port and the redesign review port
   return (await Promise.all(ports.map(isPortFree))).every(Boolean);
 }
 
@@ -167,7 +167,7 @@ async function resolvePortBase(raw: string | undefined): Promise<number> {
     throw new Error(
       `GN_E2E_PORT_BASE=auto: none of the candidate bands ` +
         `(${DEFAULT_PORT_BASE}..${DEFAULT_PORT_BASE + (AUTO_CANDIDATES - 1) * AUTO_STRIDE}) ` +
-        `has all ${PORT_BAND + 1} ports free and unclaimed — set GN_E2E_PORT_BASE to a free base explicitly`,
+        `has its band, dev-server port and redesign port all free and unclaimed — set GN_E2E_PORT_BASE to a free base explicitly`,
     );
   }
   const base = Number(raw);
@@ -309,4 +309,13 @@ export const ports = {
    *  serves is the one the Settings section must name, with its notes link.
    */
   fakeReleases: base + 29,
+  /** the packaged binary the Plum & Peach shell review drives
+   *  (redesign-shell.spec.ts, docs/design/plum-peach plan.md Phase 0 item 6):
+   *  a fresh appliance the spec claims, screenshotting the shell and the kit
+   *  gallery at the design's three widths and axing them. Lives just past the
+   *  30-port band, the way the Vite dev port does — base+30 is 18120 at the
+   *  default base, the first port of the Dolphin live-play band that only
+   *  binds under its explicit hardware gate, which never runs inside the
+   *  Playwright suite. */
+  redesign: base + 30,
 } as const;

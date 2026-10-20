@@ -48,7 +48,7 @@ and accessibility rules. Functional requirements derived from it live in
 | `--card` | `#fff7ea` | cards, panels, tables, inputs |
 | `--peach` | `#f3b49a` | selection/highlight fill, chips, active nav text on ink, portrait base |
 | `--coral` | `#e2725b` | the one hot accent: primary CTAs (Regenerate, add +), "needs you", ROI boxes, active underline, Stop |
-| `--muted` | `#8a6178` | secondary text, column headers, metadata |
+| `--muted` | `#7a5468` | secondary text, column headers, metadata — one step darker than the mock's `#8a6178` (4.49:1 on paper) so the token holds WCAG 1.4.3 at small sizes (5.5:1 on `--paper`/`--card`); the axe gate (zero serious) drove the shade |
 | `--sand` | `#efdfc8` | empty track of progress bars, neutral board columns |
 | `--hair` | `#d9bfa8` | dashed row separators |
 
@@ -174,6 +174,36 @@ contract (not the light defaults) is what components must respect.
   license to accompany distributed fonts): ship `OFL.txt` next to the font
   files in `web/public`, include it in the release archives, and keep the
   fonts' copyright notices intact. Do not rename the fonts.
+
+**Source and provenance** (AGENTS.md rule 5: imports are provenance-aware).
+The woff2 files in `web/public/fonts/` were downloaded from the official
+Google Fonts GitHub repository (`google/fonts`, SIL OFL 1.1), verified
+byte-identical (sha256) against `main` on 2026-10-20, and the Fredoka statics
+instantiated from the family's variable font (wght 400/500/600/700 at the
+default width) before woff2 conversion:
+
+| Shipped file | Upstream source (raw URL) | sha256 (upstream source) |
+| --- | --- | --- |
+| `Fredoka-400.woff2` … `Fredoka-700.woff2` | `https://github.com/google/fonts/raw/main/ofl/fredoka/Fredoka%5Bwdth%2Cwght%5D.ttf` (variable, wdth 75–100 / wght 300–700) | `2ba02e68b152868aef9ba28e24b3648c7d457fe6f25c761f2c2c53fb61a73fc8` |
+| `SpaceMono-Regular.woff2` | `https://github.com/google/fonts/raw/main/ofl/spacemono/SpaceMono-Regular.ttf` | `95837e182baeeada83368f7748db28357f0a1b75c6b84ff7065b5edf933c8e18` |
+| `SpaceMono-Bold.woff2` | `https://github.com/google/fonts/raw/main/ofl/spacemono/SpaceMono-Bold.ttf` | `405e73d41afb7e5906efce206a326af5c956f38e255f35421c260e861e599c59` |
+
+sha256 of the shipped artifacts themselves (`web/public/fonts/`), what the
+`@font-face` rules load:
+
+| File | sha256 |
+| --- | --- |
+| `Fredoka-400.woff2` | `18ae0d79e4f0173951bd959ea7bf4feb0136ca1fadd219bb3b9466ae3e8e63d5` |
+| `Fredoka-500.woff2` | `5fdf23b5a4a1b8026163c826c15aa2d9916560f8a42fb327eeb4e73454db76ee` |
+| `Fredoka-600.woff2` | `5744cd6443b6f6ad318219b318019ed8f11fdd28909e5bcf5a32af3eafbf47a3` |
+| `Fredoka-700.woff2` | `30cc69971c3f9bcaf0efc805087ad7f66924ee83b8ec8b3a38b3f9520317dab7` |
+| `SpaceMono-Regular.woff2` | `e3f87790f0d51da394d93cfed60d03f05bd17c93398e6872f6a76edf22d3b85b` |
+| `SpaceMono-Bold.woff2` | `a3d3b345e5895aba197c2b4a4ab8b93f0cea07417fa2338efd9c8795921890bd` |
+
+The shipped `OFL.txt` (sha256
+`1492a1f28d87de59156f1e56b0972773540572dcfa6ca0c85c9f214bfcbb234d`) carries
+both families' copyright notices (Fredoka Project Authors; Space Mono Project
+Authors) from the upstream per-family OFL copies.
 
 ## Global chrome (every screen)
 

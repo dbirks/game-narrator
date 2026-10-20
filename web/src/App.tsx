@@ -1,11 +1,12 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router";
 
 import { AuthProvider, RequireAuth } from "./auth/auth-context";
-import { AppNav } from "./components/AppNav";
+import { Shell } from "./components/Shell";
 import { CharactersPage } from "./pages/Characters";
 import { DialoguePage } from "./pages/Dialogue";
 import { DiagnosticsPage } from "./pages/Diagnostics";
 import { DeveloperPage } from "./pages/developer/DeveloperPage";
+import { DevKitPage } from "./pages/DevKit";
 import { GameOverviewPage } from "./pages/GameOverview";
 import { GraphPage } from "./pages/Graph";
 import { LibraryPage } from "./pages/Library";
@@ -37,10 +38,24 @@ import { VoicesPage } from "./pages/Voices";
  */
 export function App() {
   return (
-    <>
-      <AppNav />
+    <Shell>
       <Routes>
         <Route path="/" element={<Navigate to="/library" replace />} />
+        {/* Plum & Peach IA seams (ADR-0093 §4): the rename routes. The
+            redirects keep the design's status-bar nav ("traces") live in
+            Phase 0; Phase 1 moves the pages and keeps these redirects. */}
+        <Route path="/traces" element={<Navigate to="/developer" replace />} />
+        <Route path="/health" element={<Navigate to="/diagnostics" replace />} />
+        {/* The kit gallery (plan.md Phase 0 item 4): developer role only;
+            the page gates the role, the guard gates the session. */}
+        <Route
+          path="/dev/kit"
+          element={
+            <RequireAuth>
+              <DevKitPage />
+            </RequireAuth>
+          }
+        />
         <Route path="/setup" element={<SetupPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/diagnostics" element={<DiagnosticsPage />} />
@@ -162,7 +177,7 @@ export function App() {
         />
         <Route path="*" element={<NotFoundPage />} />
       </Routes>
-    </>
+    </Shell>
   );
 }
 

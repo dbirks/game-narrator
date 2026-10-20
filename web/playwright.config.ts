@@ -38,6 +38,7 @@ const discUrl = `http://127.0.0.1:${ports.disc}`;
 const clipsUrl = `http://127.0.0.1:${ports.clips}`;
 const routesUrl = `http://127.0.0.1:${ports.routes}`;
 const a11yUrl = `http://127.0.0.1:${ports.a11y}`;
+const redesignUrl = `http://127.0.0.1:${ports.redesign}`;
 const playControlsUrl = `http://127.0.0.1:${ports.playControls}`;
 const audioUrl = `http://127.0.0.1:${ports.audio}`;
 const captureUrl = `http://127.0.0.1:${ports.capture}`;
@@ -103,7 +104,7 @@ export default defineConfig({
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
       testIgnore:
-        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|voices-qa\.spec\.ts|m5-part1\.spec\.ts|m5-graph-regions\.spec\.ts|corrections-fixtures\.spec\.ts|live-play\.spec\.ts|play-controls\.spec\.ts|audio-output\.spec\.ts|bluetooth-output\.spec\.ts|capture-device\.spec\.ts|restore-walk\.spec\.ts|a11y\.spec\.ts|setup-wizard\.spec\.ts/,
+        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|voices-qa\.spec\.ts|m5-part1\.spec\.ts|m5-graph-regions\.spec\.ts|corrections-fixtures\.spec\.ts|live-play\.spec\.ts|play-controls\.spec\.ts|audio-output\.spec\.ts|bluetooth-output\.spec\.ts|capture-device\.spec\.ts|restore-walk\.spec\.ts|a11y\.spec\.ts|setup-wizard\.spec\.ts|redesign-shell\.spec\.ts/,
     },
     {
       // The first-run wizard (G9, ADR-0087) on its own packaged-binary
@@ -264,6 +265,17 @@ export default defineConfig({
       name: "a11y",
       testMatch: /a11y\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: a11yUrl },
+    },
+    {
+      // The Plum & Peach shell review (docs/design/plum-peach plan.md Phase 0
+      // item 6): the global chrome and the component kit gallery on a fresh
+      // packaged-binary appliance — screenshots at the design's three widths
+      // (1440 / 1024 / 390) plus axe, zero serious or critical. The spec
+      // claims the appliance as admin (the kit gallery's developer gate and
+      // the settings page's admin gate both open to it).
+      name: "redesign",
+      testMatch: /redesign-shell\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: redesignUrl },
     },
     {
       // The developer inspector's decision half (docs/spec/13 "did it speak,
@@ -652,6 +664,17 @@ export default defineConfig({
       command: `node web/e2e/serve.mjs a11y 127.0.0.1:${ports.a11y} ${embeddedBinary} serve`,
       cwd: "..",
       url: `${a11yUrl}/api/v1/health/live`,
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The Plum & Peach shell review on the packaged binary: a fresh
+      // appliance the spec claims; no session runs (no env needed).
+      command: `node web/e2e/serve.mjs redesign 127.0.0.1:${ports.redesign} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${redesignUrl}/api/v1/health/live`,
       reuseExistingServer: false,
       timeout: 60_000,
       stdout: "ignore",

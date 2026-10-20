@@ -47,23 +47,6 @@ body {
   color: var(--fg);
 }
 
-nav[aria-label="Primary"] {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding-bottom: var(--space-3);
-  margin-bottom: var(--space-4);
-  border-bottom: 1px solid var(--line);
-}
-
-nav[aria-label="Primary"] a {
-  font-weight: 600;
-}
-
-.nav-spacer {
-  flex: 1;
-}
-
 .nav-user {
   display: inline-flex;
   align-items: center;
@@ -453,7 +436,7 @@ body[data-scroll-locked] {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: color-mix(in srgb, #000 45%, transparent);
+  background: color-mix(in srgb, var(--ink) 45%, transparent);
 }
 
 .modal-content {
@@ -527,6 +510,21 @@ body[data-scroll-locked] {
   gap: var(--space-3);
   align-items: center;
   margin: 0;
+  /* Rows wrap instead of pushing the page sideways at phone width (the
+     design allows no horizontal page scroll at 390); at desktop widths
+     everything fits on one line and this changes nothing. */
+  flex-wrap: wrap;
+}
+
+/* Form controls in a flex row must never force the page sideways: a
+   select's longest option or an input's default width can exceed the
+   phone viewport, and flex's min-width:auto lets them push the whole
+   document (the design allows no horizontal page scroll at 390). */
+.row select,
+.row input,
+.row textarea {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .row.spread {
@@ -554,6 +552,13 @@ body[data-scroll-locked] {
   max-height: 30rem;
   border: 1px solid var(--line);
   border-radius: var(--radius);
+}
+
+/* Wide tables (the settings device lists) scroll inside their own wrapper
+   instead of pushing the page: the design allows no horizontal page scroll
+   at phone width (docs/design/plum-peach). */
+.table-overflow {
+  overflow-x: auto;
 }
 
 table.events {
@@ -1083,7 +1088,7 @@ pre.muted {
 }
 
 .publish-action-rejected {
-  border-left: 3px solid var(--bad, #b00020);
+  border-left: 3px solid var(--danger);
   padding-left: var(--space-2);
 }
 
@@ -1094,7 +1099,7 @@ pre.muted {
 }
 
 .check-fail td:nth-child(2) {
-  color: var(--bad, #b00020);
+  color: var(--danger);
 }
 
 /* ── dialogue graph (m5) ─────────────────────────────────────────────── */
@@ -1134,9 +1139,14 @@ pre.muted {
   overflow: hidden;
 }
 .graph-row-selected {
-  /* light-dark: the selected row must keep the row text and the attribution
-     badge ≥4.5:1 in both themes. */
-  background: light-dark(#eef2ff, #1e2430);
+  /* Selected/current row: the design's --peach fill, ink text on it (the
+     muted pair on peach is below 4.5:1, which the design forbids). */
+  background: var(--peach);
+  color: var(--ink);
+}
+
+.graph-row-selected .graph-row-speaker {
+  color: var(--ink);
 }
 .graph-row-text {
   flex: 1;
@@ -1152,18 +1162,22 @@ pre.muted {
   font-size: 0.7rem;
   padding: 0.1rem 0.4rem;
   border-radius: 999px;
-  border: 1px solid #ccc;
+  border: 1px solid var(--line);
 }
 .attr-badge.verified {
   border-color: var(--ok);
   color: var(--ok);
 }
 .attr-badge.inferred {
-  /* The badge text must hold 4.5:1 on both the page background and the
-     selected row (#eef2ff), so the light value is darker than a plain
-     mid-gray; the dark theme keeps the lighter side. */
-  border-color: light-dark(#5b6470, #9ca3af);
-  color: light-dark(#5b6470, #9ca3af);
+  /* On the page background --muted holds 4.5:1; on the peach selected row
+     the badge takes ink instead (the design's no-muted-on-peach rule). */
+  border-color: var(--muted);
+  color: var(--muted);
+}
+
+.graph-row-selected .attr-badge.inferred {
+  border-color: var(--ink);
+  color: var(--ink);
 }
 
 /* ── OCR regions (m5) ────────────────────────────────────────────────── */
@@ -1200,9 +1214,9 @@ pre.muted {
   display: flex;
   align-items: center;
   justify-content: center;
-  /* The placeholder sits on the canvas's hardcoded #111 in both themes, so it
-     takes the light side of the muted pair, not the theme-following token. */
-  color: #aab1bc;
+  /* The placeholder sits on the canvas's hardcoded dark ground in both
+     themes, so it takes the theme's light surface token, not the text. */
+  color: var(--paper);
   font-family: monospace;
   pointer-events: none;
 }
@@ -1211,13 +1225,13 @@ pre.muted {
   top: -1.1rem;
   left: 0;
   font-size: 0.7rem;
-  color: #22d3ee;
+  color: var(--coral);
 }
 .region-handle {
   position: absolute;
   width: 8px;
   height: 8px;
-  background: #22d3ee;
+  background: var(--coral);
 }
 .region-handle.nw {
   top: -4px;
@@ -1248,7 +1262,7 @@ pre.muted {
 }
 .regions-variants th,
 .regions-variants td {
-  border: 1px solid #ddd;
+  border: 1px solid var(--hair);
   padding: 0.2rem 0.4rem;
   text-align: left;
 }

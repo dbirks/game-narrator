@@ -1,0 +1,954 @@
+/*
+ * `src/styles/tokens.css` — the Plum & Peach design tokens, the alternate
+ * themes, the dither texture recipes, the global chrome (status bar, page
+ * container, agent pill, ⌘K palette) and the shared component kit styles
+ * (docs/design/plum-peach/README.md; ADR-0093; ADR-0011).
+ *
+ * Token-only CSS: every colour in the UI comes from a custom property
+ * declared in the theme blocks below. No raw colour values anywhere else
+ * in web/src/** (the audit lives in src/styles/tokens.test.ts). The file is
+ * static CSS loaded at startup — ADR-0011's `style-src 'self'` forbids
+ * runtime-injected styles, so themes are alternate token sets selected by
+ * the `data-theme` attribute on <html>, never by injected <style> tags.
+ *
+ * This file is imported AFTER src/index.css (see src/main.tsx): the
+ * :root rules below remap index.css's legacy tokens (--bg, --fg, --accent,
+ * …) onto the design tokens, so every pre-existing page style renders over
+ * the Plum & Peach palette without a per-rule rewrite.
+ */
+
+/* ── fonts (SIL OFL 1.1, self-hosted; see docs/design/plum-peach/README.md "Fonts and licensing") ──
+ * Fredoka: instantiated from the google/fonts variable master (wght axis,
+ * wdth pinned to 100) — the static instances keep the family name "Fredoka".
+ * Space Mono: the regular and bold masters as woff2. OFL.txt ships with the
+ * files (web/public/OFL.txt and web/public/fonts/OFL.txt). */
+
+@font-face {
+  font-family: "Fredoka";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/Fredoka-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Fredoka";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/Fredoka-500.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Fredoka";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/Fredoka-600.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Fredoka";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/Fredoka-700.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Space Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/SpaceMono-Regular.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Space Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/SpaceMono-Bold.woff2") format("woff2");
+}
+
+/* ── design tokens: Plum & Peach (default, light) ──────────────────────────
+ * The palette of docs/design/plum-peach/README.md "Colour". --ink + --paper
+ * + --card carry ~90% of the UI; --peach marks "selected / current";
+ * --coral is the one hot accent ("act now").
+ *
+ * The legacy tokens index.css's page styles use are remapped onto this set
+ * in the "legacy remap" block below, so the whole existing app renders over
+ * the palette through one seam. */
+
+:root {
+  --ink: #5a2a4a;
+  --paper: #f8eedd;
+  --card: #fff7ea;
+  --peach: #f3b49a;
+  --coral: #e2725b;
+  /* Secondary text. One step darker than the mock's #8a6178 so it holds
+     WCAG 1.4.3 (4.5:1) at 16px against --paper: #8a6178 measures 4.49 and
+     the axe gate is zero serious, so the token earns its shade here.
+     #7a5468 = 5.5:1 on paper and card. */
+  --muted: #7a5468;
+  --sand: #efdfc8;
+  --hair: #d9bfa8;
+  /* The badge vocabulary index.css uses for draft/warn and ok states
+     (legacy --warn / --ok). Chosen per theme: each must hold 4.5:1 against
+     --paper at its usual small size (WCAG 1.4.3). */
+  --warn: #8a5a2a;
+  --ok: var(--ink);
+}
+
+/* ── theme: Ink Blue & Apricot (light) ─────────────────────────────────────
+ * Values from the handoff mocks (README.md "Themes"); the coral/sand/hair
+ * slots are derived (marked in the README) and confirmed by the theme-page
+ * review pass before shipping. Character: the flat dithered offset shadow
+ * stays the elevation rule; nothing theme-specific in the kit. */
+
+[data-theme="ink-apricot"] {
+  --ink: #24357a;
+  --paper: #fdf0e2;
+  --card: #fff9f1;
+  --peach: #ffc59a;
+  --muted: #4b5058;
+  --coral: #c2542f;
+  --sand: #eadfc9;
+  --hair: #cbb894;
+  --warn: #8a5a2a;
+  --ok: var(--ink);
+}
+
+/* ── theme: Sherbet (light) ──────────────────────────────────────────────── */
+
+[data-theme="sherbet"] {
+  --ink: #43284e;
+  --paper: #fff6e6;
+  --card: #fff6e6;
+  --peach: #a3d9b1;
+  --coral: #ff9c7a;
+  /* --muted derives from the handoff (not in the mocks): an ink tint that
+     holds 4.5:1 against --paper. */
+  --muted: #6f5a78;
+  --sand: #f2e4c8;
+  --hair: #d8c39a;
+  --warn: #8a5a2a;
+  --ok: var(--ink);
+}
+
+/* ── theme: Lilac Night (dark) ─────────────────────────────────────────────
+ * A dark theme inverts which token is the "background": --ink is the page
+ * background and --paper the text, so the token contract (not the light
+ * defaults) is what components respect. Dither reads as glow at night. */
+
+[data-theme="lilac-night"] {
+  --ink: #221a33;
+  --paper: #f1e6ff;
+  --card: #2e2444;
+  --peach: #c7a9ff;
+  --coral: #ffb3c7;
+  --muted: #e2d4fa;
+  --sand: #3a2f55;
+  --hair: #4a3d66;
+  --warn: #ffc78a;
+  --ok: var(--ink);
+}
+
+/* ── legacy remap (index.css tokens over the design set) ───────────────────
+ * index.css declares --bg/--fg/--accent/--line/--fill/--danger/--ok/--warn/
+ * --radius/--ring on :root. Redefining them here (this file loads last)
+ * re-expresses every existing page style over the palette in one place.
+ * --ok/--warn are theme values above; the rest are formulae that follow the
+ * theme automatically because they resolve against the active tokens. */
+
+:root {
+  color-scheme: light;
+  --bg: var(--paper);
+  --fg: var(--ink);
+  --accent: var(--ink);
+  /* 1.5px lines are the design's card language; the legacy 1px hairline
+     uses --line. A 28% ink mix over --paper stays visible on every theme. */
+  --line: color-mix(in srgb, var(--ink) 28%, transparent);
+  --fill: color-mix(in srgb, var(--ink) 5%, transparent);
+  --danger: var(--coral);
+  --radius: 12px;
+  --ring: 2px;
+
+  /* The design's spacing scale (4/6/8/10/12/14/16/18/22/24/28/32px). The
+     legacy --space-1..4 aliases index.css uses keep working: 4/8/16/24. */
+  --sp-4: 4px;
+  --sp-6: 6px;
+  --sp-8: 8px;
+  --sp-10: 10px;
+  --sp-12: 12px;
+  --sp-14: 14px;
+  --sp-16: 16px;
+  --sp-18: 18px;
+  --sp-22: 22px;
+  --sp-24: 24px;
+  --sp-28: 28px;
+  --sp-32: 32px;
+  --space-1: var(--sp-4);
+  --space-2: var(--sp-8);
+  --space-3: var(--sp-16);
+  --space-4: var(--sp-24);
+
+  /* Radius language: cards 10–16px, chips/buttons pill, small tags 3–4px,
+     portraits 8–12px, the hero portrait an arch. */
+  --radius-card: 14px;
+  --radius-pill: 999px;
+  --radius-tag: 4px;
+  --radius-portrait: 10px;
+  --radius-arch: 999px 999px 24px 24px;
+
+  /* The only elevation: a flat offset (no blur shadows). Colour-mixed so no
+     theme carries a raw shadow hex. */
+  --offset-shadow: 0 4px 0 color-mix(in srgb, var(--ink) 25%, transparent);
+
+  /* Typography: Fredoka for titles, names, buttons, body and quoted lines;
+     Space Mono for all data and metadata (counts, ids, timings, 11px
+     uppercase column headers, the 12px status bar, 11–12px chips). */
+  --font-display: "Fredoka", "Trebuchet MS", "Segoe UI", sans-serif;
+  --font-mono: "Space Mono", "Courier New", monospace;
+  font-family: var(--font-display);
+  line-height: 1.4;
+}
+
+/* A dark theme declares its own colour scheme so form controls and scrollbars
+   follow it (the light default above is overridden here, later, on a match). */
+[data-theme="lilac-night"] {
+  color-scheme: dark;
+}
+
+/* The page container: index.css gives body a 60rem centred column; the shell
+   takes the full width and the container owns the page padding (22–36px). */
+body {
+  padding: 0;
+  max-width: none;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+/* Focus rings: 2px --coral, offset 1px, on every interactive element
+   (docs/design/plum-peach "Accessibility"). :focus-visible only, so a mouse
+   click never paints a ring. */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--coral);
+  outline-offset: 1px;
+}
+
+/* ── dither textures (CSS only, no image assets) ───────────────────────────
+ * The signature texture system: 2–4px repeating patterns of two tokens.
+ * --dither-ink / --dither-bg are set per use (defaulting to ink on the
+ * current surface) so the same recipe can run ink-on-paper or, for a
+ * 75% band, with the pair swapped. Whole-pixel sizes; pixelated rendering
+ * where it matters. */
+
+.dither-12,
+.dither-25,
+.dither-50,
+.dither-75 {
+  --dither-ink: var(--ink);
+  --dither-bg: var(--paper);
+  image-rendering: pixelated;
+}
+
+/* 12%: radial dots on a 3px grid. */
+.dither-12 {
+  background-image: radial-gradient(var(--dither-ink) 0.6px, transparent 1px);
+  background-size: 3px 3px;
+  background-position: 0 0;
+  background-color: var(--dither-bg);
+}
+
+/* 25%: radial dots on a 4px grid. */
+.dither-25 {
+  background-image: radial-gradient(var(--dither-ink) 0.9px, transparent 1.3px);
+  background-size: 4px 4px;
+  background-position: 0 0;
+  background-color: var(--dither-bg);
+}
+
+/* 50% checker on a 2px grid. */
+.dither-50 {
+  background: repeating-conic-gradient(var(--dither-ink) 0 25%, var(--dither-bg) 0 50%) 0 0 / 2px
+    2px;
+}
+
+/* 75%: the 25% pattern with ink and background swapped. */
+.dither-75 {
+  background-image: radial-gradient(var(--dither-bg) 0.9px, transparent 1.3px);
+  background-size: 4px 4px;
+  background-position: 0 0;
+  background-color: var(--dither-ink);
+}
+
+/* Cover placeholders: the stacked bands 0% → 12% → 50% → 75% → 100%
+   (README.md "Dither textures", standard uses). Five equal bands; each
+   band's density is the shared recipe on the row's own class. */
+.dither-cover {
+  display: flex;
+  flex-direction: column;
+  image-rendering: pixelated;
+}
+
+.dither-cover > span {
+  display: block;
+  flex: 1 1 20%;
+  min-height: 0;
+}
+
+/* The 0% and 100% band ends of the cover (solid paper / solid ink). */
+.dither-0 {
+  background-color: var(--dither-bg);
+}
+
+.dither-100 {
+  background-color: var(--dither-ink);
+}
+
+/* A single solid ink band variant, for a cover's 100% foot band. */
+.dither-cover-solid {
+  background-color: var(--dither-ink);
+}
+
+/* ── the flat offset elevation (the agent pill's only shadow) ────────────── */
+
+.offset-shadow {
+  box-shadow: var(--offset-shadow);
+}
+
+/* ── global chrome: the 28px status bar + 3-row dither fade ────────────────
+ * One live string, everywhere (UX-07): the server renders the canonical
+ * text (ADR-0100); this is the chrome, not the source. */
+
+.status-bar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-16);
+  padding: 0 var(--sp-16);
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.status-bar-wordmark {
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.status-bar a {
+  color: inherit;
+  text-decoration: none;
+  padding: 2px 0;
+}
+
+/* The nav items sit spaced in a row (the mock's 12–16px at mono 12px); the
+   active item stays --peach 700 (the design's "current" marker). */
+.status-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-14);
+}
+
+.status-nav a[aria-current="page"] {
+  color: var(--peach);
+  font-weight: 700;
+}
+
+/* The developer entry: the two developer-scoped destinations (harness,
+   clip store) under one muted label, visible to developer-and-up. */
+.status-dev {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-8);
+}
+
+.status-dev-label {
+  opacity: 0.6;
+  letter-spacing: 0.08em;
+}
+
+/* The principal on the ink bar (moved from the legacy second nav row):
+   the role chip is a hairline pill and the sign-out a paper text button —
+   the .badge defaults index.css paints for the paper background. */
+.status-bar .nav-user {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-8);
+}
+
+.status-bar .badge {
+  border-color: color-mix(in srgb, var(--paper) 40%, transparent);
+  color: var(--paper);
+}
+
+.status-logout {
+  font: inherit;
+  font-size: 11px;
+  padding: 2px var(--sp-8);
+  border: 1px solid color-mix(in srgb, var(--paper) 40%, transparent);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--paper);
+  cursor: pointer;
+}
+
+.status-logout:hover:not(:disabled) {
+  border-color: var(--paper);
+}
+
+.status-logout:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* The live string hugs the right edge; long strings ellipsize rather than
+   push the nav. */
+.status-live {
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* The 3-row dither fade below the bar: ink toward paper, 12% → 50% → 75%
+   from the bar down (each row 4px, README.md "Status bar"). */
+.status-fade {
+  position: sticky;
+  top: 28px;
+  z-index: 40;
+  height: 12px;
+  --fade-ink: var(--ink);
+  --fade-bg: var(--paper);
+  background:
+    radial-gradient(var(--fade-ink) 0.9px, transparent 1.3px) 0 0 / 4px 4px,
+    var(--fade-bg);
+  image-rendering: pixelated;
+}
+
+/* Row 1 (top, under the bar): 12% dots. Row 2: 50% checker. Row 3: 75%
+   (the swapped pair) — built as one 12px surface in three 4px slices. */
+.status-fade::before,
+.status-fade::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 4px;
+  image-rendering: pixelated;
+}
+
+.status-fade::before {
+  top: 4px;
+  background: repeating-conic-gradient(var(--fade-ink) 0 25%, var(--fade-bg) 0 50%) 0 0 / 2px 2px;
+}
+
+.status-fade::after {
+  top: 8px;
+  background:
+    radial-gradient(var(--fade-bg) 0.9px, transparent 1.3px) 0 0 / 4px 4px,
+    var(--fade-ink);
+}
+
+/* The page container every route renders inside: full width, the design's
+   page padding, a top offset that clears the sticky chrome. */
+.page-container {
+  min-height: 100vh;
+  padding: var(--sp-22) var(--sp-24) var(--sp-32);
+  box-sizing: border-box;
+}
+
+.page-container > main {
+  max-width: 76rem;
+  margin: 0 auto;
+  width: 100%;
+}
+
+/* The footer build line (Global chrome): version, commit, build time and
+   Go version from the public system/info endpoint — mono 11px muted over
+   a hairline. */
+.status-footer {
+  max-width: 76rem;
+  margin: var(--sp-32) auto 0;
+  padding: var(--sp-12) var(--sp-24) var(--sp-16);
+  border-top: 1px solid var(--hair);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+/* Narrow screens (phone width): the bar keeps wordmark + live string and
+   wraps the nav into a second 28px row. */
+@media (max-width: 640px) {
+  .status-bar {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 28px;
+    gap: var(--sp-8) var(--sp-16);
+    padding: 4px var(--sp-16);
+  }
+
+  .status-fade {
+    top: auto;
+    position: relative;
+  }
+}
+
+/* ── the ask-the-agent pill (⌘J) and its docked stub ───────────────────────
+ * Phase 0 seam: the pill is real (opens, closes, names its context chip);
+ * the docked panel body is a labelled stub — the agent backend lands in
+ * Phase 1 (ADR-0099 owns the wire; this is the chrome only). */
+
+.agent-pill {
+  position: fixed;
+  right: var(--sp-16);
+  bottom: var(--sp-16);
+  z-index: 50;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-8);
+  padding: var(--sp-8) var(--sp-14);
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-pill);
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  box-shadow: var(--offset-shadow);
+  cursor: pointer;
+}
+
+.agent-pill-context {
+  background: var(--peach);
+  color: var(--ink);
+  border-radius: var(--radius-pill);
+  padding: 2px var(--sp-10);
+  font-weight: 700;
+}
+
+.agent-pill kbd {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  border: 1px solid color-mix(in srgb, var(--paper) 40%, transparent);
+  border-radius: var(--radius-tag);
+  padding: 0 4px;
+}
+
+.agent-dock {
+  position: fixed;
+  right: 0;
+  top: 40px;
+  bottom: 0;
+  z-index: 45;
+  width: 360px;
+  max-width: 100vw;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: var(--sp-16);
+  background: var(--card);
+  color: var(--fg);
+  border-left: 1.5px solid var(--ink);
+  padding: var(--sp-16);
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+.agent-dock h2 {
+  margin: 0;
+  font-size: 1.1rem;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  flex-wrap: wrap;
+}
+
+/* ── the ⌘K command palette stub ───────────────────────────────────────────
+ * Phase 0 seam: the overlay and its keyboard contract (↵/Esc, focus into the
+ * input) exist; the result groups arrive with the search backend (ADR-0098
+ * owns /api/v1/search). */
+
+.palette-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: color-mix(in srgb, var(--ink) 45%, transparent);
+}
+
+.palette {
+  position: fixed;
+  z-index: 61;
+  top: 12vh;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(36rem, calc(100vw - 2rem));
+  background: var(--card);
+  color: var(--fg);
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-card);
+  padding: var(--sp-16);
+  display: grid;
+  gap: var(--sp-12);
+}
+
+.palette h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.palette input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.palette-note {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* ── the shared component kit (src/components/kit) ─────────────────────────
+ * Every kit piece is theme-agnostic: tokens only, 1.5px ink lines, the
+ * dither recipes. Restyled empty (dashed card) and error (coral border +
+ * request_id) states per the design's "Interactions and state". */
+
+.kit-card {
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-card);
+  background: var(--card);
+  color: var(--fg);
+  padding: var(--sp-16);
+  box-sizing: border-box;
+}
+
+/* Pill buttons: ink fill, outline, coral. */
+.kit-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-8);
+  border-radius: var(--radius-pill);
+  padding: var(--sp-6) var(--sp-16);
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.95rem;
+  line-height: 1.2;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.kit-pill-ink {
+  background: var(--ink);
+  color: var(--paper);
+  border: 1.5px solid var(--ink);
+}
+
+.kit-pill-outline {
+  background: transparent;
+  color: var(--ink);
+  border: 1.5px solid var(--ink);
+}
+
+.kit-pill-coral {
+  background: var(--coral);
+  /* Ink on --coral holds 3.6:1 — below the 4.5:1 for normal text, above the
+     3:1 for LARGE text (WCAG 1.4.3 large = ≥18.66px bold). The coral CTA is
+     the kit's primary action, so it takes the large-text treatment: 19.2px
+     / 700. Ink and outline pills stay at the base size (9:1 headroom). */
+  color: var(--ink);
+  font-size: 1.2rem;
+  font-weight: 700;
+  border: 1.5px solid var(--ink);
+}
+
+.kit-pill:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* Chips: --peach "selected / current" by default, neutral otherwise. */
+.kit-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-6);
+  border-radius: var(--radius-pill);
+  padding: 2px var(--sp-12);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  border: 1.5px solid var(--ink);
+  background: var(--peach);
+  color: var(--ink);
+  box-sizing: border-box;
+}
+
+.kit-chip-neutral {
+  background: transparent;
+  color: var(--muted);
+  border-color: var(--hair);
+}
+
+/* Name tabs: mono 700 uppercase on ink, letter-spacing 0.1em. */
+.kit-name-tab {
+  display: inline-block;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 2px var(--sp-10);
+  border-radius: var(--radius-tag);
+  white-space: nowrap;
+}
+
+/* Segmented toggle (view switches): a bordered strip of ink-filled
+   segments; the active one is filled. Keyboard is the Radix tabs'
+   (arrow keys move, the selection persists per user). */
+.kit-segmented {
+  display: inline-flex;
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+  background: var(--card);
+}
+
+.kit-segmented [role="tab"] {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.9rem;
+  padding: var(--sp-6) var(--sp-16);
+  cursor: pointer;
+  border-radius: 0;
+}
+
+.kit-segmented [role="tab"][aria-selected="true"] {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.kit-segmented [role="tab"]:focus-visible {
+  outline-offset: -3px;
+}
+
+/* The Radix tab panels (empty): they exist so the triggers' aria-controls
+   reference resolves (axe aria-valid-attr-value) — the switched content is
+   rendered by the consumer, not by the toggle. */
+.kit-segmented-panel {
+  padding: 0;
+  border: 0;
+}
+
+/* Stat tiles: mono label, big number, a dithered progress foot. */
+.kit-stat {
+  display: grid;
+  gap: var(--sp-4);
+  align-content: start;
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-card);
+  background: var(--card);
+  padding: var(--sp-16);
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.kit-stat-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.kit-stat-value {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.6rem;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.kit-stat-detail {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.kit-card-title {
+  margin: 0 0 var(--sp-8);
+  font-size: 1.15rem;
+  font-weight: 600;
+}
+
+.kit-segmented-option {
+  border-radius: 0;
+}
+
+/* Progress bars: an SVG whose width attribute carries the value; the
+   ink + coral checker fill and the --sand track live here, not in the
+   markup (no inline styles, ADR-0011). role=progressbar on the <svg>. */
+.kit-progress {
+  display: block;
+  width: 100%;
+  height: 10px;
+  border: 1px solid var(--ink);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+  box-sizing: content-box;
+  background-color: var(--sand);
+  image-rendering: pixelated;
+}
+
+.kit-progress-track {
+  fill: var(--sand);
+}
+
+.kit-progress-fill-a {
+  fill: var(--ink);
+}
+
+.kit-progress-fill-b {
+  fill: var(--coral);
+}
+
+/* Sparkline: twelve dithered bars (50% checker fill), the health tile's
+   pulse. Geometry is SVG attributes; the bar ink is the stylesheet's. */
+.kit-spark {
+  display: block;
+  width: 100%;
+  height: 24px;
+  image-rendering: pixelated;
+}
+
+.kit-spark-bar {
+  fill: var(--ink);
+}
+
+/* Waveform: the voice clip's text-twin visual (dithered bars over an ink
+   baseline). */
+.kit-wave {
+  display: block;
+  width: 100%;
+  height: 32px;
+  image-rendering: pixelated;
+}
+
+.kit-wave-bar {
+  fill: var(--ink);
+}
+
+.kit-wave-baseline {
+  stroke: var(--hair);
+  stroke-width: 1;
+}
+
+/* Tables: 1px dashed --hair row separators, mono 11px uppercase headers. */
+.kit-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.95rem;
+}
+
+.kit-table caption {
+  text-align: left;
+  padding-bottom: var(--sp-8);
+  caption-side: top;
+}
+
+.kit-table th,
+.kit-table td {
+  text-align: left;
+  vertical-align: top;
+  padding: var(--sp-8) var(--sp-10);
+  border-bottom: 1px dashed var(--hair);
+}
+
+.kit-table th {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* Empty state: the dashed 1.5px ink card. */
+.kit-empty {
+  border: 1.5px dashed var(--ink);
+  border-radius: var(--radius-card);
+  padding: var(--sp-24);
+  display: grid;
+  gap: var(--sp-8);
+  justify-items: center;
+  text-align: center;
+  background: var(--card);
+  color: var(--fg);
+  box-sizing: border-box;
+}
+
+/* Error state: the coral border, the problem and the request_id that
+   matches the server log line. */
+.kit-error {
+  border: 1.5px solid var(--coral);
+  border-radius: var(--radius-card);
+  background: var(--card);
+  color: var(--fg);
+  padding: var(--sp-16);
+  display: grid;
+  gap: var(--sp-8);
+  box-sizing: border-box;
+}
+
+.kit-error-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+/* ── the dev gallery (/dev/kit) frame sizing ────────────────────────────── */
+
+.devkit-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--sp-12);
+}
+
+.devkit-cover {
+  width: 150px;
+  aspect-ratio: 3 / 4;
+  border-radius: var(--radius-portrait);
+  overflow: hidden;
+}
+
+/* ── reduced motion: every animated surface settles instantly ─────────────
+ * Universal (docs/design/plum-peach "Accessibility", plan.md Phase 0 item
+ * 1): a dither fade or a progress foot that never settles is worse than
+ * one that settles now. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

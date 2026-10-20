@@ -111,39 +111,41 @@ function SettingsView({ data }: { data: Settings }) {
 
       <section aria-labelledby="settings-models">
         <h2 id="settings-models">Model roles</h2>
-        <table className="table" data-testid="settings-roles">
-          <thead>
-            <tr>
-              <th>Role</th>
-              <th>State</th>
-              <th>Model</th>
-              <th>Protocol</th>
-              <th>Endpoint</th>
-              <th>Effort</th>
-              <th>Timeout</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.models.roles.map((role) => (
-              <tr key={role.role}>
-                <td>{role.role}</td>
-                <td>
-                  <span
-                    className={`pill ${role.configured ? "pill-ok" : "pill-warn"}`}
-                    data-testid={`role-${role.role}`}
-                  >
-                    {role.state}
-                  </span>
-                </td>
-                <td>{role.model || "—"}</td>
-                <td>{role.protocol}</td>
-                <td>{role.base_url || "—"}</td>
-                <td>{role.reasoning_effort || "—"}</td>
-                <td>{role.timeout || "—"}</td>
+        <div className="table-overflow" tabIndex={0} aria-labelledby="settings-models">
+          <table className="table" data-testid="settings-roles">
+            <thead>
+              <tr>
+                <th>Role</th>
+                <th>State</th>
+                <th>Model</th>
+                <th>Protocol</th>
+                <th>Endpoint</th>
+                <th>Effort</th>
+                <th>Timeout</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {data.models.roles.map((role) => (
+                <tr key={role.role}>
+                  <td>{role.role}</td>
+                  <td>
+                    <span
+                      className={`pill ${role.configured ? "pill-ok" : "pill-warn"}`}
+                      data-testid={`role-${role.role}`}
+                    >
+                      {role.state}
+                    </span>
+                  </td>
+                  <td>{role.model || "—"}</td>
+                  <td>{role.protocol}</td>
+                  <td>{role.base_url || "—"}</td>
+                  <td>{role.reasoning_effort || "—"}</td>
+                  <td>{role.timeout || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
         <dl className="grid-defs" data-testid="settings-gateway">
           <dt>Shared gateway</dt>
           <dd>
@@ -648,34 +650,36 @@ function AudioOutputSection() {
               still applies on the next session.
             </p>
           )}
-          <table className="table" data-testid="audio-devices">
-            <thead>
-              <tr>
-                <th>Device</th>
-                <th>Kind</th>
-                <th>Rate</th>
-                <th>Marked</th>
-              </tr>
-            </thead>
-            <tbody>
-              {view.devices.map((device) => (
-                <tr key={device.id} data-testid={`audio-device-${device.id}`}>
-                  <td>
-                    <code>{device.id}</code> — {device.name}
-                  </td>
-                  <td>{device.kind}</td>
-                  <td>{device.sample_rate ?? "—"}</td>
-                  <td>
-                    {selected && selected.device === device.id
-                      ? "selected"
-                      : device.platform_default
-                        ? "platform default"
-                        : ""}
-                  </td>
+          <div className="table-overflow" tabIndex={0} aria-labelledby="settings-audio-output">
+            <table className="table" data-testid="audio-devices">
+              <thead>
+                <tr>
+                  <th>Device</th>
+                  <th>Kind</th>
+                  <th>Rate</th>
+                  <th>Marked</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {view.devices.map((device) => (
+                  <tr key={device.id} data-testid={`audio-device-${device.id}`}>
+                    <td>
+                      <code>{device.id}</code> — {device.name}
+                    </td>
+                    <td>{device.kind}</td>
+                    <td>{device.sample_rate ?? "—"}</td>
+                    <td>
+                      {selected && selected.device === device.id
+                        ? "selected"
+                        : device.platform_default
+                          ? "platform default"
+                          : ""}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
           <div className="row" data-testid="audio-output-controls">
             <label htmlFor="audio-device-select">Device</label>
             <select
@@ -914,97 +918,100 @@ function BluetoothSection() {
       ) : devicesQuery.data === undefined ? (
         <p className="muted">Reading the paired devices…</p>
       ) : (
-        <table className="table" data-testid="bt-devices">
-          <thead>
-            <tr>
-              <th>Device</th>
-              <th>State</th>
-              <th>A2DP</th>
-              <th>Marked</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {devices.map((device) => (
-              <tr key={device.address} data-testid={`bt-device-${device.address}`}>
-                <td>
-                  <code>{device.address}</code> — {device.alias || "(no name yet)"}
-                  {device.rssi !== undefined ? ` (${device.rssi} dBm)` : ""}
-                </td>
-                <td data-testid={`bt-device-state-${device.address}`}>
-                  {[
-                    device.paired && "paired",
-                    device.trusted && "trusted",
-                    device.connected && "connected",
-                  ]
-                    .filter(Boolean)
-                    .join(", ") || "unpaired"}
-                  {device.discovered ? ", discovered" : ""}
-                </td>
-                <td>{device.a2dp_sink ? "sink" : device.a2dp_source ? "source" : "—"}</td>
-                <td data-testid={`bt-device-marked-${device.address}`}>
-                  {device.selected ? "selected" : ""}
-                  {device.needs_repair ? " — needs repair" : ""}
-                </td>
-                <td className="row" data-testid={`bt-device-actions-${device.address}`}>
-                  {!device.paired && (
-                    <button
-                      type="button"
-                      disabled={!canAct || acting !== null}
-                      onClick={() => void onAction(device, "pair")}
-                    >
-                      {acting === `${device.address}:pair` ? "Pairing…" : "Pair"}
-                    </button>
-                  )}
-                  {!device.connected && (
-                    <button
-                      type="button"
-                      disabled={!canAct || acting !== null}
-                      onClick={() => void onAction(device, "connect")}
-                    >
-                      {acting === `${device.address}:connect` ? "Connecting…" : "Connect"}
-                    </button>
-                  )}
-                  {device.connected && !device.needs_repair && (
-                    <button
-                      type="button"
-                      disabled={!canAct || acting !== null}
-                      onClick={() => void onAction(device, "disconnect")}
-                    >
-                      {acting === `${device.address}:disconnect` ? "…" : "Disconnect"}
-                    </button>
-                  )}
-                  {device.needs_repair && (
-                    <button
-                      type="button"
-                      disabled={!canAct || acting !== null}
-                      onClick={() => void onAction(device, "repair")}
-                      data-testid="bt-repair"
-                    >
-                      {acting === `${device.address}:repair`
-                        ? "Repairing…"
-                        : "Repair (re-pair over classic)"}
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    disabled={!canAct || acting !== null}
-                    onClick={() => void onAction(device, "forget")}
-                  >
-                    {acting === `${device.address}:forget` ? "…" : "Forget"}
-                  </button>
-                </td>
-              </tr>
-            ))}
-            {devices.length === 0 && (
+        <div className="table-overflow" tabIndex={0} aria-labelledby="settings-audio-bluetooth">
+          <table className="table" data-testid="bt-devices">
+            <thead>
               <tr>
-                <td colSpan={5} className="muted">
-                  No paired devices yet — scan, then pair the headset (it must be in pairing mode).
-                </td>
+                <th>Device</th>
+                <th>State</th>
+                <th>A2DP</th>
+                <th>Marked</th>
+                <th></th>
               </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {devices.map((device) => (
+                <tr key={device.address} data-testid={`bt-device-${device.address}`}>
+                  <td>
+                    <code>{device.address}</code> — {device.alias || "(no name yet)"}
+                    {device.rssi !== undefined ? ` (${device.rssi} dBm)` : ""}
+                  </td>
+                  <td data-testid={`bt-device-state-${device.address}`}>
+                    {[
+                      device.paired && "paired",
+                      device.trusted && "trusted",
+                      device.connected && "connected",
+                    ]
+                      .filter(Boolean)
+                      .join(", ") || "unpaired"}
+                    {device.discovered ? ", discovered" : ""}
+                  </td>
+                  <td>{device.a2dp_sink ? "sink" : device.a2dp_source ? "source" : "—"}</td>
+                  <td data-testid={`bt-device-marked-${device.address}`}>
+                    {device.selected ? "selected" : ""}
+                    {device.needs_repair ? " — needs repair" : ""}
+                  </td>
+                  <td className="row" data-testid={`bt-device-actions-${device.address}`}>
+                    {!device.paired && (
+                      <button
+                        type="button"
+                        disabled={!canAct || acting !== null}
+                        onClick={() => void onAction(device, "pair")}
+                      >
+                        {acting === `${device.address}:pair` ? "Pairing…" : "Pair"}
+                      </button>
+                    )}
+                    {!device.connected && (
+                      <button
+                        type="button"
+                        disabled={!canAct || acting !== null}
+                        onClick={() => void onAction(device, "connect")}
+                      >
+                        {acting === `${device.address}:connect` ? "Connecting…" : "Connect"}
+                      </button>
+                    )}
+                    {device.connected && !device.needs_repair && (
+                      <button
+                        type="button"
+                        disabled={!canAct || acting !== null}
+                        onClick={() => void onAction(device, "disconnect")}
+                      >
+                        {acting === `${device.address}:disconnect` ? "…" : "Disconnect"}
+                      </button>
+                    )}
+                    {device.needs_repair && (
+                      <button
+                        type="button"
+                        disabled={!canAct || acting !== null}
+                        onClick={() => void onAction(device, "repair")}
+                        data-testid="bt-repair"
+                      >
+                        {acting === `${device.address}:repair`
+                          ? "Repairing…"
+                          : "Repair (re-pair over classic)"}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      disabled={!canAct || acting !== null}
+                      onClick={() => void onAction(device, "forget")}
+                    >
+                      {acting === `${device.address}:forget` ? "…" : "Forget"}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {devices.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="muted">
+                    No paired devices yet — scan, then pair the headset (it must be in pairing
+                    mode).
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       )}
       {actionNote && (
         <p className="muted" role="status" data-testid="bt-action-note">
@@ -1193,44 +1200,46 @@ function CaptureSection() {
               (the list re-enumerates on the next read).
             </p>
           ) : (
-            <table className="table" data-testid="capture-devices">
-              <thead>
-                <tr>
-                  <th>Device</th>
-                  <th>Path</th>
-                  <th>Link</th>
-                  <th>State</th>
-                  <th>Mode a session asks for</th>
-                </tr>
-              </thead>
-              <tbody>
-                {view.devices.map((device) => (
-                  <tr key={device.id} data-testid={`capture-device-${device.id}`}>
-                    <td>
-                      <code>{device.id}</code> — {device.name}
-                    </td>
-                    <td>{device.path}</td>
-                    <td>
-                      {device.link
-                        ? `${device.link.speed_mbps} Mb/s (${device.link.class})` +
-                          (device.link.downgraded
-                            ? " — downgraded: re-seat the dongle or try another port"
-                            : "")
-                        : "—"}
-                    </td>
-                    <td>
-                      {device.state}
-                      {device.detail ? <span className="muted"> — {device.detail}</span> : null}
-                    </td>
-                    <td>
-                      {device.chosen
-                        ? `${modeText(device.chosen.w, device.chosen.h, device.chosen.fps, device.chosen.pix_fmt)} (${device.chosen.source}${device.chosen.reason ? `, ${device.chosen.reason}` : ""})`
-                        : "—"}
-                    </td>
+            <div className="table-overflow" tabIndex={0} aria-labelledby="settings-capture">
+              <table className="table" data-testid="capture-devices">
+                <thead>
+                  <tr>
+                    <th>Device</th>
+                    <th>Path</th>
+                    <th>Link</th>
+                    <th>State</th>
+                    <th>Mode a session asks for</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {view.devices.map((device) => (
+                    <tr key={device.id} data-testid={`capture-device-${device.id}`}>
+                      <td>
+                        <code>{device.id}</code> — {device.name}
+                      </td>
+                      <td>{device.path}</td>
+                      <td>
+                        {device.link
+                          ? `${device.link.speed_mbps} Mb/s (${device.link.class})` +
+                            (device.link.downgraded
+                              ? " — downgraded: re-seat the dongle or try another port"
+                              : "")
+                          : "—"}
+                      </td>
+                      <td>
+                        {device.state}
+                        {device.detail ? <span className="muted"> — {device.detail}</span> : null}
+                      </td>
+                      <td>
+                        {device.chosen
+                          ? `${modeText(device.chosen.w, device.chosen.h, device.chosen.fps, device.chosen.pix_fmt)} (${device.chosen.source}${device.chosen.reason ? `, ${device.chosen.reason}` : ""})`
+                          : "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
           {readyDevices.length > 0 && (
             <div className="row" data-testid="capture-controls">
