@@ -28,8 +28,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/dbirks/game-narrator/internal/capture"
 	"github.com/dbirks/game-narrator/internal/capture/mode"
 	"github.com/dbirks/game-narrator/internal/capture/stack"
+	rt "github.com/dbirks/game-narrator/internal/runtime"
+	"github.com/dbirks/game-narrator/internal/vision"
 	"github.com/dbirks/game-narrator/internal/vision/ocr"
 )
 
@@ -143,14 +146,19 @@ func (s *Server) handleCaptureSelect(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// handleCapturePreview answers GET /api/v1/capture/preview?device=: one JPEG
-// snapshot through a throwaway source (build, start, one frame, encode at
-// quality 60 capped to 1280 px wide, close — ADR-0078 §3). The route is
-// authenticated (the scope grant) and throttled globally: one snapshot in
-// flight and a 500 ms minimum interval, 429 with Retry-After when exceeded.
-// A preview is also refused 503 capture-busy while a running session holds
-// the same device — the UVC bus is single-consumer, and the answer names the
-// holding session instead of a raw FFmpeg "device or resource busy".
+// handleCapturePreview answers GET /api/v1/capture/preview?device=: the
+// newest frame as a downscaled JPEG (≤ 640 px wide, quality 60, the shared
+// encoder) (ADR-0110 §2, UX-11). The route is authenticated (the scope
+// grant) and throttled globally: one snapshot in flight and a 500 ms minimum
+// interval, answered 429 with Retry-After when exceeded. While a running
+// v4l2 session holds the resolved device, the JPEG is the session's newest
+// in-memory frame — served from memory, never stored, never a second device
+// grab (the UVC bus stays with the session, so the old 503 capture-busy
+// answer for the same-device preview is replaced by the picture the operator
+// asked for). Without a session (or with a different device named), the
+// one-shot throwaway path runs: build, start, one frame, encode, close —
+// still refused 503 capture-busy in the window where a session start holds
+// the device before the hold is visible.
 func (s *Server) handleCapturePreview(w http.ResponseWriter, r *http.Request) {
 	if s.capture == nil {
 		s.writeCodeProblem(w, r, http.StatusServiceUnavailable, "capture-unavailable",
@@ -159,10 +167,12 @@ func (s *Server) handleCapturePreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The global throttle (ADR-0078): one in flight, 500 ms apart. The
-	// in-flight counter is the single-snapshot bound (a second request that
-	// arrives mid-grab is told to retry, not queued), and the interval is the
-	// decode-budget spacing. Both fail closed toward the 429.
+	// The global throttle (ADR-0078/ADR-0110): one one-shot in flight, 500 ms
+	// apart. The in-flight counter is the single-snapshot bound (a second
+	// request that arrives mid-grab is told to retry, not queued), and the
+	// interval is the decode-budget spacing. Both fail closed toward the 429.
+	// A session-mode answer reads memory only, but it shares the throttle so
+	// a polling pair (preview + signal) cannot double the one-shot budget.
 	if !atomic.CompareAndSwapInt32(&s.capturePreviewInFlight, 0, 1) {
 		s.writePreviewThrottled(w, r, "another preview snapshot is in flight")
 		return
@@ -179,22 +189,36 @@ func (s *Server) handleCapturePreview(w http.ResponseWriter, r *http.Request) {
 
 	device := strings.TrimSpace(r.URL.Query().Get("device"))
 
-	// The per-device busy check (ADR-0078): a running session on the same
-	// device holds the UVC bus, and the preview would race it for the node.
-	// The id the preview would open is the stack's resolution of the request
-	// (the requested id, else the stored selection, else the first usable
-	// device), so the comparison is on what will actually be opened.
-	resID, err := s.capture.ResolveID(r.Context(), device)
-	if err != nil {
-		s.captureProblem(w, r, err)
-		return
-	}
-	if s.sessions != nil {
-		if heldBy, sessionID, active := s.sessions.ActiveCaptureDevice(); active && heldBy == resID {
-			s.writeCodeProblem(w, r, http.StatusServiceUnavailable, "capture-busy",
-				"CAPTURE_BUSY", "Service Unavailable",
-				fmt.Sprintf("the capture device %s is held by the running session %s; stop the session before previewing it", resID, sessionID))
+	// The session's picture (ADR-0110 §2): while a v4l2 session holds the
+	// resolved device, the preview is the session's newest in-memory frame —
+	// no device grab, no UVC-bus race. The id the preview would open is the
+	// stack's resolution of the request (the requested id, else the stored
+	// selection, else the first usable device), so the comparison is on what
+	// will actually be opened.
+	if live, ok := s.captureLiveSession(); ok {
+		resID, rerr := s.capture.ResolveID(r.Context(), device)
+		if rerr != nil {
+			s.captureProblem(w, r, rerr)
 			return
+		}
+		if resID == live.Device {
+			s.writeSessionPreview(w, r, live)
+			return
+		}
+	}
+
+	// The one-shot path (no session on this device, or none at all): the
+	// per-device busy check keeps a throwaway source off a node a session is
+	// starting onto (the window where the hold is not yet visible).
+	if s.sessions != nil {
+		if heldBy, sessionID, active := s.sessions.ActiveCaptureDevice(); active {
+			resID, rerr := s.capture.ResolveID(r.Context(), device)
+			if rerr == nil && resID == heldBy {
+				s.writeCodeProblem(w, r, http.StatusServiceUnavailable, "capture-busy",
+					"CAPTURE_BUSY", "Service Unavailable",
+					fmt.Sprintf("the capture device %s is held by the running session %s; stop the session before previewing it", resID, sessionID))
+				return
+			}
 		}
 	}
 
@@ -207,6 +231,348 @@ func (s *Server) handleCapturePreview(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
+}
+
+// captureLiveSession reports the running v4l2 session's live view (ADR-0110
+// §1/§2): nil sessions wiring or no active capture session answers false, so
+// the routes fall through to the one-shot path (or its 409/503 answers).
+// The runtime's own CaptureLive answers v4l2-source sessions only — a replay
+// or test-pattern run is not the card's source, so it never answers the
+// HDMI input's question (the one-shot path answers against the card).
+func (s *Server) captureLiveSession() (rtCaptureLive, bool) {
+	if s.sessions == nil {
+		return rtCaptureLive{}, false
+	}
+	return s.sessions.CaptureLive()
+}
+
+// writeSessionPreview serves the session's newest in-memory frame as the
+// preview's JPEG (ADR-0110 §2): the shared encoder's ≤ 640 px cap, quality
+// 60, no-store — the frame is encoded from memory and dropped at the end of
+// the request, never written to disk. A session that has started but not
+// delivered a frame yet answers 409 with the reason: "no frame in memory
+// yet" is the honest state for a session that is starting, not a 500 and not
+// a stale one-shot grab that would race the session for the node.
+func (s *Server) writeSessionPreview(w http.ResponseWriter, r *http.Request, live rtCaptureLive) {
+	if live.Latest == nil || live.Latest.Image == nil {
+		detail := "the running session has not delivered a frame yet; the preview serves the session's newest in-memory frame, so wait for the first delivery"
+		if live.Source.LastError != "" {
+			detail += " (source: " + live.Source.LastError + ")"
+		}
+		s.writeCodeProblem(w, r, http.StatusConflict, "capture-preview-unavailable",
+			"PREVIEW_UNAVAILABLE", "Conflict", detail)
+		return
+	}
+	data, _, _, err := stack.EncodeJPEGDownscaled(live.Latest.Image, stackPreviewMaxWidth, stackPreviewJPEGQuality)
+	if err != nil {
+		s.writeCodeProblem(w, r, http.StatusServiceUnavailable, "capture-preview-encode-failed",
+			"PREVIEW_ENCODE_FAILED", "Service Unavailable", "encoding the preview JPEG failed: "+err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+// stackPreviewMaxWidth and stackPreviewJPEGQuality mirror the stack's
+// preview constants (ADR-0110 §2): one width bound and one quality recipe
+// for both halves of the preview answer — the one-shot snapshot and the
+// session's in-memory frame — so the two cannot drift apart.
+const (
+	stackPreviewMaxWidth    = 640
+	stackPreviewJPEGQuality = 60
+)
+
+// The signal answer's evidence-class words (ADR-0110 §1): a running v4l2
+// session answers source "session", the one-shot throwaway grab answers
+// "oneshot". The contract's enum vocabulary is pinned to these in
+// openapi_enums_test.go — the writer and the document cannot drift.
+const (
+	signalSourceSession = "session"
+	signalSourceOneShot = "oneshot"
+)
+
+// captureSignalView is GET /api/v1/capture/signal's answer (ADR-0110 §1,
+// UX-11): the signal state of the HDMI input path, from two sources of
+// evidence — a running v4l2 session (the rich answer: measured fps, the
+// tracker's window, the last dialogue crop, the newest frame's age) or a
+// one-shot frame grab (the no-session answer: the negotiated mode, the
+// window settled from the one frame through the ADR-0082 single-frame seam,
+// and no measured rate — one frame cannot measure one, so fps_actual is
+// null there).
+type captureSignalView struct {
+	// Device is the stable id of the device the answer describes.
+	Device string `json:"device"`
+	// Mode is the negotiated format (e.g. "640x480 MJPEG @ 10 fps").
+	Mode string `json:"mode"`
+	// Source names the evidence: "session" (a running v4l2 session) or
+	// "oneshot" (a single-frame grab through the throwaway path).
+	Source string `json:"source"`
+	// SessionID names the holding session (source "session" only).
+	SessionID string `json:"session_id,omitempty"`
+	// Signal is the source's aliveness: a running session's source is
+	// delivering (state running), a one-shot grab got a frame. A card
+	// delivering a black pattern is signal PRESENT (frames arrive); the
+	// picture's active flag is the "is the picture there" half.
+	Signal bool `json:"signal"`
+	// FPSActual is the measured delivery rate; null in the one-shot answer
+	// (one frame cannot measure a rate — the JSON is honest about the
+	// evidence class rather than inventing a number).
+	FPSActual *float64 `json:"fps_actual"`
+	// FPSTarget is the rate the negotiated mode asks (0 when the source has
+	// no named rate).
+	FPSTarget float64 `json:"fps_target"`
+	// Picture is the active-picture window: the tracker's accepted window
+	// once settled, the whole frame plus settled=false until then (the
+	// ADR-0082 fresh-start behaviour), with active the "is the picture
+	// there" judgment on the newest frame (a bar-framed, non-black picture
+	// was found — a black/static feed answers active=false, the "no active
+	// picture" state the UI renders).
+	Picture captureSignalPicture `json:"picture"`
+	// DialogueCrop is the last crop rectangle the session's ROI stage
+	// computed for the dialogue region, in frame coordinates; absent until
+	// the run has computed one (the one-shot answer has no profile regions,
+	// so it stays absent there).
+	DialogueCrop *captureSignalCrop `json:"dialogue_crop,omitempty"`
+	// AgeMS is the age of the last frame (session: the source's
+	// self-reported last-frame time; one-shot: the grab's own).
+	AgeMS int64 `json:"age_ms"`
+	// Synthetic labels the test seam (the ADR-0078 stack's flag): the
+	// answer is not the hardware of this machine.
+	Synthetic bool `json:"synthetic"`
+}
+
+type captureSignalPicture struct {
+	X int `json:"x"`
+	Y int `json:"y"`
+	W int `json:"w"`
+	H int `json:"h"`
+	// Settled is true once the tracker has accepted a window (the
+	// ADR-0082 settle count has elapsed); false answers carry the whole
+	// frame as the mapping basis.
+	Settled bool `json:"settled"`
+	// Active is the "is the picture there" judgment on the newest frame
+	// (the same ActiveArea scan the tracker runs per frame): a black or
+	// static-pattern frame answers false — "no active picture" (UX-11).
+	Active bool `json:"active"`
+}
+
+type captureSignalCrop struct {
+	X int `json:"x"`
+	Y int `json:"y"`
+	W int `json:"w"`
+	H int `json:"h"`
+}
+
+// handleCaptureSignal answers GET /api/v1/capture/signal?device= (ADR-0110
+// §1, UX-11): the JSON sibling of the preview. A running v4l2 session on
+// the resolved device answers from the session's live state (no device
+// grab); without one, the one-shot path grabs a single frame from the
+// selected device — cheap (one frame, the preview's own path) and the
+// evidence the no-session state owes. When neither is possible (no device,
+// the device not delivering, the device held) the route answers 409
+// capture-signal-unavailable with the operator action in the detail — the
+// "no session is running" state the spec names — while a client-named
+// device that is not in the enumeration stays a 400 (the enumeration is
+// the allowlist, ADR-0078). The route shares the preview's global throttle
+// because the one-shot mode opens the same single-consumer node.
+func (s *Server) handleCaptureSignal(w http.ResponseWriter, r *http.Request) {
+	if s.capture == nil {
+		s.writeCodeProblem(w, r, http.StatusServiceUnavailable, "capture-unavailable",
+			"CAPTURE_UNAVAILABLE", "Service Unavailable",
+			"no capture device layer is wired into this process")
+		return
+	}
+
+	// The shared throttle (ADR-0110 §1): the one-shot answer opens the
+	// single-consumer node and decodes a frame — that is the preview's
+	// CPU/USB budget, so a polling signal client cannot poll it away. The
+	// session answer reads memory only but shares the counter, which keeps
+	// the budget global (one operator, one poll loop).
+	if !atomic.CompareAndSwapInt32(&s.capturePreviewInFlight, 0, 1) {
+		s.writePreviewThrottled(w, r, "the capture signal is rate-limited: another one-shot capture is in flight")
+		return
+	}
+	defer func() { atomic.StoreInt32(&s.capturePreviewInFlight, 0) }()
+
+	now := time.Now()
+	last := time.Unix(0, atomic.LoadInt64(&s.capturePreviewLastNano))
+	if wait := previewThrottleMinInterval - now.Sub(last); wait > 0 {
+		s.writePreviewThrottled(w, r, "the capture signal is rate-limited to one answer per 500 ms")
+		return
+	}
+	atomic.StoreInt64(&s.capturePreviewLastNano, now.UnixNano())
+
+	device := strings.TrimSpace(r.URL.Query().Get("device"))
+
+	// The session's live answer (ADR-0110 §1), when a v4l2 session holds
+	// the resolved device: measured fps, the tracker's window, the last
+	// dialogue crop, the newest frame's age — all from the run's own state,
+	// no device grab.
+	if live, ok := s.captureLiveSession(); ok {
+		resID, rerr := s.capture.ResolveID(r.Context(), device)
+		if rerr != nil {
+			s.captureProblem(w, r, rerr)
+			return
+		}
+		if resID == live.Device {
+			writeJSON(w, http.StatusOK, s.sessionSignalView(live))
+			return
+		}
+	}
+
+	// The one-shot answer: one frame from the selected device (the ADR-0078
+	// throwaway path, the cheap option the no-session state takes), the
+	// window settled from that one frame through the ADR-0082 single-frame
+	// seam. The per-device busy check keeps the grab off a node a session
+	// start holds in the window where the hold is not yet visible.
+	if s.sessions != nil {
+		if heldBy, sessionID, active := s.sessions.ActiveCaptureDevice(); active {
+			resID, rerr := s.capture.ResolveID(r.Context(), device)
+			if rerr == nil && resID == heldBy {
+				s.writeCodeProblem(w, r, http.StatusServiceUnavailable, "capture-busy",
+					"CAPTURE_BUSY", "Service Unavailable",
+					fmt.Sprintf("the capture device %s is held by the running session %s; stop the session before reading its signal", resID, sessionID))
+				return
+			}
+		}
+	}
+
+	fv, err := s.capture.Frame(r.Context(), device)
+	if err != nil {
+		// A client-named device outside the enumeration is a client error
+		// (400, the allowlist rule); every other one-shot failure with no
+		// session running is the 409 the spec names, with the operator
+		// action in the detail.
+		if errors.Is(err, stack.ErrDeviceUnknown) {
+			s.captureProblem(w, r, err)
+			return
+		}
+		s.writeCodeProblem(w, r, http.StatusConflict, "capture-signal-unavailable",
+			"SIGNAL_UNAVAILABLE", "Conflict",
+			"no session is running and a one-shot frame could not be grabbed from the selected device: "+oneShotReason(err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, s.oneShotSignalView(fv))
+}
+
+// rtCaptureLive is the runtime's live capture-session view (ADR-0110):
+// an alias keeps the two capture routes' signatures readable at the call
+// site; the fields are the runtime's (session id, device, the negotiated
+// format and target fps, the source's self-report, the tracker's window,
+// the last dialogue crop, the newest in-memory frame).
+type rtCaptureLive = rt.CaptureLive
+
+// sessionSignalView shapes the session's live view into the signal answer:
+// the measured fps against the target, the tracker's window with the
+// active-picture judgment on the newest frame, the last dialogue crop and
+// the last frame's age. Signal is the source's aliveness (a card delivering
+// a black pattern is signal present; picture.active is the other half).
+func (s *Server) sessionSignalView(live rtCaptureLive) captureSignalView {
+	fv := captureSignalView{
+		Device:    live.Device,
+		Mode:      live.Format,
+		Source:    signalSourceSession,
+		SessionID: live.SessionID,
+		Signal:    live.Source.State == string(capture.StateRunning),
+		FPSTarget: live.FPSTarget,
+		Synthetic: s.capture.Synthetic,
+	}
+	actual := live.Source.FPS
+	fv.FPSActual = &actual
+	fv.Picture = captureSignalPicture{
+		X:       live.Picture.X,
+		Y:       live.Picture.Y,
+		W:       live.Picture.W,
+		H:       live.Picture.H,
+		Settled: live.Picture.Settled,
+		Active:  activePicture(live.Latest),
+	}
+	if live.Dialogue != nil {
+		c := captureSignalCrop{X: live.Dialogue.X, Y: live.Dialogue.Y, W: live.Dialogue.W, H: live.Dialogue.H}
+		fv.DialogueCrop = &c
+	}
+	if !live.Source.LastFrameAt.IsZero() {
+		fv.AgeMS = time.Since(live.Source.LastFrameAt).Round(time.Millisecond).Milliseconds()
+	}
+	return fv
+}
+
+// oneShotSignalView shapes the one-shot frame grab into the signal answer:
+// the negotiated mode and target fps, the window from the tracker's
+// single-frame Settle (the ADR-0082 amendment-1 seam — a one-frame input
+// has no stream to hysteresise over), the active-picture judgment on the
+// frame, and no measured rate (one frame cannot measure one: fps_actual
+// stays null).
+func (s *Server) oneShotSignalView(fv stack.FrameView) captureSignalView {
+	view := captureSignalView{
+		Device:    fv.Device,
+		Mode:      fv.Mode.String(),
+		Source:    signalSourceOneShot,
+		Signal:    true,
+		FPSTarget: fv.Mode.FPS,
+		Synthetic: s.capture.Synthetic,
+	}
+	tr := vision.NewTracker(vision.TrackerConfig{})
+	tr.Settle(fv.Frame.Image)
+	if b, ok := tr.Box(); ok {
+		view.Picture = captureSignalPicture{
+			X: b.Min.X, Y: b.Min.Y, W: b.Dx(), H: b.Dy(),
+			Settled: true,
+			Active:  activePictureFrame(fv.Frame.Image),
+		}
+	} else {
+		w, h := fv.Frame.Bounds()
+		view.Picture = captureSignalPicture{
+			W: w, H: h,
+			Settled: false,
+			Active:  activePictureFrame(fv.Frame.Image),
+		}
+	}
+	if !fv.Stats.LastFrameAt.IsZero() {
+		view.AgeMS = time.Since(fv.Stats.LastFrameAt).Round(time.Millisecond).Milliseconds()
+	}
+	return view
+}
+
+// activePicture reports the "is the picture there" judgment (UX-11) for a
+// possibly-absent frame: the same ActiveArea scan the tracker runs per
+// frame finds a bar-framed, non-black picture. nil answers false — a
+// session that has not delivered a frame has no picture, and the UI's
+// "no active picture" text is the honest render.
+func activePicture(f *capture.Frame) bool {
+	if f == nil || f.Image == nil {
+		return false
+	}
+	return activePictureFrame(f.Image)
+}
+
+func activePictureFrame(img image.Image) bool {
+	if img == nil {
+		return false
+	}
+	_, ok := vision.ActiveArea(img)
+	return ok
+}
+
+// oneShotReason turns a one-shot grab failure into the 409's detail: the
+// sentinel's operator action (attach the dongle, re-seat it, name a device
+// the enumeration has), not a raw driver error.
+func oneShotReason(err error) string {
+	switch {
+	case errors.Is(err, stack.ErrDeviceAbsent):
+		return "no usable capture device is attached: connect the UVC HDMI capture dongle and retry (docs/spec/10)"
+	case errors.Is(err, stack.ErrSourceUnwired):
+		return "no capture source builder is wired into this process"
+	case errors.Is(err, stack.ErrModeUnavailable):
+		return "no offered capture mode fits the selection policy: the device offers no format the card's link budget admits"
+	case errors.Is(err, stack.ErrNoSelectionStore):
+		return "the capture selection cannot be persisted: the settings store is not wired into this process"
+	default:
+		return "the capture device is not delivering frames: " + err.Error()
+	}
 }
 
 // handleCaptureProbe answers POST /api/v1/capture/probe (docs/spec/10's

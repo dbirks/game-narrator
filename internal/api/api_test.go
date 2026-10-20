@@ -310,6 +310,65 @@ func TestSystemInfo(t *testing.T) {
 	if !strings.HasPrefix(startedAt, "2026-10-16T03:04:05Z") {
 		t.Fatalf("started_at = %q, want the fixed test start time in UTC", startedAt)
 	}
+
+	// The bound listen address and the explicit tailnet state (ADR-0110 §4,
+	// UX-13): the test server wired nothing, so the answer is the default
+	// resolution and the not-detected tailnet with its note — never a blank
+	// field.
+	la, ok := body["listen_addresses"].([]any)
+	if !ok || len(la) != 1 || la[0] != "127.0.0.1:8080" {
+		t.Fatalf("listen_addresses = %v, want [127.0.0.1:8080]", body["listen_addresses"])
+	}
+	tn, ok := body["tailnet"].(map[string]any)
+	if !ok {
+		t.Fatalf("tailnet = %T, want the explicit tailnet state object", body["tailnet"])
+	}
+	if tn["present"] != false {
+		t.Fatalf("tailnet.present = %v, want false (the test server detects nothing)", tn["present"])
+	}
+	if note, _ := tn["note"].(string); note == "" {
+		t.Fatalf("tailnet.note = empty, want the explicit \"not configured\" text")
+	}
+}
+
+// TestSystemInfoReportsBoundListenAndTailnet (ADR-0110 §4, UX-13): the bound
+// listen address the host wired and the detected tailnet — the values the
+// settings page and a monitoring client read, from the startup cache. The
+// leak test below still applies to the same body: a tailnet address is a
+// CGNAT-space membership fact, and the route never prints hostnames or env.
+func TestSystemInfoReportsBoundListenAndTailnet(t *testing.T) {
+	h := newHandler(t, WithWebAssets(uiBuild()),
+		WithListen("0.0.0.0:8081"),
+		WithTailnet(TailnetView{
+			Present: true,
+			Address: "100.75.42.9",
+			Port:    8081,
+			URL:     "http://100.75.42.9:8081",
+			Source:  "interface",
+			Note:    "detected from the machine's interfaces (100.64.0.0/10)",
+		}),
+	)
+	rec := do(t, h, http.MethodGet, "/api/v1/system/info")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := decodeJSON(t, rec)
+	la, ok := body["listen_addresses"].([]any)
+	if !ok || len(la) != 1 || la[0] != "0.0.0.0:8081" {
+		t.Fatalf("listen_addresses = %v, want the bound address [0.0.0.0:8081]", body["listen_addresses"])
+	}
+	tn, ok := body["tailnet"].(map[string]any)
+	if !ok {
+		t.Fatalf("tailnet = %T, want object", body["tailnet"])
+	}
+	for k, want := range map[string]any{"present": true, "address": "100.75.42.9", "url": "http://100.75.42.9:8081", "source": "interface"} {
+		if tn[k] != want {
+			t.Fatalf("tailnet.%s = %v, want %v", k, tn[k], want)
+		}
+	}
+	if port, ok := tn["port"].(float64); !ok || port != 8081 {
+		t.Fatalf("tailnet.port = %v, want 8081 (the bound listen port)", tn["port"])
+	}
 }
 
 func TestSystemInfoLeaksNoHostOrEnv(t *testing.T) {

@@ -2243,8 +2243,8 @@ export interface paths {
       cookie?: never;
     };
     /**
-     * One throttled JPEG preview snapshot of the capture device (operator).
-     * @description The preview (ADR-0078): one JPEG frame through a throwaway source — build, start, one frame, encode at quality 60 capped to 1280 px wide, close. The device query parameter names a stable id; absent, the stack's own resolution (the persisted selection, then the first usable device). The route is authenticated and globally throttled: one snapshot in flight and a 500 ms minimum interval, answered 429 with Retry-After when exceeded (docs/spec/08 rate-limits preview streaming). It is also refused 503 capture-busy while a running session holds the same device — the UVC bus is single-consumer, and the answer names the holding session.
+     * The newest frame as a downscaled JPEG preview of the capture device (operator).
+     * @description The preview (ADR-0078, re-shaped by ADR-0110 §2, UX-11): the newest frame as a downscaled JPEG — at most 640 px wide, quality 60 — served from memory and never stored. While a running v4l2 session holds the resolved device, the JPEG is the session's newest in-memory frame (no second device grab: the UVC bus is single-consumer, so the old 503 capture-busy answer for the same-device preview is replaced by the picture the operator asked for). Without a session (or with a different device named), one JPEG snapshot through a throwaway source — build, start, one frame, encode, close. The device query parameter names a stable id; absent, the stack's own resolution (the persisted selection, then the first usable device). The route is authenticated and globally throttled: one snapshot in flight and a 500 ms minimum interval, answered 429 with Retry-After when exceeded. It is refused 503 capture-busy in the window where a session start holds the same device, and answers 409 capture-preview-unavailable while the running session has not delivered a frame yet.
      */
     get: operations["capturePreview"];
     put?: never;
@@ -2539,6 +2539,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/capture/signal": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * The HDMI signal state: present/absent, format, fps, the active-picture window, the dialogue crop and the last frame's age (operator).
+     * @description The JSON sibling of the preview (ADR-0110 §1, UX-11): a running v4l2 session on the resolved device answers from the session's live state (no device grab) — the measured fps against the target, the active-picture tracker's window and settle state, the last dialogue-region crop and the newest frame's age; without one, the one-shot path grabs a single frame from the selected device (the cheap option) and settles the window from it through the ADR-0082 single-frame seam. When neither is possible the route answers 409 capture-signal-unavailable with the operator action in the detail — the "no session is running" state — while a client-named device outside the enumeration stays a 400. The route shares the preview's global throttle (one one-shot in flight, 500 ms minimum interval, 429 with Retry-After) because the one-shot mode opens the same single-consumer node.
+     */
+    get: operations["captureSignal"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2600,6 +2620,7 @@ export interface components {
         [key: string]: Record<string, never>;
       };
     };
+    /** @description Build, Go and machine capacity, plus the network reachability the settings surface needs (ADR-0110 §4): the bound listen address(es) and the cached tailnet detection. Still no hostnames, paths, environment values or secrets. */
     SystemInfo: {
       version: string;
       commit: string;
@@ -2609,6 +2630,9 @@ export interface components {
       num_cpu: number;
       /** Format: date-time */
       started_at: string;
+      /** @description The listen address(es) the server is bound to (the bound address the host wired; the environment resolution when it did not). */
+      listen_addresses: string[];
+      tailnet: components["schemas"]["Tailnet"];
     };
     /** @enum {string} */
     Role: "viewer" | "curator" | "operator" | "developer" | "admin";
@@ -4053,6 +4077,7 @@ export interface components {
         mode: string;
         admin_configured: boolean;
       };
+      tailnet: components["schemas"]["Tailnet"];
     };
     SettingsWebSearch: {
       enabled: boolean;
@@ -5027,6 +5052,73 @@ export interface components {
       created_at: string;
       characters: components["schemas"]["SetupBoardCharacter"][];
       progress: components["schemas"]["SetupProgress"];
+    };
+    /** @description The tailnet detection's answer (UX-13, ADR-0110 §4): present and the address when the tailnet was found — with the URL built from the bound port and the source naming which half of the detection found it — or present=false with an explicit note when it was not (the "not configured" state, never a blank field). Detected at startup, cached on the server, served from the cache; never re-detected at request time and never sent to an external service. */
+    Tailnet: {
+      /** @description True when a tailnet address was detected. */
+      present: boolean;
+      /** @description The tailnet IPv4; absent when not present. */
+      address?: string;
+      /** @description The bound HTTP port the URL points at; absent when none is known. */
+      port?: number;
+      /** @description The tailnet URL (http://address:port), the settings page's display value; absent when not present or when no port is known. */
+      url?: string;
+      /**
+       * @description The detection half that found it: "interface" (a 100.64.0.0/10 address on a machine interface) or "tailscale" (the tailscale-ip fallback); absent when not present.
+       * @enum {string}
+       */
+      source?: "interface" | "tailscale";
+      /** @description The explicit absent-state text (the "not configured" state) and, when present, how the address was found. */
+      note?: string;
+    };
+    /** @description The active-picture window (ADR-0082) with the active-picture judgment (UX-11): the tracker's accepted window once settled, the whole frame plus settled=false until then (a session that begins on a black frame invents no window). */
+    CaptureSignalPicture: {
+      /** @description The window's origin x in frame coordinates (0 until settled). */
+      x: number;
+      /** @description The window's origin y in frame coordinates (0 until settled). */
+      y: number;
+      /** @description The window's width (the whole frame's until settled). */
+      w: number;
+      /** @description The window's height (the whole frame's until settled). */
+      h: number;
+      /** @description True once the tracker has accepted a window (the ADR-0082 settle count has elapsed). */
+      settled: boolean;
+      /** @description The "is the picture there" judgment on the newest frame (a bar-framed, non-black picture was found); a black or static-pattern frame answers false — the "no active picture" state the UI renders (UX-11). */
+      active: boolean;
+    };
+    /** @description The last crop rectangle the session's ROI stage computed for the dialogue region, in frame coordinates: the same MapRect the runtime crops with, so the drawn box and the cropped box cannot disagree. */
+    CaptureSignalCrop: {
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+    };
+    /** @description GET /api/v1/capture/signal (ADR-0110 §1, UX-11): the HDMI input's signal state from two sources of evidence — a running v4l2 session (measured fps, the tracker's window, the last dialogue crop, the newest frame's age) or a one-shot frame grab through the throwaway path (the negotiated mode, the window settled from the one frame through the ADR-0082 single-frame seam, and no measured rate — one frame cannot measure one, so fps_actual is null there). No session and no one-shot answer is the 409 below, with the operator action in the detail. */
+    CaptureSignal: {
+      /** @description The stable id of the device the answer describes. */
+      device: string;
+      /** @description The negotiated format (e.g. "640x480 MJPEG @ 10 fps"). */
+      mode: string;
+      /**
+       * @description The evidence: "session" (a running v4l2 session) or "oneshot" (a single-frame grab through the throwaway path).
+       * @enum {string}
+       */
+      source: "session" | "oneshot";
+      /** @description The holding session (source "session" only). */
+      session_id?: string;
+      /** @description The source's aliveness: a running session's source is delivering (state running), a one-shot grab got a frame. A card delivering a black pattern is signal present (frames arrive); picture.active is the "is the picture there" half. */
+      signal: boolean;
+      /** @description The measured delivery rate; null in the one-shot answer (one frame cannot measure a rate — the answer is honest about the evidence class rather than inventing a number). */
+      fps_actual: number | null;
+      /** @description The rate the negotiated mode asks (0 when the source has no named rate). */
+      fps_target: number;
+      picture: components["schemas"]["CaptureSignalPicture"];
+      /** @description Absent until the run has computed one (a session without a dialogue region, or no frame yet); the one-shot answer has no profile regions, so it stays absent there. */
+      dialogue_crop?: components["schemas"]["CaptureSignalCrop"];
+      /** @description The age of the last frame (session: the source's self-reported last-frame time; one-shot: the grab's own). 0 before the first frame. */
+      age_ms: number;
+      /** @description The labelled test seam (ADR-0078): the answer is not the hardware of this machine. */
+      synthetic: boolean;
     };
   };
   responses: {
@@ -9092,6 +9184,15 @@ export interface operations {
           "application/problem+json": components["schemas"]["Problem"];
         };
       };
+      /** @description The running session has not delivered a frame yet: the preview serves the session's newest in-memory frame, and there is none to serve. */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
       /** @description The preview is throttled (one in flight, 500 ms apart); Retry-After says when to try again. */
       429: {
         headers: {
@@ -9101,7 +9202,7 @@ export interface operations {
           "application/problem+json": components["schemas"]["Problem"];
         };
       };
-      /** @description No usable device is attached, the device is held by a running session (capture-busy), or the device is not delivering frames. */
+      /** @description No usable device is attached, the device is held by a running session (capture-busy) in the session-start window, or the device is not delivering frames. */
       503: {
         headers: {
           [name: string]: unknown;
@@ -9561,6 +9662,66 @@ export interface operations {
         };
       };
       404: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  captureSignal: {
+    parameters: {
+      query?: {
+        /** @description The capture device's stable id (from listCaptureDevices); absent, the persisted selection then the first usable device. */
+        device?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The signal state from the running session (source "session") or the one-shot grab (source "oneshot"). */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CaptureSignal"];
+        };
+      };
+      /** @description The requested device is not in the current enumeration. */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description No session is running and a one-shot frame could not be grabbed from the selected device (no device attached, the device not delivering, the device held); the detail carries the operator action. */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description The capture surface is throttled (one one-shot in flight, 500 ms apart); Retry-After says when to try again. */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description The capture layer is unwired, the device is held by a running session (capture-busy) in the session-start window, or no usable device is attached. */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
       default: components["responses"]["Problem"];
     };
   };

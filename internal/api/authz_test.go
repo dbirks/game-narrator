@@ -53,6 +53,7 @@ func matrixCases() []routeCase {
 		{http.MethodPost, "/api/v1/jobs/" + id + "/retry", auth.RoleOperator, ""},
 		{http.MethodGet, "/api/v1/capture/devices", auth.RoleOperator, ""},
 		{http.MethodGet, "/api/v1/capture/preview", auth.RoleOperator, ""},
+		{http.MethodGet, "/api/v1/capture/signal", auth.RoleOperator, ""},
 		{http.MethodPost, "/api/v1/sessions", auth.RoleOperator, `{}`},
 		{http.MethodPost, "/api/v1/sessions/" + id + "/stop", auth.RoleOperator, ""},
 		// The player's live controls (ADR-0075): pause/resume are idempotent

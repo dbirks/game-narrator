@@ -729,10 +729,12 @@ const (
 	// ocrTimeout bounds the probe's OCR call: a hung engine degrades the
 	// OCR block, it does not hold the probe.
 	ocrTimeout = 15 * time.Second
-	// previewMaxWidth caps the preview JPEG's width (docs/spec/10: the 4 GB
-	// box and the browser both feel a 1080p frame in the preview; 1280 is
-	// the 720p class the pipeline analyses).
-	previewMaxWidth = 1280
+	// previewMaxWidth caps the preview JPEG's width (ADR-0110, UX-11): the
+	// Health tile and the Play frame are small, and a 720p-class frame in the
+	// preview is decode budget the OCR and speech pipelines would rather have
+	// on the 4 GB box — the cap moved from 1280 to the 480p class the tile
+	// renders.
+	previewMaxWidth = 640
 	// previewJPEGQuality is the preview's encoding quality: recognisably the
 	// picture, not a lossless blob.
 	previewJPEGQuality = 60
@@ -762,18 +764,64 @@ func testsrcSource(m mode.Mode) capture.Source {
 // absent means the stack's own resolution (stored selection, then first
 // usable device) — the same fallback the session uses.
 func (s *Stack) Snapshot(ctx context.Context, id string) ([]byte, SnapshotMeta, error) {
-	res, err := s.Resolve(ctx, id)
+	fv, err := s.Frame(ctx, id)
 	if err != nil {
 		return nil, SnapshotMeta{}, err
 	}
-	src, err := s.buildSource(ctx, res)
+	data, w, h, err := EncodeJPEGDownscaled(fv.Frame.Image, previewMaxWidth, previewJPEGQuality)
 	if err != nil {
 		return nil, SnapshotMeta{}, err
+	}
+	meta := SnapshotMeta{
+		Device: fv.Device,
+		Mode:   fv.Mode.String(),
+		Width:  w, Height: h,
+		FreshMS: time.Since(fv.Stats.LastFrameAt).Round(time.Millisecond).Milliseconds(),
+	}
+	return data, meta, nil
+}
+
+// FrameView is the one-shot frame answer (ADR-0110): the grabbed frame
+// (in memory, never stored), the resolved mode (the negotiated format and
+// target rate), the source's self-report and the device's stable id.
+type FrameView struct {
+	// Frame is the grabbed frame: the API serves its pixels (the preview's
+	// JPEG, the signal's active-picture judgment) and drops them at the end
+	// of the request.
+	Frame capture.Frame
+	// Device is the stable id of the device the frame came from.
+	Device string
+	// Mode is the negotiated mode (the format and target fps the signal
+	// reports).
+	Mode mode.Mode
+	// ModeSource names the mode's provenance ("saved" or "policy").
+	ModeSource string
+	// Stats is the source's self-report at the grab (the measured rate —
+	// meaningful over the grab's frames, the last-frame time, the state,
+	// the last failure text).
+	Stats capture.Stats
+}
+
+// Frame grabs one frame from the resolved device and returns it in memory
+// (the one-shot half of ADR-0110: the signal's no-session answer and the
+// preview's one-shot path): build the source, start it, read the first
+// frame, close. Unlike Snapshot it returns the frame itself — the caller
+// downscales or analyses it — with the resolved mode and the source's
+// stats. The device id is the API's (stable) id; absent means the stack's
+// own resolution (stored selection, then first usable device).
+func (s *Stack) Frame(ctx context.Context, id string) (FrameView, error) {
+	res, err := s.Resolve(ctx, id)
+	if err != nil {
+		return FrameView{}, err
+	}
+	src, err := s.buildSource(ctx, res)
+	if err != nil {
+		return FrameView{}, err
 	}
 	defer func() { _ = src.Close() }()
 	frames, err := src.Start(ctx)
 	if err != nil {
-		return nil, SnapshotMeta{}, fmt.Errorf("capture: opening the preview: %w", err)
+		return FrameView{}, fmt.Errorf("capture: opening the one-shot frame source: %w", err)
 	}
 	grabCtx, cancel := context.WithTimeout(ctx, grabTimeout)
 	defer cancel()
@@ -781,30 +829,46 @@ func (s *Stack) Snapshot(ctx context.Context, id string) ([]byte, SnapshotMeta, 
 	case f, ok := <-frames:
 		if !ok {
 			st := src.Stats()
-			return nil, SnapshotMeta{}, fmt.Errorf("capture: the preview source ended before a frame (state %s: %s)", st.State, orEmpty(st.LastError))
+			return FrameView{}, fmt.Errorf("capture: the one-shot frame source ended before a frame (state %s: %s)", st.State, orEmpty(st.LastError))
 		}
-		img := f.Image
-		w, h := f.Bounds()
-		if w > previewMaxWidth {
-			img = downscale(img, previewMaxWidth)
-			h = int(float64(h) * previewMaxWidth / float64(w))
-			w = previewMaxWidth
-		}
-		var buf bytes.Buffer
-		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: previewJPEGQuality}); err != nil {
-			return nil, SnapshotMeta{}, fmt.Errorf("capture: encoding the preview JPEG: %w", err)
-		}
-		meta := SnapshotMeta{
-			Device: s.deviceID(res.Device),
-			Mode:   res.Mode.String(),
-			Width:  w, Height: h,
-			FreshMS: time.Since(src.Stats().LastFrameAt).Round(time.Millisecond).Milliseconds(),
-		}
-		return buf.Bytes(), meta, nil
+		return FrameView{
+			Frame:      f,
+			Device:     s.deviceID(res.Device),
+			Mode:       res.Mode,
+			ModeSource: res.ModeSource,
+			Stats:      src.Stats(),
+		}, nil
 	case <-grabCtx.Done():
 		st := src.Stats()
-		return nil, SnapshotMeta{}, fmt.Errorf("capture: no frame within %s (state %s: %s)", grabTimeout, st.State, orEmpty(st.LastError))
+		return FrameView{}, fmt.Errorf("capture: no frame within %s (state %s: %s)", grabTimeout, st.State, orEmpty(st.LastError))
 	}
+}
+
+// EncodeJPEGDownscaled encodes img as a JPEG capped to maxWidth wide
+// (quality q, aspect preserved): the preview's shared encoder (ADR-0110 §2),
+// used by the one-shot snapshot and by the session's in-memory frame, so
+// both halves of the preview answer the same width bound with the same
+// recipe. The image is downscaled in memory (nearest-neighbour, the
+// existing downscale helper) — the preview is a recognisable snapshot, not
+// a quality product, and a decode-heavy scaler on the A53 is CPU the OCR
+// budget would rather have — and never written to disk. The answer is the
+// bytes and the encoded size.
+func EncodeJPEGDownscaled(img image.Image, maxWidth, q int) ([]byte, int, int, error) {
+	if img == nil {
+		return nil, 0, 0, errors.New("capture: no frame to encode")
+	}
+	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if w > maxWidth {
+		img = downscale(img, maxWidth)
+		h = int(float64(h) * float64(maxWidth) / float64(w))
+		w = maxWidth
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: q}); err != nil {
+		return nil, 0, 0, fmt.Errorf("capture: encoding the preview JPEG: %w", err)
+	}
+	return buf.Bytes(), w, h, nil
 }
 
 // Probe runs the docs/spec/10 capture test on the resolved device: grab up

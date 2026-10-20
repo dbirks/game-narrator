@@ -981,6 +981,128 @@ func (m *Manager) ActiveCaptureDevice() (deviceID, sessionID string, active bool
 	return "", "", false
 }
 
+// CapturePictureView is the active-picture window the signal route reports
+// (ADR-0110): the tracker's accepted window once it has settled one, the
+// whole frame plus Settled false until then (the ADR-0082 fresh-start
+// behaviour — a session that begins on a black frame invents no window).
+// X/Y are the window's origin in frame coordinates; W/H its size.
+type CapturePictureView struct {
+	X       int  `json:"x"`
+	Y       int  `json:"y"`
+	W       int  `json:"w"`
+	H       int  `json:"h"`
+	Settled bool `json:"settled"`
+}
+
+// CaptureCropView is one crop rectangle in frame coordinates (the last
+// dialogue-region cut the signal route draws; ADR-0110).
+type CaptureCropView struct {
+	X int `json:"x"`
+	Y int `json:"y"`
+	W int `json:"w"`
+	H int `json:"h"`
+}
+
+// CaptureLive is the active capture session's live view for the UX-11 surface
+// (ADR-0110): the session id and the negotiated format and target fps, the
+// source's self-report (the measured fps and the last-frame time), the
+// active-picture tracker's window and settle state, the last dialogue-region
+// crop and the newest frame still in memory (the preview serves it without a
+// device grab). ok is false when no v4l2 capture session is starting, running
+// or stopping: a finished session's final counters are not a live signal, and
+// a non-capture session (replay, dolphin, manual) holds no device the signal
+// question is about.
+//
+// The reads are concurrency-safe by construction: the session scan runs under
+// the manager's lock (the same walk ActiveCaptureDevice takes), the snapshot
+// and the source's self-report take their own locks, and the tracker's Box and
+// the pipeline's live-view reads are mutex-guarded for exactly this
+// cross-goroutine reader (ADR-0082 amendment 1, ADR-0110 §3).
+func (m *Manager) CaptureLive() (CaptureLive, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out CaptureLive
+	for _, s := range m.sessions {
+		snap := s.Snapshot()
+		switch snap.State {
+		case StateStarting, StateRunning, StateStopping:
+		default:
+			continue
+		}
+		if snap.SourceKind != SourceKindV4L2 || snap.CaptureDevice == "" {
+			continue
+		}
+		out = CaptureLive{
+			SessionID: s.id,
+			Device:    snap.CaptureDevice,
+			Format:    snap.CaptureMode,
+			FPSTarget: snap.CaptureFPSTarget,
+			Source:    snap.Source,
+		}
+		if s.runner != nil {
+			cfg := s.runner.Config()
+			var f capture.Frame
+			haveFrame := false
+			if f, haveFrame = s.runner.LatestFrame(); haveFrame && f.Image == nil {
+				haveFrame = false
+			}
+			w, h := f.Bounds()
+			// The window: the tracker's accepted one once settled, the whole
+			// frame plus Settled false until then (the ADR-0082 fresh-start
+			// behaviour — a session that begins on a black frame invents no
+			// window). A nil tracker (a wiring the runtime does not produce
+			// for v4l2 sessions) degrades to the same whole-frame answer.
+			if tr := cfg.Crop.Tracker; tr != nil {
+				if b, ok := tr.Box(); ok {
+					out.Picture = CapturePictureView{
+						X: b.Min.X, Y: b.Min.Y, W: b.Dx(), H: b.Dy(),
+						Settled: true,
+					}
+				} else {
+					out.Picture = CapturePictureView{W: w, H: h}
+				}
+			} else {
+				out.Picture = CapturePictureView{W: w, H: h}
+			}
+			if rect, ok := s.runner.DialogueCrop(); ok {
+				out.Dialogue = &CaptureCropView{X: rect.Min.X, Y: rect.Min.Y, W: rect.Dx(), H: rect.Dy()}
+			}
+			if haveFrame {
+				out.Latest = &f
+			}
+		}
+		return out, true
+	}
+	return CaptureLive{}, false
+}
+
+// CaptureLive is the view CaptureLive returns: the pieces the API's
+// GET /api/v1/capture/signal and the in-memory preview read of a running
+// v4l2 session (ADR-0110).
+type CaptureLive struct {
+	SessionID string
+	// Device is the capture device's stable id the session holds.
+	Device string
+	// Format is the session's capture_mode (e.g. "640x480 MJPEG @ 10 fps"):
+	// the negotiated format the signal reports.
+	Format string
+	// FPSTarget is the fps of that mode (the target half of "fps actual vs
+	// target"); 0 when the source kind has no named rate.
+	FPSTarget float64
+	// Source is the source's self-report (the measured fps, the last-frame
+	// time, the lifecycle state, the last failure text).
+	Source SourceInfo
+	// Picture is the active-picture window: the tracker's accepted window once
+	// it has settled one, the whole frame plus Settled false until then.
+	Picture CapturePictureView
+	// Dialogue is the last dialogue-region crop, nil until the run has
+	// computed one (or the profile has no dialogue region).
+	Dialogue *CaptureCropView
+	// Latest is the newest frame in memory, nil until the first delivery;
+	// the preview serves it and the signal's active-picture judgment reads it.
+	Latest *capture.Frame
+}
+
 // Pause stops a running session's commitment and speech
 // (docs/spec/08 "…/pause": "pause stops new speech and fences pending
 // utterances"). It is one control message to the session's single writer:

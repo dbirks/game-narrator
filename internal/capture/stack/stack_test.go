@@ -517,8 +517,8 @@ func TestSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatalf("snapshot: %v", err)
 		}
-		if meta.Width != 1280 || meta.Height != 720 {
-			t.Fatalf("want the 1280 cap with the aspect kept, got %dx%d", meta.Width, meta.Height)
+		if meta.Width != 640 || meta.Height != 360 {
+			t.Fatalf("want the 640 cap (ADR-0110 §2) with the aspect kept, got %dx%d", meta.Width, meta.Height)
 		}
 	})
 }

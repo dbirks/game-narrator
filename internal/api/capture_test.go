@@ -34,8 +34,6 @@ import (
 	"github.com/dbirks/game-narrator/internal/capture/mode"
 	"github.com/dbirks/game-narrator/internal/capture/stack"
 	"github.com/dbirks/game-narrator/internal/capture/usb"
-	"github.com/dbirks/game-narrator/internal/events"
-	"github.com/dbirks/game-narrator/internal/runtime"
 	"github.com/dbirks/game-narrator/internal/vision/ocr"
 )
 
@@ -97,6 +95,12 @@ type capturePush struct {
 	// blank, when set, makes every frame a black no-signal-style frame with a
 	// distinct pixel (a valid frame the OCR can be scripted against).
 	blank bool
+	// wide, when set, makes every frame a 960x480 letterbox frame: black
+	// pillar bars either side of a 640x480 content rectangle with the usual
+	// x/y/seq pattern (a bar-framed, non-black picture — the synthetic
+	// bordered frame the active-picture scan and the ADR-0082 tracker settle
+	// on; without the bars ActiveArea refuses to report a window).
+	wide bool
 }
 
 func newCapturePush() *capturePush {
@@ -127,18 +131,39 @@ func (c *capturePush) push(t *testing.T, n int) {
 	c.mu.Lock()
 	c.seq++
 	seq := c.seq
+	blank, wide := c.blank, c.wide
 	c.mu.Unlock()
-	img := image.NewRGBA(image.Rect(0, 0, 640, 480))
-	for y := 0; y < 480; y++ {
-		for x := 0; x < 640; x++ {
+	w, h := 640, 480
+	if wide {
+		w = 960
+	}
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			// The wide frame's black pillar bars: outside the centred 640x480
+			// content rectangle the pixel stays black (the bar the active-
+			// picture scan trims).
+			if wide && (x < (w-640)/2 || x >= (w+640)/2) {
+				img.Set(x, y, color.RGBA{})
+				continue
+			}
+			if blank {
+				img.Set(x, y, color.RGBA{})
+				continue
+			}
 			img.Set(x, y, color.RGBA{R: uint8(seq), G: uint8(x % 256), B: uint8(y % 256), A: 255})
 		}
+	}
+	if blank {
+		// The distinct pixel the blank frame keeps (a valid, OCR-scriptable
+		// frame that is still the black no-signal pattern for the scan).
+		img.Set(0, 0, color.RGBA{R: uint8(seq)})
 	}
 	f := capture.Frame{
 		SourceClock:        capture.ClockMonotonic,
 		CaptureTimestampNS: int64(seq) * 100_000_000,
-		Width:              640,
-		Height:             480,
+		Width:              w,
+		Height:             h,
 		PixFmt:             capture.PixRGBA,
 		Image:              img,
 		Hash:               capture.HashFrame(img),
@@ -496,113 +521,6 @@ func TestCapturePreviewServesJPEGAndThrottles(t *testing.T) {
 	rec = e.send(auth.RoleOperator, http.MethodGet, "/api/v1/capture/preview?device=usb-NotThere_0002", nil)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("GET preview unknown device = %d, want 400: %s", rec.Code, rec.Body.String())
-	}
-}
-
-// TestCapturePreviewBusyWhenASessionHoldsTheDevice pins the per-device busy
-// check end-to-end: a real running v4l2 session on the device (through the
-// manager's own capture wiring and the runtime's ActiveCaptureDevice) makes
-// the preview answer 503 capture-busy naming the holding session — the UVC
-// bus is single-consumer, and the route must refuse the race rather than let
-// FFmpeg answer "device or resource busy". The probe takes the same branch.
-func TestCapturePreviewBusyWhenASessionHoldsTheDevice(t *testing.T) {
-	a := newTestAuth(t)
-	profileID := seedSyntheticProfileForAPI(t, a.st, true)
-
-	// The session's source: a push-based v4l2 source the manager's capture
-	// wiring hands the session (the runtime's own seam).
-	sessSrc := newCapturePush()
-	sessionResolve := func(ctx context.Context, requestedID string) (stack.Resolved, error) {
-		return stack.Resolved{
-			Device:     fakeCaptureDevice(),
-			Mode:       mode.Mode{W: 640, H: 480, FPS: 10, PixFmt: "mjpeg"},
-			ModeSource: stack.ModeSourcePolicy,
-		}, nil
-	}
-
-	mem := events.NewMemStore()
-	hub := events.New(events.WithStore(mem))
-	mgr, err := runtime.New(runtime.Options{
-		Store:      a.st,
-		Hub:        hub,
-		AssetsRoot: t.TempDir(),
-		OCR:        ocrScripted{text: ""},
-		Capture: &runtime.CaptureOptions{
-			Resolve: sessionResolve,
-			Source:  func(ctx context.Context, res stack.Resolved) (capture.Source, error) { return sessSrc, nil },
-		},
-		Log: discardLogger,
-	})
-	if err != nil {
-		t.Fatalf("runtime.New: %v", err)
-	}
-	t.Cleanup(func() { _ = a.st.Close() })
-	t.Cleanup(func() { _ = hub.Close() })
-	t.Cleanup(mgr.Close)
-	t.Cleanup(func() { _ = sessSrc.Close() })
-
-	info, err := mgr.Start(context.Background(), runtime.StartRequest{
-		ProfileID:   profileID,
-		FrameSource: runtime.FrameSource{Kind: runtime.SourceKindV4L2, Dir: stack.FakeID},
-		Mode:        runtime.ModeConservative,
-	})
-	if err != nil {
-		t.Fatalf("start the v4l2 session: %v", err)
-	}
-	by := time.Now().Add(30 * time.Second)
-	for {
-		cur, _ := mgr.Get(info.ID)
-		if cur.State == runtime.StateRunning {
-			break
-		}
-		if time.Now().After(by) {
-			t.Fatalf("the v4l2 session never reached running (last %s)", cur.State)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	// The session holds the device: ActiveCaptureDevice reports it.
-	dev, sessID, active := mgr.ActiveCaptureDevice()
-	if !active || dev != stack.FakeID || sessID != info.ID {
-		t.Fatalf("ActiveCaptureDevice = (%q, %q, %v), want the fake device held by the running session", dev, sessID, active)
-	}
-
-	// The preview's stack: the same fixed device, its own push source (which
-	// the busy check must refuse to open while the session holds the device).
-	previewSrc := newCapturePush()
-	t.Cleanup(func() { _ = previewSrc.Close() })
-	stk := &stack.Stack{
-		List: func(ctx context.Context) ([]devices.Device, error) {
-			return []devices.Device{fakeCaptureDevice()}, nil
-		},
-		Link:   func(ctx context.Context, node string) (usb.Info, error) { return usb.Info{}, nil },
-		Store:  &memSelection{},
-		Policy: mode.Policy{},
-		Source: func(ctx context.Context, path string, m mode.Mode) (capture.Source, error) { return previewSrc, nil },
-	}
-	h := a.handler(WithStore(a.st), WithSessions(mgr), WithCapture(stk))
-
-	for method, target := range map[string]string{
-		http.MethodGet:  "/api/v1/capture/preview?device=" + stack.FakeID,
-		http.MethodPost: "/api/v1/capture/probe",
-	} {
-		var r *http.Request
-		if method == http.MethodPost {
-			b, _ := json.Marshal(map[string]any{"device": stack.FakeID, "frames": 2})
-			r = httptest.NewRequest(method, target, bytes.NewReader(b))
-		} else {
-			r = httptest.NewRequest(method, target, nil)
-		}
-		r.Header.Set("Authorization", "Bearer "+a.bearer(auth.RoleOperator))
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, r)
-		if rec.Code != http.StatusServiceUnavailable {
-			t.Fatalf("%s %s (device held) = %d, want 503 capture-busy: %s", method, target, rec.Code, rec.Body.String())
-		}
-		if !strings.Contains(strings.ToLower(rec.Body.String()), "capture-busy") &&
-			!strings.Contains(strings.ToLower(rec.Body.String()), "held by") {
-			t.Fatalf("the 503 does not name the busy condition: %s", rec.Body.String())
-		}
 	}
 }
 

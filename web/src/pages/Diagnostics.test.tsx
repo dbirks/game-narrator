@@ -13,6 +13,8 @@ const systemInfo: SystemInfo = {
   arch: "arm64",
   num_cpu: 4,
   started_at: "2026-10-16T00:00:00Z",
+  listen_addresses: ["127.0.0.1:18090"],
+  tailnet: { present: false },
 };
 
 const readiness: Readiness = { status: "ok", checks: {} };

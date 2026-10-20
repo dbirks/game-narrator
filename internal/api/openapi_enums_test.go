@@ -185,6 +185,14 @@ var literalEnums = map[string][]string{
 	// The metrics snapshot (docs/spec/13 "Metrics", ADR-0106): the three
 	// Prometheus kinds internal/telemetry declares.
 	"MetricSnapshot.properties.type": {"counter", "gauge", "histogram"},
+	// The signal answer's evidence class (ADR-0110 §1): a running v4l2 session
+	// answers "session", the one-shot throwaway grab answers "oneshot" — the
+	// two words internal/api/capture.go writes, pinned here the same way the
+	// capture source kinds are (the doc's enum must match the writer).
+	"CaptureSignal.properties.source": {signalSourceSession, signalSourceOneShot},
+	// The tailnet detection's answer (ADR-0110 §4): the interface scan's word
+	// and the tailscale-ip fallback's word, the two values DetectTailnet writes.
+	"Tailnet.properties.source": {tailnetSourceInterface, tailnetSourceTailscale},
 }
 
 func TestOpenAPIEnumVocabulariesMatchTheDomainEnums(t *testing.T) {

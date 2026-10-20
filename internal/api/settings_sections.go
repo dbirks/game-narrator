@@ -259,18 +259,21 @@ func settingsAudio() audioView {
 	return view
 }
 
-// settingsSecurity renders the listen address and the authentication posture.
-// The address prefers the WithListen value (the bound address, when the host
-// wired it) and falls back to the environment resolution; the posture reports
-// whether an admin account exists so a page rendered by a locked-out operator
-// can say "no admin has claimed this appliance yet" instead of a bare 403.
+// settingsSecurity renders the listen address, the tailnet URL and the
+// authentication posture. The address prefers the WithListen value (the
+// bound address, when the host wired it) and falls back to the environment
+// resolution; the tailnet is the startup-cached detection (never re-run at
+// request time, never forwarded); the posture reports whether an admin
+// account exists so a page rendered by a locked-out operator can say "no
+// admin has claimed this appliance yet" instead of a bare 403.
 func (s *Server) settingsSecurity(ctx context.Context) securityView {
 	listen := s.listenAddr
 	if listen == "" {
 		listen = bootstrap.ResolveListen("", osLookupEnv)
 	}
 	view := securityView{Listen: listen, ListenEnv: bootstrap.EnvListen,
-		Auth: securityAuth{Mode: "cookie sessions and API tokens"}}
+		Auth:    securityAuth{Mode: "cookie sessions and API tokens"},
+		Tailnet: s.tailnetView()}
 	if s.users != nil {
 		if has, err := s.users.HasRole(ctx, store.RoleAdmin); err == nil {
 			view.Auth.AdminConfigured = has

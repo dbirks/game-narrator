@@ -64,6 +64,7 @@ const settings: Settings = {
     listen: "127.0.0.1:18090",
     listen_env: "GAME_NARRATOR_LISTEN",
     auth: { mode: "local", admin_configured: true },
+    tailnet: { present: false },
   },
   imports: {
     web_search: {

@@ -90,7 +90,18 @@ func (s *capturePushSource) push(t *testing.T, f capture.Frame) {
 	}
 }
 
-func (s *capturePushSource) Stats() capture.Stats { return capture.Stats{} }
+// Stats is the source's self-report: the running state and the delivered
+// count once it has delivered, the way the production V4L2 source reports
+// (the runtime's source self-report — the signal's measured fps and last-
+// frame time — reads this).
+func (s *capturePushSource) Stats() capture.Stats {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.seq == 0 {
+		return capture.Stats{}
+	}
+	return capture.Stats{State: capture.StateRunning, Delivered: uint64(s.seq), FPS: 10, LastFrameAt: time.Now()}
+}
 
 func (s *capturePushSource) Close() error {
 	s.mu.Lock()

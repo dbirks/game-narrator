@@ -34,8 +34,17 @@ type analysis struct {
 // bounding the pool by OCR work — what docs/spec/01's "ROI worker pool" is for —
 // is unaffected.
 func (r *Runner) analyze(f capture.Frame, reg games.Region) analysis {
-	crop := vision.CropNormalized(f.Image, vision.RectOf(reg), r.cfg.Crop)
+	rect := vision.RectOf(reg)
+	crop := vision.CropNormalized(f.Image, rect, r.cfg.Crop)
 	a := analysis{crop: crop}
+	// The live view's last-crop record (ADR-0110): the box the cut actually
+	// used, in frame coordinates (vision.CropRect shares the cut's own
+	// active-window and MapRect spelling — the crop image is rebased to its
+	// origin, so its bounds alone cannot carry the position). The developer
+	// inspector and the signal route draw this box; noteCrop records nothing
+	// for an empty box, so a region that crops nothing keeps answering "no
+	// crop yet".
+	r.noteCrop(reg.ID, vision.CropRect(f.Image, rect, r.cfg.Crop))
 	if crop == nil || crop.Bounds().Empty() {
 		a.empty = true
 		return a

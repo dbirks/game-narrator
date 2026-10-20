@@ -880,11 +880,28 @@ func runServe(args []string, log *slog.Logger, ring *logbuf.Ring) (int, error) {
 		go btAutoReconnect(runCtx, btController, os.LookupEnv, storedDevice, log)
 	}
 
+	// The tailnet detection (UX-13, ADR-0110 §4): run it here, at startup
+	// — after config, before the listener comes up — so the one bounded
+	// `tailscale ip` subprocess (the fallback half) and the interface scan
+	// happen outside the request path forever: the value is cached on the
+	// server and served for the process's life. A detection failure degrades
+	// to the explicit "not configured" state, never a boot failure.
+	tailnet := api.DetectTailnet(ctx, api.TailnetDeps{
+		Port: api.TailnetPort(cfg.Listen),
+	})
+
 	apiOpts := []api.Option{
 		api.WithReadiness(storeReadiness(st, readiness, log)),
 		api.WithEvents(hub),
 		api.WithJobs(jobsStore),
 		api.WithSessions(sessions),
+		// The bound listen address (ADR-0110 §4): the real bind, not the
+		// environment fallback — the settings security section and the
+		// system-info surface report what the box actually listens on.
+		api.WithListen(cfg.Listen),
+		// The cached tailnet answer (UX-13): the settings page's tailnet URL
+		// and the system-info surface read this value, never a re-detection.
+		api.WithTailnet(tailnet),
 		api.WithOnboarding(runner, store.NewAgentStore(st), tools.NewSQLiteApprovals(st)),
 		// The setup board snapshot (ADR-0108, UX-06): the GET .../board read
 		// the setup page's page load rebuilds the board from, derived from

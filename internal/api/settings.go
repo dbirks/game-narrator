@@ -123,6 +123,9 @@ type securityView struct {
 	Listen    string       `json:"listen"`
 	ListenEnv string       `json:"listen_env"`
 	Auth      securityAuth `json:"auth"`
+	// Tailnet is the cached tailnet detection (UX-13, ADR-0110 §4): the
+	// settings page's tailnet URL and its explicit "not configured" state.
+	Tailnet *TailnetView `json:"tailnet"`
 }
 
 type securityAuth struct {

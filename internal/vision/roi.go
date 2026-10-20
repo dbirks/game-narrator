@@ -79,14 +79,13 @@ const scanStrideTarget = 512
 // up outside the picture yields an empty image — check image.Rectangle.Empty on
 // Bounds() — so a mis-calibrated region degrades into "read no text" instead of
 // taking the recognition loop down.
-func CropNormalized(img image.Image, r Rect, opts CropOptions) image.Image {
-	if img == nil {
-		return empty()
-	}
-	bounds := img.Bounds()
-	if bounds.Dx() <= 0 || bounds.Dy() <= 0 {
-		return empty()
-	}
+// activeWindowFor reports the active window a crop maps against for the
+// given options: the tracker's hysteresed window once it has settled one,
+// a fresh ActiveArea scan before that, the whole frame when the scan finds
+// no bar-framed picture (or letterbox detection is off). It is the single
+// spelling CropNormalized and CropRect both map through, so the cut and the
+// box a caller draws for it cannot disagree.
+func activeWindowFor(img image.Image, bounds image.Rectangle, opts CropOptions) image.Rectangle {
 	active := bounds
 	if opts.Letterbox == LetterboxDetect {
 		if opts.Tracker != nil {
@@ -102,12 +101,46 @@ func CropNormalized(img image.Image, r Rect, opts CropOptions) image.Image {
 			active = a
 		}
 	}
-	rect := r.clamped()
-	box := MapRect(active, rect)
+	return active
+}
+
+func CropNormalized(img image.Image, r Rect, opts CropOptions) image.Image {
+	if img == nil {
+		return empty()
+	}
+	bounds := img.Bounds()
+	if bounds.Dx() <= 0 || bounds.Dy() <= 0 {
+		return empty()
+	}
+	active := activeWindowFor(img, bounds, opts)
+	box := MapRect(active, r.clamped())
 	if box.Empty() {
 		return empty()
 	}
 	return crop(img, box)
+}
+
+// CropRect reports the frame-coordinate box CropNormalized would cut for
+// (img, r, opts) — the same active window and MapRect as the cut itself, so
+// a caller that draws the region's box (the developer inspector, the signal
+// route's last dialogue-region crop) draws exactly what the runtime crops.
+// The crop image CropNormalized returns is rebased to its own origin, so
+// its bounds alone cannot carry the position: this is the position half.
+// It reports an empty box for a nil/empty frame or a region that clamps to
+// nothing — "no cut" stays "no box", never a whole-frame guess.
+func CropRect(img image.Image, r Rect, opts CropOptions) image.Rectangle {
+	if img == nil {
+		return image.Rectangle{}
+	}
+	bounds := img.Bounds()
+	if bounds.Dx() <= 0 || bounds.Dy() <= 0 {
+		return image.Rectangle{}
+	}
+	box := MapRect(activeWindowFor(img, bounds, opts), r.clamped())
+	if box.Empty() {
+		return image.Rectangle{}
+	}
+	return box
 }
 
 // MapRect projects a normalized rect onto pixel coordinates of an active area.

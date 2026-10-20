@@ -156,9 +156,10 @@ type Server struct {
 	// device list would claim an appliance with no capture hardware.
 	capture *stack.Stack
 	// capturePreviewInFlight and capturePreviewLastNano are the preview's
-	// global throttle state (ADR-0078 §3): one snapshot in flight, a 500 ms
-	// minimum interval, shared by every request because the budget is the
-	// decode cores and the USB bus, not the caller.
+	// global throttle state (ADR-0078 §3, shared with the signal route's
+	// one-shot mode by ADR-0110): one snapshot in flight, a 500 ms minimum
+	// interval, shared by every request because the budget is the decode
+	// cores and the USB bus, not the caller.
 	capturePreviewInFlight int32
 	capturePreviewLastNano int64
 
@@ -218,6 +219,14 @@ type Server struct {
 	// the page then falls back to the environment resolution of the same
 	// flag > env > default precedence the process itself used.
 	listenAddr string
+
+	// tailnet is the cached tailnet detection (UX-13, ADR-0110 §4): detected
+	// once at process startup (cmd/game-narrator runs DetectTailnet before the
+	// listener comes up and injects the value through WithTailnet), so no
+	// request ever touches the network namespace or the `tailscale` CLI. nil
+	// means the host did not run the detection — the surfaces report the
+	// explicit "not detected by this process" state rather than a blank.
+	tailnet *TailnetView
 
 	// harnessRepoRoot is the repository root the /tests page's dev harness
 	// reads (WithTestHarness): testdata/scenarios for the catalog and runs,
@@ -419,6 +428,18 @@ func WithOCRPreview(factory ocrFactoryFunc, replayRoots []string) Option {
 // outranks the fallback the page uses when the host did not wire it.
 func WithListen(addr string) Option {
 	return func(s *Server) { s.listenAddr = strings.TrimSpace(addr) }
+}
+
+// WithTailnet injects the startup-cached tailnet detection (UX-13,
+// ADR-0110 §4): the value the process detected before the listener came up
+// (a 100.64.0.0/10 interface address, or `tailscale ip` when the scan
+// found nothing), served from the cache for the process's life — never
+// re-detected at request time. The settings security section and the
+// system-info surface report it; it crosses no other boundary (the update
+// checker, the providers and the support bundle receive no seam that
+// carries it, so it is never sent to an external service).
+func WithTailnet(v TailnetView) Option {
+	return func(s *Server) { s.tailnet = &v }
 }
 
 // WithTestHarness wires the /tests page's dev harness to a repository root
@@ -674,6 +695,7 @@ func (s *Server) Handler() http.Handler {
 	routes.register(mux, http.MethodGet, "/api/v1/capture/devices", s.handleCaptureDevices)
 	routes.register(mux, http.MethodPut, "/api/v1/capture/devices/{id}", s.handleCaptureSelect)
 	routes.register(mux, http.MethodGet, "/api/v1/capture/preview", s.handleCapturePreview)
+	routes.register(mux, http.MethodGet, "/api/v1/capture/signal", s.handleCaptureSignal)
 	routes.register(mux, http.MethodPost, "/api/v1/capture/probe", s.handleCaptureProbe)
 	// The operator's live controls of docs/spec/08 ("…/pause, …/resume,
 	// …/settings"): pause/resume stop and restart the commitment and the
@@ -996,28 +1018,54 @@ func safeReadiness(ctx context.Context, f ReadinessFunc, log *slog.Logger) (chec
 	return f(ctx)
 }
 
-// systemInfoResponse exposes build/OS capacity only: no hostnames, paths,
-// environment values or secrets.
+// systemInfoResponse exposes build/OS capacity plus the network reachability
+// the settings surface needs (UX-13, ADR-0110 §4): the bound listen
+// address(es) and the cached tailnet detection. Still no hostnames, paths,
+// environment values or secrets — the tailnet address is a CGNAT-space IP
+// the UI renders, not a credential, and it is served from the startup cache,
+// never re-detected (and never forwarded) at request time.
 type systemInfoResponse struct {
-	Version   string `json:"version"`
-	Commit    string `json:"commit"`
-	GoVersion string `json:"go_version"`
-	OS        string `json:"os"`
-	Arch      string `json:"arch"`
-	NumCPU    int    `json:"num_cpu"`
-	StartedAt string `json:"started_at"`
+	Version         string       `json:"version"`
+	Commit          string       `json:"commit"`
+	GoVersion       string       `json:"go_version"`
+	OS              string       `json:"os"`
+	Arch            string       `json:"arch"`
+	NumCPU          int          `json:"num_cpu"`
+	StartedAt       string       `json:"started_at"`
+	ListenAddresses []string     `json:"listen_addresses"`
+	Tailnet         *TailnetView `json:"tailnet"`
 }
 
 func (s *Server) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
+	listen := s.listenAddr
+	if listen == "" {
+		listen = bootstrap.ResolveListen("", osLookupEnv)
+	}
 	writeJSON(w, http.StatusOK, systemInfoResponse{
-		Version:   s.build.Version,
-		Commit:    s.build.Commit,
-		GoVersion: s.build.GoVersion,
-		OS:        s.build.GOOS,
-		Arch:      s.build.GOARCH,
-		NumCPU:    runtime.NumCPU(),
-		StartedAt: s.startedAt.Format(time.RFC3339),
+		Version:         s.build.Version,
+		Commit:          s.build.Commit,
+		GoVersion:       s.build.GoVersion,
+		OS:              s.build.GOOS,
+		Arch:            s.build.GOARCH,
+		NumCPU:          runtime.NumCPU(),
+		StartedAt:       s.startedAt.Format(time.RFC3339),
+		ListenAddresses: []string{listen},
+		Tailnet:         s.tailnetView(),
 	})
+}
+
+// tailnetView reports the cached tailnet detection for the surfaces that
+// render it (the settings security section, the system info). The host did
+// not wire a detection (nil) when the process is not the production host
+// (the tests): the answer is the explicit absent state with the reason, so
+// a page renders "not detected by this process" instead of a blank field —
+// UX-13's "not configured" rule, which the detection itself also applies to
+// its own absent answer.
+func (s *Server) tailnetView() *TailnetView {
+	if s.tailnet != nil {
+		return s.tailnet
+	}
+	return &TailnetView{Present: false, Note: "not detected by this process: the tailnet detection runs at startup and was not wired here"}
 }
 
 // writeProblem emits an RFC 9457 application/problem+json response correlated

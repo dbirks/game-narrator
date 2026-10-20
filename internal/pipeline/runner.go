@@ -61,6 +61,15 @@ type Runner struct {
 	// occurrence's id on another occurrence's request.
 	lastMu  sync.Mutex
 	lastMsg string
+
+	// liveView is the frame-ordered stage's observation for concurrent readers
+	// (ADR-0110): the newest frame in memory (one slot, overwritten per frame —
+	// the preview serves it without a device grab) and the last crop rectangle
+	// the ROI stage computed per region (one entry per region id, the profile's
+	// bounded set). Both are written only on the frame-ordered stage and read
+	// from the API's goroutines, so each is mutex-guarded the way the tracker's
+	// Box reads are (ADR-0082 amendment 1). See liveview.go.
+	liveView liveView
 }
 
 // lastCommitted reports the id of the last message this run committed, for

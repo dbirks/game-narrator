@@ -92,6 +92,11 @@ func (r *Runner) roiLoop(ctx context.Context, frames <-chan capture.Frame, in ch
 				return nil
 			}
 			r.cnt.framesProcessed()
+			// The live view's newest frame (ADR-0110): one overwrite per frame,
+			// on the frame-ordered stage, before the regions analyse it — the
+			// preview's "newest pixels in memory" and the signal route's
+			// active-picture judgment read this slot from their own goroutines.
+			r.noteFrame(f)
 			// The active-picture tracker (ADR-0082) is fed once per frame, on this
 			// frame-ordered stage, before any region crops the frame: every region
 			// then maps through the same hysteresised window (CropOptions.Tracker
