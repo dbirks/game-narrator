@@ -140,6 +140,9 @@ func (s *Server) handleImportFile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.rejectIfProfileDeleted(w, r, p.DeletedAt) {
+		return
+	}
 	if p.IsImmutable() {
 		s.writeCodeProblem(w, r, http.StatusConflict, "immutable-revision", codeImmutable, "Conflict",
 			fmt.Sprintf("revision %d is %s and frozen: content only ever enters a draft, so derive one with POST /api/v1/profiles/%s/revisions",

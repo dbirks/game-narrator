@@ -258,6 +258,9 @@ func (s *Server) handleDiscImport(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.rejectIfProfileDeleted(w, r, p.DeletedAt) {
+		return
+	}
 	if p.IsImmutable() {
 		s.writeCodeProblem(w, r, http.StatusConflict, "revision-immutable", "CONFLICT",
 			"Conflict",

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -67,6 +68,31 @@ func (c *call) finish(r Result, err error) {
 // ErrQAFailed reports a cache entry that failed the ASR quality check. Callers
 // may retry with an explicit override; the error carries no hidden state.
 var ErrQAFailed = errors.New("speech: cache entry failed QA (use override to play anyway)")
+
+// keyInputContextKey is the context slot the message id of a key input
+// travels in (ADR-0107): the key is a hash of the input's JSON, so the id is
+// not in the key, and the caller that narrates the message is the only party
+// that can say which message it is. Cache.generate reads the slot when it
+// persists a fresh entry; nothing else does.
+type keyInputContextKey int
+
+// WithKeyInput attaches the message id the key input was built for, so the
+// cache entry produced under this context carries OriginalMessageID — the
+// provenance a profile purge needs to address the rows of one profile's
+// messages. A caller without a message (a voice preview) does not attach one.
+func WithKeyInput(ctx context.Context, messageID string) context.Context {
+	if strings.TrimSpace(messageID) == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, keyInputContextKey(0), messageID)
+}
+
+func keyInputFrom(ctx context.Context) string {
+	if id, ok := ctx.Value(keyInputContextKey(0)).(string); ok {
+		return id
+	}
+	return ""
+}
 
 // Cache is the singleflight, priority-bounded TTS cache in front of the asset
 // store (docs/spec/07 "Cache"). Concurrency model:
@@ -353,11 +379,12 @@ func (c *Cache) generate(ctx context.Context, key CacheKey, gen GenerationFunc) 
 		return Result{}, fmt.Errorf("speech: committing audio: %w", err)
 	}
 	entry := Entry{
-		SHA256:     commit.SHA256,
-		Size:       commit.Size,
-		Duration:   info.Duration.Nanoseconds(),
-		SampleRate: info.SampleRate,
-		QA:         QAUnknown,
+		SHA256:            commit.SHA256,
+		Size:              commit.Size,
+		Duration:          info.Duration.Nanoseconds(),
+		SampleRate:        info.SampleRate,
+		QA:                QAUnknown,
+		OriginalMessageID: keyInputFrom(ctx),
 	}
 	if err := c.Index.Put(key, entry); err != nil {
 		return Result{}, fmt.Errorf("speech: recording index entry: %w", err)

@@ -79,6 +79,33 @@ var (
 	// cursors opaque, so a client that mangles one is a 400 rather than an
 	// internal error.
 	ErrInvalidCursor = errors.New("store: invalid cursor")
+
+	// The library lifecycle sentinels (ADR-0107, gap G14). Each one is a 409
+	// with its own wire code at the API layer, so the caller can tell the four
+	// refusals apart instead of recovering from a generic conflict.
+	// ErrProfileAlreadyDeleted means a soft delete was asked for a revision
+	// that carries the mark; the row exists (that is what retention is for),
+	// so the answer is "already deleted", not "not found".
+	ErrProfileAlreadyDeleted = errors.New("store: profile is already deleted")
+	// ErrProfileHasPublicationHistory means the revision has a publish_actions
+	// row — published, archived or even a gate refusal. 0004's RESTRICT on
+	// publish_actions.profile_id exists precisely so such a revision cannot be
+	// deleted out from under its own trail, and the soft delete obeys the same
+	// rule instead of leaning on the foreign key's opaque error: the retirement
+	// path for a shipped revision is archive, not delete.
+	ErrProfileHasPublicationHistory = errors.New("store: profile has publication history")
+	// ErrProfileHasDerivedRevisions means another revision descends from this
+	// one (parent_revision); deleting a parent first would orphan the lineage
+	// the 0001 composite key refuses to write.
+	ErrProfileHasDerivedRevisions = errors.New("store: profile has derived revisions")
+	// ErrProfileNotDeleted means a purge was asked for a revision that was
+	// never soft-deleted: purging is the second half of a two-step act, and
+	// the first step is the mark.
+	ErrProfileNotDeleted = errors.New("store: profile is not deleted")
+	// ErrRetentionNotElapsed means the soft-delete mark is inside its retention
+	// window; the purge must wait until purge_after, when the mistake has had
+	// its bounded time to be noticed.
+	ErrRetentionNotElapsed = errors.New("store: retention window has not elapsed")
 )
 
 // Pagination bounds from docs/spec/08 "Conventions" ("pagination with cursor and

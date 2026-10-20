@@ -228,6 +228,18 @@ func (s *Server) sessionProblem(w http.ResponseWriter, r *http.Request, err erro
 	case errors.Is(err, runtime.ErrProfileNotFound):
 		s.writeProblem(w, r, http.StatusNotFound, "profile-not-found",
 			"Profile Not Found", "the profile_id in the request names a profile that does not exist")
+	case errors.Is(err, runtime.ErrProfileDeleted):
+		// A soft-deleted revision is a 404 for Play (ADR-0107): the mark is
+		// the delete, and starting a session on it would resurrect what the
+		// operator removed.
+		s.writeCodeProblem(w, r, http.StatusNotFound, "profile-deleted", codeNotFound, "Not Found",
+			"the profile was deleted (its receipt's purge_after is the retention deadline); a session cannot start on a deleted revision")
+	case errors.Is(err, runtime.ErrGameDisabled):
+		// The game's disable switch (ADR-0107): a 409, not a 404 — the game
+		// and its profiles exist and stay editable; the operator re-enables
+		// it to make it playable again.
+		s.writeCodeProblem(w, r, http.StatusConflict, "game-disabled", "GAME_DISABLED", "Conflict",
+			"the game is disabled: it is hidden from Play and narration while its profiles stay editable — re-enable it before starting a session")
 	case errors.Is(err, runtime.ErrProfileNotPublished):
 		s.writeProblem(w, r, http.StatusConflict, "profile-not-published",
 			"Profile Not Published", "the profile is not the edition's published revision; publish it before running it")

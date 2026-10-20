@@ -41,7 +41,7 @@ import (
 // these columns; anything that will be compared against a caller's token uses
 // profileRowColumns, which adds the version so the row and its guard are read in
 // one statement and cannot come from different instants.
-const profileColumns = "id, edition_id, revision_num, parent_revision, status, manifest_digest, published_at, preferred_voice_id, publication_author, narrator_fallback"
+const profileColumns = "id, edition_id, revision_num, parent_revision, status, manifest_digest, published_at, preferred_voice_id, publication_author, narrator_fallback, deleted_at, purge_after"
 
 // profileRowColumns is profileColumns plus the optimistic-locking counter.
 const profileRowColumns = profileColumns + ", row_version"
@@ -184,8 +184,14 @@ func (s *Store) ListProfiles(ctx context.Context, editionID string) ([]games.Pro
 	var out []games.Profile
 	err := s.inRead(ctx, func(ctx context.Context, q queryable) error {
 		const op = "list profiles"
+		// Soft-deleted revisions (ADR-0107) are hidden from the library for the
+		// whole retention window: the row is still on disk (that is what the
+		// window is for), but the list is the surface a user acts on, and a
+		// half-deleted revision is not something to act on. Direct reads answer
+		// the same way at the API layer (404), and the purge path reads rows
+		// through the store without this filter.
 		rows, err := q.query(ctx, op,
-			"SELECT "+profileRowColumns+" FROM profiles WHERE edition_id = ? ORDER BY revision_num", editionID)
+			"SELECT "+profileRowColumns+" FROM profiles WHERE edition_id = ? AND deleted_at IS NULL ORDER BY revision_num", editionID)
 		if err != nil {
 			return err
 		}
@@ -225,11 +231,11 @@ func (tx *Tx) nextRevisionNum(ctx context.Context, editionID string) (int, error
 func (tx *Tx) insertProfile(ctx context.Context, p games.Profile) error {
 	const op = "insert profile"
 	if _, err := tx.exec(ctx, op,
-		`INSERT INTO profiles (id, edition_id, revision_num, parent_revision, status, manifest_digest, published_at, preferred_voice_id, publication_author, narrator_fallback)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO profiles (id, edition_id, revision_num, parent_revision, status, manifest_digest, published_at, preferred_voice_id, publication_author, narrator_fallback, deleted_at, purge_after)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID, p.EditionID, p.RevisionNum, nullIntPtr(p.ParentRevision), string(p.Status),
 		p.ManifestDigest, nullStr(p.PublishedAt), nullStr(p.PreferredVoiceID), p.PublicationAuthor,
-		boolInt(p.NarratorFallback)); err != nil {
+		boolInt(p.NarratorFallback), nullStr(p.DeletedAt), nullStr(p.PurgeAfter)); err != nil {
 		return err
 	}
 	return nil
@@ -493,6 +499,44 @@ func (tx *Tx) NewRevision(ctx context.Context, parentProfileID string) (games.Pr
 		return parent, err
 	}
 
+	num, err := tx.nextRevisionNum(ctx, parent.EditionID)
+	if err != nil {
+		return parent, err
+	}
+	parentNum := parent.RevisionNum
+	fresh := games.Profile{
+		ID:               games.NewID(),
+		EditionID:        parent.EditionID,
+		RevisionNum:      num,
+		ParentRevision:   &parentNum,
+		Status:           games.StatusDraft,
+		PreferredVoiceID: parent.PreferredVoiceID,
+		// An editorial decision about how this profile narrates unknown
+		// speakers follows the lineage it was made for (ADR-0101).
+		NarratorFallback: parent.NarratorFallback,
+	}
+	if err := fresh.Validate(); err != nil {
+		return parent, err
+	}
+	if err := tx.insertProfile(ctx, fresh); err != nil {
+		return parent, err
+	}
+	if err := tx.copyProfileContent(ctx, op, src, fresh.ID); err != nil {
+		return parent, err
+	}
+
+	return fresh, nil
+}
+
+// copyProfileContent copies one revision's content rows into the profile whose
+// id is dstID, minting a fresh id for every row and rewriting every internal
+// reference (the work documented on NewRevision). Both NewRevision (the same
+// edition, the next revision number) and CloneProfile (a new game and edition,
+// revision 1) end their transaction with this helper, so "a snapshot is an
+// independent set of rows, with no row of the new revision pointing at a row of
+// the old one" has exactly one implementation (ADR-0107 split the caller, not
+// the copy).
+func (tx *Tx) copyProfileContent(ctx context.Context, op string, src ProfileContent, dstID string) error {
 	remap := make(map[string]string,
 		len(src.Sources)+len(src.Characters)+len(src.Scenes)+len(src.Regions)+
 			len(src.Messages)+len(src.Assertions))
@@ -522,31 +566,6 @@ func (tx *Tx) NewRevision(ctx context.Context, parentProfileID string) (games.Pr
 	for _, r := range src.Assertions {
 		nextID(r.ID)
 	}
-
-	num, err := tx.nextRevisionNum(ctx, parent.EditionID)
-	if err != nil {
-		return parent, err
-	}
-	parentNum := parent.RevisionNum
-	fresh := games.Profile{
-		ID:               games.NewID(),
-		EditionID:        parent.EditionID,
-		RevisionNum:      num,
-		ParentRevision:   &parentNum,
-		Status:           games.StatusDraft,
-		PreferredVoiceID: parent.PreferredVoiceID,
-		// An editorial decision about how this profile narrates unknown
-		// speakers follows the lineage it was made for (ADR-0101).
-		NarratorFallback: parent.NarratorFallback,
-	}
-	if err := fresh.Validate(); err != nil {
-		return parent, err
-	}
-	if err := tx.insertProfile(ctx, fresh); err != nil {
-		return parent, err
-	}
-
-	dst := fresh.ID
 	now := nowStamp()
 
 	// Insert in dependency order: the things messages point at first, then
@@ -555,46 +574,48 @@ func (tx *Tx) NewRevision(ctx context.Context, parentProfileID string) (games.Pr
 	// ErrConflict rather than a mystery.
 	for _, r := range src.Sources {
 		out := r
-		out.ID, out.ProfileID = nextID(r.ID), dst
+		out.ID, out.ProfileID = nextID(r.ID), dstID
 		if err := tx.insertSource(ctx, op, out); err != nil {
-			return parent, err
+			return err
 		}
 	}
 	for _, r := range src.Characters {
 		out := r
-		out.ID, out.ProfileID = nextID(r.ID), dst
+		out.ID, out.ProfileID = nextID(r.ID), dstID
 		out.Aliases = remapRefs(r.Aliases, remap)
 		out.VisualDescriptors = remapRefs(r.VisualDescriptors, remap)
 		out.VerifiedSourceRefs = remapRefs(r.VerifiedSourceRefs, remap)
 		if err := tx.insertCharacter(ctx, op, out); err != nil {
-			return parent, err
+			return err
 		}
 	}
 	for _, r := range src.Scenes {
 		out := r
-		out.ID, out.ProfileID = nextID(r.ID), dst
+		out.ID, out.ProfileID = nextID(r.ID), dstID
 		out.Aliases = remapRefs(r.Aliases, remap)
 		out.VisualAnchors = remapRefs(r.VisualAnchors, remap)
 		out.ProgressJSON = remapRefs(r.ProgressJSON, remap)
 		if err := tx.insertScene(ctx, op, out); err != nil {
-			return parent, err
+			return err
 		}
 	}
 	for _, r := range src.Regions {
 		out := r
-		out.ID, out.ProfileID = nextID(r.ID), dst
+		out.ID, out.ProfileID = nextID(r.ID), dstID
 		out.OCRSettings = remapRefs(r.OCRSettings, remap)
 		out.MaskAssetIDs = remapRefs(r.MaskAssetIDs, remap)
-		if out.SceneID, err = remapRef(op, remap, r.SceneID, "region.scene_id"); err != nil {
-			return parent, err
+		sceneID, err := remapRef(op, remap, r.SceneID, "region.scene_id")
+		if err != nil {
+			return err
 		}
+		out.SceneID = sceneID
 		if err := tx.insertRegion(ctx, op, out); err != nil {
-			return parent, err
+			return err
 		}
 	}
 	for _, r := range src.Messages {
 		out := r
-		out.ID, out.ProfileID = nextID(r.ID), dst
+		out.ID, out.ProfileID = nextID(r.ID), dstID
 		out.MarkupJSON = remapRefs(r.MarkupJSON, remap)
 		out.AttributionEvidence = remapRefs(r.AttributionEvidence, remap)
 		out.Flags = remapRefs(r.Flags, remap)
@@ -603,71 +624,78 @@ func (tx *Tx) NewRevision(ctx context.Context, parentProfileID string) (games.Pr
 		// count would let a client that cached "message revision 4" of the old
 		// revision overwrite the fourth edit of the new one.
 		out.Revision, out.CreatedAt, out.UpdatedAt = 1, now, now
-		if out.SourceID, err = remapRef(op, remap, r.SourceID, "message.source_id"); err != nil {
-			return parent, err
+		sourceID, err := remapRef(op, remap, r.SourceID, "message.source_id")
+		if err != nil {
+			return err
 		}
-		if out.SceneID, err = remapRef(op, remap, r.SceneID, "message.scene_id"); err != nil {
-			return parent, err
+		out.SourceID = sourceID
+		sceneID, err := remapRef(op, remap, r.SceneID, "message.scene_id")
+		if err != nil {
+			return err
 		}
-		if out.SpeakerID, err = remapRef(op, remap, r.SpeakerID, "message.speaker_id"); err != nil {
-			return parent, err
+		out.SceneID = sceneID
+		speakerID, err := remapRef(op, remap, r.SpeakerID, "message.speaker_id")
+		if err != nil {
+			return err
 		}
+		out.SpeakerID = speakerID
 		if err := tx.insertMessage(ctx, op, out); err != nil {
-			return parent, err
+			return err
 		}
 	}
 	for _, r := range src.Pages {
 		out := r
 		msgID, ok := remap[r.MessageID]
 		if !ok {
-			return parent, outsideProfileError(op, "message page", r.MessageID, r.MessageID)
+			return outsideProfileError(op, "message page", r.MessageID, r.MessageID)
 		}
 		out.MessageID = msgID
 		out.VisiblePrefixes = remapRefs(r.VisiblePrefixes, remap)
 		out.DisplayControls = remapRefs(r.DisplayControls, remap)
 		out.TimingJSON = remapRefs(r.TimingJSON, remap)
 		if err := tx.insertPage(ctx, op, out); err != nil {
-			return parent, err
+			return err
 		}
 	}
 	for _, r := range src.Edges {
 		out := r
 		from, ok := remap[r.FromID]
 		if !ok {
-			return parent, outsideProfileError(op, "edge", r.FromID, r.FromID)
+			return outsideProfileError(op, "edge", r.FromID, r.FromID)
 		}
 		to, ok := remap[r.ToID]
 		if !ok {
-			return parent, outsideProfileError(op, "edge", r.ToID, r.ToID)
+			return outsideProfileError(op, "edge", r.ToID, r.ToID)
 		}
 		out.FromID, out.ToID = from, to
 		out.Evidence = remapRefs(r.Evidence, remap)
-		if out.SourceID, err = remapRef(op, remap, r.SourceID, "edge.source_id"); err != nil {
-			return parent, err
+		sourceID, err := remapRef(op, remap, r.SourceID, "edge.source_id")
+		if err != nil {
+			return err
 		}
+		out.SourceID = sourceID
 		if err := tx.insertEdge(ctx, op, out); err != nil {
-			return parent, err
+			return err
 		}
 	}
 	for _, r := range src.Assertions {
 		out := r
 		msgID, ok := remap[r.MessageID]
 		if !ok {
-			return parent, outsideProfileError(op, "speaker assertion", r.ID, r.MessageID)
+			return outsideProfileError(op, "speaker assertion", r.ID, r.MessageID)
 		}
 		charID, ok := remap[r.CharacterID]
 		if !ok {
-			return parent, outsideProfileError(op, "speaker assertion", r.ID, r.CharacterID)
+			return outsideProfileError(op, "speaker assertion", r.ID, r.CharacterID)
 		}
-		out.ID, out.ProfileID = nextID(r.ID), dst
+		out.ID, out.ProfileID = nextID(r.ID), dstID
 		out.MessageID, out.CharacterID = msgID, charID
 		out.Evidence = remapRefs(r.Evidence, remap)
 		if err := tx.insertAssertion(ctx, op, out); err != nil {
-			return parent, err
+			return err
 		}
 	}
-
-	return fresh, nil
+	return nil
 }
 
 // NewRevision is the exported form; see the Tx method.
@@ -776,16 +804,18 @@ func remapValue(v any, remap map[string]string, changed *bool) any {
 // of every profile scan — callers that do not need it (ListProfiles) simply drop it.
 func scanProfileRow(r scanner, op string) (games.Profile, int64, error) {
 	var (
-		p        games.Profile
-		parent   sql.NullInt64
-		status   string
-		pubAt    sql.NullString
-		voice    sql.NullString
-		fallback sql.NullInt64
-		rev      int64
+		p          games.Profile
+		parent     sql.NullInt64
+		status     string
+		pubAt      sql.NullString
+		voice      sql.NullString
+		fallback   sql.NullInt64
+		deletedAt  sql.NullString
+		purgeAfter sql.NullString
+		rev        int64
 	)
 	if err := r.Scan(&p.ID, &p.EditionID, &p.RevisionNum, &parent, &status,
-		&p.ManifestDigest, &pubAt, &voice, &p.PublicationAuthor, &fallback, &rev); err != nil {
+		&p.ManifestDigest, &pubAt, &voice, &p.PublicationAuthor, &fallback, &deletedAt, &purgeAfter, &rev); err != nil {
 		return p, 0, mapReadError(op, err)
 	}
 	p.Status = games.ProfileStatus(status)
@@ -795,6 +825,10 @@ func scanProfileRow(r scanner, op string) (games.Profile, int64, error) {
 	// The column is NOT NULL DEFAULT 1 (0015); a NULL would only reach a
 	// pre-migration row, and that reads as the default, on.
 	p.NarratorFallback = !fallback.Valid || fallback.Int64 == 1
+	// The soft-delete mark (ADR-0107): NULL means not deleted; the pair is
+	// written together by the store, so neither column is backfilled.
+	p.DeletedAt = deletedAt.String
+	p.PurgeAfter = purgeAfter.String
 	return p, rev, nil
 }
 

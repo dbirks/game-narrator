@@ -277,6 +277,11 @@ type gameDTO struct {
 	Platform    string          `json:"platform"`
 	UserTags    json.RawMessage `json:"user_tags"`
 	CreatedAt   string          `json:"created_at"`
+	// Disabled is the title family's library switch (ADR-0107): a disabled
+	// game is hidden from Play (session start refuses it with 409
+	// GAME_DISABLED) while its profiles stay editable and the game stays in
+	// the library list with the flag on, so the UI can keep it visible there.
+	Disabled bool `json:"disabled"`
 }
 
 func toGameDTO(g games.Game) gameDTO {
@@ -288,6 +293,7 @@ func toGameDTO(g games.Game) gameDTO {
 		Platform:    g.Platform,
 		UserTags:    defaultJSONArray(g.UserTags),
 		CreatedAt:   g.CreatedAt,
+		Disabled:    g.Disabled,
 	}
 }
 

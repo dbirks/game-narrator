@@ -64,6 +64,9 @@ func (s *Server) handleProfileRegionsPut(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
+	if !s.rejectIfProfileDeleted(w, r, p.DeletedAt) {
+		return
+	}
 	var req putRegionsRequest
 	if !s.decodeJSONBody(w, r, &req, maxJSONBodyBytes) {
 		return

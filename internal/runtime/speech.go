@@ -884,7 +884,11 @@ func (w *speechWiring) speak(u *utteranceInfo) {
 		slot.cancel()
 	}()
 	ttsStart := time.Now()
-	res, err := w.voices.Speech.GetOrGenerate(synthCtx, key, speech.PriorityCurrent, func(ctx context.Context) (tts.Audio, error) {
+	// WithKeyInput carries the message id into the cache: the key's hash cannot
+	// be inverted, so the index row the cache writes persists the id it got
+	// from here (ADR-0107: a profile purge addresses "the cache rows of this
+	// profile's messages" through that column).
+	res, err := w.voices.Speech.GetOrGenerate(speech.WithKeyInput(synthCtx, u.messageID), key, speech.PriorityCurrent, func(ctx context.Context) (tts.Audio, error) {
 		return rv.generate(ctx, u.text)
 	})
 	if err != nil && ctx.Err() == nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
@@ -911,7 +915,7 @@ func (w *speechWiring) speak(u *utteranceInfo) {
 			w.mu.Unlock()
 			slot.cancel()
 		}()
-		r, err2 := w.voices.Speech.GetOrGenerate(synthCtx2, key, speech.PriorityCurrent, func(ctx context.Context) (tts.Audio, error) {
+		r, err2 := w.voices.Speech.GetOrGenerate(speech.WithKeyInput(synthCtx2, u.messageID), key, speech.PriorityCurrent, func(ctx context.Context) (tts.Audio, error) {
 			return rv.generate(ctx, u.text)
 		})
 		if err2 == nil {
@@ -1164,7 +1168,7 @@ func (w *speechWiring) prewarmWorker(batch context.Context, messageID string) {
 	}
 	pctx, cancel := context.WithTimeout(batch, w.prewarmCfg.jobDeadline)
 	defer cancel()
-	res, err := w.voices.Speech.GetOrGenerate(pctx, key, speech.PriorityBackground, func(ctx context.Context) (tts.Audio, error) {
+	res, err := w.voices.Speech.GetOrGenerate(speech.WithKeyInput(pctx, messageID), key, speech.PriorityBackground, func(ctx context.Context) (tts.Audio, error) {
 		return rv.generate(ctx, text)
 	})
 	if err != nil {

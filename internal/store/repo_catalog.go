@@ -19,7 +19,7 @@ import (
 )
 
 // gameColumns is the read/write column list, in the order scanGameRow expects.
-const gameColumns = "id, slug, title, description, platform, user_tags, created_at"
+const gameColumns = "id, slug, title, description, platform, user_tags, created_at, disabled"
 
 // editionColumns likewise. The published revision of an edition is not folded in:
 // it is per-edition state answered by PublishedProfile, and games.Edition has no
@@ -44,9 +44,9 @@ func (tx *Tx) createGame(ctx context.Context, g games.Game) error {
 		return err
 	}
 	_, err := tx.exec(ctx, op,
-		`INSERT INTO games (id, slug, title, description, platform, user_tags, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		g.ID, g.Slug, g.Title, g.Description, g.Platform, orDefault(g.UserTags, "[]"), g.CreatedAt)
+		`INSERT INTO games (id, slug, title, description, platform, user_tags, created_at, disabled)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		g.ID, g.Slug, g.Title, g.Description, g.Platform, orDefault(g.UserTags, "[]"), g.CreatedAt, boolInt(g.Disabled))
 	return err
 }
 
@@ -152,9 +152,9 @@ func (s *Store) UpdateGame(ctx context.Context, g games.Game) error {
 			return err
 		}
 		res, err := tx.exec(ctx, op,
-			`UPDATE games SET slug = ?, title = ?, description = ?, platform = ?, user_tags = ?
+			`UPDATE games SET slug = ?, title = ?, description = ?, platform = ?, user_tags = ?, disabled = ?
 			 WHERE id = ?`,
-			g.Slug, g.Title, g.Description, g.Platform, orDefault(g.UserTags, "[]"), g.ID)
+			g.Slug, g.Title, g.Description, g.Platform, orDefault(g.UserTags, "[]"), boolInt(g.Disabled), g.ID)
 		if err != nil {
 			return err
 		}
@@ -223,15 +223,17 @@ func (s *Store) ListEditions(ctx context.Context, gameID string) ([]games.Editio
 
 func scanGameRow(r scanner, op string) (games.Game, error) {
 	var (
-		g    games.Game
-		tags []byte
+		g        games.Game
+		tags     []byte
+		disabled int
 	)
-	if err := r.Scan(&g.ID, &g.Slug, &g.Title, &g.Description, &g.Platform, &tags, &g.CreatedAt); err != nil {
+	if err := r.Scan(&g.ID, &g.Slug, &g.Title, &g.Description, &g.Platform, &tags, &g.CreatedAt, &disabled); err != nil {
 		return g, mapReadError(op, err)
 	}
 	if len(tags) > 0 {
 		g.UserTags = json.RawMessage(append([]byte(nil), tags...))
 	}
+	g.Disabled = disabled == 1
 	return g, nil
 }
 

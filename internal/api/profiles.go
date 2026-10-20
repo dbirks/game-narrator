@@ -57,6 +57,14 @@ type profileDTO struct {
 	// omits.
 	NarratorFallback bool     `json:"narrator_fallback"`
 	NextStates       []string `json:"next_states"`
+	// DeletedAt and PurgeAfter are the soft-delete mark (ADR-0107): empty for
+	// every live revision, filled in together on the DELETE receipt and on the
+	// rows the store's own reads keep returning during the retention window.
+	// The API surfaces hide the marked rows (the list filters them, the direct
+	// read 404s), so these fields are the receipt's evidence and the store's
+	// own bookkeeping, not the library's display state.
+	DeletedAt  string `json:"deleted_at,omitempty"`
+	PurgeAfter string `json:"purge_after,omitempty"`
 }
 
 func toProfileDTO(p games.Profile) profileDTO {
@@ -73,6 +81,8 @@ func toProfileDTO(p games.Profile) profileDTO {
 		PublicationAuthor: p.PublicationAuthor,
 		NarratorFallback:  p.NarratorFallback,
 		NextStates:        make([]string, 0, len(next)),
+		DeletedAt:         p.DeletedAt,
+		PurgeAfter:        p.PurgeAfter,
 	}
 	if out.NextStates == nil {
 		out.NextStates = []string{}
@@ -373,6 +383,13 @@ func (s *Server) handleProfileGet(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// A soft-deleted revision is hidden from the direct read (ADR-0107): the
+	// row exists on disk for the retention window, the surface does not.
+	if p.DeletedAt != "" {
+		s.writeCodeProblem(w, r, http.StatusNotFound, "profile-deleted", codeNotFound, "Not Found",
+			"no live profile revision has that identifier (a deleted revision's receipt is the DELETE response, and its purge_after is the retention deadline)")
+		return
+	}
 	setETag(w, version)
 	writeJSON(w, http.StatusOK, toProfileDTO(p))
 }
@@ -428,6 +445,9 @@ func (s *Server) handleProfileRevision(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.rejectIfProfileDeleted(w, r, parent.DeletedAt) {
+		return
+	}
 	if !s.rejectBody(w, r) {
 		return
 	}
@@ -461,8 +481,11 @@ func (s *Server) handleProfileStatus(w http.ResponseWriter, r *http.Request) {
 	if !s.catalogRequired(w, r) {
 		return
 	}
-	_, version, ok := s.resolveProfile(w, r, r.PathValue("id"))
+	p, version, ok := s.resolveProfile(w, r, r.PathValue("id"))
 	if !ok {
+		return
+	}
+	if !s.rejectIfProfileDeleted(w, r, p.DeletedAt) {
 		return
 	}
 	var req profileStatusRequest
@@ -520,6 +543,9 @@ func (s *Server) handleNarratorFallback(w http.ResponseWriter, r *http.Request) 
 	}
 	prof, version, ok := s.resolveProfile(w, r, r.PathValue("id"))
 	if !ok {
+		return
+	}
+	if !s.rejectIfProfileDeleted(w, r, prof.DeletedAt) {
 		return
 	}
 	id := prof.ID

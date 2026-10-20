@@ -803,6 +803,17 @@ func (s *Server) Handler() http.Handler {
 	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/narrator-fallback", s.handleNarratorFallback)
 	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/publish", s.handleProfilePublish)
 	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/publish-actions", s.handlePublishActions)
+	// Library lifecycle (ADR-0107, gap G14): duplicate and clone a revision,
+	// disable and re-enable a game, soft-delete a revision and purge it once
+	// the retention window closes. Which role each needs is the scope table's
+	// business — the admin-only purge is the explicit grant there, placed
+	// before the curator wildcard that would otherwise swallow it.
+	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/duplicate", s.handleProfileDuplicate)
+	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/clone", s.handleProfileClone)
+	routes.register(mux, http.MethodDelete, "/api/v1/profiles/{id}", s.handleProfileDelete)
+	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/purge", s.handleProfilePurge)
+	routes.register(mux, http.MethodPost, "/api/v1/games/{id}/disable", s.handleGameDisableRoute)
+	routes.register(mux, http.MethodPost, "/api/v1/games/{id}/enable", s.handleGameEnableRoute)
 	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/messages", s.handleMessagesList)
 	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/messages/search", s.handleMessageSearch)
 	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/messages/{mid}", s.handleMessageGet)

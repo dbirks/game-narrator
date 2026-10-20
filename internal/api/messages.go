@@ -275,6 +275,9 @@ func (s *Server) handleMessagePatch(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.rejectIfProfileDeleted(w, r, p.DeletedAt) {
+		return
+	}
 	mid, ok := s.idFromPath(w, r, "mid")
 	if !ok {
 		return

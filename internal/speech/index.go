@@ -59,6 +59,15 @@ type Entry struct {
 	QATranscript string  `json:"qa_transcript"`
 	QAModel      string  `json:"qa_model"`
 	QACheckedAt  string  `json:"qa_checked_at"`
+	// OriginalMessageID is the id of the message this entry was synthesised
+	// for (migration 0017, ADR-0107). The cache key is a hash of its input,
+	// so the id is not in the key; the caller that narrates the message
+	// carries it through the context (WithKeyInput) and the cache records it
+	// here. Empty for rows written before 0017 and for voice-previews and
+	// auditions, which belong to no message and age out through eviction.
+	// The store-backed index persists it so a profile purge can address
+	// "the cache rows of this profile's messages".
+	OriginalMessageID string `json:"original_message_id,omitempty"`
 	// FromCache is filled by lookups, not persisted.
 	FromCache bool `json:"-"`
 }

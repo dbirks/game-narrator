@@ -20,6 +20,12 @@ type Game struct {
 	Platform    string
 	UserTags    json.RawMessage
 	CreatedAt   string
+	// Disabled is the library's disable switch (ADR-0107, gap G14): a disabled
+	// game is hidden from Play and narration (session start refuses it) while
+	// its profiles stay editable, and the library keeps showing it so it can be
+	// re-enabled. A column rather than a status: the profile lifecycle is
+	// untouched.
+	Disabled bool
 }
 
 // Validate mirrors the games table's constraints.
@@ -96,6 +102,14 @@ type Profile struct {
 	// NewRevision carries it from the parent); a zero value reaching an
 	// insert would read as an explicit opt-out.
 	NarratorFallback bool
+	// DeletedAt and PurgeAfter are the soft-delete mark (ADR-0107, gap G14):
+	// a delete is a retention mark, not a removal — the row and its content
+	// survive until PurgeAfter, hidden from the library, from direct reads and
+	// from session start. The pair is always set together (the store asserts
+	// it before writing); an empty DeletedAt means "not deleted" and the
+	// purge window is closed.
+	DeletedAt  string
+	PurgeAfter string
 }
 
 // Validate mirrors the profiles table's constraints, including the rule that
@@ -115,6 +129,21 @@ func (p Profile) Validate() error {
 		problems = append(problems, requireHash("Profile.manifestDigest", p.ManifestDigest, true))
 	}
 	problems = append(problems, requireOptionalTimestamp("Profile.publishedAt", p.PublishedAt))
+	// The soft-delete mark (ADR-0107): the pair is one fact — "deleted, purge
+	// after T" — so a half-set mark is a validation problem, not a storage
+	// accident the readers have to guess about.
+	if p.DeletedAt == "" && p.PurgeAfter == "" {
+		// not deleted: nothing else to check
+	} else {
+		if p.DeletedAt == "" {
+			problems = append(problems, invalid("Profile.deletedAt", "is required when purge_after is set"))
+		} else if p.PurgeAfter == "" {
+			problems = append(problems, invalid("Profile.purgeAfter", "is required when deleted_at is set"))
+		}
+		problems = append(problems,
+			requireOptionalTimestamp("Profile.deletedAt", p.DeletedAt),
+			requireOptionalTimestamp("Profile.purgeAfter", p.PurgeAfter))
+	}
 	// The status/timestamp pair is the immutability gate in concrete form: a
 	// revision that claims to be published without a timestamp and digest could
 	// not be re-validated by an auditor, and one that is not published but has
@@ -147,6 +176,38 @@ func (p Profile) CanPublish() bool { return p.Status.CanTransition(StatusPublish
 // IsImmutable reports whether edits must be refused in favour of deriving a new
 // revision.
 func (p Profile) IsImmutable() bool { return p.Status == StatusPublished || p.Status == StatusArchived }
+
+// CloneLink is one clone's provenance record (clone_links, ADR-0107, gap G14):
+// a clone copies a revision into a new game, a matching edition and a fresh
+// draft, and this row is the answer to "where did this come from" in both
+// directions. The rows are immutable once written; the table carries no foreign
+// keys on purpose (0017 argues it), so the id pairs are validated as ids only.
+type CloneLink struct {
+	ID              string
+	SourceProfileID string
+	TargetProfileID string
+	SourceEditionID string
+	TargetEditionID string
+	SourceGameID    string
+	TargetGameID    string
+	CreatedBy       string
+	CreatedAt       string
+}
+
+// Validate mirrors the clone_links table's constraints.
+func (c CloneLink) Validate() error {
+	return validation(
+		requireID("CloneLink.id", c.ID),
+		requireID("CloneLink.sourceProfileID", c.SourceProfileID),
+		requireID("CloneLink.targetProfileID", c.TargetProfileID),
+		requireID("CloneLink.sourceEditionID", c.SourceEditionID),
+		requireID("CloneLink.targetEditionID", c.TargetEditionID),
+		requireID("CloneLink.sourceGameID", c.SourceGameID),
+		requireID("CloneLink.targetGameID", c.TargetGameID),
+		requireNonEmpty("CloneLink.createdBy", c.CreatedBy, 200),
+		requireTimestamp("CloneLink.createdAt", c.CreatedAt),
+	)
+}
 
 // Source records where content came from (sources). Provenance rows are
 // immutable once registered (docs/spec/01 "Key invariants"); corrections are

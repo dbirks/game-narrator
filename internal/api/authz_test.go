@@ -66,6 +66,17 @@ func matrixCases() []routeCase {
 
 		// curator: import, publish, voices, onboarding
 		{http.MethodPost, "/api/v1/games", auth.RoleCurator, `{}`},
+		// Library lifecycle (ADR-0107, gap G14): the curator's five operations.
+		// The matrix proves a viewer's click on any of them is refused at the
+		// gate; the admin-only purge sits in the admin block below, and its
+		// explicit scope-table grant precedes the curator wildcard so the
+		// boundary is in the table, not the handler.
+		{http.MethodPost, "/api/v1/profiles/" + id + "/duplicate", auth.RoleCurator, ""},
+		{http.MethodPost, "/api/v1/profiles/" + id + "/clone", auth.RoleCurator, `{}`},
+		{http.MethodDelete, "/api/v1/profiles/" + id, auth.RoleCurator, ""},
+		{http.MethodPost, "/api/v1/games/" + id + "/disable", auth.RoleCurator, ""},
+		{http.MethodPost, "/api/v1/games/" + id + "/enable", auth.RoleCurator, ""},
+
 		{http.MethodPost, "/api/v1/games/demo/profiles", auth.RoleCurator, `{}`},
 		{http.MethodPost, "/api/v1/games/demo/profiles/rev1/publish", auth.RoleCurator, `{}`},
 		{http.MethodPost, "/api/v1/games/demo/import", auth.RoleCurator, `{}`},
@@ -92,6 +103,10 @@ func matrixCases() []routeCase {
 
 		// admin: users, tokens, config
 		{http.MethodGet, "/api/v1/users", auth.RoleAdmin, ""},
+		// The purge (ADR-0107): the one profile write the curator wildcard must
+		// not swallow — the scope table keeps the boundary in the table.
+		{http.MethodPost, "/api/v1/profiles/" + id + "/purge", auth.RoleAdmin, ""},
+
 		{http.MethodPost, "/api/v1/users", auth.RoleAdmin, `{}`},
 		{http.MethodPost, "/api/v1/users/" + id + "/disable", auth.RoleAdmin, ""},
 		{http.MethodPost, "/api/v1/users/" + id + "/enable", auth.RoleAdmin, ""},

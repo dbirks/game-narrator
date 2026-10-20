@@ -778,7 +778,7 @@ func (s *Store) PublishedProfile(ctx context.Context, editionID string) (games.P
 	err := s.inRead(ctx, func(ctx context.Context, q queryable) error {
 		p, v, err := scanProfileRow(q.queryRow(ctx, op,
 			"SELECT "+profileRowColumns+" FROM profiles WHERE id = "+
-				"(SELECT published_profile_id FROM editions WHERE id = ?)", editionID), op)
+				"(SELECT published_profile_id FROM editions WHERE id = ?) AND deleted_at IS NULL", editionID), op)
 		if err != nil {
 			return err
 		}

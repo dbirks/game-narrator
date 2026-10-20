@@ -255,6 +255,11 @@ func DefaultPolicy() *Policy {
 		// registers — is curator. The /api/v1/editions prefix joins games and
 		// profiles here for the same reason: an edition's revisions are curated
 		// content, and the readable half of it is enumerated above.
+		// The purge (ADR-0107) is the one profile write the curator wildcard
+		// must NOT swallow: it is admin, and the concrete grant sits before
+		// the wildcard so first-match keeps the boundary in the table, not in
+		// the handler.
+		Grant{Method: http.MethodPost, Pattern: "/api/v1/profiles/{id}/purge", Access: Require(RoleAdmin)},
 		Grant{Method: "", Pattern: "/api/v1/games/{rest...}", Access: Require(RoleCurator)},
 		Grant{Method: "", Pattern: "/api/v1/editions/{rest...}", Access: Require(RoleCurator)},
 		Grant{Method: "", Pattern: "/api/v1/profiles/{rest...}", Access: Require(RoleCurator)},

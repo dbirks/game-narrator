@@ -88,7 +88,12 @@ func (s *Service) Preview(ctx context.Context, revisionID, text string) (Preview
 		}
 	}
 
-	res, err := s.Speech.GetOrGenerate(ctx, key, speech.PriorityCurrent, gen)
+	// WithKeyInput carries the preview's identity into the cache entry (ADR-
+	// 0107): the key's hash cannot be inverted, so the index row the cache
+	// writes records the id the key was built from. It is "voice-preview:<id>"
+	// by the key's own contract (previewCacheKey), never a dialogue message id
+	// — a profile purge addresses real message ids and must not match this.
+	res, err := s.Speech.GetOrGenerate(speech.WithKeyInput(ctx, "voice-preview:"+rev.ID), key, speech.PriorityCurrent, gen)
 	if err != nil {
 		return PreviewResult{}, fmt.Errorf("voices: preview: %w", err)
 	}

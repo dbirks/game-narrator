@@ -74,7 +74,7 @@ func (i *SpeechCacheIndex) Lookup(key speech.CacheKey) (speech.Entry, bool) {
 	err := i.st.inRead(ctx, func(_ context.Context, q queryable) error {
 		row := q.queryRow(ctx, op,
 			`SELECT sha256, size_bytes, duration_ns, sample_rate, qa_state,
-			        qa_wer, qa_cer, qa_transcript, qa_model, qa_checked_at
+			        qa_wer, qa_cer, qa_transcript, qa_model, qa_checked_at, original_message_id
 			   FROM speech_cache WHERE key = ?`, string(key))
 		return scanSpeechCacheEntry(op, row, &e)
 	})
@@ -92,8 +92,8 @@ func (i *SpeechCacheIndex) Put(key speech.CacheKey, e speech.Entry) error {
 		_, err := tx.exec(context.Background(), op,
 			`INSERT INTO speech_cache (key, sha256, size_bytes, duration_ns, sample_rate, qa_state,
 			   qa_wer, qa_cer, qa_transcript, qa_model, qa_checked_at,
-			   key_version, created_at, accessed_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			   key_version, original_message_id, created_at, accessed_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			 ON CONFLICT (key) DO UPDATE SET
 			     sha256        = excluded.sha256,
 			     size_bytes    = excluded.size_bytes,
@@ -109,7 +109,7 @@ func (i *SpeechCacheIndex) Put(key speech.CacheKey, e speech.Entry) error {
 			     accessed_at   = excluded.accessed_at`,
 			string(key), e.SHA256, e.Size, e.Duration, e.SampleRate, int(e.QA),
 			e.QAWER, e.QACER, e.QATranscript, e.QAModel, e.QACheckedAt,
-			speech.KeyVersion(), stampMS(time.Now().UTC()), stampMS(time.Now().UTC()))
+			speech.KeyVersion(), nullStr(e.OriginalMessageID), stampMS(time.Now().UTC()), stampMS(time.Now().UTC()))
 		if err != nil {
 			return mapWriteError(op, err)
 		}
@@ -141,7 +141,7 @@ func (i *SpeechCacheIndex) loadLocked(ctx context.Context) (map[speech.CacheKey]
 	err := i.st.inRead(ctx, func(_ context.Context, q queryable) error {
 		rows, err := q.query(ctx, op,
 			`SELECT key, sha256, size_bytes, duration_ns, sample_rate, qa_state,
-			        qa_wer, qa_cer, qa_transcript, qa_model, qa_checked_at
+			        qa_wer, qa_cer, qa_transcript, qa_model, qa_checked_at, original_message_id
 			   FROM speech_cache`)
 		if err != nil {
 			return mapReadError(op, err)
@@ -153,14 +153,18 @@ func (i *SpeechCacheIndex) loadLocked(ctx context.Context) (map[speech.CacheKey]
 				key       string
 				qaState   int
 				checkedAt sql.NullString
+				origMsg   sql.NullString
 			)
 			if err := rows.Scan(&key, &e.SHA256, &e.Size, &e.Duration, &e.SampleRate, &qaState,
-				&e.QAWER, &e.QACER, &e.QATranscript, &e.QAModel, &checkedAt); err != nil {
+				&e.QAWER, &e.QACER, &e.QATranscript, &e.QAModel, &checkedAt, &origMsg); err != nil {
 				return mapReadError(op, fmt.Errorf("scan: %w", err))
 			}
 			e.QA = speech.QAState(qaState)
 			if checkedAt.Valid {
 				e.QACheckedAt = checkedAt.String
+			}
+			if origMsg.Valid {
+				e.OriginalMessageID = origMsg.String
 			}
 			out[speech.CacheKey(key)] = e
 		}
@@ -180,9 +184,10 @@ func scanSpeechCacheEntry(op string, row interface {
 	var (
 		qaState   int
 		checkedAt sql.NullString
+		origMsg   sql.NullString
 	)
 	if err := row.Scan(&e.SHA256, &e.Size, &e.Duration, &e.SampleRate, &qaState,
-		&e.QAWER, &e.QACER, &e.QATranscript, &e.QAModel, &checkedAt); err != nil {
+		&e.QAWER, &e.QACER, &e.QATranscript, &e.QAModel, &checkedAt, &origMsg); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
@@ -191,6 +196,9 @@ func scanSpeechCacheEntry(op string, row interface {
 	e.QA = speech.QAState(qaState)
 	if checkedAt.Valid {
 		e.QACheckedAt = checkedAt.String
+	}
+	if origMsg.Valid {
+		e.OriginalMessageID = origMsg.String
 	}
 	return nil
 }

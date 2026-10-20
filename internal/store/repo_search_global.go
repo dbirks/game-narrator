@@ -95,7 +95,7 @@ const findGamesGlobalSQL = `SELECT ` + gameColumns + `,
 	END
 	FROM games
 	WHERE lower(title) LIKE ? ESCAPE '\'
-	ORDER BY 8 DESC, created_at DESC, id
+	ORDER BY 9 DESC, created_at DESC, id
 	LIMIT ?`
 
 // findCharactersGlobalSQL is the same shape across the catalogue: the name
@@ -184,7 +184,7 @@ func (s *Store) FindGamesGlobal(ctx context.Context, query string, limit int) ([
 			var cls int
 			var tags []byte
 			if err := rows.Scan(&h.Game.ID, &h.Game.Slug, &h.Game.Title, &h.Game.Description,
-				&h.Game.Platform, &tags, &h.Game.CreatedAt, &cls); err != nil {
+				&h.Game.Platform, &tags, &h.Game.CreatedAt, &h.Game.Disabled, &cls); err != nil {
 				return mapReadError(opSearchGlobal, err)
 			}
 			if len(tags) > 0 {

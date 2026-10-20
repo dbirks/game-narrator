@@ -1907,6 +1907,41 @@
             "$ref": "#/components/responses/Problem"
           }
         }
+      },
+      "delete": {
+        "operationId": "deleteProfile",
+        "tags": [
+          "profiles"
+        ],
+        "summary": "Soft-delete a revision: the mark with its retention window (FR-02).",
+        "description": "deleted_at + purge_after (72h) land in one compare-and-swap (ADR-0107). The 200 body is the marked profile, the receipt. Refusals: publication history (0004: the audit trail outlives the revision), derived revisions, an active session pinned to the profile (PROFILE_IN_USE), or an already-deleted mark. The row stays on disk until the purge.",
+        "x-required-role": "curator",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProfileId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The marked profile (the receipt): deleted_at and purge_after filled in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Profile"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "409": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
       }
     },
     "/api/v1/profiles/{id}/revisions": {
@@ -6980,6 +7015,205 @@
           }
         }
       }
+    },
+    "/api/v1/profiles/{id}/duplicate": {
+      "post": {
+        "operationId": "duplicateProfile",
+        "tags": [
+          "profiles"
+        ],
+        "summary": "Duplicate a revision: a new draft of the same edition with its content snapshot (FR-02).",
+        "description": "The lifecycle verb over the revision-snapshot store primitive (ADR-0107): every row gets a fresh id, internal references are rewritten, corrections and publication history are not copied, and parent_revision records the derivation. Audited as catalog.profile.duplicate so the intent stays distinguishable from POST .../revisions.",
+        "x-required-role": "curator",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProfileId"
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "The new draft revision.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Profile"
+                }
+              }
+            },
+            "headers": true
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "409": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/api/v1/profiles/{id}/clone": {
+      "post": {
+        "operationId": "cloneProfile",
+        "tags": [
+          "profiles"
+        ],
+        "summary": "Clone a revision into a new game with a matching edition and a draft revision 1 (FR-02).",
+        "description": "One store transaction: the new game (caller's title/slug or the source's, slug suffixed -copy, -2, ... until free), the edition copy, the draft revision with the content snapshot, and the clone_links provenance row (ADR-0107). The source must not be deleted. Audited as catalog.profile.clone.",
+        "x-required-role": "curator",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProfileId"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CloneRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The clone: the new game, edition, draft revision and the provenance link.",
+            "headers": {
+              "headers": {
+                "ETag": {
+                  "schema": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CloneResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "409": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/api/v1/profiles/{id}/purge": {
+      "post": {
+        "operationId": "purgeProfile",
+        "tags": [
+          "profiles"
+        ],
+        "summary": "Purge a soft-deleted revision after its retention window (admin).",
+        "description": "The admin half of the two-step delete (ADR-0107). Requires now >= purge_after (409 RETENTION_NOT_ELAPSED before the window closes), re-checks the soft-delete guards, then in one store transaction deletes the profile's speech-cache rows and the profile row (the content cascades, the FTS triggers follow). After the commit the now-unreferenced blobs are removed under the reference-before-delete discipline (ADR-0041). Audited as catalog.profile.purge.",
+        "x-required-role": "admin",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProfileId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The purge report: the cache entries removed and the blobs deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurgeReport"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "409": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/api/v1/games/{id}/disable": {
+      "post": {
+        "operationId": "disableGame",
+        "tags": [
+          "games"
+        ],
+        "summary": "Disable a game: hidden from Play and narration, still editable (FR-02).",
+        "description": "Sets games.disabled (ADR-0107): session start refuses any of its profiles with 409 GAME_DISABLED, while every catalogue write on the game keeps working and the game stays in the library list with disabled: true. Audited as catalog.game.disable.",
+        "x-required-role": "curator",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/GameId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Sets games.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Game"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/api/v1/games/{id}/enable": {
+      "post": {
+        "operationId": "enableGame",
+        "tags": [
+          "games"
+        ],
+        "summary": "Re-enable a disabled game (FR-02).",
+        "description": "Clears games.disabled (ADR-0107): the game is playable again and session start accepts its profiles. Audited as catalog.game.enable.",
+        "x-required-role": "curator",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/GameId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Clears games.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Game"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -7546,6 +7780,10 @@
           "created_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "disabled": {
+            "type": "boolean",
+            "description": "games.disabled (ADR-0107): the title family's library switch. A disabled game is hidden from Play (session start refuses its profiles with 409 GAME_DISABLED) while its profiles stay editable and the game stays in the library list with the flag on."
           }
         }
       },
@@ -7670,6 +7908,16 @@
               "$ref": "#/components/schemas/ProfileStatus"
             },
             "description": "The lifecycle moves this revision can still make, from the transition table."
+          },
+          "deleted_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The soft-delete mark (ADR-0107): present only on the DELETE receipt and on the store-side rows during the retention window; the API surfaces hide marked revisions (the list omits them, the direct read 404s)."
+          },
+          "purge_after": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The retention deadline (ADR-0107): deleted_at + 72h. Before it, the purge answers 409 RETENTION_NOT_ELAPSED."
           }
         }
       },
@@ -14390,6 +14638,113 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/AssistantQuestionView"
+            }
+          }
+        }
+      },
+      "CloneRequest": {
+        "type": "object",
+        "description": "The optional body of the clone. Absent or empty takes the ADR-0107 defaults: the source game's title, and the source slug suffixed -copy, then -2, -3, ... until the slug is free.",
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "slug": {
+            "type": "string",
+            "maxLength": 80
+          }
+        }
+      },
+      "CloneLink": {
+        "type": "object",
+        "description": "One provenance row of clone_links (ADR-0107): where a clone came from. Immutable; the table is queryable in both directions (source profile, target game).",
+        "required": [
+          "id",
+          "source_profile_id",
+          "target_profile_id",
+          "source_edition_id",
+          "target_edition_id",
+          "source_game_id",
+          "target_game_id",
+          "created_by",
+          "created_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "source_profile_id": {
+            "type": "string"
+          },
+          "target_profile_id": {
+            "type": "string"
+          },
+          "source_edition_id": {
+            "type": "string"
+          },
+          "target_edition_id": {
+            "type": "string"
+          },
+          "source_game_id": {
+            "type": "string"
+          },
+          "target_game_id": {
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "CloneResponse": {
+        "type": "object",
+        "description": "The clone's 201 body: the four rows the one store transaction created (ADR-0107).",
+        "required": [
+          "game",
+          "edition",
+          "profile",
+          "link"
+        ],
+        "properties": {
+          "game": {
+            "$ref": "#/components/schemas/Game"
+          },
+          "edition": {
+            "$ref": "#/components/schemas/Edition"
+          },
+          "profile": {
+            "$ref": "#/components/schemas/Profile"
+          },
+          "link": {
+            "$ref": "#/components/schemas/CloneLink"
+          }
+        }
+      },
+      "PurgeReport": {
+        "type": "object",
+        "description": "The purge's 200 body (ADR-0107): what the transaction removed and the blobs its post-commit reference-before-delete pass dropped.",
+        "required": [
+          "profile_id",
+          "cache_entries",
+          "deleted_blobs"
+        ],
+        "properties": {
+          "profile_id": {
+            "type": "string"
+          },
+          "cache_entries": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "deleted_blobs": {
+            "type": "array",
+            "items": {
+              "type": "string"
             }
           }
         }

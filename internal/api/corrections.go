@@ -198,6 +198,9 @@ func (s *Server) handleCreateCorrection(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
+	if !s.rejectIfProfileDeleted(w, r, p.DeletedAt) {
+		return
+	}
 	kind, err := games.ParseCorrectionKind(strings.TrimSpace(req.Kind))
 	if err != nil {
 		s.writeCodeProblem(w, r, http.StatusBadRequest, "invalid-kind", codeInvalidParameter,

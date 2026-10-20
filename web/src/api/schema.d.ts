@@ -566,7 +566,11 @@ export interface paths {
     get: operations["getProfile"];
     put?: never;
     post?: never;
-    delete?: never;
+    /**
+     * Soft-delete a revision: the mark with its retention window (FR-02).
+     * @description deleted_at + purge_after (72h) land in one compare-and-swap (ADR-0107). The 200 body is the marked profile, the receipt. Refusals: publication history (0004: the audit trail outlives the revision), derived revisions, an active session pinned to the profile (PROFILE_IN_USE), or an already-deleted mark. The row stays on disk until the purge.
+     */
+    delete: operations["deleteProfile"];
     options?: never;
     head?: never;
     patch?: never;
@@ -2375,6 +2379,106 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/profiles/{id}/duplicate": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Duplicate a revision: a new draft of the same edition with its content snapshot (FR-02).
+     * @description The lifecycle verb over the revision-snapshot store primitive (ADR-0107): every row gets a fresh id, internal references are rewritten, corrections and publication history are not copied, and parent_revision records the derivation. Audited as catalog.profile.duplicate so the intent stays distinguishable from POST .../revisions.
+     */
+    post: operations["duplicateProfile"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/profiles/{id}/clone": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Clone a revision into a new game with a matching edition and a draft revision 1 (FR-02).
+     * @description One store transaction: the new game (caller's title/slug or the source's, slug suffixed -copy, -2, ... until free), the edition copy, the draft revision with the content snapshot, and the clone_links provenance row (ADR-0107). The source must not be deleted. Audited as catalog.profile.clone.
+     */
+    post: operations["cloneProfile"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/profiles/{id}/purge": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Purge a soft-deleted revision after its retention window (admin).
+     * @description The admin half of the two-step delete (ADR-0107). Requires now >= purge_after (409 RETENTION_NOT_ELAPSED before the window closes), re-checks the soft-delete guards, then in one store transaction deletes the profile's speech-cache rows and the profile row (the content cascades, the FTS triggers follow). After the commit the now-unreferenced blobs are removed under the reference-before-delete discipline (ADR-0041). Audited as catalog.profile.purge.
+     */
+    post: operations["purgeProfile"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/games/{id}/disable": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Disable a game: hidden from Play and narration, still editable (FR-02).
+     * @description Sets games.disabled (ADR-0107): session start refuses any of its profiles with 409 GAME_DISABLED, while every catalogue write on the game keeps working and the game stays in the library list with disabled: true. Audited as catalog.game.disable.
+     */
+    post: operations["disableGame"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/games/{id}/enable": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Re-enable a disabled game (FR-02).
+     * @description Clears games.disabled (ADR-0107): the game is playable again and session start accepts its profiles. Audited as catalog.game.enable.
+     */
+    post: operations["enableGame"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2488,6 +2592,8 @@ export interface components {
       user_tags: string[];
       /** Format: date-time */
       created_at: string;
+      /** @description games.disabled (ADR-0107): the title family's library switch. A disabled game is hidden from Play (session start refuses its profiles with 409 GAME_DISABLED) while its profiles stay editable and the game stays in the library list with the flag on. */
+      disabled?: boolean;
     };
     /** @description One region/language/disc-revision binding (editions). */
     Edition: {
@@ -2524,6 +2630,16 @@ export interface components {
       narrator_fallback?: boolean;
       /** @description The lifecycle moves this revision can still make, from the transition table. */
       next_states: components["schemas"]["ProfileStatus"][];
+      /**
+       * Format: date-time
+       * @description The soft-delete mark (ADR-0107): present only on the DELETE receipt and on the store-side rows during the retention window; the API surfaces hide marked revisions (the list omits them, the direct read 404s).
+       */
+      deleted_at?: string;
+      /**
+       * Format: date-time
+       * @description The retention deadline (ADR-0107): deleted_at + 72h. Before it, the purge answers 409 RETENTION_NOT_ELAPSED.
+       */
+      purge_after?: string;
     };
     /** @description One entry of an edition's publication history: what shipped, what it retired, who decided, which digest was validated, and what the gate found. */
     PublishAction: {
@@ -4762,6 +4878,37 @@ export interface components {
       tool_cards: components["schemas"]["AssistantToolCardView"][];
       questions: components["schemas"]["AssistantQuestionView"][];
     };
+    /** @description The optional body of the clone. Absent or empty takes the ADR-0107 defaults: the source game's title, and the source slug suffixed -copy, then -2, -3, ... until the slug is free. */
+    CloneRequest: {
+      title?: string;
+      slug?: string;
+    };
+    /** @description One provenance row of clone_links (ADR-0107): where a clone came from. Immutable; the table is queryable in both directions (source profile, target game). */
+    CloneLink: {
+      id: string;
+      source_profile_id: string;
+      target_profile_id: string;
+      source_edition_id: string;
+      target_edition_id: string;
+      source_game_id: string;
+      target_game_id: string;
+      created_by: string;
+      /** Format: date-time */
+      created_at: string;
+    };
+    /** @description The clone's 201 body: the four rows the one store transaction created (ADR-0107). */
+    CloneResponse: {
+      game: components["schemas"]["Game"];
+      edition: components["schemas"]["Edition"];
+      profile: components["schemas"]["Profile"];
+      link: components["schemas"]["CloneLink"];
+    };
+    /** @description The purge's 200 body (ADR-0107): what the transaction removed and the blobs its post-commit reference-before-delete pass dropped. */
+    PurgeReport: {
+      profile_id: string;
+      cache_entries: number;
+      deleted_blobs: string[];
+    };
   };
   responses: {
     /** @description RFC 9457 problem+json. code is the stable member of docs/spec/08's error contract; X-Request-Id correlates it with the server log and the event stream. */
@@ -5849,6 +5996,31 @@ export interface operations {
         };
       };
       404: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  deleteProfile: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: components["parameters"]["ProfileId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The marked profile (the receipt): deleted_at and purge_after filled in. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Profile"];
+        };
+      };
+      404: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
       default: components["responses"]["Problem"];
     };
   };
@@ -9035,6 +9207,136 @@ export interface operations {
       403: components["responses"]["Problem"];
       404: components["responses"]["Problem"];
       503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  duplicateProfile: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: components["parameters"]["ProfileId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The new draft revision. */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Profile"];
+        };
+      };
+      404: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  cloneProfile: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: components["parameters"]["ProfileId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["CloneRequest"];
+      };
+    };
+    responses: {
+      /** @description The clone: the new game, edition, draft revision and the provenance link. */
+      201: {
+        headers: {
+          headers?: unknown;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CloneResponse"];
+        };
+      };
+      404: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  purgeProfile: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: components["parameters"]["ProfileId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The purge report: the cache entries removed and the blobs deleted. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PurgeReport"];
+        };
+      };
+      404: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  disableGame: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Game ULID or slug. */
+        id: components["parameters"]["GameId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Sets games. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Game"];
+        };
+      };
+      404: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  enableGame: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Game ULID or slug. */
+        id: components["parameters"]["GameId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Clears games. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Game"];
+        };
+      };
+      404: components["responses"]["Problem"];
       default: components["responses"]["Problem"];
     };
   };

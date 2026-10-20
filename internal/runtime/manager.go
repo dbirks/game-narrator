@@ -53,16 +53,25 @@ const (
 var (
 	ErrAnotherSessionRunning = errors.New("runtime: another session is already running")
 	ErrProfileNotFound       = errors.New("runtime: profile not found")
-	ErrProfileNotPublished   = errors.New("runtime: profile revision is not the published revision")
-	ErrProfileNotRunnable    = errors.New("runtime: published profile has no regions to observe")
-	ErrInvalidMode           = errors.New("runtime: mode must be conservative or predictive")
-	ErrUnknownSourceKind     = errors.New("runtime: unknown frame source kind")
-	ErrSourceUnsupported     = errors.New("runtime: frame source kind is not implemented in this build")
-	ErrSourceNotAllowed      = errors.New("runtime: frame source path is outside the configured allowlist")
-	ErrSourceMissing         = errors.New("runtime: frame source path does not exist")
-	ErrDevTraceUnavailable   = errors.New("runtime: developer trace storage is not configured")
-	ErrSessionNotFound       = errors.New("runtime: no such session")
-	ErrManagerClosed         = errors.New("runtime: the runtime is closed")
+	// ErrProfileDeleted: the profile was soft-deleted (ADR-0107). The row
+	// still answers the store's reads until the purge removes it, but Play
+	// treats the mark as the delete: the session start is a 404, and the
+	// operator's path back is the purge's audit line, not a resurrection.
+	ErrProfileDeleted = errors.New("runtime: profile is deleted")
+	// ErrGameDisabled: the title family's disable switch is on (ADR-0107).
+	// The refusal is a 409 — the game exists and its profiles stay editable,
+	// but a session must not start on a game the operator took off Play.
+	ErrGameDisabled        = errors.New("runtime: game is disabled")
+	ErrProfileNotPublished = errors.New("runtime: profile revision is not the published revision")
+	ErrProfileNotRunnable  = errors.New("runtime: published profile has no regions to observe")
+	ErrInvalidMode         = errors.New("runtime: mode must be conservative or predictive")
+	ErrUnknownSourceKind   = errors.New("runtime: unknown frame source kind")
+	ErrSourceUnsupported   = errors.New("runtime: frame source kind is not implemented in this build")
+	ErrSourceNotAllowed    = errors.New("runtime: frame source path is outside the configured allowlist")
+	ErrSourceMissing       = errors.New("runtime: frame source path does not exist")
+	ErrDevTraceUnavailable = errors.New("runtime: developer trace storage is not configured")
+	ErrSessionNotFound     = errors.New("runtime: no such session")
+	ErrManagerClosed       = errors.New("runtime: the runtime is closed")
 	// ErrAudioUnavailable: the session has no speech pipeline — either the
 	// process has no voice workflow configured, or the session's sink could
 	// not be built. The answer says so rather than pretending a control was

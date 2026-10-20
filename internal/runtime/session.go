@@ -247,6 +247,26 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 		}
 		return Info{}, err
 	}
+	// Library lifecycle (ADR-0107, gap G14): a soft-deleted revision is 404
+	// for Play — the mark is the delete, and starting a session on it would
+	// resurrect what the operator removed (the row stays readable by the
+	// store's own repositories until the purge removes it). A disabled title
+	// family is a 409: the game exists and its profiles stay editable, but a
+	// session must not start on a game the operator took off Play.
+	if prof.DeletedAt != "" {
+		return Info{}, fmt.Errorf("%w: profile %s was deleted (purge_after %s)", ErrProfileDeleted, req.ProfileID, prof.PurgeAfter)
+	}
+	edition, err := m.opts.Store.GetEdition(ctx, prof.EditionID)
+	if err != nil {
+		return Info{}, err
+	}
+	game, err := m.opts.Store.GetGame(ctx, edition.GameID)
+	if err != nil {
+		return Info{}, err
+	}
+	if game.Disabled {
+		return Info{}, fmt.Errorf("%w: game %s is disabled", ErrGameDisabled, game.Slug)
+	}
 	published, _, err := m.opts.Store.PublishedProfile(ctx, prof.EditionID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
