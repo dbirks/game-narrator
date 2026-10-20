@@ -337,6 +337,10 @@ func Run(ctx context.Context, o Options) Report {
 	r.add(ctx, "capture.devices", r.opts.Timeout, func(ctx context.Context) Check { return r.checkCaptureDevices(ctx) })
 	r.add(ctx, "audio.sinks", r.opts.Timeout, func(ctx context.Context) Check { return r.checkAudioSinks(ctx) })
 	r.add(ctx, "audio.selected", r.opts.Timeout, func(ctx context.Context) Check { return r.checkAudioSelected(ctx) })
+	// The UNO Q hub-HDMI mixer route (issue #5 / ADR-0111): read-only — the
+	// card presence plus the two switches that decide whether the ANX7625
+	// bridge receives the MultiMedia4 stream at all.
+	r.add(ctx, "audio.hdmi_bridge", r.opts.Timeout, func(ctx context.Context) Check { return r.checkHDMIBridge(ctx) })
 	// The Bluetooth output row (ADR 0091): the radio plus the session
 	// prerequisites; it degrades rather than fails (a radio-less host is
 	// a DEGRADED appliance, not a broken one).

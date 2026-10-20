@@ -23,6 +23,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/providers/tts"
 	ses "github.com/dbirks/game-narrator/internal/session"
 	"github.com/dbirks/game-narrator/internal/speech"
+	"github.com/dbirks/game-narrator/internal/speech/alsahw"
 	"github.com/dbirks/game-narrator/internal/speech/dummy"
 	"github.com/dbirks/game-narrator/internal/speech/filesink"
 	"github.com/dbirks/game-narrator/internal/speech/pipewire"
@@ -46,6 +47,11 @@ const (
 	// configured stable identity (docs/spec/07: "Use USB ALSA/PipeWire sink
 	// by stable device identity").
 	SinkPipeWire = audio.SinkPipeWire
+	// SinkALSA writes the device node in-process at the profile's exact
+	// proven hw_params (issue #5 / ADR-0111): the UNO Q narrator is a
+	// system service without a user PipeWire session, and the hub HDMI
+	// bridge (ANX7625) audibly plays only at the config the profile pins.
+	SinkALSA = audio.SinkALSA
 )
 
 // narratorCharacter is the conventional character id of the fallback voice
@@ -500,6 +506,8 @@ func (m *Manager) newSpeechWiring(id string, speakerByMessage map[string]string,
 				kind = SinkFile
 			case *pipewire.Sink:
 				kind = SinkPipeWire
+			case *alsahw.Sink:
+				kind = SinkALSA
 			default:
 				kind = "external"
 			}
@@ -519,6 +527,30 @@ func (m *Manager) newSpeechWiring(id string, speakerByMessage map[string]string,
 				target = "default"
 			}
 			sink, err = pipewire.New(target)
+		}
+	case opts.Sink == SinkALSA:
+		// The alsahw sink addresses a profiled device by its stable hw:
+		// identity and negotiates the profile's exact params. A device
+		// without a proven profile is not addressable by it: inventing
+		// params is how the receiver goes silent, so the documented
+		// degradation (the pipewire sink's own precedent) is filesink
+		// evidence with a warning, not a guessed negotiation.
+		target := opts.PipeWireTarget
+		prof, ok := audio.ProfileForDevice(target)
+		if !ok {
+			m.log.Warn("alsahw sink configured but the device has no proven hw_params profile; recording to the file sink as evidence instead",
+				"session_id", id, "device", target)
+			kind, sink, err = m.filesinkFor(id)
+		} else {
+			kind = SinkALSA
+			params := alsahw.Params{
+				Format:      prof.Format,
+				Rate:        prof.Rate,
+				Channels:    prof.Channels,
+				PeriodSize:  uint32(prof.PeriodSize),
+				PeriodCount: uint32(prof.PeriodCount),
+			}
+			sink, err = alsahw.New(prof.DeviceID(), params, time.Duration(audio.DefaultKeepAlive)*time.Millisecond)
 		}
 	default:
 		kind, sink, err = m.filesinkFor(id)

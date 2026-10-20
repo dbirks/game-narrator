@@ -75,6 +75,22 @@ then `systemctl --user restart wireplumber` (HDMI sink stays default).
 `session.suspend-timeout-seconds = 0` keeps the stream and the receiver's
 ELD lock alive between narrations (cost: ~520 ms buffer latency).
 
+**From the narrator service (no user session).** The service user
+(`game-narrator`) has no PipeWire session, so the rule above is the
+operator-session form of the same property. The service plays the same
+node in-process: sink `alsahw`, device `hw:ArduinoImolaHPH,3`, the exact
+proven hw_params (ADR-0114, issue #5) — one writer goroutine owns the
+stream, and the keep-alive (one silence period every ~200 ms while idle)
+holds the ELD lock in place of the user session's no-suspend rule. The
+Settings page lists the device as the "UNO Q hub HDMI (ANX7625)" row
+(kind `hdmi`); `doctor`'s `audio.hdmi_bridge` row reads the mixer route
+(SEC_MI2S_RX ← MultiMedia4 on, DISPLAY_PORT_RX ← MultiMedia4 off) and
+names the exact `amixer` fix for a misroute; the hardware gate
+(`make test-hardware`, `GAME_NARRATOR_HW_SMOKE=1` +
+`GAME_NARRATOR_HW_AUDIO_CONSENT=1`) plays the 1 s tone and asserts
+`hw_ptr` advanced. See manual 19, "Audio over the hub HDMI from the
+service".
+
 Verify without ears: with PipeWire playing a WAV, compare
 `/proc/asound/card1/pcm3p/sub0/hw_params` against the aplay reference —
 it must read `RW_INTERLEAVED / S16_LE / 2ch / 48000 / period_size 6240 /

@@ -209,11 +209,12 @@ func listALSA(ctx context.Context) (List, error) {
 		if name == "" {
 			continue
 		}
-		devices = append(devices, Device{
+		d := Device{
 			ID:   name,
 			Name: name,
 			Kind: inferALSAKind(name, comment),
-		})
+		}
+		devices = append(devices, applyProfile(d))
 	}
 	if len(devices) == 0 {
 		return List{}, fmt.Errorf("no output devices in `aplay -L` output")
@@ -255,6 +256,24 @@ func inferALSAKind(name, comment string) Kind {
 	default:
 		return inferKind([]string{name, comment})
 	}
+}
+
+// applyProfile upgrades a row whose identity is a known profile (issue #5):
+// the kind becomes the profile's (the evidence the aplay comment may not
+// carry — the UNO Q's aplay -L rows name the subdevice, not the bridge),
+// the display name becomes the profile's label, and the proven rate and
+// channels fill the row's evidence fields. The ID stays the stable hw:
+// identity — selection and the alsahw sink both address it.
+func applyProfile(d Device) Device {
+	p, ok := ProfileForDevice(d.ID)
+	if !ok {
+		return d
+	}
+	d.Kind = KindHDMI
+	d.Name = p.Label
+	d.SampleRate = strconv.Itoa(p.Rate)
+	d.Channels = p.Channels
+	return d
 }
 
 // runCmd runs one command with the caller's context and returns its stdout.

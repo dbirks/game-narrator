@@ -87,9 +87,13 @@ func newFakeHost(t *testing.T) *fakeHost {
 	h.exec("v4l2-ctl -d /dev/video1 --list-formats-ext", v4l2Formats(t, "v4l2-formats-ms2130.txt"))
 
 	h.opts = Options{
-		DataDir:      dir,
-		Timeout:      3 * time.Second,
-		ModelTimeout: 5 * time.Second,
+		DataDir: dir,
+		// The fake host's budgets, scaled by the race build tag (issue #22):
+		// the storage.database check is a real SQLite migration, and an
+		// unscaled 3 s ceiling times it out on a saturated, race-instrumented
+		// host without the check having failed.
+		Timeout:      3 * time.Second * checkTimeoutScale,
+		ModelTimeout: 5 * time.Second * checkTimeoutScale,
 		LookupEnv:    h.lookupEnv,
 		LookPath:     h.lookPath,
 		Exec:         h.runCommand,
@@ -272,6 +276,7 @@ func TestRunReportsEveryComponentExactlyOnce(t *testing.T) {
 		"storage.data_dir", "storage.database",
 		"tools.ffmpeg", "tools.v4l2_ctl", "tools.tesseract",
 		"ocr.controlled_image", "capture.devices", "audio.sinks", "audio.selected",
+		"audio.hdmi_bridge",
 		"bluetooth.audio", "updates.check",
 		"providers.agent_reasoning", "providers.fast_reasoning",
 		"providers.vision_ocr_fallback", "providers.decision",
@@ -311,7 +316,8 @@ func TestGroupsAreDerivedFromIDs(t *testing.T) {
 	want := map[string]string{
 		"storage.data_dir": "Storage", "tools.ffmpeg": "Tools",
 		"ocr.controlled_image": "OCR", "capture.devices": "Capture",
-		"audio.sinks": "Audio", "audio.selected": "Audio", "providers.decision": "Providers",
+		"audio.sinks": "Audio", "audio.selected": "Audio", "audio.hdmi_bridge": "Audio",
+		"providers.decision": "Providers",
 	}
 	rep := h.run()
 	for id, group := range want {

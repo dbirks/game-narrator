@@ -12,6 +12,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/audio"
 	"github.com/dbirks/game-narrator/internal/runtime"
 	"github.com/dbirks/game-narrator/internal/speech"
+	"github.com/dbirks/game-narrator/internal/speech/alsahw"
 	"github.com/dbirks/game-narrator/internal/speech/dummy"
 	"github.com/dbirks/game-narrator/internal/speech/filesink"
 	"github.com/dbirks/game-narrator/internal/speech/pipewire"
@@ -418,6 +419,26 @@ func (s *Server) toneSink(ctx context.Context, kind, device string) (speech.Audi
 			return nil, "", fmt.Errorf("pipewire: %w", err)
 		}
 		return sk, kind, nil
+	case SinkALSA:
+		// The alsahw tone follows the same rule as the session sink
+		// (ADR-0111): a profiled device at its exact proven hw_params, or
+		// a refusal — the tone endpoint plays evidence, it does not guess
+		// a negotiation.
+		prof, ok := audio.ProfileForDevice(device)
+		if !ok {
+			return nil, "", fmt.Errorf("alsahw: device %q has no proven hw_params profile (the alsahw sink addresses profiled devices only)", device)
+		}
+		sk, err := alsahw.New(prof.DeviceID(), alsahw.Params{
+			Format:      prof.Format,
+			Rate:        prof.Rate,
+			Channels:    prof.Channels,
+			PeriodSize:  uint32(prof.PeriodSize),
+			PeriodCount: uint32(prof.PeriodCount),
+		}, time.Duration(audio.DefaultKeepAlive)*time.Millisecond)
+		if err != nil {
+			return nil, "", fmt.Errorf("alsahw: %w", err)
+		}
+		return sk, kind, nil
 	default:
 		return nil, "", fmt.Errorf("unknown sink kind %q", kind)
 	}
@@ -429,4 +450,5 @@ const (
 	SinkDummy    = runtime.SinkDummy
 	SinkFile     = runtime.SinkFile
 	SinkPipeWire = runtime.SinkPipeWire
+	SinkALSA     = runtime.SinkALSA
 )

@@ -431,6 +431,58 @@ shows `q6asm_dai_prepare: pcm size 99840 period 4 period_sz 6240 vs
 24960 rate 48000 ch 2`. If all of that holds, the user hears the tone
 on the receiver — ask them; it is the acceptance step.
 
+### Audio over the hub HDMI from the service
+
+The narrator service (`game-narrator`, the system user without a user
+PipeWire session) plays the same hub HDMI **without** the WirePlumber
+rule and without any user session: it writes the ALSA device node
+in-process at the exact proven config (ADR-0114, issue #5). The sink is
+`alsahw`, the device the stable identity `hw:ArduinoImolaHPH,3` — the
+Settings page's audio section lists it as the "UNO Q hub HDMI
+(ANX7625)" row, kind **hdmi**, and the selection is sink `alsahw` +
+that device (or `GAME_NARRATOR_AUDIO_SINK=alsahw` and
+`GAME_NARRATOR_AUDIO_DEVICE=hw:ArduinoImolaHPH,3` in
+`/etc/game-narrator/env`). The sink keeps the stream open between
+narrations — one silence period every ~200 ms — which is what holds the
+receiver's ELD lock in place of the user session's
+`session.suspend-timeout-seconds = 0` rule; the mixer routes stay exactly
+as above (SEC_MI2S_RX on, DISPLAY_PORT_RX off).
+
+Verify the service path the same way the skill verifies the user path:
+
+1. `game-narrator doctor` — the `audio.hdmi_bridge` row must be OK. It
+   is read-only: on a mis-routed board it is FAIL and names the exact
+   `amixer -c ArduinoImolaHPH set …` command to run.
+2. The test tone: Settings → Audio → the "UNO Q hub HDMI (ANX7625)"
+   device with sink `alsahw` → play tone. The receiver should reproduce
+   the 440 Hz tone; while it plays, the kernel's own record must read
+   the proven config:
+
+   ```sh
+   cat /proc/asound/card1/pcm3p/sub0/hw_params
+   # RW_INTERLEAVED / S16_LE / 2ch / 48000 / period_size 6240 /
+   # buffer_size 24960, state RUNNING, hw_ptr advancing
+   ```
+
+3. The hardware gate (the machine-checked form of the same proof, under
+   consent): with a receiver on the hub HDMI,
+
+   ```sh
+   sudo -u game-narrator GAME_NARRATOR_HW_SMOKE=1 \
+     GAME_NARRATOR_HW_AUDIO_CONSENT=1 make -C /opt/game-narrator test-hardware
+   ```
+
+   plays a 1 s 440 Hz tone into `hw:ArduinoImolaHPH,3` through the
+   sink and asserts the DMA consumed it — `hw_ptr` advances and the
+   negotiated `hw_params` match the proven config (the
+   `TestHWALSAHubHDMI` row; NOT RUN without the board or the consent
+   variable, and reported NOT RUN — not passed — until it has run).
+
+A silent receiver while `hw_ptr` advances is the receiver side (volume,
+input selection, the receiver's own ELD); a frozen `hw_ptr` is the
+bridge side (the `audio.hdmi_bridge` doctor row and the mixer routes
+above are the first read).
+
 ## Step 10 — First session
 
 The Play page (`/play`) starts sessions against a published game revision;
@@ -515,7 +567,10 @@ gn-data.mount`).
   200 and `GET /api/v1/system/info` answers.
 - `game-narrator doctor` (env sourced, `--data-dir /var/lib/game-narrator`)
   reports no `FAIL`; every `NOT CONFIGURED`/`BLOCKED` row names the missing
-  piece (dongle, DAC, role model) and how to attach/configure it.
+  piece (dongle, DAC, role model) and how to attach/configure it. On a
+  board with a receiver on the hub HDMI the `audio.hdmi_bridge` row is
+  part of that check (the mixer route the ANX7625 bridge needs; a
+  misroute is a `FAIL` naming the exact `amixer` fix).
 - The UI is reachable from another machine: the login page renders, the
   admin account logs in, `/diagnostics` shows build version/commit and live
   readiness.

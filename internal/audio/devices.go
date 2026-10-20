@@ -34,18 +34,23 @@ const (
 	EnvDevice = "GAME_NARRATOR_AUDIO_DEVICE"
 )
 
-// Sink kinds: the same three the session runtime accepts (ADR-0039). They
+// Sink kinds: the same kinds the session runtime accepts (ADR-0039). They
 // live here because both the selection logic and the API validate against
 // them; the runtime aliases these constants (ADR-0074 keeps one spelling).
 const (
 	SinkDummy    = "dummy"
 	SinkFile     = "filesink"
 	SinkPipeWire = "pipewire"
+	// SinkALSA writes the device node in-process with the profile's exact
+	// hw_params (issue #5 / ADR-0111): the UNO Q narrator runs as a system
+	// service without a user PipeWire session, and the hub HDMI bridge
+	// audibly plays only at the proven config the profile pins.
+	SinkALSA = "alsahw"
 )
 
 // KnownSinkKinds is the accepted sink-kind set, for validation and the
 // "would have failed to start" note.
-var KnownSinkKinds = []string{SinkDummy, SinkFile, SinkPipeWire}
+var KnownSinkKinds = []string{SinkDummy, SinkFile, SinkPipeWire, SinkALSA}
 
 // DefaultDevice is the platform-default sink identity the app plays to when
 // neither the environment nor the store names a device (the platform's own
