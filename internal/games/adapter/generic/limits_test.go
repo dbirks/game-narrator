@@ -462,6 +462,7 @@ func TestBoundedMemoryOnLargeSource(t *testing.T) {
 	}
 	defer f.Close()
 
+	cpuStart, cpuStartErr := cpuTimeNanos() // 0 + error if the platform has no getrusage
 	start := time.Now()
 	res, err := Adapter{}.Parse(context.Background(), f, adapter.ParseOptions{
 		ProfileID: games.NewID(),
@@ -469,6 +470,7 @@ func TestBoundedMemoryOnLargeSource(t *testing.T) {
 		Language:  "en",
 	})
 	elapsed := time.Since(start)
+	cpuEnd, cpuEndErr := cpuTimeNanos()
 	if err != nil {
 		t.Fatalf("Parse of %d rows: %v", rows, err)
 	}
@@ -503,11 +505,25 @@ func TestBoundedMemoryOnLargeSource(t *testing.T) {
 	size := fileSize(t, path)
 	allocated := int64(after.TotalAlloc) - int64(before.TotalAlloc)
 
-	if elapsed > 10*time.Second {
-		t.Errorf("parsing %d rows took %s, above the 10s budget", rows, elapsed)
+	// Speed budget on CPU time, not wall clock (issue #16): the previous 10 s
+	// wall bound failed on a shared host (15.9 s wall at load ~13) while the
+	// import itself was doing no more work — wall clock stretches with the
+	// load average, getrusage CPU time does not. Measured at -race on the dev
+	// host: 6.9 s CPU for this import, so the 30 s budget carries ~4× headroom
+	// for slower dev machines and GC churn, and stays honest under parallel
+	// gates. Wall time is still reported, for the log.
+	var cpu time.Duration
+	if cpuStartErr == nil && cpuEndErr == nil {
+		cpu = time.Duration(cpuEnd - cpuStart)
+		const cpuBudget = 30 * time.Second
+		if cpu > cpuBudget {
+			t.Errorf("parsing %d rows took %s CPU (wall %s), above the %s CPU budget", rows, cpu, elapsed, cpuBudget)
+		}
+	} else {
+		t.Logf("NOT RUN: CPU-time speed budget unavailable on this platform; wall clock was %s", elapsed)
 	}
-	t.Logf("%d rows from a %s file in %s: live heap growth %s (%s/message), %s allocated, %d messages, %d pages",
-		rows, human(size), elapsed.Round(time.Millisecond), human(growth),
+	t.Logf("%d rows from a %s file in %s wall / %s CPU: live heap growth %s (%s/message), %s allocated, %d messages, %d pages",
+		rows, human(size), elapsed.Round(time.Millisecond), cpu.Round(time.Millisecond), human(growth),
 		human(growth/int64(rows)), human(allocated), res.Stats.Imported, len(res.Pages))
 
 	// Spot-check content correctness at a high row index, so a reader that

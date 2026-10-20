@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -49,6 +50,18 @@ func collect(t *testing.T, ch <-chan capture.Frame, n int, within time.Duration)
 		}
 	}
 	return out
+}
+
+// dumpGoroutines logs the stacks of every goroutine in the test process.
+// On a supervision timeout this is the difference between "it hung" and "here
+// is where it hung": the issue #16 dump (test goroutine parked in the wait
+// loop's select, supervisor alive in its restart loop) is what located the
+// unbounded deadline extension.
+func dumpGoroutines(t *testing.T) {
+	t.Helper()
+	buf := make([]byte, 1<<20)
+	n := runtime.Stack(buf, true)
+	t.Logf("goroutine dump:\n%s", buf[:n])
 }
 
 func TestTestSourceDeliversAnimatedFramesAtRate(t *testing.T) {
@@ -444,7 +457,8 @@ func TestSupervisionSurvivesKilledFFmpeg(t *testing.T) {
 
 	first := collect(t, ch, 5, 5*time.Second)
 	if len(first) < 5 {
-		t.Fatalf("only %d frames before the kill", len(first))
+		dumpGoroutines(t)
+		t.Fatalf("only %d frames before the kill (5 s deadline)", len(first))
 	}
 	pid := s.PID()
 	if pid <= 0 {
@@ -458,26 +472,38 @@ func TestSupervisionSurvivesKilledFFmpeg(t *testing.T) {
 	// once: the assertion is about the transition, which is the only thing
 	// docs/spec/13's "Capture removed → reconnect with backoff" row can be
 	// checked against.
+	//
+	// The wait is bounded by a single deadline that never moves (issue #16):
+	// the previous version re-armed the deadline on every resumed frame while
+	// the transient had not been sampled, and once a descheduled poll missed
+	// the 400 ms reconnecting window the re-arming kept the deadline five
+	// seconds in the future forever — the test looped until the 25-minute
+	// package timeout. Waiting longer cannot recover a missed transient: the
+	// state passes through reconnecting once, ending at the new child's first
+	// delivered frame (recordDelivered flips it to running), so after the
+	// frames resume the only durable evidence of the transition is the
+	// restart counter, and that is the fallback the assertion below accepts.
 	sawReconnecting := false
 	var frames []capture.Frame
 	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) && (len(frames) < 5 || !sawReconnecting) {
+	for time.Now().Before(deadline) && len(frames) < 5 {
 		if st := s.Stats(); st.State == capture.StateReconnecting {
 			sawReconnecting = true
 		}
 		select {
 		case f, ok := <-ch:
 			if !ok {
+				dumpGoroutines(t)
 				t.Fatal("frame channel closed on kill: a supervised source must reconnect, not end")
 			}
 			frames = append(frames, f)
-			if len(frames) >= 5 && !sawReconnecting {
-				// Frames resumed before we caught the transient; keep looking
-				// briefly so the state assertion is not skipped by luck.
-				deadline = time.Now().Add(5 * time.Second)
-			}
 		case <-time.After(2 * time.Millisecond):
 		}
+	}
+	if len(frames) < 5 {
+		dumpGoroutines(t)
+		t.Fatalf("only %d frames after the kill within %v (want 5): capture did not resume",
+			len(frames), 15*time.Second)
 	}
 	st := s.Stats()
 	t.Logf("after kill: saw_reconnecting=%v restarts=%d delivered=%d resumed=%d state=%s last_error=%q",
@@ -486,15 +512,14 @@ func TestSupervisionSurvivesKilledFFmpeg(t *testing.T) {
 		t.Fatalf("killing FFmpeg left state %s with no restart: supervision is not running", st.State)
 	}
 	if !sawReconnecting {
-		// Only a fast poll can miss a 400 ms window; the restart counter and
-		// resumed frames still have to prove the recovery.
+		// A descheduled poll can miss the whole transient under load; the
+		// restart counter and the resumed frames still have to prove the
+		// recovery, so this path is a pass with the transition assertion
+		// marked NOT RUN rather than a failure.
 		t.Logf("NOT RUN: could not sample the reconnecting transient (poll was too slow); recovery itself is proven by restarts=%d and %d resumed frames", st.Restarts, len(frames))
 	}
 	if st.Restarts < 1 {
 		t.Errorf("Restarts = %d after killing the child, want >= 1", st.Restarts)
-	}
-	if len(frames) < 5 {
-		t.Fatalf("only %d frames after the kill, want 5: capture did not resume", len(frames))
 	}
 	for i, f := range frames {
 		if f.Width != 160 || f.Height != 120 {
