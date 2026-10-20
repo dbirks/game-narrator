@@ -28,7 +28,8 @@ import { expectDefaultDataDirUntouched, serverRun } from "./support/servers";
  *   4. derive a revision, edit one speech text, /games/:id/publish shows
  *      "1 changed", the review-and-publish transaction lands, and the history
  *      records it;
- *   5. /diagnostics shows the readiness detail.
+ *   5. /health (the renamed /diagnostics, ADR-0111) shows the readiness
+ *      detail.
  */
 
 const EDITION = {
@@ -101,7 +102,12 @@ test("m5 part 1: play, characters, publish review, diagnostics", async ({
       // 503: /api/v1/voices on a build whose voice models are not configured —
       // the pages answer it with their honest "not available" panels, which is
       // the documented behaviour this walk is checking, not a fault.
-      401, 503,
+      // 409: the health page's capture signal read (this walk's last route is
+      // the /diagnostics → /health redirect) on an appliance with no capture
+      // layer — ADR-0110 §1's 409 carries the layer's own reason, and the
+      // tile renders it as its own state, so it is the machine's answer,
+      // not a fault.
+      401, 409, 503,
     ],
   );
   const shot = (step: string) =>
@@ -429,7 +435,8 @@ test("m5 part 1: play, characters, publish review, diagnostics", async ({
   await expect(page.getByTestId("rollback-derive")).toContainText("Roll back to revision 1");
   await shot("06-published");
 
-  // ── 5. /diagnostics: readiness and its detail ─────────────────────────────
+  // ── 5. /health (the renamed /diagnostics, ADR-0111): readiness and its
+  // detail ─────────────────────────────────────────────────────────────
   // The readiness probe runs a live integrity check. While the replay session
   // has been writing, that probe can transiently report a failure and answer
   // 503 — the page's documented degradation is the honest error panel with a

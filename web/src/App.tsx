@@ -5,10 +5,10 @@ import { Shell } from "./components/Shell";
 import { CastPage } from "./pages/Cast";
 import { CharactersPage } from "./pages/Characters";
 import { DialoguePage } from "./pages/Dialogue";
-import { DiagnosticsPage } from "./pages/Diagnostics";
 import { DevKitPage } from "./pages/DevKit";
 import { GameOverviewPage } from "./pages/GameOverview";
 import { GraphPage } from "./pages/Graph";
+import { HealthPage } from "./pages/Health";
 import { LibraryPage } from "./pages/Library";
 import { LoginPage } from "./pages/Login";
 import { NewGamePage } from "./pages/NewGame";
@@ -32,7 +32,7 @@ import { VoicesPage } from "./pages/Voices";
  * from the revision rows of the overview, which is how their `?profile=` target
  * gets named.
  *
- * `/diagnostics` stays outside the guard on purpose: readiness and build info are
+ * `/health` stays outside the guard on purpose: readiness and build info are
  * public routes in the scope table (ADR-0016 §3) because `doctor` and a stalled
  * appliance must be inspectable before an account exists — and an appliance that
  * cannot be inspected is the one you are locked out of.
@@ -53,10 +53,12 @@ export function App() {
     <Shell>
       <Routes>
         <Route path="/" element={<Navigate to="/library" replace />} />
-        {/* Plum & Peach IA seams (ADR-0093 §4, ADR-0109): /traces is the
-            line-trace surface; /developer (the session inspector) redirects
-            to it, preserving the query so ?session= deep links still land in
-            the inspector view. */}
+        {/* Plum & Peach IA seams (ADR-0093 §4, ADR-0109, ADR-0111): /traces
+            is the line-trace surface; /developer (the session inspector)
+            redirects to it, preserving the query so ?session= deep links
+            still land in the inspector view. Health is the other Phase 1
+            rename that landed (item 8, ADR-0111): the page moved to /health
+            and /diagnostics now redirects. */}
         <Route
           path="/traces"
           element={
@@ -66,7 +68,7 @@ export function App() {
           }
         />
         <Route path="/developer" element={<TracesRedirect />} />
-        <Route path="/health" element={<Navigate to="/diagnostics" replace />} />
+        <Route path="/diagnostics" element={<Navigate to="/health" replace />} />
         {/* The kit gallery (plan.md Phase 0 item 4): developer role only;
             the page gates the role, the guard gates the session. */}
         <Route
@@ -79,7 +81,9 @@ export function App() {
         />
         <Route path="/setup" element={<SetupPage />} />
         <Route path="/login" element={<LoginPage />} />
-        <Route path="/diagnostics" element={<DiagnosticsPage />} />
+        {/* ADR-0016 §3: readiness and build info are public — the health
+            page must be inspectable before an account exists. */}
+        <Route path="/health" element={<HealthPage />} />
         {/* /settings is admin-gated by the API (403 otherwise); the guard here
             is the unauthenticated case only (ADR-0047). */}
         <Route

@@ -48,6 +48,7 @@ const playControlsUrl = `http://127.0.0.1:${ports.playControls}`;
 const audioUrl = `http://127.0.0.1:${ports.audio}`;
 const setupBoardUrl = `http://127.0.0.1:${ports.setupBoard}`;
 const captureUrl = `http://127.0.0.1:${ports.capture}`;
+const healthUrl = `http://127.0.0.1:${ports.health}`;
 const developerDecisionUrl = `http://127.0.0.1:${ports.developerDecision}`;
 const developerActionsUrl = `http://127.0.0.1:${ports.developerActions}`;
 const restoreUrl = `http://127.0.0.1:${ports.restore}`;
@@ -110,7 +111,7 @@ export default defineConfig({
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
       testIgnore:
-        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|voices-qa\.spec\.ts|m5-part1\.spec\.ts|m5-graph-regions\.spec\.ts|corrections-fixtures\.spec\.ts|live-play\.spec\.ts|play-controls\.spec\.ts|audio-output\.spec\.ts|bluetooth-output\.spec\.ts|capture-device\.spec\.ts|restore-walk\.spec\.ts|a11y\.spec\.ts|setup-wizard\.spec\.ts|redesign-shell\.spec\.ts|library\.spec\.ts|ksearch\.spec\.ts|agent-dock\.spec\.ts|setup-board\.spec\.ts|traces\.spec\.ts/,
+        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|voices-qa\.spec\.ts|m5-part1\.spec\.ts|m5-graph-regions\.spec\.ts|corrections-fixtures\.spec\.ts|live-play\.spec\.ts|play-controls\.spec\.ts|audio-output\.spec\.ts|bluetooth-output\.spec\.ts|capture-device\.spec\.ts|restore-walk\.spec\.ts|a11y\.spec\.ts|setup-wizard\.spec\.ts|redesign-shell\.spec\.ts|library\.spec\.ts|ksearch\.spec\.ts|agent-dock\.spec\.ts|setup-board\.spec\.ts|traces\.spec\.ts|health\.spec\.ts/,
     },
     {
       // The first-run wizard (G9, ADR-0087) on its own packaged-binary
@@ -382,6 +383,20 @@ export default defineConfig({
       name: "capture-device",
       testMatch: /capture-device\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: captureUrl },
+    },
+    {
+      // The Health screen's walk (ADR-0111, plan.md Phase 1 item 8): the
+      // packaged binary with the capture seam standing in for the UVC HDMI
+      // dongle (GAME_NARRATOR_CAPTURE_FAKE, the capture-dongle walk's seam)
+      // — a labelled-synthetic device fed by a real FFmpeg testsrc2 pipe —
+      // so the UX-11 signal/preview tile and the 3×2 grid's capture tile
+      // read a real feed without the hardware, labelled synthetic
+      // throughout. The scripted halves (the black feed's words, the non-ok
+      // rollup) are page.route stubs — AGENTS.md rule 3 class (a), labelled
+      // in the test names.
+      name: "health",
+      testMatch: /health\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: healthUrl },
     },
     {
       // The audio-output walk (ADR-0074, docs/spec/10): the packaged binary
@@ -954,6 +969,21 @@ export default defineConfig({
       command: `node web/e2e/serve.mjs capture 127.0.0.1:${ports.capture} ${embeddedBinary} serve`,
       cwd: "..",
       url: `${captureUrl}/api/v1/health/live`,
+      env: { GAME_NARRATOR_CAPTURE_FAKE: "1" },
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The Health screen's walk server (ADR-0111, plan.md Phase 1 item 8):
+      // the same capture seam as the capture-dongle walk's server, on the
+      // health walk's own port and throwaway data dir — the appliance claim
+      // is once per appliance (ADR-0016 §7), so the walk cannot share the
+      // capture walk's already-claimed appliance.
+      command: `node web/e2e/serve.mjs health 127.0.0.1:${ports.health} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${healthUrl}/api/v1/health/live`,
       env: { GAME_NARRATOR_CAPTURE_FAKE: "1" },
       reuseExistingServer: false,
       timeout: 60_000,

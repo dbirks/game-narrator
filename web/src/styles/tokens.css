@@ -1746,6 +1746,222 @@ textarea:focus-visible,
   }
 }
 
+/* ── the Health screen (plan.md Phase 1 item 8; ADR-0111) ─────────────────
+ * The 3×2 tile grid over the status rollup, the capture tile's UX-11
+ * signal/preview block. Tokens only: the tag's text stays ink or muted
+ * (WCAG 1.4.3 at the 11px mono size); the accents are the border and fill,
+ * the way the design's error state carries its coral.
+ *
+ * The run-3715836 review fixes the grid spans: the page title is the
+ * rollup's own summary (the design's 36/600 Fredoka word, the tab row to
+ * its right), the grid spans the content width (not a narrow column), the
+ * tile labels wrap their full design names, and the preserved sections run
+ * full-width under the grid in two columns at the desktop width. */
+
+/* The title row: the 36 px summary word (README 2i's page title) with the
+   tab row at its right — one line when the width fits, the tabs wrap under
+   the word on a phone (no horizontal scroll at 390). */
+.health-title-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--sp-8) var(--sp-16);
+}
+
+.health-title-row h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 36px;
+  font-weight: 600;
+  line-height: 1.15;
+}
+
+.health-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--sp-12);
+}
+
+/* 3×2 is the design at the desktop width; the grid reflows to two columns
+   on a tablet and one on a phone — the tile never overflows the container
+   (no horizontal scroll at 390). */
+@media (max-width: 1024px) {
+  .health-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .health-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.health-tile {
+  display: grid;
+  gap: var(--sp-8);
+  align-content: start;
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-card);
+  background: var(--card);
+  padding: var(--sp-16);
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+/* The non-ok tile (slow/fail) wears the design's error language: the coral
+   border carries the hot accent; the tile's text stays ink (the border
+   alone is not text). */
+.health-tile-warn {
+  border-color: var(--coral);
+}
+
+.health-tile-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-8);
+  min-width: 0;
+}
+
+.health-tile-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  /* The full design names wrap, never truncate (the run-3715836 review
+     fix 2): the word the status bar uses is the word the tile shows. */
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+
+/* The status tag: the small pill in the design's tag language (3–4px
+   radius). ok = the peach "selected/current" fill; slow/fail = the error
+   language (coral border, ink text); unknown = the neutral chip. */
+.health-tile-tag {
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--radius-tag);
+  padding: 2px var(--sp-8);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  border: 1.5px solid var(--ink);
+  background: var(--peach);
+  color: var(--ink);
+  box-sizing: border-box;
+  flex: none;
+}
+
+.health-tile-tag-warn {
+  background: transparent;
+  border-color: var(--coral);
+  color: var(--ink);
+}
+
+.health-tile-tag-unknown {
+  background: transparent;
+  border-color: var(--hair);
+  color: var(--muted);
+  font-weight: 400;
+}
+
+/* The one-line detail: the rollup's own evidence (or the fact that there
+   is none), mono at the chip size. */
+.health-tile-detail {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  min-height: 1.4em;
+}
+
+/* The preserved sections under the grid (the run-3715836 review fix 5):
+   full-width, two columns at the desktop width, one below — the narrow
+   single column they used to sit in is gone. Each section keeps its own
+   panel and testids; the reflow is the page's, not the section's. */
+.health-sections {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--sp-12);
+  align-items: start;
+}
+
+@media (min-width: 1025px) {
+  .health-sections {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* The UX-11 block: the two status words (signal present / active picture)
+   and the tile's picture. The words are the acceptance's asserted text
+   (ADR-0111 §3): mono on the card, the picture a 4:3-frame JPEG capped at
+   the server's 640 px width. */
+.health-signal {
+  display: grid;
+  gap: var(--sp-6);
+  min-width: 0;
+}
+
+.health-signal-words {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6) var(--sp-8);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.health-signal-words [data-testid="health-tile-capture-picture"]:not(:nth-child(1)) {
+  border-left: 1px dashed var(--hair);
+  padding-left: var(--sp-8);
+}
+
+.health-preview {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-tag);
+  background: var(--sand);
+}
+
+/* The "no picture yet" placeholder: the dither-25 recipe reads as static,
+   the honest texture for an absent frame (not a black frame: that would
+   read as "no signal", which is a different word). */
+.health-preview-waiting {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  --dither-ink: var(--ink);
+  --dither-bg: var(--sand);
+  background-image: radial-gradient(var(--dither-ink) 0.9px, transparent 1.3px);
+  background-size: 4px 4px;
+  background-position: 0 0;
+  image-rendering: pixelated;
+}
+
+.health-signal-meta {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  overflow-wrap: anywhere;
+}
+
 /* ── reduced motion: every animated surface settles instantly ─────────────
  * Universal (docs/design/plum-peach "Accessibility", plan.md Phase 0 item
  * 1): a dither fade or a progress foot that never settles is worse than

@@ -12,7 +12,8 @@ import { expectDefaultDataDirUntouched, serverRun } from "./support/servers";
  *
  * One walk on one fresh appliance (the packaged binary): first the
  * anonymous/first-run states the route-coverage spec walks (claim form, public
- * diagnostics, not-found), then the appliance is claimed and the walk signs in
+ * health — /diagnostics redirects to it, ADR-0111 — not-found), then the
+ * appliance is claimed and the walk signs in
  * as admin and seeds the synthetic game the way the curation walk does
  * (create → edition → draft → script import), so every `/games/:id/…` route is
  * visited in the state the other specs establish. Each route is scanned with
@@ -92,8 +93,10 @@ test("axe: every route of the ui-coverage matrix, WCAG 2.1 A/AA", async ({ page 
   // 503 joins 401 on the ignore list: on this appliance the capture layer is
   // unwired (no UVC dongle, no test seam), and the setup wizard's devices step
   // renders that 503 as its own "no capture layer" note — the machine's
-  // answer, not a fault of the walk.
-  const consoleErrors = trackConsoleErrors(page, [401, 503]);
+  // answer, not a fault of the walk. 409 joins them for the same layer on
+  // the health page's signal read: ADR-0110 §1's 409 carries the layer's own
+  // reason and the tile renders it as its own state.
+  const consoleErrors = trackConsoleErrors(page, [401, 409, 503]);
   const report: Record<string, RouteReport> = {};
 
   const visit = async (name: string, url: string, settle: (page: Page) => Promise<void>) => {
@@ -107,8 +110,10 @@ test("axe: every route of the ui-coverage matrix, WCAG 2.1 A/AA", async ({ page 
     await expect(page).toHaveURL(/\/setup$/, { timeout: 30_000 });
     await settled(page, "setup-form");
   });
-  await visit("diagnostics (anonymous)", "/diagnostics", async (page) => {
-    await expect(page.getByRole("heading", { name: "Diagnostics" })).toBeVisible();
+  await visit("health (anonymous)", "/diagnostics", async (page) => {
+    // The ADR-0093 §4 rename: /diagnostics redirects to /health (ADR-0111).
+    await expect(page).toHaveURL(/\/health$/);
+    await expect(page.getByRole("heading", { name: "Health" })).toBeVisible();
     await settled(page, "readiness");
   });
   await visit("not-found (anonymous)", "/definitely/not/a/route", async (page) => {
@@ -253,7 +258,7 @@ test("axe: every route of the ui-coverage matrix, WCAG 2.1 A/AA", async ({ page 
       settle: (page) => settled(page, "session-start"),
     },
     {
-      name: "diagnostics (signed in)",
+      name: "health (signed in)",
       url: "/diagnostics",
       settle: (page) => settled(page, "readiness"),
     },

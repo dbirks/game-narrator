@@ -28,7 +28,7 @@ test("embedded binary serves the SPA and its deep links", async ({ page, request
   expect(deepLink?.headers()["content-security-policy"]).toContain(csp);
   expect(deepLink?.headers()["cache-control"]).toBe("no-cache");
   await expect(page.getByRole("heading", { name: "Not found" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Back to Diagnostics" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Back to Health" })).toBeVisible();
 
   // The bundle referenced by index.html is served by the same binary with a
   // JS media type and immutable caching (a wrong type would break the module
@@ -48,10 +48,12 @@ test("embedded binary serves the SPA and its deep links", async ({ page, request
   expect(missing.status()).toBe(404);
   expect(missing.headers()["content-type"]).toContain("application/problem+json");
 
-  // /diagnostics is served from the bundle and reads live data from the same
-  // process, i.e. the embedded UI and the API agree.
+  // /health (the ADR-0093 §4 name of the old /diagnostics route, ADR-0111)
+  // is served from the bundle and reads live data from the same process,
+  // i.e. the embedded UI and the API agree. The old path redirects to it.
   await page.goto("/diagnostics");
-  await expect(page.getByRole("heading", { name: "Diagnostics" })).toBeVisible();
+  await expect(page).toHaveURL(/\/health$/);
+  await expect(page.getByRole("heading", { name: "Health" })).toBeVisible();
 
   const info = (await (await request.get("/api/v1/system/info")).json()) as {
     version: string;
@@ -69,7 +71,7 @@ test("embedded binary serves the SPA and its deep links", async ({ page, request
   expect(info.version).not.toBe("dev");
   expect(info.commit).not.toBe("unknown");
 
-  await page.screenshot({ path: "test-results/embedded-diagnostics.png", fullPage: true });
+  await page.screenshot({ path: "test-results/embedded-health.png", fullPage: true });
 
   // CSP must not break the app: no blocked scripts, styles or fetches.
   expect(consoleErrors).toEqual([]);

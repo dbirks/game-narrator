@@ -18,8 +18,8 @@ import { expectDefaultDataDirUntouched, serverRun } from "./support/servers";
  *      /login is the stable terminal state);
  *   5. still anonymous: a privileged route answers /login?next=… and the
  *      remembered target survives the round trip;
- *   6. the public routes (/diagnostics, the not-found page) stay reachable
- *      with no account at all.
+ *   6. the public routes (/health — /diagnostics redirects to it, ADR-0111 —
+ *      and the not-found page) stay reachable with no account at all.
  */
 
 const ADMIN = { username: "route-admin", password: "steady as the tide" };
@@ -81,7 +81,8 @@ test("the route matrix across the first-run, authenticated and anonymous phases"
   await page.getByTestId("nav-logout").click();
   await expect(page).toHaveURL(/\/login/);
   await page.goto("/diagnostics");
-  await expect(page.getByRole("heading", { name: "Diagnostics" })).toBeVisible();
+  await expect(page).toHaveURL(/\/health$/);
+  await expect(page.getByRole("heading", { name: "Health" })).toBeVisible();
   await page.goto("/definitely/not/a/route");
   await expect(page.getByRole("heading", { name: "Not found" })).toBeVisible();
 

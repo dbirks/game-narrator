@@ -440,8 +440,8 @@ function Wizard() {
           </button>
         ) : null}
         {stepId === "done" ? (
-          <a href="/diagnostics" data-testid="setup-to-diagnostics">
-            Open the diagnostics page →
+          <a href="/health" data-testid="setup-to-diagnostics">
+            Open the health page →
           </a>
         ) : null}
       </p>

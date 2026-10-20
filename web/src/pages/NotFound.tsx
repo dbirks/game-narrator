@@ -5,7 +5,7 @@ export function NotFoundPage() {
     <main>
       <h1>Not found</h1>
       <p className="muted">That page does not exist yet.</p>
-      <Link to="/diagnostics">Back to Diagnostics</Link>
+      <Link to="/health">Back to Health</Link>
     </main>
   );
 }

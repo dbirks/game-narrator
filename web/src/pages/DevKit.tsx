@@ -150,6 +150,16 @@ function KitGallery() {
           label="Capture health, last twelve windows"
           testid="kit-gallery-sparkline"
         />
+        {/* The fixed-scale shape (the health tile's level window): the bars
+            keep each level's own height — a flat fail window does not
+            render as a full bar, because the scale top is 100, not the
+            window's max. */}
+        <Sparkline
+          values={[100, 100, 55, 25, 0, 100, 100, 100, 100, 25, 55, 100]}
+          label="Tile levels, last twelve seconds (fixed scale to 100)"
+          max={100}
+          testid="kit-gallery-sparkline-levels"
+        />
         <Waveform
           values={[
             0.4, 0.7, 0.9, 0.5, 0.8, 0.6, 0.95, 0.3, 0.7, 0.5, 0.85, 0.45, 0.65, 0.9, 0.5, 0.3,

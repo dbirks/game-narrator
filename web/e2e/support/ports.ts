@@ -219,6 +219,12 @@ export const ports = {
    *  by m5-settings-tests' admin, so the wizard claims a fresh packaged-binary
    *  server it owns. */
   wizard: base + 1,
+  /** the packaged binary the Health screen's walk drives (health.spec.ts,
+   *  ADR-0111, plan.md Phase 1 item 8): the capture seam stands in for the
+   *  dongle (GAME_NARRATOR_CAPTURE_FAKE, the capture-dongle walk's seam), so
+   *  the UX-11 signal/preview tile reads a real FFmpeg testsrc2 feed without
+   *  the hardware. Offset 4 — offsets 2-3 are unused band slots. */
+  health: base + 4,
   /** the packaged binary serving the embedded UI (embedded.spec.ts). */
   embedded: base + 5,
   /** the packaged binary the catalogue walk-through claims (catalog.spec.ts). */

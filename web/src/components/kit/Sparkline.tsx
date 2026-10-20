@@ -6,19 +6,25 @@ export interface SparklineProps {
   values: readonly number[];
   label: string;
   testid?: string;
+  /** A fixed scale top: the bars scale to this value instead of the
+   *  window's own max, so each value's own meaning survives a flat window
+   *  (the health tile's level encoding: ok 100 / slow 55 / fail 25 /
+   *  unknown 0). Omitted: the window's max, the general shape. */
+  max?: number;
 }
 
 const BAR_COUNT = 12;
 
 /** The health tile's 12-bar dithered sparkline (docs/design/plum-peach 2i).
  *  Bars scale to the window's max (a flat-zero window renders the floor
- *  line, not nothing); the bar geometry is SVG attributes and the 50%
- *  checker fill is a stylesheet pattern, so no inline styles are needed. */
-export function Sparkline({ values, label, testid = "kit-sparkline" }: SparklineProps) {
+ *  line, not nothing) — or to the fixed `max` when the values carry their
+ *  own scale; the bar geometry is SVG attributes and the 50% checker fill
+ *  is a stylesheet pattern, so no inline styles are needed. */
+export function Sparkline({ values, label, testid = "kit-sparkline", max }: SparklineProps) {
   const id = useId();
   const bars: number[] = [];
   for (let i = 0; i < BAR_COUNT; i++) bars.push(i < values.length ? values[i] : 0);
-  const max = Math.max(...bars, 0);
+  const top = max ?? Math.max(...bars, 0);
   const patternId = `kit-spark-pattern-${id}`;
   return (
     <svg
@@ -36,7 +42,7 @@ export function Sparkline({ values, label, testid = "kit-sparkline" }: Sparkline
         </pattern>
       </defs>
       {bars.map((value, index) => {
-        const height = max > 0 ? Math.max(2, Math.round((value / max) * 20)) : 2;
+        const height = top > 0 ? Math.max(2, Math.round((value / top) * 20)) : 2;
         return (
           <rect
             key={index}

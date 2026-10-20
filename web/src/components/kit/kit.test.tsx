@@ -156,6 +156,26 @@ describe("Sparkline / Waveform", () => {
     expect(screen.getByLabelText("Health window")).toHaveAttribute("role", "img");
     expect(screen.getByLabelText("Clip envelope")).toHaveAttribute("role", "img");
   });
+
+  it("keeps each value's own height on a fixed scale (max), not the window's max", () => {
+    // A uniform fail window on the health tile's fixed scale (100) must
+    // render as a quarter bar, not a full bar: scaling to the window's own
+    // max would erase the level the fixed scale encodes.
+    const { unmount } = render(
+      <Sparkline values={[25, 25, 25]} label="Fail window" max={100} testid="fixed" />,
+    );
+    const heights = Array.from(document.querySelectorAll('[data-testid="fixed"] rect[fill]'))
+      .slice(0, 3)
+      .map((rect) => rect.getAttribute("height"));
+    expect(heights).toEqual(["5", "5", "5"]);
+    unmount();
+    // Without the fixed scale the same window fills the bar (its own max).
+    render(<Sparkline values={[25, 25, 25]} label="Fail window" testid="own" />);
+    const own = Array.from(document.querySelectorAll('[data-testid="own"] rect[fill]'))
+      .slice(0, 3)
+      .map((rect) => rect.getAttribute("height"));
+    expect(own).toEqual(["20", "20", "20"]);
+  });
 });
 
 interface Row {
