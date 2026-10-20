@@ -75,7 +75,14 @@
  * in the "legacy remap" block below, so the whole existing app renders over
  * the palette through one seam. */
 
-:root {
+/* The block is `:root, [data-theme="plum"]` — not a bare `:root` — so a plum
+   scope nested inside another theme (the theme page's plum preview card,
+   which carries data-theme="plum") resolves plum's own slots instead of
+   inheriting the ambient theme's (under Lilac Night the bare :root values
+   are overridden on <html> and the plum preview would render plum labels on
+   dark cards — an axe color-contrast fail). */
+:root,
+[data-theme="plum"] {
   --ink: #5a2a4a;
   --paper: #f8eedd;
   --card: #fff7ea;
@@ -210,9 +217,22 @@
 }
 
 /* A dark theme declares its own colour scheme so form controls and scrollbars
-   follow it (the light default above is overridden here, later, on a match). */
+   follow it (the light default above is overridden here, later, on a match).
+   The dark theme also inverts the legacy remap (docs/design/plum-peach README
+   "Lilac Night": "a dark theme inverts which token is background"): --ink is
+   the surface and --paper the text, so every derived legacy token that named
+   --ink for text/structure is re-pointed at --paper here. Without this the
+   page is light-lavender with dark text on dark --card surfaces — the
+   /settings walk's axe pass fails it on color-contrast. */
 [data-theme="lilac-night"] {
   color-scheme: dark;
+  --bg: var(--ink);
+  --fg: var(--paper);
+  --accent: var(--paper);
+  --line: color-mix(in srgb, var(--paper) 28%, transparent);
+  --fill: color-mix(in srgb, var(--paper) 8%, transparent);
+  --offset-shadow: 0 4px 0 color-mix(in srgb, var(--paper) 25%, transparent);
+  --ok: var(--paper);
 }
 
 /* The page container: index.css gives body a 60rem centred column; the shell
@@ -1039,9 +1059,13 @@ textarea:focus-visible,
 }
 
 .kit-pill-outline {
+  /* --fg, not --ink: in the dark theme --ink is the surface colour (the
+     token contract inverts it), so the outline reads through the derived
+     text colour — in the light themes --fg is --ink, so the look is the
+     same there. */
   background: transparent;
-  color: var(--ink);
-  border: 1.5px solid var(--ink);
+  color: var(--fg);
+  border: 1.5px solid var(--fg);
 }
 
 .kit-pill-coral {
@@ -1270,6 +1294,122 @@ textarea:focus-visible,
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--muted);
+}
+
+/* Form controls: the native range and select over the token set
+   (docs/design/plum-peach README "Colour": --card is the input surface,
+   1.5px solid --ink is the line rule, Space Mono the data font).
+
+   The range's fill fraction is carried by the data-volume attribute —
+   ADR-0011's CSP admits classes and data-attributes, no inline styles —
+   and painted as the two-stop token gradient on the track: the coral fill
+   over the ink track. accent-color keeps the thumb on the token (and is
+   the fill where an engine has no track pseudo-elements). The step-0.05
+   grid is the input's own (min 0, max 1, step 0.05), so the attribute
+   always names one of these rules. */
+.kit-range {
+  --kit-range-fill: 0%;
+  accent-color: var(--coral);
+  border: none;
+  background: none;
+  padding: 0;
+  margin: 0;
+  min-height: var(--sp-16);
+}
+.kit-range[data-volume="0.05"] {
+  --kit-range-fill: 5%;
+}
+.kit-range[data-volume="0.10"] {
+  --kit-range-fill: 10%;
+}
+.kit-range[data-volume="0.15"] {
+  --kit-range-fill: 15%;
+}
+.kit-range[data-volume="0.20"] {
+  --kit-range-fill: 20%;
+}
+.kit-range[data-volume="0.25"] {
+  --kit-range-fill: 25%;
+}
+.kit-range[data-volume="0.30"] {
+  --kit-range-fill: 30%;
+}
+.kit-range[data-volume="0.35"] {
+  --kit-range-fill: 35%;
+}
+.kit-range[data-volume="0.40"] {
+  --kit-range-fill: 40%;
+}
+.kit-range[data-volume="0.45"] {
+  --kit-range-fill: 45%;
+}
+.kit-range[data-volume="0.50"] {
+  --kit-range-fill: 50%;
+}
+.kit-range[data-volume="0.55"] {
+  --kit-range-fill: 55%;
+}
+.kit-range[data-volume="0.60"] {
+  --kit-range-fill: 60%;
+}
+.kit-range[data-volume="0.65"] {
+  --kit-range-fill: 65%;
+}
+.kit-range[data-volume="0.70"] {
+  --kit-range-fill: 70%;
+}
+.kit-range[data-volume="0.75"] {
+  --kit-range-fill: 75%;
+}
+.kit-range[data-volume="0.80"] {
+  --kit-range-fill: 80%;
+}
+.kit-range[data-volume="0.85"] {
+  --kit-range-fill: 85%;
+}
+.kit-range[data-volume="0.90"] {
+  --kit-range-fill: 90%;
+}
+.kit-range[data-volume="0.95"] {
+  --kit-range-fill: 95%;
+}
+.kit-range[data-volume="1.00"] {
+  --kit-range-fill: 100%;
+}
+.kit-range::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(
+    90deg,
+    var(--coral) var(--kit-range-fill),
+    var(--ink) var(--kit-range-fill)
+  );
+}
+.kit-range::-moz-range-track {
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--ink);
+}
+.kit-range::-moz-range-progress {
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--coral);
+}
+
+.kit-select {
+  background: var(--card);
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-card);
+  padding: var(--sp-8) var(--sp-12);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  /* Native selects size to their longest option — width:100% keeps them
+     inside their container (the design allows no horizontal scroll at
+     390). The flex rows that host a device select already bound it
+     (min-width:0 / max-width:100%). */
+  width: 100%;
+  box-sizing: border-box;
 }
 
 /* Empty state: the dashed 1.5px ink card. */
@@ -1744,6 +1884,202 @@ textarea:focus-visible,
   .cast-page h1 {
     font-size: 26px;
   }
+}
+
+/* ── the theme page (/settings/theme; UX-09, ADR-0109) ─────────────────────
+ * The swatch previews are pure CSS over the token set: the `data-theme`
+ * attribute scopes the theme's token block to the preview element (the token
+ * blocks are bare [data-theme] selectors, so they apply at any depth), and
+ * the swatches render the same custom properties the app uses — no inline
+ * styles and no injected CSS (ADR-0011). */
+
+.theme-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-12);
+  margin-bottom: var(--sp-16);
+}
+
+.theme-preview {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 3px;
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-tag);
+  overflow: hidden;
+  background: var(--paper);
+  image-rendering: pixelated;
+  /* The caption's text token, scoped to THIS preview's theme: the light
+     themes print --ink, and Lilac Night inverts to --paper (the same rule
+     as the legacy remap's dark-theme block — a nested scope must not read
+     the app theme's --fg inherited from <html>). */
+  color: var(--ink);
+}
+
+.theme-preview[data-theme="lilac-night"] {
+  color: var(--paper);
+}
+
+/* Each tile is the colour block with the slot name captioned below it, on
+   the card background (ink on card — the design's primary readable pair):
+   a label printed on the token itself fails the contrast gate on the light
+   slots (the a11y walk's axe color-contrast check). */
+.theme-preview-item {
+  display: flex;
+  flex-direction: column;
+}
+
+.theme-preview-swatch {
+  display: block;
+  min-height: 34px;
+}
+
+.theme-preview-name {
+  padding: 3px 4px;
+  background: var(--card);
+  /* Inherits the preview-scoped text token set on .theme-preview above. */
+  color: inherit;
+  border-top: 1px solid var(--hair);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.theme-preview-paper {
+  background: var(--paper);
+}
+.theme-preview-card {
+  background: var(--card);
+}
+.theme-preview-ink {
+  background: var(--ink);
+}
+.theme-preview-peach {
+  background: var(--peach);
+}
+.theme-preview-coral {
+  background: var(--coral);
+}
+.theme-preview-muted {
+  background: var(--muted);
+}
+.theme-preview-sand {
+  background: var(--sand);
+}
+.theme-preview-hair {
+  background: var(--hair);
+}
+
+/* The slot table: the row's data-theme scopes that theme's tokens, so each
+   cell's swatch and value are the theme's own, and the derived slots are
+   flagged where the README marks them. The table carries the kit-table
+   style (the design's table); each cell keeps its table-cell display — a
+   display override on a td removes it from the table layout (a tr with no
+   table-cells degenerates to a block and the row's cells stack into one
+   long column). Swatch and hex share one line; the derived chip drops
+   below them. */
+
+.theme-slot-cell {
+  white-space: nowrap;
+}
+
+.theme-slot-cell code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.theme-slot-derived {
+  display: block;
+  margin-top: var(--sp-4);
+}
+
+/* The "derived" chip is a mark of this table (app chrome), not a swatch of
+   the row's theme: the row's data-theme scope would print the reviewed
+   theme's --muted on the RUNNING theme's card surface and fail the contrast
+   gate where the two themes' surfaces disagree. It keeps the app theme's
+   text token on the app theme's card (the kit-card pair). */
+.theme-slots .kit-chip-neutral {
+  border-color: var(--fg);
+  color: var(--fg);
+}
+
+.theme-slot-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--hair);
+  border-radius: 2px;
+  margin-right: var(--sp-4);
+  vertical-align: baseline;
+}
+
+.theme-slot-ink {
+  background: var(--ink);
+}
+.theme-slot-paper {
+  background: var(--paper);
+}
+.theme-slot-card {
+  background: var(--card);
+}
+.theme-slot-peach {
+  background: var(--peach);
+}
+.theme-slot-coral {
+  background: var(--coral);
+}
+.theme-slot-muted {
+  background: var(--muted);
+}
+.theme-slot-sand {
+  background: var(--sand);
+}
+.theme-slot-hair {
+  background: var(--hair);
+}
+
+@media (max-width: 720px) {
+  .theme-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── the /settings rework (ADR-0109) ───────────────────────────────────────
+ * The page's sections render as kit cards; these rules are the page-level
+ * composition the kit does not own (the section stack, the dl grid inside a
+ * card, the tailnet line, the Bluetooth pairing prompt). */
+
+.settings-stack {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--sp-16);
+}
+
+.settings-stack .kit-card dl.grid-defs {
+  margin: 0;
+}
+
+.settings-tailnet {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-8);
+  flex-wrap: wrap;
+}
+
+.settings-tailnet code {
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  word-break: break-all;
+}
+
+.settings-bt-prompt {
+  border: 1.5px dashed var(--ink);
+  border-radius: var(--radius-card);
+  background: var(--sand);
+  padding: var(--sp-10) var(--sp-12);
+  display: grid;
+  gap: var(--sp-8);
+  align-items: center;
 }
 
 /* ── the Health screen (plan.md Phase 1 item 8; ADR-0111) ─────────────────

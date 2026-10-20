@@ -4130,6 +4130,18 @@ export interface components {
       web_search: components["schemas"]["SettingsWebSearch"];
       agent: components["schemas"]["SettingsAgent"];
     };
+    /** @description The appliance's network reachability (docs/design/plum-peach UX-13): the tailnet URL — the Tailscale address for reaching this appliance's web UI — copied from the running system, or the explicit not-configured state. The URL is an address, not a credential (docs/spec/14): it crosses the admin-gated boundary only from the machine's own tailscale state or the operator's GAME_NARRATOR_TAILNET_URL pin. */
+    SettingsNetwork: {
+      /** @description The URL to reach this appliance's web UI over the tailnet (the Tailscale address); null when Tailscale is not configured. */
+      tailnet_url: string | null;
+      /**
+       * @description Where the URL came from: the GAME_NARRATOR_TAILNET_URL pin or the live tailscale status record; null (outside the enum) alongside a null URL.
+       * @enum {string|null}
+       */
+      source: "env" | "tailscale" | null;
+      /** @description One-line context: the pin's variable, the derivation, or the reason the URL is null. The UI renders it verbatim. */
+      note: string;
+    };
     SettingsVersion: {
       version: string;
       commit: string;
@@ -4218,6 +4230,7 @@ export interface components {
       audio: components["schemas"]["SettingsAudio"];
       security: components["schemas"]["SettingsSecurity"];
       imports: components["schemas"]["SettingsImports"];
+      network: components["schemas"]["SettingsNetwork"];
       version: components["schemas"]["SettingsVersion"];
       update: components["schemas"]["SettingsUpdate"];
       mutable: components["schemas"]["SettingsMutable"];

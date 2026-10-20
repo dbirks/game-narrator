@@ -180,6 +180,38 @@ function KitGallery() {
         />
       </Card>
 
+      <Card title="Form controls (range and select)">
+        <div className="stack">
+          <div>
+            <label htmlFor="kit-gallery-range">Master volume</label>
+            <input
+              id="kit-gallery-range"
+              className="kit-range"
+              data-testid="kit-gallery-range"
+              data-volume="0.50"
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              defaultValue={0.5}
+            />
+          </div>
+          <div>
+            <label htmlFor="kit-gallery-select">Audio output device</label>
+            <select
+              id="kit-gallery-select"
+              className="kit-select"
+              data-testid="kit-gallery-select"
+              defaultValue="hdmi"
+            >
+              <option value="hdmi">hdmi-out (hdmi)</option>
+              <option value="usb">jbl-usb-dac (usb)</option>
+              <option value="bluetooth">bluez_output.AA:BB:CC:DD:EE:FF.1 (bluetooth)</option>
+            </select>
+          </div>
+        </div>
+      </Card>
+
       <Card title="Empty and error states">
         <div className="stack">
           <KitEmptyState title="No games yet">

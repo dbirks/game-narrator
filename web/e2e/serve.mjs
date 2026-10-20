@@ -116,6 +116,24 @@ for (const key of Object.keys(childEnv)) {
   scrubbedProviderVars.push(key);
 }
 
+// GN_E2E_NO_TAILSCALE (ADR-0109): the settings page's network section probes
+// `tailscale` on the child's PATH, and a developer box that is on a tailnet
+// would otherwise render a live, host-specific URL into a spec that asserts
+// URL-free or not-configured settings DOMs. The child's PATH is prepended
+// with this run's own `tailscale` shim (a no-output exit 127): the probe
+// finds the shim first and answers its honest "did not answer" not-configured
+// note without touching the real CLI, while the rest of the PATH — the
+// toolchain a `go run` server needs — stays intact (the shim and the real
+// CLI can share a directory, so a PATH filter cannot express this).
+if (process.env.GN_E2E_NO_TAILSCALE === "1") {
+  const shimDir = join(dataDir, "bin");
+  await mkdir(shimDir, { recursive: true });
+  const shim = join(shimDir, "tailscale");
+  await writeFile(shim, "#!/bin/sh\nexit 127\n");
+  await chmod(shim, 0o700);
+  childEnv.PATH = `${shimDir}:${childEnv.PATH ?? ""}`;
+}
+
 // The per-run manifest + server log directory (ADR-0094): under this run's
 // root, not the checkout's web/test-results — concurrent Playwright runs in
 // the same checkout must not read or delete each other's records. e2e/

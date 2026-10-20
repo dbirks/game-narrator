@@ -20,6 +20,7 @@ import { RegionsPage } from "./pages/Regions";
 import { SetupPage } from "./pages/Setup";
 import { SettingsPage } from "./pages/Settings";
 import { TestsPage } from "./pages/Tests";
+import { ThemePage } from "./pages/Theme";
 import { TracesPage } from "./pages/Traces";
 import { VoicesPage } from "./pages/Voices";
 
@@ -91,6 +92,17 @@ export function App() {
           element={
             <RequireAuth>
               <SettingsPage />
+            </RequireAuth>
+          }
+        />
+        {/* The theme picker lives under /settings/theme (plan.md item 9, ADR-0109):
+            the same guard as /settings; the page itself renders the four
+            themes over the Phase 0 token seam. */}
+        <Route
+          path="/settings/theme"
+          element={
+            <RequireAuth>
+              <ThemePage />
             </RequireAuth>
           }
         />

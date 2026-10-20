@@ -14,7 +14,7 @@ import {
 } from "../api/diagnostics";
 import { fetchCaptureDevices } from "../api/capture";
 import { fetchSettings } from "../api/settings";
-import { useAuth } from "../auth/auth-context";
+import { useAuth, statusQueryKey } from "../auth/auth-context";
 import { ErrorState } from "../components/states";
 
 /**
@@ -82,6 +82,7 @@ function ClaimForm() {
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   if (status.isPending) return <p className="muted">Checking this appliance…</p>;
   if (status.isError) return <ErrorState error={status.error} action="Cannot read setup state" />;
@@ -93,6 +94,13 @@ function ClaimForm() {
     setError(null);
     try {
       await authApi.setup(username, password);
+      // The same update `login()` makes after a sign-in: whatever /auth/status
+      // said a minute ago, the appliance is claimed now. Without it the
+      // AuthProvider's stale cache (setup_required: true, 60 s staleTime) and
+      // this form's fresh refetch disagree, and the shell bounces the
+      // operator between /login and /setup for the whole stale window right
+      // after the one-shot claim.
+      queryClient.setQueryData(statusQueryKey, { setup_required: false, loopback_setup: true });
       // Deliberately no session: sign in like anybody else (ADR-0016 §7).
       navigate("/login", { replace: true });
     } catch (caught) {

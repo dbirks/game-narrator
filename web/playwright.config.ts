@@ -53,6 +53,8 @@ const developerDecisionUrl = `http://127.0.0.1:${ports.developerDecision}`;
 const developerActionsUrl = `http://127.0.0.1:${ports.developerActions}`;
 const restoreUrl = `http://127.0.0.1:${ports.restore}`;
 const fakeReleasesUrl = `http://127.0.0.1:${ports.fakeReleases}`;
+const themeUrl = `http://127.0.0.1:${ports.theme}`;
+const themeNotCfgUrl = `http://127.0.0.1:${ports.themeNotCfg}`;
 const embeddedBinary = resolve(import.meta.dirname, "..", "bin", "game-narrator");
 // The replay allowlist for the inspector's server: the repo's testdata, named
 // explicitly (ADR-0024 "replay allowlist") rather than relying on the
@@ -111,7 +113,7 @@ export default defineConfig({
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
       testIgnore:
-        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|voices-qa\.spec\.ts|m5-part1\.spec\.ts|m5-graph-regions\.spec\.ts|corrections-fixtures\.spec\.ts|live-play\.spec\.ts|play-controls\.spec\.ts|audio-output\.spec\.ts|bluetooth-output\.spec\.ts|capture-device\.spec\.ts|restore-walk\.spec\.ts|a11y\.spec\.ts|setup-wizard\.spec\.ts|redesign-shell\.spec\.ts|library\.spec\.ts|ksearch\.spec\.ts|agent-dock\.spec\.ts|setup-board\.spec\.ts|traces\.spec\.ts|health\.spec\.ts/,
+        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|voices-qa\.spec\.ts|m5-part1\.spec\.ts|m5-graph-regions\.spec\.ts|corrections-fixtures\.spec\.ts|live-play\.spec\.ts|play-controls\.spec\.ts|audio-output\.spec\.ts|bluetooth-output\.spec\.ts|capture-device\.spec\.ts|restore-walk\.spec\.ts|a11y\.spec\.ts|setup-wizard\.spec\.ts|redesign-shell\.spec\.ts|library\.spec\.ts|ksearch\.spec\.ts|agent-dock\.spec\.ts|setup-board\.spec\.ts|traces\.spec\.ts|health\.spec\.ts|settings-theme\.spec\.ts/,
     },
     {
       // The first-run wizard (G9, ADR-0087) on its own packaged-binary
@@ -415,6 +417,16 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"], baseURL: audioUrl },
     },
     {
+      // The settings-and-theme walk (plan.md Phase 1 item 9, ADR-0109): the
+      // theme picker (UX-09), the audio sink categories with the test tone
+      // and the unpaired-Bluetooth pairing prompt (UX-12), and the tailnet
+      // URL (UX-13), each on its own packaged-binary server so the walk
+      // owns its appliance claim.
+      name: "settings-theme",
+      testMatch: /settings-theme\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: themeUrl },
+    },
+    {
       // The live play path (task browser-live-play, AGENTS.md rule 3 class
       // (d)+(e)): a real Dolphin emulator and the real gateway driven through
       // the packaged /play and /developer pages. No webServer here on
@@ -444,6 +456,11 @@ export default defineConfig({
       command: `node web/e2e/serve.mjs api 127.0.0.1:${ports.api} go run ./cmd/game-narrator serve`,
       cwd: "..",
       url: `${apiUrl}/api/v1/health/live`,
+      // GN_E2E_NO_TAILSCALE (ADR-0109): the settings page's network section
+      // probes the host's tailscale, and this spec's no-foreign-URL assertion
+      // must hold on a developer box that is on a tailnet — the probe's
+      // honest "not configured" answer is the deterministic state.
+      env: { GN_E2E_NO_TAILSCALE: "1" },
       // Never reuse: a server from an earlier run points at an earlier (already
       // deleted) data directory, and testing against it would prove nothing about
       // the binary under test.
@@ -1019,6 +1036,54 @@ export default defineConfig({
       env: {
         GAME_NARRATOR_UPDATE_BASE_URL: fakeReleasesUrl,
         GN_E2E_KEEP_DATA_DIR: "1",
+      },
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The settings-and-theme walk's server (plan.md Phase 1 item 9,
+      // ADR-0109): the tailnet URL pin (UX-13) — an obviously-fake stable
+      // *.ts.net name, so the spec asserts text equality against the API
+      // without a real tailnet — the labelled-synthetic audio seam with the
+      // design's three sink categories (the hub's HDMI port, a USB DAC, the
+      // Bluetooth A2DP sink), the filesink recording the test tone, and the
+      // labelled-synthetic Bluetooth controller (the pairing walk's
+      // unpaired device). GN_E2E_NO_TAILSCALE keeps the live probe out of
+      // the walk's reach: the pin is the walk's state, and the probe must
+      // not render a host-specific URL next to it.
+      command: `node web/e2e/serve.mjs theme 127.0.0.1:${ports.theme} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${themeUrl}/api/v1/health/live`,
+      env: {
+        GAME_NARRATOR_TAILNET_URL: "http://uno-q.stable-tailnet.example.ts.net:8080",
+        GAME_NARRATOR_AUDIO_FAKE_DEVICES:
+          "auto_null:null:48000,hdmi-out:hdmi:48000,jbl-usb-dac:usb:48000,bluez_output.AA:BB:CC:DD:EE:FF.1:bluetooth:48000",
+        GAME_NARRATOR_AUDIO_SINK: "filesink",
+        GAME_NARRATOR_BT_FAKE: "1",
+        GN_E2E_NO_TAILSCALE: "1",
+      },
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The walk's second server: the same seams WITHOUT the tailnet pin,
+      // GN_E2E_NO_TAILSCALE scrubbing the tailscale CLI out of the child's
+      // PATH (serve.mjs), so the network section's not-configured state is
+      // asserted on any host — including a developer box with a running
+      // tailscaled (ADR-0109: an explicit note, never a blank field).
+      command: `node web/e2e/serve.mjs theme-notcfg 127.0.0.1:${ports.themeNotCfg} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${themeNotCfgUrl}/api/v1/health/live`,
+      env: {
+        GAME_NARRATOR_AUDIO_FAKE_DEVICES:
+          "auto_null:null:48000,hdmi-out:hdmi:48000,jbl-usb-dac:usb:48000,bluez_output.AA:BB:CC:DD:EE:FF.1:bluetooth:48000",
+        GAME_NARRATOR_AUDIO_SINK: "filesink",
+        GAME_NARRATOR_BT_FAKE: "1",
+        GN_E2E_NO_TAILSCALE: "1",
       },
       reuseExistingServer: false,
       timeout: 60_000,

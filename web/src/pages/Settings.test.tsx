@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MemoryRouter } from "react-router";
 
 import type { Settings } from "../api/settings";
 import { AuthProvider } from "../auth/auth-context";
@@ -79,6 +80,11 @@ const settings: Settings = {
       max_tool_calls: 48,
       source: "build constants of cmd/game-narrator's agent wiring",
     },
+  },
+  network: {
+    tailnet_url: "http://uno-q.stubbed-tailnet.ts.net:18090",
+    source: "env",
+    note: "Pinned by GAME_NARRATOR_TAILNET_URL — the operator's stable tailnet name (the environment override beats the live probe).",
   },
   version: {
     version: "v0.0.0-test",
@@ -165,11 +171,15 @@ function renderPage() {
     defaultOptions: { queries: { retry: false } },
   });
   return render(
-    <QueryClientProvider client={client}>
-      <AuthProvider>
-        <SettingsPage />
-      </AuthProvider>
-    </QueryClientProvider>,
+    // MemoryRouter: the page's Theme card carries a Link to /settings/theme
+    // (ADR-0109), the same seam the other page tests wrap.
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <AuthProvider>
+          <SettingsPage />
+        </AuthProvider>
+      </QueryClientProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -232,6 +242,14 @@ describe("SettingsPage (unit test with a stubbed fetch fake)", () => {
     expect(screen.getByTestId("settings-version")).toHaveTextContent("abcdef1");
     expect(screen.getByTestId("settings-version")).toHaveTextContent("no auto-update");
     expect(screen.getByTestId("backup-download")).toBeInTheDocument();
+    // The new ADR-0109 cards: the theme link (the theme page route) and the
+    // tailnet URL, rendered verbatim from the API's network section.
+    expect(screen.getByTestId("theme-page-link")).toHaveAttribute("href", "/settings/theme");
+    expect(screen.getByTestId("settings-theme-current")).toHaveTextContent("Plum & Peach");
+    expect(screen.getByTestId("tailnet-url")).toHaveTextContent(
+      "http://uno-q.stubbed-tailnet.ts.net:18090",
+    );
+    expect(screen.getByTestId("tailnet-note")).toHaveTextContent("GAME_NARRATOR_TAILNET_URL");
   });
 
   it("shows the administrator notice on a 403 instead of an error", async () => {

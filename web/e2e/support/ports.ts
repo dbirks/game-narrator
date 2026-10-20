@@ -91,7 +91,9 @@ async function bandFree(base: number): Promise<boolean> {
     base + 35,
     base + 36,
     base + 37,
-  ); // the dev port and the redesign/library/ksearch/agent-dock/setup-board-model/setup-board/traces/fake-assistant review ports
+    base + 38,
+    base + 39,
+  ); // the dev port and the redesign/library/ksearch/agent-dock/setup-board-model/setup-board/traces/fake-assistant/theme/theme-notcfg review ports
   return (await Promise.all(ports.map(isPortFree))).every(Boolean);
 }
 
@@ -383,4 +385,17 @@ export const ports = {
    *  flow (find_similar_lines → apply_speaker_fix behind the confirmation
    *  gate) with a synthetic, labelled-stub decision model. */
   fakeAssistant: base + 37,
+  /** the packaged binary the settings-and-theme walk drives
+   *  (settings-theme.spec.ts, plan.md Phase 1 item 9): the tailnet URL pin,
+   *  the labelled-synthetic audio seam (HDMI/USB/Bluetooth sink categories)
+   *  and the labelled-synthetic Bluetooth controller. Like the redesign port,
+   *  it lives past the 30-port band. base+31/32 are the library and
+   *  ksearch review ports, so the walk takes the next free offsets.
+   *  */
+  theme: base + 38,
+  /** the packaged binary the same walk drives WITHOUT the tailnet pin, its
+   *  PATH scrubbed of the tailscale CLI (GN_E2E_NO_TAILSCALE): the spec's
+   *  not-configured-state assertion must hold whether or not the host has a
+   *  running tailscaled. */
+  themeNotCfg: base + 39,
 } as const;

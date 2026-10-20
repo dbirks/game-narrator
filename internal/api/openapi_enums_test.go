@@ -193,6 +193,11 @@ var literalEnums = map[string][]string{
 	// The tailnet detection's answer (ADR-0110 §4): the interface scan's word
 	// and the tailscale-ip fallback's word, the two values DetectTailnet writes.
 	"Tailnet.properties.source": {tailnetSourceInterface, tailnetSourceTailscale},
+	// The /settings network section (UX-13, ADR-0109): the tailnet URL's
+	// source, written by settingsNetwork in internal/api/network.go — the
+	// operator's env pin or the live tailscale probe (null alongside a null
+	// URL is outside the enum; the type union carries it).
+	"SettingsNetwork.properties.source": {"env", "tailscale"},
 }
 
 func TestOpenAPIEnumVocabulariesMatchTheDomainEnums(t *testing.T) {

@@ -7,7 +7,8 @@ package api
 // The configuration surface of this build is entirely environment variables —
 // providers.LoadRoles for the model roles, GAME_NARRATOR_LISTEN,
 // GAME_NARRATOR_DATA_DIR, GAME_NARRATOR_AUDIO_SINK / GAME_NARRATOR_AUDIO_DEVICE,
-// GAME_NARRATOR_WEB_ALLOW_PRIVATE / GAME_NARRATOR_WEB_PRIVATE_ALLOW — plus the
+// GAME_NARRATOR_WEB_ALLOW_PRIVATE / GAME_NARRATOR_WEB_PRIVATE_ALLOW,
+// GAME_NARRATOR_TAILNET_URL (the tailnet URL pin, ADR-0109) — plus the
 // build constants cmd/game-narrator pins for the agent budget. One setting is
 // runtime-mutable: the audio output (ADR-0074) persists through its own route
 // (PUT /api/v1/settings/audio) with the environment as the override layer.
@@ -46,6 +47,7 @@ type settingsResponse struct {
 	Audio    audioView    `json:"audio"`
 	Security securityView `json:"security"`
 	Imports  importsView  `json:"imports"`
+	Network  networkView  `json:"network"`
 	Version  versionView  `json:"version"`
 	Update   updateView   `json:"update"`
 	Mutable  mutableView  `json:"mutable"`
@@ -193,6 +195,7 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 		Audio:    settingsAudio(),
 		Security: s.settingsSecurity(ctx),
 		Imports:  settingsImports(),
+		Network:  s.settingsNetwork(ctx),
 		Version: versionView{
 			Version: s.build.Version, Commit: s.build.Commit, GoVersion: s.build.GoVersion,
 			OS: s.build.GOOS, Arch: s.build.GOARCH,
