@@ -53,6 +53,7 @@ archives:
   - id: game-narrator
     # game-narrator_<version>_linux_<arch>.tar.gz (tar.gz is the v2 default)
     files:
+      - LICENSE
       - README.md
       - examples/config/config.example.yaml
       - examples/config/env.example
@@ -110,7 +111,7 @@ dockers_v2:
       org.opencontainers.image.version: "{{ .Version }}"
       org.opencontainers.image.revision: "{{ .ShortCommit }}"
       org.opencontainers.image.source: https://github.com/dbirks/game-narrator
-      org.opencontainers.image.licenses: UNLICENSED
+      org.opencontainers.image.licenses: Apache-2.0
 
 # --- Keyless cosign signing of pushed OCI images (ADR 0048) -----------------
 # docker_signs runs only in the publish phase, i.e. for non-snapshot runs that
@@ -169,7 +170,7 @@ nfpms:
     formats:
       - deb
       - archlinux
-    license: unspecified # README "License: Not yet chosen" — see ADR 0033
+    license: Apache-2.0 # LICENSE; ADR 0086
     maintainer: "dbirks (Game Narrator project)"
     description: >-
       Live game narration assistant: captures gameplay video, reads on-screen
@@ -275,6 +276,10 @@ nfpms:
         # upgrade lives here (post_install covers fresh installs).
         postupgrade: packaging/arch/post_upgrade.sh
     contents:
+      - src: LICENSE
+        dst: /usr/share/doc/game-narrator/LICENSE
+        file_info:
+          mode: 0o644
       - src: packaging/systemd/game-narrator.service
         dst: /lib/systemd/system/game-narrator.service
         file_info:

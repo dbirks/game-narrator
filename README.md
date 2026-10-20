@@ -328,4 +328,8 @@ passing. `make help` lists the targets.
 
 ## License
 
-Not yet chosen.
+Licensed under the [Apache License, Version 2.0](LICENSE) (ADR 0086).
+
+The license covers this project's code and documentation only. Game images,
+game scripts, voices and other content you import stay yours and under their
+own terms; none of it is distributed with Game Narrator (AGENTS.md rule 5).
