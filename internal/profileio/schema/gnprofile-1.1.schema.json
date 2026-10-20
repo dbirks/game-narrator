@@ -106,7 +106,7 @@
       "type": "object",
       "additionalProperties": false,
       "description": "Lifecycle of the exported revision. Excluded from manifest_digest: a re-import is a draft by construction, and an approval timestamp is not content. narrator_fallback and auto_cast ride here rather than in a content section because they are row properties of the exported profile (the import applies them to the draft it creates), the way preferred_voice_id travels.",
-      "required": ["status", "revision", "narrator_fallback", "auto_cast"],
+      "required": ["status", "revision", "narrator_fallback"],
       "properties": {
         "status": { "$ref": "#/$defs/ProfileStatus" },
         "revision": { "type": "integer", "description": "profiles.revision_num: which revision of the edition this was." },
