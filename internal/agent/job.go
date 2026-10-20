@@ -50,6 +50,9 @@ type JobConfig struct {
 	ModelLabel string
 	// Budget freezes the run ceilings; zero fields take the defaults.
 	Budget BudgetConfig
+	// SetupStages is handed through to every attempt's Options (ADR-0108):
+	// the setup board's stage observer. Nil: attempts run without it.
+	SetupStages func(runID, profileID, toolName string, res Result)
 }
 
 // JobPayload is the agent.run job payload. RunID names the durable run;
@@ -94,6 +97,7 @@ func NewJobHandler(cfg JobConfig) (jobs.Handler, error) {
 			Budget:      cfg.Budget,
 			Prompt:      cfg.Prompt,
 			ModelLabel:  cfg.ModelLabel,
+			SetupStages: cfg.SetupStages,
 		})
 		// The result is the machine-readable half of "why did this attempt
 		// stop" for the developer UI; it is written even when the run

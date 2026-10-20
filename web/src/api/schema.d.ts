@@ -1530,6 +1530,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/onboarding/runs/{id}/board": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * The setup board snapshot: every character with its column, plus the run-level tiles and six-cell stage rail (UX-06).
+     * @description The page-load half of the setup board (docs/design/plum-peach product-notes UX-06, ADR-0108): the live half is the SSE stream (setup.character_stage / setup.progress, replayable via Last-Event-ID), and this snapshot is derived from the same durable rows the events carry, so it equals the board a client assembles by replaying the events. Card columns: finding (staged), brief (brief written), voicing (TTS take exists or in flight), done (a take is approved and current).
+     */
+    get: operations["getOnboardingRunBoard"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/onboarding/runs/{id}/messages": {
     parameters: {
       query?: never;
@@ -4909,6 +4929,57 @@ export interface components {
       cache_entries: number;
       deleted_blobs: string[];
     };
+    /** @description One card of the setup board snapshot. */
+    SetupBoardCharacter: {
+      character_id: string;
+      /** @description The character display name. */
+      name: string;
+      /**
+       * @description The card column the character is in (UX-06).
+       * @enum {string}
+       */
+      stage: "finding" | "brief" | "voicing" | "done";
+      /** @description The character cited-line count. */
+      lines: number;
+      /**
+       * Format: date-time
+       * @description The observed time of the character newest setup.character_stage event; absent when the event log holds none.
+       */
+      at?: string;
+    };
+    /** @description One cell of the setup page six-cell stage rail (plan.md item 4). */
+    SetupRailCell: {
+      /** @enum {string} */
+      id: "find_game" | "dialogue" | "characters" | "briefs" | "voices" | "publish";
+      label: string;
+      /** @enum {string} */
+      state: "pending" | "active" | "done";
+      /** @description The cell number (line count, character counts, the profile status on the publish cell). */
+      value?: string;
+    };
+    /** @description The run-level state behind the setup page tiles and rail; also the setup.progress SSE payload (ADR-0108). */
+    SetupProgress: {
+      run_id: string;
+      /** @description The profile total dialogue line count. */
+      lines_read: number;
+      characters: number;
+      /** @description Characters at stage voicing or later (a TTS take exists; done means it is approved). */
+      voiced: number;
+      total: number;
+      /** @description Whole seconds since the run was created. */
+      elapsed: number;
+      stage_rail: components["schemas"]["SetupRailCell"][];
+    };
+    /** @description The setup board snapshot (ADR-0108, UX-06): the page load that cannot trust the stream rebuilds the board from this body. Every field is derived from the same durable rows the setup.* events carry. */
+    SetupBoard: {
+      run_id: string;
+      /** @enum {string} */
+      state: "queued" | "running" | "blocked" | "review" | "failed" | "succeeded" | "cancelled";
+      /** Format: date-time */
+      created_at: string;
+      characters: components["schemas"]["SetupBoardCharacter"][];
+      progress: components["schemas"]["SetupProgress"];
+    };
   };
   responses: {
     /** @description RFC 9457 problem+json. code is the stable member of docs/spec/08's error contract; X-Request-Id correlates it with the server log and the event stream. */
@@ -7618,6 +7689,34 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["OnboardingRunState"];
+        };
+      };
+      401: components["responses"]["Problem"];
+      403: components["responses"]["Problem"];
+      404: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  getOnboardingRunBoard: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The run ULID. */
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The board snapshot. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SetupBoard"];
         };
       };
       401: components["responses"]["Problem"];

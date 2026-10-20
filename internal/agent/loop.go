@@ -80,6 +80,16 @@ type Options struct {
 	// ModelLabel is the model id stored on the run row for the evidence
 	// bundle. Log-safe: an id, never a URL or token.
 	ModelLabel string
+	// SetupStages, when non-nil, is called after each SUCCEEDED tool call
+	// with the run id, the run's profile (once known) and the result
+	// envelope. The setup board (ADR-0108) uses it to emit
+	// setup.character_stage / setup.progress at the run's real stage
+	// transitions; the loop stays agnostic to what the observer reports, and
+	// a nil hook is a no-op, so the agent core and every other consumer are
+	// unchanged. The observer runs synchronously in the loop's critical
+	// section and must be cheap and non-fatal: the tool has already done its
+	// durable work, so an observer fault cannot undo a transition.
+	SetupStages func(runID, profileID, toolName string, res Result)
 }
 
 // Run executes the loop to a stop condition. The returned Outcome always
@@ -373,6 +383,13 @@ func (l *loop) run(ctx context.Context) (Outcome, error) {
 			l.emitEvent(events.ToolCompleted, map[string]any{
 				"run_id": l.opts.RunID, "tool_call_id": tc.ID, "name": tc.Name, "status": string(res.Status),
 			})
+			// The setup board's stage observer (ADR-0108): it sees the same
+			// result the loop sees, before the review-boundary stop, so a
+			// design_voice that stops the run for approval still reports its
+			// voicing transition. A nil hook is a no-op.
+			if l.opts.SetupStages != nil && res.Status == StatusSucceeded {
+				l.opts.SetupStages(l.opts.RunID, l.opts.ProfileID, tc.Name, res)
+			}
 
 			l.recordOutcome(key, res.Status, res.Error)
 			if res.Status == StatusFailed && url != "" && isSourceRefusal(res.Error) {

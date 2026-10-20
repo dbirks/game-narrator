@@ -28,6 +28,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/profileio"
 	"github.com/dbirks/game-narrator/internal/restore"
 	"github.com/dbirks/game-narrator/internal/runtime"
+	"github.com/dbirks/game-narrator/internal/setupboard"
 	"github.com/dbirks/game-narrator/internal/store"
 )
 
@@ -107,6 +108,13 @@ var literalEnums = map[string][]string{
 	"OnboardingToolCallView.properties.status": {"pending", string(agent.StatusSucceeded), string(agent.StatusFailed), string(agent.StatusRefused), string(agent.StatusTimeout), string(agent.StatusCancelled)},
 	"OnboardingReviewItem.properties.kind":     {"publish", "tool"},
 	"OnboardingReviewItem.properties.state":    {"pending", "resolved"},
+	// The setup board snapshot (ADR-0108, UX-06): the card columns
+	// internal/setupboard derives, the rail's six cells and cell states it
+	// writes, and the run-state vocabulary the snapshot answers verbatim.
+	"SetupBoard.properties.state":          {string(agent.StateQueued), string(agent.StateRunning), string(agent.StateBlocked), string(agent.StateReview), string(agent.StateFailed), string(agent.StateSucceeded), string(agent.StateCancelled)},
+	"SetupBoardCharacter.properties.stage": {string(setupboard.StageFinding), string(setupboard.StageBrief), string(setupboard.StageVoicing), string(setupboard.StageDone)},
+	"SetupRailCell.properties.id":          {setupboard.RailFindGame, setupboard.RailDialogue, setupboard.RailCharacters, setupboard.RailBriefs, setupboard.RailVoices, setupboard.RailPublish},
+	"SetupRailCell.properties.state":       {string(setupboard.CellPending), string(setupboard.CellActive), string(setupboard.CellDone)},
 	// The voice workflow (M4, docs/spec/07): the revision lifecycle the store
 	// enforces (draft → auditioning → approved → retired, one-way) and the
 	// per-instance registration states the registry reconciliation writes.

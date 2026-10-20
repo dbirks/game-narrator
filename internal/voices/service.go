@@ -84,6 +84,15 @@ type Service struct {
 	// the check simply does not run; the runtime never blocks playback on
 	// either check.
 	QA *speech.QAEngine
+	// StageObserver, when non-nil, receives the workflow's real setup-board
+	// transitions (ADR-0108): the revision's auditions recorded (a TTS take
+	// was requested and generated) and a revision approved (human or
+	// auto-cast). The observer resolves the board the voice belongs to; a
+	// nil observer runs the workflow without board events.
+	StageObserver interface {
+		AuditionsReady(ctx context.Context, revisionID string)
+		VoiceApproved(ctx context.Context, revisionID string)
+	}
 }
 
 // New validates the wiring.
@@ -258,6 +267,12 @@ func (s *Service) fillDraft(ctx context.Context, rev store.VoiceProfile, n int) 
 	if err := s.Store.AddAuditions(ctx, rev.ID, ids, auditions); err != nil {
 		return nil, fmt.Errorf("voices: record auditions: %w", err)
 	}
+	// The setup board's take transition (ADR-0108): the clips are durable
+	// now, which is the moment a TTS take was really requested on this
+	// path. The observer degrades to silence; the fill is already done.
+	if s.StageObserver != nil {
+		s.StageObserver.AuditionsReady(ctx, rev.ID)
+	}
 	return auditions, nil
 }
 
@@ -347,6 +362,12 @@ func (s *Service) Approve(ctx context.Context, revisionID, auditionID, consent, 
 		RegisteredName: name, State: store.VoiceRegPending, LastVerifiedAt: &now,
 	}); err != nil {
 		return store.VoiceProfile{}, fmt.Errorf("voices: record pending registration: %w", err)
+	}
+	// The setup board's approval transition (ADR-0108): the revision is
+	// frozen and current, whether the approval was a human click or the
+	// auto-cast default (UX-03 re-uses this gate, so both read as done).
+	if s.StageObserver != nil {
+		s.StageObserver.VoiceApproved(ctx, revisionID)
 	}
 	return s.Store.GetVoiceRevision(ctx, revisionID)
 }

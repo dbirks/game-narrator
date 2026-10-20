@@ -296,6 +296,34 @@ func (s *Store) ListCharacters(ctx context.Context, profileID string) ([]games.C
 	return out, err
 }
 
+// ProfileIDsForCharacter answers "which profile revisions contain a character
+// with this exact display name" (ADR-0108): the setup board's voice events
+// are keyed by character name — the voice surface's own identity (the
+// voice_profiles.character column, /api/v1/voices?character=) — and this is
+// the join back to the profile a board belongs to. Distinct profile ids, in
+// stable order; an empty slice (not an error) is the honest "no profile has
+// that character" answer.
+func (s *Store) ProfileIDsForCharacter(ctx context.Context, name string) ([]string, error) {
+	const op = "profile ids for character"
+	var out []string
+	err := s.inRead(ctx, func(ctx context.Context, q queryable) error {
+		rows, err := q.query(ctx, op, "SELECT DISTINCT profile_id FROM characters WHERE name = ? ORDER BY profile_id", name)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return mapReadError(op, err)
+			}
+			out = append(out, id)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
 func loadCharacters(ctx context.Context, q queryable, profileID string) ([]games.Character, error) {
 	const op = "list characters"
 	rows, err := q.query(ctx, op, "SELECT "+characterColumns+" FROM characters WHERE profile_id = ? ORDER BY id", profileID)

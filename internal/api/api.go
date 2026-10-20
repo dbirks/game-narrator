@@ -34,6 +34,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/games/adapter"
 	"github.com/dbirks/game-narrator/internal/logbuf"
 	rt "github.com/dbirks/game-narrator/internal/runtime"
+	"github.com/dbirks/game-narrator/internal/setupboard"
 	"github.com/dbirks/game-narrator/internal/store"
 	"github.com/dbirks/game-narrator/internal/telemetry"
 	"github.com/dbirks/game-narrator/internal/updates"
@@ -171,6 +172,13 @@ type Server struct {
 	// queue the runs execute as, the run log and the human approval tokens.
 	// nil answers 503 under /api/v1/onboarding (ADR-0028).
 	onb *onbDeps
+
+	// setupBoard wires the setup board snapshot (onboarding_board.go,
+	// ADR-0108, UX-06): the GET .../board read that reconstructs the board a
+	// client would assemble from the SSE stage events. nil answers 503 on
+	// that one route only; the rest of the onboarding surface and the event
+	// stream are unaffected.
+	setupBoard *setupboard.Emitter
 
 	// assistantDeps wires the context-aware assistant routes (assistant.go,
 	// ADR-0099): the thread→run ownership tables, the durable queue the
@@ -767,6 +775,10 @@ func (s *Server) Handler() http.Handler {
 	routes.register(mux, http.MethodPost, "/api/v1/onboarding/runs/{id}/cancel", s.handleOnboardingCancel)
 	routes.register(mux, http.MethodPost, "/api/v1/onboarding/runs/{id}/approve", s.handleOnboardingApprove)
 	routes.register(mux, http.MethodPost, "/api/v1/onboarding/uploads", s.handleOnboardingUpload)
+	// The setup board snapshot (ADR-0108, UX-06): the page-load half of the
+	// board the SSE stage events drive live. The scope table grants the whole
+	// /api/v1/onboarding prefix, so this GET rides the same grant.
+	routes.register(mux, http.MethodGet, "/api/v1/onboarding/runs/{id}/board", s.handleOnboardingBoard)
 
 	// Context-aware assistant (ADR-0099, docs/design/plum-peach UX-01/04/05):
 	// the agent dock's backend. One thread is one durable agent run; a

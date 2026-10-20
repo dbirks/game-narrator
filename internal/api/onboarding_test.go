@@ -33,6 +33,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/providers"
 	"github.com/dbirks/game-narrator/internal/providers/openai"
 	"github.com/dbirks/game-narrator/internal/providers/router"
+	"github.com/dbirks/game-narrator/internal/setupboard"
 	"github.com/dbirks/game-narrator/internal/store"
 )
 
@@ -52,11 +53,34 @@ type onbEnv struct {
 	runner *jobs.Runner
 	h      http.Handler
 	model  agent.Model
+	// eventStore is the durable event log the hub appends to (the SSE
+	// Last-Event-ID replay source); tests read it to replay the stream.
+	eventStore *store.EventStore
+	// board is the setup board emitter (ADR-0108), wired only when the env
+	// asked for it: the agent job's SetupStages hook and the board route.
+	board *setupboard.Emitter
+}
+
+// onbBoardOpts turns the optional board wiring and tool backends on for one
+// env: the scripted runs never fetch or fetch-free, but the stage tools need
+// a chat role (analyze_character) and a design provider (design_voice), and
+// the board test wants the SSE emitter wired end to end.
+type onbBoardOpts struct {
+	board bool
+	chat  tools.ChatFn
+	tts   tools.VoiceDesigner
 }
 
 // newOnbEnv wires the appliance the way cmd/game-narrator does, with model in
 // place of the provider gateway.
 func newOnbEnv(t *testing.T, model agent.Model) *onbEnv {
+	t.Helper()
+	return newOnbEnvFull(t, model, onbBoardOpts{})
+}
+
+// newOnbEnvFull is newOnbEnv with the optional board wiring and the tool
+// backends the stage-relevant tools need (ADR-0108 board tests).
+func newOnbEnvFull(t *testing.T, model agent.Model, opts onbBoardOpts) *onbEnv {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	t.Cleanup(cancel)
@@ -71,7 +95,8 @@ func newOnbEnv(t *testing.T, model agent.Model) *onbEnv {
 		t.Fatalf("generic.Register: %v", err)
 	}
 	js := store.NewJobsStore(a.st)
-	hub := events.New(events.WithStore(store.NewEventStore(a.st)), events.WithLogger(discardLogger))
+	evStore := store.NewEventStore(a.st)
+	hub := events.New(events.WithStore(evStore), events.WithLogger(discardLogger))
 	runner, err := jobs.NewRunner(js, hub, discardLogger, jobs.WithPollInterval(2*time.Millisecond))
 	if err != nil {
 		t.Fatalf("jobs.NewRunner: %v", err)
@@ -82,14 +107,15 @@ func newOnbEnv(t *testing.T, model agent.Model) *onbEnv {
 		Assets:    as,
 		Adapters:  reg,
 		Fetcher:   nil, // the scripted runs never fetch; web research is live-only
-		Chat:      nil,
+		Chat:      opts.chat,
+		TTS:       opts.tts,
 		Approvals: tools.NewSQLiteApprovals(a.st),
 	}
 	toolReg, err := tools.DefaultTools(deps)
 	if err != nil {
 		t.Fatalf("tools.DefaultTools: %v", err)
 	}
-	handler, err := agent.NewJobHandler(agent.JobConfig{
+	cfg := agent.JobConfig{
 		Model:      model,
 		Registry:   toolReg,
 		Store:      store.NewAgentStore(a.st),
@@ -100,7 +126,15 @@ func newOnbEnv(t *testing.T, model agent.Model) *onbEnv {
 			UserRole:     auth.RoleCurator,
 			SourcePolicy: "web sources are untrusted; import_user_asset is the only script-content path",
 		},
-	})
+	}
+	var board *setupboard.Emitter
+	if opts.board {
+		// The setup board (ADR-0108): the same emitter the production wiring
+		// passes to the agent loop and the board route.
+		board = setupboard.New(hub, a.st, store.NewAgentStore(a.st), evStore, discardLogger)
+		cfg.SetupStages = board.ObserveTool
+	}
+	handler, err := agent.NewJobHandler(cfg)
 	if err != nil {
 		t.Fatalf("agent.NewJobHandler: %v", err)
 	}
@@ -123,13 +157,18 @@ func newOnbEnv(t *testing.T, model agent.Model) *onbEnv {
 		}
 	})
 
-	h := a.handler(
+	hOpts := []Option{
 		WithStore(a.st), WithJobs(js), WithEvents(hub),
 		WithImport(as, reg, runner),
 		WithOnboarding(runner, store.NewAgentStore(a.st), tools.NewSQLiteApprovals(a.st)),
-	)
+	}
+	if board != nil {
+		hOpts = append(hOpts, WithSetupBoard(board))
+	}
+	h := a.handler(hOpts...)
 	return &onbEnv{t: t, ctx: ctx, a: a, st: a.st, as: as, reg: reg,
-		js: js, hub: hub, runner: runner, h: h, model: model}
+		js: js, hub: hub, runner: runner, h: h, model: model,
+		eventStore: evStore, board: board}
 }
 
 // ── request helpers ─────────────────────────────────────────────────────────

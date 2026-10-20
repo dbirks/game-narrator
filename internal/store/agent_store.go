@@ -214,6 +214,60 @@ func (a *AgentStore) GetAgentRun(ctx context.Context, id string) (AgentRun, erro
 	return r, nil
 }
 
+// LatestAgentRunByCharacter resolves the onboarding run a name-keyed voice
+// transition belongs to (ADR-0108): the most recently updated run whose
+// profile contains a character of that exact name, excluding failed runs —
+// a failed run's board is frozen and a new run's job is to continue it.
+// The second return value is false (with a nil error) when no such run
+// exists: voice work outside any setup run (a Cast page on a published
+// game) has no board, and the caller skips the transition rather than
+// inventing a run id.
+func (a *AgentStore) LatestAgentRunByCharacter(ctx context.Context, name string) (AgentRun, bool, error) {
+	const op = "latest agent run by character"
+	var r AgentRun
+	var found bool
+	var profile sql.NullString
+	var created, updated string
+	err := a.s.inRead(ctx, func(ctx context.Context, q queryable) error {
+		err := q.queryRow(ctx, op,
+			`SELECT id, profile_id, state, plan_json, budget_json, prompt_version,
+			model, stop_reason, created_at, updated_at
+			FROM agent_runs
+			WHERE profile_id IN (SELECT profile_id FROM characters WHERE name = ?)
+				AND state != 'failed'
+			ORDER BY updated_at DESC, id DESC
+			LIMIT 1`, name,
+		).Scan(&r.ID, &profile, &r.State, &r.PlanJSON, &r.BudgetJSON, &r.PromptVersion,
+			&r.Model, &r.StopReason, &created, &updated)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return nil
+			}
+			return err
+		}
+		found = true
+		return nil
+	})
+	if err != nil {
+		return AgentRun{}, false, mapReadError(op, err)
+	}
+	if !found {
+		return AgentRun{}, false, nil
+	}
+	if profile.Valid {
+		r.ProfileID = profile.String
+	}
+	r.CreatedAt, err = parseStamp(created)
+	if err != nil {
+		return AgentRun{}, false, mapReadError(op, err)
+	}
+	r.UpdatedAt, err = parseStamp(updated)
+	if err != nil {
+		return AgentRun{}, false, mapReadError(op, err)
+	}
+	return r, true, nil
+}
+
 // LatestAgentToolCall is the status bar's stage read (status.go): the
 // run's newest tool call, by seq — the step the agent is on, pending or
 // settled. One statement with a LIMIT, the bounded shape the 2 Hz status
