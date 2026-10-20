@@ -1,4 +1,4 @@
-import { BrowserRouter, Navigate, Route, Routes, useParams, useSearchParams } from "react-router";
+import { BrowserRouter, Navigate, Route, Routes, useSearchParams } from "react-router";
 
 import { AuthProvider, RequireAuth } from "./auth/auth-context";
 import { Shell } from "./components/Shell";
@@ -22,17 +22,6 @@ import { SettingsPage } from "./pages/Settings";
 import { TestsPage } from "./pages/Tests";
 import { TracesPage } from "./pages/Traces";
 import { VoicesPage } from "./pages/Voices";
-
-/**
- * The ⌘K character-row seam (ADR-0098): /games/:id/cast is the design's Cast
- * destination; the merged Cast page (plan item 5) replaces this redirect with
- * the real route, and the old /characters and /voices paths become its
- * redirects — the seam moves, the link never 404s.
- */
-function CastSeamRedirect() {
-  const { id } = useParams();
-  return <Navigate to={`/games/${id}/characters`} replace />;
-}
 
 /**
  * Routes (docs/spec/09 "Routes and page requirements"). The milestone 1 slice
@@ -78,11 +67,6 @@ export function App() {
         />
         <Route path="/developer" element={<TracesRedirect />} />
         <Route path="/health" element={<Navigate to="/diagnostics" replace />} />
-        {/* The ⌘K palette's character rows target the Cast page (ADR-0098's
-            IA: /games/:id/cast). The merged Cast page lands with plan item 5;
-            until then the seam keeps every cast link live, the same way
-            /traces and /health keep the renamed nav live in Phase 0. */}
-        <Route path="/games/:id/cast" element={<CastSeamRedirect />} />
         {/* The kit gallery (plan.md Phase 0 item 4): developer role only;
             the page gates the role, the guard gates the session. */}
         <Route

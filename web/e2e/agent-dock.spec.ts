@@ -71,11 +71,12 @@ const PRIMARY_ROUTES: { path: string; chip: string; settle: (page: Page) => Prom
     settle: (page) => expect(page.getByTestId("play-start-form")).toBeVisible({ timeout: 20_000 }),
   },
   {
-    // /traces redirects to /developer until the Phase 1 rename (ADR-0093 §4);
-    // the chip seam already names the destination "traces".
+    // /traces is the Traces screen now (the ADR-0109 rename landed): the
+    // chip names the destination and the line-trace list settles on its
+    // panel.
     path: "/traces",
     chip: "traces",
-    settle: (page) => expect(page.getByTestId("session-start")).toBeVisible({ timeout: 20_000 }),
+    settle: (page) => expect(page.getByTestId("traces-list")).toBeVisible({ timeout: 20_000 }),
   },
   {
     path: "/settings",

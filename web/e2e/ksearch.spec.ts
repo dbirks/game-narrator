@@ -192,12 +192,10 @@ test("⌘K opens the overlay (role=dialog) from any page without navigation", as
         expect(page.getByTestId("play-start-form")).toBeVisible({ timeout: 20_000 }),
     },
     {
-      // /traces is the ADR-0093 seam: it redirects to /developer.
+      // /traces is the Traces screen itself now (the ADR-0109 rename landed):
+      // the line-trace list settles on its panel.
       path: "/traces",
-      settled: async (page) => {
-        await expect(page).toHaveURL(/\/developer$/, { timeout: 20_000 });
-        await expect(page.getByTestId("session-panel")).toBeVisible();
-      },
+      settled: (page) => expect(page.getByTestId("traces-list")).toBeVisible({ timeout: 20_000 }),
     },
     {
       path: "/settings",
@@ -259,8 +257,7 @@ test("⌘K: grouped results across categories; ↵ per row kind", async ({ page 
 
   // ── ↵ on a line row opens the line's trace ──────────────────────────────
   // The line rows carry the line id in mono and the /traces?line= route; the
-  // ADR-0093 seam lands the trace query on /developer until item 7's Traces
-  // page replaces it.
+  // ADR-0109 rename landed the trace query on the Traces screen itself.
   const lineRow = page.locator('[data-testid="palette-row"][data-kind="line"]').first();
   const lineRoute = (await lineRow.getAttribute("data-route")) ?? "";
   expect(lineRoute, "the line row targets the line's trace").toMatch(/^\/traces\?line=/);
@@ -272,13 +269,13 @@ test("⌘K: grouped results across categories; ↵ per row kind", async ({ page 
   await page.keyboard.press("ArrowDown");
   await expect(lineRow).toBeFocused();
   await page.keyboard.press("Enter");
-  await expect(page).toHaveURL(/\/developer$/, { timeout: 20_000 });
+  await expect(page).toHaveURL(/traces\?line=/, { timeout: 20_000 });
   await expect(page.getByTestId("palette")).toHaveCount(0);
 
   // ── ↵ on a character row lands on the Cast page ─────────────────────────
   // "marla" ranks the character, and the character row targets the game's
-  // Cast page (ADR-0098's IA: /games/:id/cast — the seam lands it on the
-  // merged characters page until item 5's Cast page replaces it).
+  // Cast page (ADR-0098's IA: /games/:id/cast) — the Cast seam page the
+  // setup board's completion lands on, so the CTA is live there.
   await openPalette(page);
   await query(page, "marla");
   const characterRow = page.locator('[data-testid="palette-row"][data-kind="character"]').first();
@@ -287,8 +284,8 @@ test("⌘K: grouped results across categories; ↵ per row kind", async ({ page 
   await page.keyboard.press("ArrowDown"); // the character row leads this answer
   await expect(characterRow).toBeFocused();
   await page.keyboard.press("Enter");
-  await expect(page).toHaveURL(`/games/${gameId}/characters`, { timeout: 20_000 });
-  await expect(page.getByTestId("characters-title")).toContainText(GAME.title);
+  await expect(page).toHaveURL(`/games/${gameId}/cast`, { timeout: 20_000 });
+  await expect(page.getByTestId("cast-start-narrating")).toBeVisible();
   await expect(page.getByTestId("palette")).toHaveCount(0);
 
   // ── ↵ on an action row runs the action ──────────────────────────────────
