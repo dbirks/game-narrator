@@ -4,6 +4,7 @@ import { Link, useSearchParams } from "react-router";
 
 import {
   api,
+  apiStatus,
   catalogApi,
   type Schemas,
   type Edition,
@@ -89,8 +90,14 @@ async function fetchRunOptions(signal?: AbortSignal): Promise<RunOption[]> {
           params: { id: edition.id },
           signal,
         })) as unknown as Profile;
-      } catch {
-        continue; // a 404 here means "nothing published", not a fault
+      } catch (error) {
+        // Only a 404 means "nothing published for this edition" — the normal
+        // shelf state the empty option list renders. Any other failure
+        // (transient 5xx, an aborted in-flight read, a network drop) must
+        // not be swallowed into a false "Nothing is published": rethrow it so
+        // the query errors and the page offers the retryable error state.
+        if (apiStatus(error) !== 404) throw error;
+        continue;
       }
       if (profile) options.push({ game, edition, profile });
     }

@@ -11,6 +11,7 @@ import {
   serverRun,
 } from "./support/servers";
 import { trackConsoleErrors } from "./support/console";
+import { acquireScenarioLock } from "./support/scenario-lock";
 
 /**
  * The /library screen (docs/design/plum-peach 2a; ADR-0109) on a fresh
@@ -178,279 +179,289 @@ test("library: hero, status chip, view persistence and a real session start", as
   // renders that 503 as its own "no capture layer" note.
   const consoleErrors = trackConsoleErrors(page, [401, 503]);
 
-  // ── claim the appliance and sign in ──────────────────────────────────────
-  await setScenario(request, "stall");
-  await page.goto("/");
-  await expect(page.getByTestId("setup-form")).toBeVisible({ timeout: 30_000 });
-  await page.getByTestId("setup-username").fill(ADMIN.username);
-  await page.getByTestId("setup-password").fill(ADMIN.password);
-  await page.getByTestId("setup-submit").click();
-  await expect(page).toHaveURL(/\/login$/, { timeout: 20_000 });
-  await page.getByTestId("login-username").fill(ADMIN.username);
-  await page.getByTestId("login-password").fill(ADMIN.password);
-  await page.getByTestId("login-submit").click();
-  await expect(page.getByTestId("nav-user")).toContainText(ADMIN.username);
-  await expect(page.getByTestId("nav-role")).toHaveText("admin");
+  // The scenario lock (ADR-0112): the in-setup seed drives the shared
+  // fake-model gateway's one global scenario (stall), so this walk is serial
+  // with the other scenario walks across the run's workers.
+  const releaseScenario = await acquireScenarioLock(testInfo, "stall");
+  try {
+    // ── claim the appliance and sign in ──────────────────────────────────────
+    await setScenario(request, "stall");
+    await page.goto("/");
+    await expect(page.getByTestId("setup-form")).toBeVisible({ timeout: 30_000 });
+    await page.getByTestId("setup-username").fill(ADMIN.username);
+    await page.getByTestId("setup-password").fill(ADMIN.password);
+    await page.getByTestId("setup-submit").click();
+    await expect(page).toHaveURL(/\/login$/, { timeout: 20_000 });
+    await page.getByTestId("login-username").fill(ADMIN.username);
+    await page.getByTestId("login-password").fill(ADMIN.password);
+    await page.getByTestId("login-submit").click();
+    await expect(page.getByTestId("nav-user")).toContainText(ADMIN.username);
+    await expect(page.getByTestId("nav-role")).toHaveText("admin");
 
-  // ── seed 1: the READY game, through the UI (the a11y walk's seed) ────────
-  await page.goto("/library");
-  await page.getByTestId("new-game").click();
-  await page.getByTestId("new-game-slug").fill(READY.slug);
-  await page.getByTestId("new-game-title").fill(READY.title);
-  await page.getByTestId("new-game-platform").fill("GameCube");
-  await page.getByTestId("new-game-submit").click();
-  const readyCard = page.getByTestId(`game-${READY.slug}`);
-  await expect(readyCard, "the ready game lands on the shelf").toContainText(READY.title, {
-    timeout: 30_000,
-  });
+    // ── seed 1: the READY game, through the UI (the a11y walk's seed) ────────
+    await page.goto("/library");
+    await page.getByTestId("new-game").click();
+    await page.getByTestId("new-game-slug").fill(READY.slug);
+    await page.getByTestId("new-game-title").fill(READY.title);
+    await page.getByTestId("new-game-platform").fill("GameCube");
+    await page.getByTestId("new-game-submit").click();
+    const readyCard = page.getByTestId(`game-${READY.slug}`);
+    await expect(readyCard, "the ready game lands on the shelf").toContainText(READY.title, {
+      timeout: 30_000,
+    });
 
-  await readyCard.click();
-  await expect(page.getByTestId("game-title")).toHaveText(READY.title);
-  const readyGameId = /\/games\/([^/]+)\/overview/.exec(page.url())?.[1] ?? "";
-  expect(readyGameId, "the overview URL carries the game id").toBeTruthy();
+    await readyCard.click();
+    await expect(page.getByTestId("game-title")).toHaveText(READY.title);
+    const readyGameId = /\/games\/([^/]+)\/overview/.exec(page.url())?.[1] ?? "";
+    expect(readyGameId, "the overview URL carries the game id").toBeTruthy();
 
-  await page.getByTestId("new-edition").click();
-  await page.getByTestId("edition-region").fill("us");
-  await page.getByTestId("edition-language").fill("en");
-  await page.getByTestId("edition-revision").fill("rev0");
-  await page.getByTestId("edition-submit").click();
-  const editionTab = page.getByRole("tab", { name: "us / en / rev0" });
-  await expect(editionTab).toBeVisible({ timeout: 20_000 });
-  await page
-    .getByTestId(/edition-panel-/)
-    .getByTestId("new-draft")
-    .click();
-  await expect(page.getByTestId("revision-1")).toBeVisible({ timeout: 20_000 });
+    await page.getByTestId("new-edition").click();
+    await page.getByTestId("edition-region").fill("us");
+    await page.getByTestId("edition-language").fill("en");
+    await page.getByTestId("edition-revision").fill("rev0");
+    await page.getByTestId("edition-submit").click();
+    const editionTab = page.getByRole("tab", { name: "us / en / rev0" });
+    await expect(editionTab).toBeVisible({ timeout: 20_000 });
+    await page
+      .getByTestId(/edition-panel-/)
+      .getByTestId("new-draft")
+      .click();
+    await expect(page.getByTestId("revision-1")).toBeVisible({ timeout: 20_000 });
 
-  const revision1 = page.getByTestId("revision-1");
-  await revision1.getByTestId("import-file").setInputFiles(ADVENTURE_CSV);
-  await revision1.getByTestId("import-submit").click();
-  await expect(page.getByTestId("job-progress")).toContainText("succeeded", { timeout: 60_000 });
-  await expect(page.getByTestId("import-inserted")).toHaveText("40");
+    const revision1 = page.getByTestId("revision-1");
+    await revision1.getByTestId("import-file").setInputFiles(ADVENTURE_CSV);
+    await revision1.getByTestId("import-submit").click();
+    await expect(page.getByTestId("job-progress")).toContainText("succeeded", { timeout: 60_000 });
+    await expect(page.getByTestId("import-inserted")).toHaveText("40");
 
-  // Calibrate: a published profile is runnable only with observable regions
-  // (sessions.go answers profile-not-runnable without one), so the draft gets
-  // the region editor's minimal calibration — one set-wide textbox box —
-  // through the same API the editor calls, before the publish freezes it.
-  const editionsResp = await page.request.get(`/api/v1/games/${readyGameId}/editions`);
-  expect(editionsResp.status(), "the editions list answers").toBe(200);
-  const editions = (await editionsResp.json()) as { editions: Array<{ id: string }> };
-  expect(editions.editions, "the seed created exactly one edition").toHaveLength(1);
-  const profilesResp = await page.request.get(
-    `/api/v1/editions/${editions.editions[0].id}/profiles`,
-  );
-  expect(profilesResp.status(), "the profiles list answers").toBe(200);
-  const profiles = (await profilesResp.json()) as {
-    profiles: Array<{ id: string; status: string }>;
-  };
-  const readyDraft = profiles.profiles.find((p) => p.status === "draft");
-  if (readyDraft === undefined) {
-    throw new Error(
-      `the imported draft is not listed: ${JSON.stringify(profiles.profiles.map((p) => p.status))}`,
+    // Calibrate: a published profile is runnable only with observable regions
+    // (sessions.go answers profile-not-runnable without one), so the draft gets
+    // the region editor's minimal calibration — one set-wide textbox box —
+    // through the same API the editor calls, before the publish freezes it.
+    const editionsResp = await page.request.get(`/api/v1/games/${readyGameId}/editions`);
+    expect(editionsResp.status(), "the editions list answers").toBe(200);
+    const editions = (await editionsResp.json()) as { editions: Array<{ id: string }> };
+    expect(editions.editions, "the seed created exactly one edition").toHaveLength(1);
+    const profilesResp = await page.request.get(
+      `/api/v1/editions/${editions.editions[0].id}/profiles`,
     );
-  }
-  const profileResp = await page.request.get(`/api/v1/profiles/${readyDraft.id}`);
-  expect(profileResp.status(), "the profile read answers").toBe(200);
-  const ifMatch = profileResp.headers()["etag"];
-  // Cookie auth + an unsafe method needs the session's CSRF token (the
-  // non-HttpOnly gn_csrf cookie, the SPA's own source) and a same-origin
-  // Origin: page.request is not a browser fetch, so the spec supplies both.
-  const csrfCookie = (await page.context().cookies()).find((c) => c.name === "gn_csrf");
-  const putRegions = await page.request.put(`/api/v1/profiles/${readyDraft.id}/regions`, {
-    headers: {
-      "if-match": ifMatch,
-      "x-csrf-token": csrfCookie?.value ?? "",
-      origin: new URL(page.url()).origin,
-    },
-    data: {
-      regions: [{ label: "textbox", region_type: "textbox", x: 0.1, y: 0.75, w: 0.8, h: 0.15 }],
-    },
-  });
-  expect(putRegions.status(), "the set-wide textbox box is accepted").toBe(200);
+    expect(profilesResp.status(), "the profiles list answers").toBe(200);
+    const profiles = (await profilesResp.json()) as {
+      profiles: Array<{ id: string; status: string }>;
+    };
+    const readyDraft = profiles.profiles.find((p) => p.status === "draft");
+    if (readyDraft === undefined) {
+      throw new Error(
+        `the imported draft is not listed: ${JSON.stringify(profiles.profiles.map((p) => p.status))}`,
+      );
+    }
+    const profileResp = await page.request.get(`/api/v1/profiles/${readyDraft.id}`);
+    expect(profileResp.status(), "the profile read answers").toBe(200);
+    const ifMatch = profileResp.headers()["etag"];
+    // Cookie auth + an unsafe method needs the session's CSRF token (the
+    // non-HttpOnly gn_csrf cookie, the SPA's own source) and a same-origin
+    // Origin: page.request is not a browser fetch, so the spec supplies both.
+    const csrfCookie = (await page.context().cookies()).find((c) => c.name === "gn_csrf");
+    const putRegions = await page.request.put(`/api/v1/profiles/${readyDraft.id}/regions`, {
+      headers: {
+        "if-match": ifMatch,
+        "x-csrf-token": csrfCookie?.value ?? "",
+        origin: new URL(page.url()).origin,
+      },
+      data: {
+        regions: [{ label: "textbox", region_type: "textbox", x: 0.1, y: 0.75, w: 0.8, h: 0.15 }],
+      },
+    });
+    expect(putRegions.status(), "the set-wide textbox box is accepted").toBe(200);
 
-  await revision1.getByTestId("status-review").click();
-  await expect(revision1.getByTestId("badge-review")).toBeVisible();
-  await revision1.getByTestId("publish").click();
-  await expect(
-    revision1.getByTestId("badge-published"),
-    "the ready game's revision is published",
-  ).toBeVisible({ timeout: 60_000 });
+    await revision1.getByTestId("status-review").click();
+    await expect(revision1.getByTestId("badge-review")).toBeVisible();
+    await revision1.getByTestId("publish").click();
+    await expect(
+      revision1.getByTestId("badge-published"),
+      "the ready game's revision is published",
+    ).toBeVisible({ timeout: 60_000 });
 
-  // ── seed 2: the IN-SETUP game, a live onboarding run left active ───────────
-  await page.goto("/games/new");
-  await expect(page.getByTestId("onb-setup-form")).toBeVisible({ timeout: 20_000 });
-  await page.getByTestId("onb-title").fill(SETTING.title);
-  await page.getByTestId("onb-platform").fill("GameCube");
-  await page.getByTestId("onb-web-toggle").uncheck();
-  await page.getByTestId("onb-file").setInputFiles(ADVENTURE_CSV);
-  await page.getByTestId("onb-start").click();
+    // ── seed 2: the IN-SETUP game, a live onboarding run left active ───────────
+    await page.goto("/games/new");
+    await expect(page.getByTestId("onb-setup-form")).toBeVisible({ timeout: 20_000 });
+    await page.getByTestId("onb-title").fill(SETTING.title);
+    await page.getByTestId("onb-platform").fill("GameCube");
+    await page.getByTestId("onb-web-toggle").uncheck();
+    await page.getByTestId("onb-file").setInputFiles(ADVENTURE_CSV);
+    await page.getByTestId("onb-start").click();
 
-  const importCall = page.getByTestId("onb-tool-import_user_asset");
-  await expect(importCall, "the import lands in the tool timeline").toBeVisible({
-    timeout: WAIT_MS,
-  });
-  await expect(page.getByTestId("onb-tool-status-import_user_asset")).toHaveText("succeeded");
-  const qualityCall = page.getByTestId("onb-tool-source_quality");
-  await expect(qualityCall, "the quality run lands in the tool timeline").toBeVisible({
-    timeout: WAIT_MS,
-  });
-  await expect(page.getByTestId("onb-tool-status-source_quality")).toHaveText("succeeded");
+    const importCall = page.getByTestId("onb-tool-import_user_asset");
+    await expect(importCall, "the import lands in the tool timeline").toBeVisible({
+      timeout: WAIT_MS,
+    });
+    await expect(page.getByTestId("onb-tool-status-import_user_asset")).toHaveText("succeeded");
+    const qualityCall = page.getByTestId("onb-tool-source_quality");
+    await expect(qualityCall, "the quality run lands in the tool timeline").toBeVisible({
+      timeout: WAIT_MS,
+    });
+    await expect(page.getByTestId("onb-tool-status-source_quality")).toHaveText("succeeded");
 
-  // The stall: the scripted model keeps re-issuing the same read-only
-  // preview_profile call, so the loop's repetition guard ends the run
-  // blocked. Poll the status read (the bar's own source, through the
-  // signed-in page's request context) until the seed's run is the active
-  // one — deterministic, not a wall-clock guess.
-  await expectRunBlocked(page.request);
+    // The stall: the scripted model keeps re-issuing the same read-only
+    // preview_profile call, so the loop's repetition guard ends the run
+    // blocked. Poll the status read (the bar's own source, through the
+    // signed-in page's request context) until the seed's run is the active
+    // one — deterministic, not a wall-clock guess.
+    await expectRunBlocked(page.request);
 
-  // ── the library screen ────────────────────────────────────────────────────
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto("/library");
-  await expect(page.getByTestId("lib-hero")).toBeVisible({ timeout: WAIT_MS });
-  await liveTextSettled(page);
-
-  // 1. The ready game is the hero (the hero-slot policy): its title, its
-  //    summary line and the design's three pills.
-  await expect(page.getByTestId("lib-hero-title")).toHaveText(READY.title);
-  await expect(page.getByTestId("lib-hero-summary")).toContainText("40 lines");
-  await expect(page.getByTestId("lib-hero-summary")).toContainText("5 characters");
-  await expect(page.getByTestId("lib-hero-start")).toBeVisible();
-  await expect(page.getByTestId("lib-hero-cast")).toBeVisible();
-  await expect(page.getByTestId("lib-hero-dialogue")).toBeVisible();
-
-  // 2. The setting-up game's progress: on its tile chip AND in the status
-  //    bar (the server-rendered string — the bar and the chip read the same
-  //    store counts, so they cannot disagree).
-  const settingChip = page.getByTestId(`lib-chip-${SETTING.slug}`);
-  await expect(settingChip).toBeVisible({ timeout: WAIT_MS });
-  await expect(settingChip).toContainText("setting up");
-  await expect(settingChip).toContainText("0 of 5 voiced");
-  await expect(page.getByTestId("status-live")).toContainText("agent blocked");
-  await expect(page.getByTestId("status-live")).toContainText("0 of 5 voiced");
-
-  // 3. The "All games" row: the ⌘K pill opens the palette; the shelf/list
-  //    toggle is the design's segmented control.
-  const allGames = page.getByTestId("lib-all-games-row");
-  await expect(allGames.getByRole("heading", { name: "All games" })).toBeVisible();
-  await expect(page.getByTestId("lib-kbd-pill")).toBeVisible();
-  await page.getByTestId("lib-kbd-pill").click();
-  await expect(page.getByTestId("palette")).toBeVisible();
-  await expect(page.getByTestId("palette-input")).toBeFocused();
-  await page.keyboard.press("Escape");
-  await expect(page.getByTestId("palette")).toHaveCount(0);
-
-  // 4. The shelf: the dashed Add-a-game tile first, then the game tiles
-  //    (the ready tile carries its published chip and its ▶).
-  const shelf = page.getByTestId("lib-shelf");
-  await expect(shelf).toBeVisible();
-  const addTile = page.getByTestId("lib-add-game-tile");
-  await expect(addTile, "the dashed Add-a-game tile is the shelf's first tile").toBeVisible();
-  await expect(addTile).toContainText("Add a game");
-  const readyTile = page.getByTestId(`lib-tile-${READY.slug}`);
-  await expect(readyTile).toBeVisible();
-  await expect(page.getByTestId(`lib-chip-${READY.slug}`)).toContainText("published");
-  await expect(page.getByTestId(`lib-play-${READY.slug}`)).toBeVisible();
-  await expect(page.getByTestId(`lib-tile-${SETTING.slug}`)).toBeVisible();
-
-  // 5. The list view, and the toggle's persistence across reload (UX-08).
-  await page.getByTestId("lib-view-toggle").getByRole("tab", { name: "List" }).click();
-  const list = page.getByTestId("lib-list");
-  await expect(list, "the list view renders").toBeVisible();
-  await expect(list.getByRole("row", { name: /Ready Voyage/ })).toContainText("40");
-  await expect(list.getByRole("row", { name: /Ready Voyage/ })).toContainText("0/5");
-  await expect(list.getByRole("row", { name: /Setting Voyage/ })).toContainText("0/5");
-  await fontsReady(page);
-  const listShotPath = `${testInfo.outputDir}/library-list-1440.png`;
-  await page.screenshot({ path: listShotPath, fullPage: true });
-  await testInfo.attach("library-list-1440.png", {
-    body: readFileSync(listShotPath),
-    contentType: "image/png",
-  });
-  await page.reload();
-  await expect(
-    page.getByTestId("lib-list"),
-    "the list choice persists across reload (UX-08)",
-  ).toBeVisible({
-    timeout: WAIT_MS,
-  });
-  // and back the other way, for the symmetric proof.
-  await page.getByTestId("lib-view-toggle").getByRole("tab", { name: "Shelf" }).click();
-  await expect(page.getByTestId("lib-shelf")).toBeVisible();
-  await page.reload();
-  await expect(
-    page.getByTestId("lib-shelf"),
-    "the shelf choice persists across reload (UX-08)",
-  ).toBeVisible({
-    timeout: WAIT_MS,
-  });
-
-  // 6. Screenshots + axe at the design's three widths (AGENTS.md rule 9).
-  const reports: ScanReport[] = [];
-  for (const width of WIDTHS) {
-    await page.setViewportSize({ width, height: 900 });
+    // ── the library screen ────────────────────────────────────────────────────
+    await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto("/library");
     await expect(page.getByTestId("lib-hero")).toBeVisible({ timeout: WAIT_MS });
     await liveTextSettled(page);
+
+    // 1. The ready game is the hero (the hero-slot policy): its title, its
+    //    summary line and the design's three pills.
+    await expect(page.getByTestId("lib-hero-title")).toHaveText(READY.title);
+    await expect(page.getByTestId("lib-hero-summary")).toContainText("40 lines");
+    await expect(page.getByTestId("lib-hero-summary")).toContainText("5 characters");
+    await expect(page.getByTestId("lib-hero-start")).toBeVisible();
+    await expect(page.getByTestId("lib-hero-cast")).toBeVisible();
+    await expect(page.getByTestId("lib-hero-dialogue")).toBeVisible();
+
+    // 2. The setting-up game's progress: on its tile chip AND in the status
+    //    bar (the server-rendered string — the bar and the chip read the same
+    //    store counts, so they cannot disagree).
+    const settingChip = page.getByTestId(`lib-chip-${SETTING.slug}`);
+    await expect(settingChip).toBeVisible({ timeout: WAIT_MS });
+    await expect(settingChip).toContainText("setting up");
+    await expect(settingChip).toContainText("0 of 5 voiced");
+    await expect(page.getByTestId("status-live")).toContainText("agent blocked");
+    await expect(page.getByTestId("status-live")).toContainText("0 of 5 voiced");
+
+    // 3. The "All games" row: the ⌘K pill opens the palette; the shelf/list
+    //    toggle is the design's segmented control.
+    const allGames = page.getByTestId("lib-all-games-row");
+    await expect(allGames.getByRole("heading", { name: "All games" })).toBeVisible();
+    await expect(page.getByTestId("lib-kbd-pill")).toBeVisible();
+    await page.getByTestId("lib-kbd-pill").click();
+    await expect(page.getByTestId("palette")).toBeVisible();
+    await expect(page.getByTestId("palette-input")).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("palette")).toHaveCount(0);
+
+    // 4. The shelf: the dashed Add-a-game tile first, then the game tiles
+    //    (the ready tile carries its published chip and its ▶).
+    const shelf = page.getByTestId("lib-shelf");
+    await expect(shelf).toBeVisible();
+    const addTile = page.getByTestId("lib-add-game-tile");
+    await expect(addTile, "the dashed Add-a-game tile is the shelf's first tile").toBeVisible();
+    await expect(addTile).toContainText("Add a game");
+    const readyTile = page.getByTestId(`lib-tile-${READY.slug}`);
+    await expect(readyTile).toBeVisible();
+    await expect(page.getByTestId(`lib-chip-${READY.slug}`)).toContainText("published");
+    await expect(page.getByTestId(`lib-play-${READY.slug}`)).toBeVisible();
+    await expect(page.getByTestId(`lib-tile-${SETTING.slug}`)).toBeVisible();
+
+    // 5. The list view, and the toggle's persistence across reload (UX-08).
+    await page.getByTestId("lib-view-toggle").getByRole("tab", { name: "List" }).click();
+    const list = page.getByTestId("lib-list");
+    await expect(list, "the list view renders").toBeVisible();
+    await expect(list.getByRole("row", { name: /Ready Voyage/ })).toContainText("40");
+    await expect(list.getByRole("row", { name: /Ready Voyage/ })).toContainText("0/5");
+    await expect(list.getByRole("row", { name: /Setting Voyage/ })).toContainText("0/5");
     await fontsReady(page);
-    await expectNoHorizontalScroll(page, width);
-    const shot = `library-${width}.png`;
-    const shotPath = `${testInfo.outputDir}/${shot}`;
-    await page.screenshot({ path: shotPath, fullPage: true });
-    await testInfo.attach(shot, { body: readFileSync(shotPath), contentType: "image/png" });
-
-    const results = await new AxeBuilder({ page }).withTags([...WCAG_21_A_AA]).analyze();
-    const violations = results.violations ?? [];
-    const byRule: Record<string, number> = {};
-    for (const violation of violations) {
-      byRule[violation.id] = (byRule[violation.id] ?? 0) + violation.nodes.length;
-    }
-    reports.push({
-      url: page.url(),
-      width,
-      view: "shelf",
-      violations: Object.fromEntries(Object.entries(byRule).sort(([a], [b]) => a.localeCompare(b))),
-      serious: violations
-        .filter((violation) => violation.impact === "serious" || violation.impact === "critical")
-        .map(
-          (violation) =>
-            `${violation.id} [${violation.impact}] ×${violation.nodes.length} — ${violation.help}`,
-        ),
+    const listShotPath = `${testInfo.outputDir}/library-list-1440.png`;
+    await page.screenshot({ path: listShotPath, fullPage: true });
+    await testInfo.attach("library-list-1440.png", {
+      body: readFileSync(listShotPath),
+      contentType: "image/png",
     });
+    await page.reload();
+    await expect(
+      page.getByTestId("lib-list"),
+      "the list choice persists across reload (UX-08)",
+    ).toBeVisible({
+      timeout: WAIT_MS,
+    });
+    // and back the other way, for the symmetric proof.
+    await page.getByTestId("lib-view-toggle").getByRole("tab", { name: "Shelf" }).click();
+    await expect(page.getByTestId("lib-shelf")).toBeVisible();
+    await page.reload();
+    await expect(
+      page.getByTestId("lib-shelf"),
+      "the shelf choice persists across reload (UX-08)",
+    ).toBeVisible({
+      timeout: WAIT_MS,
+    });
+
+    // 6. Screenshots + axe at the design's three widths (AGENTS.md rule 9).
+    const reports: ScanReport[] = [];
+    for (const width of WIDTHS) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto("/library");
+      await expect(page.getByTestId("lib-hero")).toBeVisible({ timeout: WAIT_MS });
+      await liveTextSettled(page);
+      await fontsReady(page);
+      await expectNoHorizontalScroll(page, width);
+      const shot = `library-${width}.png`;
+      const shotPath = `${testInfo.outputDir}/${shot}`;
+      await page.screenshot({ path: shotPath, fullPage: true });
+      await testInfo.attach(shot, { body: readFileSync(shotPath), contentType: "image/png" });
+
+      const results = await new AxeBuilder({ page }).withTags([...WCAG_21_A_AA]).analyze();
+      const violations = results.violations ?? [];
+      const byRule: Record<string, number> = {};
+      for (const violation of violations) {
+        byRule[violation.id] = (byRule[violation.id] ?? 0) + violation.nodes.length;
+      }
+      reports.push({
+        url: page.url(),
+        width,
+        view: "shelf",
+        violations: Object.fromEntries(
+          Object.entries(byRule).sort(([a], [b]) => a.localeCompare(b)),
+        ),
+        serious: violations
+          .filter((violation) => violation.impact === "serious" || violation.impact === "critical")
+          .map(
+            (violation) =>
+              `${violation.id} [${violation.impact}] ×${violation.nodes.length} — ${violation.help}`,
+          ),
+      });
+    }
+    await testInfo.attach("axe-reports.json", {
+      body: JSON.stringify(reports, null, 2),
+      contentType: "application/json",
+    });
+    const failing = reports.filter((report) => report.serious.length > 0);
+    expect(
+      failing,
+      `serious/critical axe violations on /library:\n${failing
+        .map((report) => `— ${report.url} @${report.width}px:\n${report.serious.join("\n")}`)
+        .join("\n\n")}`,
+    ).toEqual([]);
+
+    // 7. ▶ starts a session for the published profile and lands on /play with
+    //    it active (the session id in the URL, the live panel settled).
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/library");
+    await expect(page.getByTestId("lib-hero-start")).toBeVisible({ timeout: WAIT_MS });
+    await page.getByTestId("lib-hero-start").click();
+    await expect(page, "the start lands on /play with the session in the URL").toHaveURL(
+      /\/play\?session=.[^&]+/,
+      { timeout: WAIT_MS },
+    );
+    await expect(page.getByTestId("play-live"), "the session is live on /play").toBeVisible({
+      timeout: WAIT_MS,
+    });
+    await expect(page.getByTestId("play-session-id")).not.toHaveText("");
+    // The session runs the ready game's published profile with the library's
+    // synthetic frame source: the snapshot names test_pattern.
+    await expect(page.getByTestId("play-source")).toContainText("test_pattern", {
+      timeout: WAIT_MS,
+    });
+
+    // the walk must not have left a console error behind, and must not have
+    // touched the developer's real data directory.
+    expect(consoleErrors).toEqual([]);
+    expectDefaultDataDirUntouched(serverRun("library"));
+  } finally {
+    releaseScenario();
   }
-  await testInfo.attach("axe-reports.json", {
-    body: JSON.stringify(reports, null, 2),
-    contentType: "application/json",
-  });
-  const failing = reports.filter((report) => report.serious.length > 0);
-  expect(
-    failing,
-    `serious/critical axe violations on /library:\n${failing
-      .map((report) => `— ${report.url} @${report.width}px:\n${report.serious.join("\n")}`)
-      .join("\n\n")}`,
-  ).toEqual([]);
-
-  // 7. ▶ starts a session for the published profile and lands on /play with
-  //    it active (the session id in the URL, the live panel settled).
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto("/library");
-  await expect(page.getByTestId("lib-hero-start")).toBeVisible({ timeout: WAIT_MS });
-  await page.getByTestId("lib-hero-start").click();
-  await expect(page, "the start lands on /play with the session in the URL").toHaveURL(
-    /\/play\?session=.[^&]+/,
-    { timeout: WAIT_MS },
-  );
-  await expect(page.getByTestId("play-live"), "the session is live on /play").toBeVisible({
-    timeout: WAIT_MS,
-  });
-  await expect(page.getByTestId("play-session-id")).not.toHaveText("");
-  // The session runs the ready game's published profile with the library's
-  // synthetic frame source: the snapshot names test_pattern.
-  await expect(page.getByTestId("play-source")).toContainText("test_pattern", {
-    timeout: WAIT_MS,
-  });
-
-  // the walk must not have left a console error behind, and must not have
-  // touched the developer's real data directory.
-  expect(consoleErrors).toEqual([]);
-  expectDefaultDataDirUntouched(serverRun("library"));
 });

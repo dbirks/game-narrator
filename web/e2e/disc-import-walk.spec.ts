@@ -48,7 +48,14 @@ test("import a disc image through the UI, publish, and see the messages on /play
     "runs on the disc project's own embedded-binary backend",
   );
   const run = serverRun("disc");
-  const consoleErrors = trackConsoleErrors(page, [401]);
+  // 404 joins 401: the /play stop's start form probes every edition's
+  // published revision, and this appliance's library also holds the
+  // speaker-link walk's game (the two disc specs share the appliance —
+  // their games are disjoint, its edition unpublished): its probe answers
+  // 404, the page's documented "nothing published" state, and the browser
+  // logs the probe as a failed resource — the machine's answer, not a
+  // fault of this walk.
+  const consoleErrors = trackConsoleErrors(page, [401, 404]);
   const shot = (step: string) =>
     page.screenshot({ path: `test-results/disc-import-walk-${step}.png`, fullPage: true });
 

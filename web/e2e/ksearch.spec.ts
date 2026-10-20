@@ -178,7 +178,12 @@ test("⌘K: claim and seed the synthetic game", async ({ page }) => {
 
 test("⌘K opens the overlay (role=dialog) from any page without navigation", async ({ page }) => {
   test.setTimeout(300_000);
-  const consoleErrors = trackConsoleErrors(page, [401, 503]);
+  // 409 joins 503 for the /health stop's capture-signal read: on this
+  // appliance no session runs and the one-shot grab cannot run, so the
+  // route answers 409 `capture-signal-unavailable` with the operator
+  // action (ADR-0110 §1) and the tile renders it as its own state — the
+  // machine's answer, not a fault of the walk.
+  const consoleErrors = trackConsoleErrors(page, [401, 409, 503]);
   await signIn(page);
 
   const stops: Array<{ path: string; settled: (page: Page) => Promise<void> }> = [
@@ -203,10 +208,10 @@ test("⌘K opens the overlay (role=dialog) from any page without navigation", as
         expect(page.getByTestId("settings-roles")).toBeVisible({ timeout: 20_000 }),
     },
     {
-      // /health is the ADR-0093 seam: it redirects to /diagnostics.
+      // /health is the Health screen (the ADR-0093 §4 seam renamed in
+      // ADR-0111): the status rollup settles on the page's main testid.
       path: "/health",
-      settled: (page) =>
-        expect(page.getByTestId("diagnostics-page")).toBeVisible({ timeout: 20_000 }),
+      settled: (page) => expect(page.getByTestId("health-page")).toBeVisible({ timeout: 20_000 }),
     },
   ];
 
