@@ -93,7 +93,11 @@ test("upload the synthetic clip, play it by id with no replay allowlist, delete 
   const setup = await request.post(`${origin}/api/v1/auth/setup`, {
     data: { username: ADMIN.username, password: ADMIN.password },
   });
-  expect(setup.status(), `auth setup: ${await setup.text()}`).toBe(201);
+  // A standalone run claims the appliance; a repeat against this project's
+  // dedicated server (this spec's own earlier run) already claimed it with
+  // this same admin — the documented 409 (setup is once per appliance,
+  // ADR-0016 §7) still signs the login below.
+  expect([201, 409], `auth setup: ${await setup.text()}`).toContain(setup.status());
   await request.post(`${origin}/api/v1/auth/login`, {
     data: { username: ADMIN.username, password: ADMIN.password },
   });
@@ -109,9 +113,13 @@ test("upload the synthetic clip, play it by id with no replay allowlist, delete 
   const csrf = async () =>
     (await request.cookies(origin)).find((cookie) => cookie.name === "gn_csrf")?.value ?? "";
 
+  // A per-run slug: a repeat against this project's dedicated server (this
+  // spec's own earlier run) must not hit the UNIQUE slug — the idempotency
+  // key is fresh per request, so the same slug is a 409, not a replay.
+  const slug = `${EDITION.slug}-${randomUUID().slice(0, 8)}`;
   const game = await post(
     "/api/v1/games",
-    { slug: EDITION.slug, title: EDITION.title },
+    { slug, title: EDITION.title },
     { "idempotency-key": randomUUID(), "x-csrf-token": await csrf() },
   );
   expect(game.status(), `create game: ${await game.text()}`).toBe(201);
@@ -219,11 +227,37 @@ test("upload the synthetic clip, play it by id with no replay allowlist, delete 
     })
     .toBeGreaterThanOrEqual(2);
 
+  // Under load the clip can exhaust (source_end) while this click is being
+  // reached, and the terminal state tears the Stop control out of the DOM —
+  // a plain click then retries against a detached button for minutes (issue
+  // #23). Drive the stop off the server's observed state instead: while the
+  // session is still live, click the control (bounded attempts, re-checking
+  // the state between them — the stop is idempotent); if the settle wins the
+  // race, the poll below simply observes that settlement.
+  const sessionState = async () =>
+    (
+      (await (await request.get(`${origin}/api/v1/sessions/${sessionId}`)).json()) as {
+        state: string;
+      }
+    ).state;
   const stop = page.getByTestId("play-stop");
-  if (await stop.isVisible()) {
-    await stop.click();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if ((await sessionState()) !== "running") break; // settled on its own
+    if (!(await stop.isVisible())) break; // the UI already shows it settled
+    try {
+      await stop.click({ timeout: 5_000 });
+      break;
+    } catch {
+      // The settle won this attempt's race (the control detached mid-click);
+      // the loop re-checks the observed state before any retry.
+    }
   }
-  await expect(page.getByTestId("play-state")).toHaveText("stopped", { timeout: 180_000 });
+  await expect
+    .poll(sessionState, {
+      timeout: 180_000,
+      message: "the session settles on the stop",
+    })
+    .toBe("stopped");
   const finalSession = (await (
     await request.get(`${origin}/api/v1/sessions/${sessionId}`)
   ).json()) as { state: string; stats: { commits: number } };

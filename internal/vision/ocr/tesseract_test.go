@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -178,18 +177,21 @@ wait`)
 		t.Fatalf("stub recorded %d pids, want the script and its child: %v", len(pids), pids)
 	}
 	// The whole process group must be gone, not just the process we spawned.
+	// processGone (pool_test.go) treats a zombie — killed, pending reap — as
+	// gone: in a container whose PID 1 never calls wait (the default of a
+	// `docker run` test sandbox), the grandchild re-parents to that PID 1 and
+	// lingers as a zombie that Kill(pid, 0) keeps answering for (issue #21).
 	cutoff := time.Now().Add(2 * time.Second)
 	for _, pid := range pids {
 		for {
-			if err := syscall.Kill(pid, 0); err == nil {
-				if time.Now().After(cutoff) {
-					t.Errorf("pid %d survived cancellation; the OCR child outlived its observation (ADR-0012 §2)", pid)
-					break
-				}
-				time.Sleep(20 * time.Millisecond)
-				continue
+			if processGone(pid) {
+				break
 			}
-			break
+			if time.Now().After(cutoff) {
+				t.Errorf("pid %d survived cancellation; the OCR child outlived its observation (ADR-0012 §2)", pid)
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
 		}
 	}
 }

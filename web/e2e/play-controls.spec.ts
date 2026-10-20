@@ -20,18 +20,20 @@ import { apiAsUser, expectDefaultDataDirUntouched, serverRun } from "./support/s
  *      dialogue-advance-001 seed the player walk uses) and approve + register
  *      a scripted-TTS voice for Marina, so the committed lines have a voice
  *      to speak and the pause has real audio to fence;
- *   2. /play: start the replay session, wait for the first committed line,
- *      then pause — the button follows the server's snapshot (aria-pressed,
- *      label "Resume"), and the server's own view says paused=true;
- *   3. resume — the button and the snapshot flip back, and the session
- *      settles at exactly the clip's two commits: the paused window's lines
- *      are neither lost nor replayed;
- *   4. the narrated classes and the decision mode move through the controls:
- *      the checkboxes and the select post the partial settings, the 200
- *      snapshot re-syncs the page (the "Narrating: …" line reads back the
- *      applied state), and the server's snapshot agrees;
- *   5. the keyboard shortcuts (p/s/i/m) drive the same controls from the
+ *   2. /play: start the replay session, then the decision mode and the
+ *      narrated classes move through the controls: the checkboxes and the
+ *      select post the partial settings, the 200 snapshot re-syncs the page
+ *      (the "Narrating: …" line reads back the applied state), and the
+ *      server's snapshot agrees;
+ *   3. the keyboard shortcuts (s/i/m) drive the same controls from the
  *      window, not the forms;
+ *   4. pause at the head of the session — the button follows the server's
+ *      snapshot (aria-pressed, label "Resume"), and the server's own view
+ *      says paused=true — then resume (the keyboard `p` takes the same
+ *      path): at the head the clip's whole lifetime is ahead of the pause
+ *      window whatever the host's OCR speed (issue #23);
+ *   5. the session settles at exactly the clip's two commits: the paused
+ *      window's lines are neither lost nor replayed;
  *   6. the "Current committed line" region is an aria-live polite region,
  *      and axe finds no serious/critical WCAG 2.1 A/AA violation in the
  *      live-session state.
@@ -111,13 +113,21 @@ test("play controls: pause/resume, narrated classes, decision mode (synthetic re
   const setup = await request.post(`${origin}/api/v1/auth/setup`, {
     data: { username: ADMIN.username, password: ADMIN.password },
   });
-  expect(setup.status(), `auth setup: ${await setup.text()}`).toBe(201);
+  // A standalone run claims the appliance; a repeat against this project's
+  // dedicated server (this spec's own earlier run) already claimed it with
+  // this same admin — the documented 409 (setup is once per appliance,
+  // ADR-0016 §7) still signs the login below.
+  expect([201, 409], `auth setup: ${await setup.text()}`).toContain(setup.status());
   await request.post(`${origin}/api/v1/auth/login`, {
     data: { username: ADMIN.username, password: ADMIN.password },
   });
 
+  // A per-run slug: a repeat against this project's dedicated server (this
+  // spec's own earlier run) must not hit the UNIQUE slug — the idempotency
+  // key is fresh per request, so the same slug is a 409, not a replay.
+  const slug = `${EDITION.slug}-${randomUUID().slice(0, 8)}`;
   const game = await api.post("/api/v1/games", {
-    data: { slug: EDITION.slug, title: EDITION.title },
+    data: { slug, title: EDITION.title },
     headers: { "idempotency-key": randomUUID() },
   });
   expect(game.status(), `create game: ${await game.text()}`).toBe(201);
@@ -305,11 +315,13 @@ test("play controls: pause/resume, narrated classes, decision mode (synthetic re
       win.document.activeElement?.blur?.();
     });
 
-  // Every control is driven before the first commit: the clip's lifetime on a
-  // real OCR engine is short (~20s for the 24-frame recording), and the
-  // controls are live for any running session, commits or not. The shortcuts
-  // finish the round-trip by restoring the product's defaults, so the run
-  // itself commits under the documented default policy.
+  // The non-pause shortcuts are driven before any commit: the clip's lifetime
+  // is the host's own OCR throughput (replay drains lossless and
+  // back-pressured, never real-time paced — ~20s on a loaded host, well under
+  // a second on a fast one), and the controls are live for any running
+  // session, commits or not. The shortcuts finish the round-trip by restoring
+  // the product's defaults, so the run itself commits under the documented
+  // default policy.
   await blur();
   await page.keyboard.press("s"); // signs off
   await expect(signs).not.toBeChecked({ timeout: 15_000 });
@@ -323,13 +335,39 @@ test("play controls: pause/resume, narrated classes, decision mode (synthetic re
     timeout: 15_000,
   });
 
-  // The `p` shortcut takes the same control path as pause: pause and resume
-  // again from the window. Like every control in this section it runs before
-  // the first commit — a pause does not stop the source (the text machines
-  // keep observing through it), so every second spent paused is a second the
-  // clip keeps consuming, and on a fast machine the 24-frame clip can
-  // exhaust (source_end) mid-pause and settle with the controls honestly
-  // inert, which would strand the resume assertion.
+  settingsSnapshot = await snapshot();
+  expect(settingsSnapshot.mode, "the shortcuts drove the mode").toBe("conservative");
+  expect(settingsSnapshot.narrated_classes, "the shortcuts drove the classes").toEqual([
+    "dialogue",
+  ]);
+
+  // ── 7. pause and resume at the head of the session: the button follows the
+  //     server's snapshot ─────────────────────────────────────────────────────
+  // The pause window must sit at the head of the session, not after the first
+  // committed line (the first draft's placement). The clip drains at the
+  // host's OCR throughput, and a pause does not stop the source — the text
+  // machines keep observing through it — so a pause that lands near the
+  // clip's tail ends the session (source_end) before the second page's
+  // commit margin is reached: on a fast host the 24-frame clip exhausts in
+  // well under a second, and by the time the first line has committed only
+  // the second page's tail is left. Pausing at the head proves the same
+  // product behaviour — the pause stops commitment and speech, the button
+  // follows the server's snapshot, the keyboard `p` takes the same path, and
+  // the resume continues from the next commit — with the clip's whole
+  // lifetime ahead of it, whatever the host's speed (issue #23).
+  await pauseButton.click();
+  await expect(pauseButton).toHaveAttribute("aria-pressed", "true", { timeout: 15_000 });
+  await expect(pauseButton).toHaveText("Resume");
+  const pausedSnapshot = await snapshot();
+  expect(pausedSnapshot.paused, "the server's own view is paused").toBe(true);
+  const commitsAtPause = pausedSnapshot.stats.commits;
+
+  // The `p` shortcut takes the same control path as pause: resume through the
+  // button, then pause and resume again from the window (the page's own rule
+  // is to act from the window, so blur first).
+  await pauseButton.click();
+  await expect(pauseButton).toHaveAttribute("aria-pressed", "false", { timeout: 15_000 });
+  await expect(pauseButton).toHaveText("Pause");
   await blur();
   await page.keyboard.press("p"); // pause, from the window
   await expect(pauseButton).toHaveAttribute("aria-pressed", "true", { timeout: 15_000 });
@@ -337,48 +375,38 @@ test("play controls: pause/resume, narrated classes, decision mode (synthetic re
   await page.keyboard.press("p"); // and back
   await expect(pauseButton).toHaveAttribute("aria-pressed", "false", { timeout: 15_000 });
 
-  settingsSnapshot = await snapshot();
-  expect(settingsSnapshot.mode, "the shortcuts drove the mode").toBe("conservative");
-  expect(settingsSnapshot.narrated_classes, "the shortcuts drove the classes").toEqual([
-    "dialogue",
-  ]);
-
-  // ── 7. the first committed line, then pause: the button follows the
-  //     server's snapshot ─────────────────────────────────────────────────────
-  const lines = page.locator('[data-testid="recent-lines"] li');
+  // The server's flag is the evidence, and the read must not race the resume's
+  // settle: poll the observed state to the unpaused flag under a generous
+  // ceiling — a single read right after the click saw the pre-resume flag on
+  // a loaded host (issue #23).
   await expect
-    .poll(() => lines.count(), { timeout: 120_000, intervals: [50] })
-    .toBeGreaterThanOrEqual(1);
-  await expect(page.getByTestId("current-line-speaker")).toHaveText("Marina");
+    .poll(async () => (await snapshot()).paused, {
+      timeout: 60_000,
+      message: "the server's own view is unpaused",
+    })
+    .toBe(false);
 
-  await pauseButton.click();
-  await expect(pauseButton).toHaveAttribute("aria-pressed", "true", { timeout: 15_000 });
-  await expect(pauseButton).toHaveText("Resume");
-  const pausedSnapshot = await snapshot();
-  expect(pausedSnapshot.paused, "the server's own view is paused").toBe(true);
-  const commitsAtPause = pausedSnapshot.stats.commits;
-  expect(
-    commitsAtPause,
-    "at least the first line committed before the pause",
-  ).toBeGreaterThanOrEqual(1);
-
-  // ── 8. resume: back to the same evidence, nothing replayed ────────────────
-  await pauseButton.click();
-  await expect(pauseButton).toHaveAttribute("aria-pressed", "false", { timeout: 15_000 });
-  await expect(pauseButton).toHaveText("Pause");
-  const resumedSnapshot = await snapshot();
-  expect(resumedSnapshot.paused, "the server's own view is unpaused").toBe(false);
-
-  // ── 9. the session settles at exactly the clip's two commits ──────────────
+  // ── 8. the session settles at exactly the clip's two commits ──────────────
+  // The clip drains at the host's own OCR throughput (replay is lossless and
+  // back-pressured, never real-time paced), so on a loaded host the settle
+  // takes longer than the idle-host wall clock the first draft assumed. The
+  // commits counter is the clip's own progress: poll it to two — the settle
+  // is observed, not read once after the state flipped (issue #23).
+  await expect
+    .poll(async () => (await snapshot()).stats.commits, {
+      timeout: 300_000,
+      message: "the synthetic clip commits its two pages",
+    })
+    .toBe(2);
+  // Then the session itself settles to stopped.
   await expect
     .poll(async () => (await snapshot()).state, {
-      timeout: 180_000,
+      timeout: 60_000,
       message: "the session settles",
     })
-    .toMatch(/stopped|failed/);
+    .toBe("stopped");
   const final = await snapshot();
   expect(final.state, `the session ended: ${final.reason ?? ""}`).toBe("stopped");
-  expect(final.stats.commits, "the synthetic clip commits its two pages").toBe(2);
   expect(final.stats.commits, "the pause neither lost nor replayed a commit").toBe(
     Math.max(commitsAtPause, 2),
   );
@@ -386,10 +414,12 @@ test("play controls: pause/resume, narrated classes, decision mode (synthetic re
   // The page, from the other side of the wire: the same numbers.
   await expect(page.getByTestId("play-state")).toHaveText("stopped", { timeout: 30_000 });
   await expect(page.getByTestId("play-commits")).toHaveText("2");
+  // The committed line's speaker and order, from the other side of the wire:
+  // Marina's two lines, newest first (the same order the sse walk asserts) —
+  // demo-page-2 committed second and tops the list, demo-page-1 is below it.
   const linesAfter = page.locator('[data-testid="recent-lines"] li');
   await expect(linesAfter).toHaveCount(2, { timeout: 30_000 });
-  // Newest first (the same order the sse walk asserts): demo-page-2 committed
-  // second and tops the list, demo-page-1 is below it.
+  await expect(page.getByTestId("current-line-speaker")).toHaveText("Marina");
   await expect(linesAfter.first()).toContainText(
     "nobody in the village had seen that boat before.",
   );
@@ -402,20 +432,20 @@ test("play controls: pause/resume, narrated classes, decision mode (synthetic re
   // `started` counter is the authoritative server-side signal that the voice
   // resolved and audio actually began — a line the pipeline skipped (no voice)
   // ends without ever starting, so `started >= 1` proves the committed lines
-  // were spoken by the approved voice, not dropped. The counter is driven by
-  // the session snapshot, so poll it to ride out the settle.
+  // were spoken by the approved voice, not dropped. The counters are driven by
+  // the session snapshot, so poll to ride out the settle.
   const spoken = async (testId: string) =>
     Number((await page.getByTestId(testId).textContent()) ?? "0");
   await expect
     .poll(() => spoken("play-speech-started"), {
-      timeout: 30_000,
+      timeout: 60_000,
       message: "the approved voice speaks a committed line",
     })
     .toBeGreaterThanOrEqual(1);
   expect(await spoken("play-speech-requested")).toBeGreaterThanOrEqual(1);
   expect(await spoken("play-speech-ended")).toBeGreaterThanOrEqual(1);
 
-  // ── 10. the live region and the accessibility pass ────────────────────────
+  // ── 9. the live region and the accessibility pass ─────────────────────────
   const liveRegion = page.getByLabel("Current committed line");
   await expect(liveRegion).toHaveAttribute("aria-live", "polite");
 
