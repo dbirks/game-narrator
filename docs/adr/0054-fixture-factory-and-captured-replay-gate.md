@@ -195,3 +195,63 @@ Consequences: single-line dialogue boxes are read through the text, not the
 box furniture; the truth remains the engine's record-time reading under a
 recorded recipe (rule 3), and a crop-recipe revision no longer requires a
 second boot-to-dialogue drive.
+
+## Amendment 2026-10-20: per-run temp dirs carry an owner marker and are reclaimed at harness start (issue #14)
+
+Context: the "materialized to a temp dir" decision above was safe for runs
+that finish — the deferred cleanup removes the replay dir on success,
+failure and panic — but not for runs that are KILLED. On 2026-10-20 five
+SIGKILLed workers (go test -timeout panic, worker timeout) left five
+`/tmp/gn-scenario-dolphin-*` dirs of 233 MB each (1.2 GB total) plus the
+`gn-scenario-audio-*` sink dirs the harness never removed on the normal
+path either, filling the /tmp quota.
+
+Decision:
+
+- **Every per-run temp dir the harness creates carries a `.gn-owner`
+  marker**: the creating process's PID plus its start time in clock ticks
+  since boot (the kernel field, read from `/proc/<pid>/stat` on Linux; 0
+  where the OS does not expose it) and the wall-clock write time. The
+  start ticks defeat PID reuse: a live PID whose start time differs from
+  the marker's is a newer process, not the owner.
+- **At harness start the harness reclaims its own stale dirs**
+  (`ReclaimStaleTempDirs`, called from `RunScenario` and
+  `runDolphinScenario`, so every entry point — the `make test-dolphin`
+  replay phase, the dev-UI test worker — gets it): a prefixed dir
+  (`gn-scenario-dolphin-*`, `gn-scenario-audio-*`) is removed only when
+  its marker's owner PID is dead (signal 0, plus the start-ticks
+  comparison on Linux); a prefixed dir with no readable marker (pre-marker
+  builds) is removed only when its NEWEST mtime is older than a 24 h
+  floor; a dir outside the harness's own prefixes — or a file — is never
+  touched; and where liveness cannot be established the dir is kept. The
+  failure direction is always conservative: a wrong "alive" costs one
+  stale dir, a wrong "dead" would destroy a live worker's in-flight run.
+- **The reclaimed bytes are logged** (`slog` INFO, visible in the
+  `make test-dolphin` gate output): "reclaimed N stale per-run temp
+  dir(s), M bytes".
+- **The replay materialization stops copying the fixture's bytes**: the
+  frame files are HARDLINKED into the replay dir (the fixture is
+  hash-verified and never mutated, so the links ARE the content),
+  falling back to a byte copy on cross-device temp dirs. A leaked replay
+  dir then holds a link table, not another full copy of the fixture's
+  frames; normal runs pay zero copy cost. The sliced `timestamps.json`
+  and `truth.json` remain newly written files, and the "harness reads the
+  slice exactly as recorded, fixture never mutated" boundary is
+  unchanged.
+
+Validation: `TestReclaimStaleTempDirs` (dead-owner dir reclaimed with its
+bytes accounted; live-owner dir — the test's own PID — kept; unmarked dir
+past the 24 h floor reclaimed; unmarked fresh dir kept; foreign-prefix
+dir and foreign file untouched), `TestReclaimMarkerRoundTrip` (a dir this
+process just materialized, with its own marker, survives a reclaim pass),
+`TestProcessStartTicksSelfOnLinux` (the /proc field-22 parse is positive
+and stable). Measured on the dev host on 2026-10-20: the first reclaim
+pass freed 248 stale `gn-scenario-audio-*` dirs (1.49 MB) left by earlier
+test runs.
+
+Consequences and reversal: normal-completion cleanup (the deferred
+cleanups) is unchanged; this amendment adds the killed-run path. Reversal
+is deleting the marker writes and the two `reclaimOurTempDirs` calls —
+the pre-#14 behavior (leaked dirs until manual cleanup) returns; the
+hardlink materialization is independently reversible by switching
+`linkOrCopyFile` back to `copyFile`.

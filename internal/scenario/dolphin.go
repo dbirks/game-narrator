@@ -79,6 +79,7 @@ func RunDolphinScenario(ctx context.Context, repoRoot string, sc *Scenario) (Run
 // materialized dir lands where they can assert on it — and assert it is gone
 // when the scenario finishes.
 func runDolphinScenario(ctx context.Context, repoRoot string, sc *Scenario, baseDir string) (RunResult, error) {
+	reclaimOurTempDirs() // harness start: reclaim a killed run's temp dirs (issue #14)
 	if sc.Origin != OriginDolphin {
 		return RunResult{}, fmt.Errorf("scenario %s: RunDolphinScenario requires origin %q (got %q)", sc.ID, OriginDolphin, sc.Origin)
 	}
@@ -152,15 +153,22 @@ type DolphinFixtureInfo struct {
 
 // materializeDolphinReplay copies one slice of the fixture into a temp dir in
 // the replay source's shape: the frame files, a sliced timestamps.json and a
-// sliced truth.json (rows for the slice, in manifest order). The copy is the
-// honest boundary: the harness reads the slice exactly as recorded, and the
-// fixture itself is never mutated.
+// sliced truth.json (rows for the slice, in manifest order). The frame files
+// are HARDLINKED into the replay dir when the filesystem allows it (the
+// fixture is hash-verified and never mutated, so the links ARE the content —
+// a killed run then leaves a link table, not another full copy of the
+// fixture's bytes; issue #14), falling back to a byte copy otherwise. The
+// sliced timestamps.json and truth.json are written as new files. The copy/
+// link is the honest boundary: the harness reads the slice exactly as
+// recorded, and the fixture itself is never mutated.
 //
 // The dir is created under baseDir ("" = os.TempDir(), the os.MkdirTemp
 // contract: the production path materializes under the system temp dir) and
-// is caller-owned. The returned cleanup removes the dir and must be called
-// exactly once by the caller — deferred at the call site so the dir is gone
-// when the scenario finishes, success, failure, or panic. cleanup is
+// is caller-owned. It carries a .gn-owner marker (writeTempOwnerMarker) so
+// a SIGKILLed run's leftover is reclaimable by the next harness start
+// (ReclaimStaleTempDirs). The returned cleanup removes the dir and must be
+// called exactly once by the caller — deferred at the call site so the dir
+// is gone when the scenario finishes, success, failure, or panic. cleanup is
 // idempotent (a second call is a no-op) and a no-op when the dir was never
 // created; the error paths remove a partially written dir before returning,
 // so the caller's call only ever meets a dir that is already gone.
@@ -184,6 +192,7 @@ func materializeDolphinReplay(fxDir string, in Input, baseDir string) (dir strin
 		cleanup = func() {}
 		return "", 0, 0, man, cleanup, err
 	}
+	writeTempOwnerMarker(dir) // reclaimable if this run is SIGKILLed (issue #14)
 	cleanup = func() { os.RemoveAll(dir) }
 
 	rows := man.Frames[first : last+1]
@@ -194,7 +203,7 @@ func materializeDolphinReplay(fxDir string, in Input, baseDir string) (dir strin
 	ts := make([]tsEntry, 0, len(rows))
 	for _, fr := range rows {
 		ts = append(ts, tsEntry{File: fr.File, TsNS: fr.TsNS})
-		if err := copyFile(filepath.Join(fxDir, "frames", fr.File), filepath.Join(dir, fr.File)); err != nil {
+		if err := linkOrCopyFile(filepath.Join(fxDir, "frames", fr.File), filepath.Join(dir, fr.File)); err != nil {
 			cleanup()
 			return "", 0, 0, man, cleanup, err
 		}
@@ -222,6 +231,19 @@ func materializeDolphinReplay(fxDir string, in Input, baseDir string) (dir strin
 		return "", 0, 0, man, cleanup, err
 	}
 	return dir, first, last, man, cleanup, nil
+}
+
+// linkOrCopyFile materializes one verified fixture file into the replay dir:
+// a hard link when the filesystem allows it (zero copied bytes — the replay
+// dir shares the fixture's inodes, so a leaked dir costs link-table space,
+// not another 233 MB; issue #14), a byte copy when it does not (cross-device
+// temp dirs, filesystems without links). The fixture file is read-only input
+// in both shapes: nothing ever writes through the replay copy.
+func linkOrCopyFile(src, dst string) error {
+	if err := os.Link(src, dst); err == nil {
+		return nil
+	}
+	return copyFile(src, dst)
 }
 
 func copyFile(src, dst string) error {

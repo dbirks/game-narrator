@@ -192,6 +192,7 @@ func failedDetails(r RunResult) string {
 // frames live in the external fixture dir and their profile ships with the
 // fixture).
 func RunScenario(ctx context.Context, repoRoot string, sc *Scenario) (RunResult, error) {
+	reclaimOurTempDirs() // harness start: reclaim a killed run's temp dirs (issue #14)
 	if sc.Status == StatusBlocked {
 		return RunResult{ID: sc.ID, Catalog: sc.Catalog, Status: "blocked", Reason: sc.Reason, Faults: sc.Faults}, nil
 	}
@@ -486,6 +487,8 @@ func (r *run) buildGateways() {
 // delivered prefix when a stop lands mid-playback), which is what makes
 // "no stale audio starts" and "no temporary file left behind" assertable
 // against the sink's own directory rather than the event log alone.
+// The dir carries a .gn-owner marker so a SIGKILLed run's sink is
+// reclaimable by the next harness start (issue #14).
 // The scheduler's publisher is a discarding stub: the sidecar session is
 // the event recorder of record for the merged timeline, and duplicating
 // the scheduler's playback events would double-count every start.
@@ -494,6 +497,7 @@ func (r *run) buildAudioPipeline(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("audio dir: %w", err)
 	}
+	writeTempOwnerMarker(dir) // reclaimable if this run is SIGKILLed (issue #14)
 	r.audioDir = dir
 	sink, err := filesink.New(dir)
 	if err != nil {
