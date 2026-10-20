@@ -1,0 +1,225 @@
+# ADR-0079: A second, structurally different synthetic game for the bench and replay gates — per-set layout data, instant-reveal fixtures, and the non-Latin abstain path
+
+Date: 2026-10-19
+Status: accepted
+Owners: agent worker (gap audit G12, DoD 6)
+Related requirements/tests: docs/spec/12 ("Benchmarks and ground truth", "Frame replay", holdout discipline), docs/spec/04 (two-game portability; DoD 6: no game-specific logic in shared code), ADR-0038 (synthetic bench ground truth), ADR-0058 (holdout verdict discipline), ADR-0035 (calibration), ADR-0037 (capture clock), `internal/bench` (generate/generate002/run/report/profile/secondclip_test), `internal/pipeline` (replay_real_second_test.go), `internal/matcher` (score.go fuzzy floor, fuzzy_floor_test.go), `scripts/fixtures/gen-synthetic-replay-002.sh`, `testdata/bench/bench-synthetic-002`, `testdata/synthetic/replay/black-water-001`, `testdata/scenarios/synthetic/black-water-001.yaml`, Makefile `bench` recipe
+
+## Context and constraints
+
+Gap audit G12: portability was proven only for ingestion/export of the
+synthetic second game "Black Water" (`TestTwoGamePortability`); recognition
+(OCR → match → commit) and speech had only ever run on Wind Waker material.
+DoD 6 requires the multi-game story to hold without one game's vocabulary or
+geometry in shared code.
+
+The existing bench harness (`internal/bench`) proved the first game with:
+a per-set ground-truth document (truth.json + profile.json), a frame
+generator, the real pipeline (ModeReplay, real Tesseract, real matcher, real
+commit policy) per sample, a speech sidecar with scripted TTS, and the
+holdout-split metrics. But two of its assumptions were load-bearing and
+first-game-shaped:
+
+1. **The frame renderer hard-coded the first game's textbox geometry.**
+   `generate.go`'s constants (bottom box at 0.07/0.72, 0.86×0.23, rounded
+   corners) rendered every set's frames. A second game whose box sits
+   elsewhere, with a different shape, could not be rendered or graded at
+   all — the harness could only measure games that looked like the first.
+2. **The only reveal behaviour in the corpus was the typewriter.** The M2
+   replay clip reveals a page word-by-word; a game that shows each page
+   instantly (the other common engine behaviour) had no fixture and no
+   assertion coverage, so the tracker's vote/stability policy was graded on
+   one reveal shape only.
+
+A third gap: every line in every fixture is Latin. Whether the shared
+matcher/commit policy degrades gracefully (abstains, commits no speech) on a
+script the configured OCR model cannot read was untested.
+
+## Options
+
+- **Branch the renderer on the set id.** Rejected: a condition on one game's
+  identity is exactly what docs/spec/04's portability rule (and
+  `assertNoGameVocabulary`) exists to keep out of shared code.
+- **A separate harness package for the second game.** Rejected: duplicates
+  the metrics/reporting discipline and splits the holdout story in two.
+- **Per-set layout data (chosen).** The textbox geometry and corner shape
+  become a `Layout` field of the set's profile.json — data, not code. The
+  renderer is a pure function of (sample, layout); the region the pipeline
+  watches is derived from the same layout, so the crop, the presence test
+  (dark share in the profile region, `internal/pipeline/roi.go`) and the
+  truth agree by construction. Set 001's committed profile.json is
+  regenerated with the layout made explicit (byte-identical frames: the
+  default layout reproduces the old constants exactly).
+
+## Decision
+
+1. `ScriptProfile` gains `Layout` (normalized box fractions + corner shape).
+   The zero layout is the first game's box, so existing sets keep rendering
+   identically; the loader validates the box stays inside the frame.
+   `RenderSamples` takes the layout instead of assuming it.
+2. A second bench set, `bench-synthetic-002` ("Black Water"), is committed
+   under `testdata/bench/` with: a different font family per line
+   (Liberation Sans for Latin, Noto Sans for the non-Latin line), a different
+   box position (upper-left) and shape (square corners, wider/shorter
+   aspect), an **instant page reveal** frame schedule (the line is whole on
+   its first frame, held, then the box empties and dismisses — no
+   typewriter prefixes), two-line wrapped boxes for the long lines, and one
+   **Cyrillic line** in the script. All text is the invented Black Water
+   dialogue already committed as the portability fixture; nothing is
+   game-derived (AGENTS.md rule 5). A generator test pins the committed
+   set against the generator, same as set 001.
+3. `make bench` runs the second set's holdout through the same harness and
+   the same metrics/objectives as the first set's, reported separately
+   (`artifacts/bench-second/`); the two holdouts are never pooled
+   (ADR-0058 discipline, different games are different systems) and the
+   recipe fails if either holdout misses its bar.
+4. A second replay clip + scenario, `black-water-001`, is generated by
+   `scripts/fixtures/gen-synthetic-replay-002.sh` (deterministic,
+   byte-stable, regenerated whole): instant page reveals, a two-line
+   wrapped page, a Cyrillic page, the upper-left square-cornered box.
+   `internal/pipeline` gains `replay_real_second_test.go` — real Tesseract,
+   real matcher, real commit policy, scripted-TTS sidecar (the M2 pipeline
+   owns no TTS scheduler, as in the first game's test) — with the same
+   assertion family as `dialogue-advance-001.yaml` (message_detected,
+   committed counts, speech_cancelled on the page advance,
+   no_duplicate_commit, no_stale_generation_applied).
+5. The Cyrillic page's expected behaviour is the graceful path: the
+   configured OCR model (eng) reads it as low-confidence gibberish, the
+   matcher abstains, and the narrator stays silent rather than reading
+   back a misread. The scenario and the bench grade this as *no committed
+   speech for the line*, which is a pass for the product and an honest
+   recall/top-1 miss in the bench metrics — the set's report says what the
+   run measured, never what the run was hoped to say.
+
+## Findings (empirical, recorded as the run landed)
+
+- **The core assumption that broke (goal 4, failing-test-first).** The
+  matcher's fuzzy-commit path could commit on a *retrieved* single candidate
+  at softmax probability 1.0 even when the text evidence was 0.02: the
+  second game's Cyrillic page reads as out-of-script gibberish (e.g.
+  `BOA3 TO, MPRYYT.`), which shares the trigram ` to` with one profile
+  message, so retrieval alone yields a one-candidate pool and the old
+  probability/margin gate passed it. The existing text-evidence floor only
+  guarded the *fallback* (no-retrieval) path. Fix: `fuzzyTextFloor` (0.1,
+  evidence-set, `internal/matcher/score.go`) now applies to any winner that
+  is not an exact, prefix, or graph decision. Failing-first test:
+  `TestFuzzyTextFloorOnRetrievedGarbage` (the actual recorded garbage
+  readings) — it committed before the fix and abstains after. Measured on
+  the evidence set: the garbage reads score 0.02–0.037 on text; the worst
+  legitimate small-box read is 0.19; everything the policy must keep is
+  ≥0.79, so 0.1 separates the two populations with wide margin.
+- **Cyrillic page behaviour (the graceful path).** On the clip and on the
+  bench the eng OCR model reads the Cyrillic page as low-confidence
+  gibberish, the matcher abstains (no candidate clears the floor), and the
+  narrator stays silent: `bw-c` commits 0 times in the scenario and the
+  bench grades it as an honest recall/top-1 miss, never a wrong commit.
+  `speech_cancelled dialogue_advanced` fires twice in the clip: once from
+  the real b→c page advance, and once from the truth-driven speech sidecar
+  committing c to replay ground truth (the pipeline itself never commits c).
+- **Bench holdout (graded split).** 10 samples (9 dialogue + 1 empty box):
+  recognition recall 100%, top-1 exact 100%, speaker 100%, speech precision
+  100%, 0 duplicate commits, 0 stale generations. The empty box abstains
+  correctly (no commit). The Cyrillic line's deterministic split lands its
+  480p/720p variants in the *tuning* split, where they are graded honestly
+  as abstain-misses; the holdout grades the Latin lines, which all commit.
+  Calibration is reported `not_fitted` — a 100%-correct top-1 with no
+  labelled errors cannot be calibrated; that is the honest state, not a
+  failure (a real fit needs Dolphin fixture-factory frames with labelled
+  errors, M6).
+- **Clip generator repairs (failing-test-first).** The generator's text
+  measurement clamped pango to a 100px canvas, so long lines never wrapped
+  and overflowed the box (OCR read truncated words) — caught by the
+  text-inside-box guard (`TestSecondReplayClipTextInsideBox`). The PNG
+  re-encode step re-injected `date`/`tIME` chunks, breaking byte-determinism
+  until the chunk-exclude flag propagated to every write. A missing final
+  `-dither none -colors 20` re-quantization left 8-bit scene noise showing
+  through the 0.85-alpha box, which the pipeline's Otsu+median read as
+  garbage; the same re-quantization the first clip carries fixed it. The
+  `timestamps.json` was missing the `ts_ns` field the replay clock reads.
+- **Page A reworded for OCR stability.** A standalone "I" in Liberation Sans
+  reads as `|` through the pipeline chain at every size tried (24/26/30pt),
+  and the scenario's `message_detected` needs a fold-exact match. The bench
+  set keeps the original `bw-02` line (its 480p variant is graded honestly
+  in the tuning split); the *clip's* page A was reworded to
+  "You paid the ferryman. The crossing is done now." — same scene/speaker/,
+  still two wrapped lines, and it reads back exactly (conf 0.92). This is a
+  fixture-authoring choice, not a product change.
+- **Live TTS (goal 3).** One live run over the second set's holdout line
+  `bw-02` ("You paid. I did not say the coin was yours.") through the real
+  gateway: a narrator voice designed for the run, registered as
+  `gn_test_6b69ed3b`, voiced the line, and was removed. Evidence WAV (PCM
+  mono 24kHz, 4.4s, peak 0.83 / RMS 0.108 — real signal, not silence) is
+  under `artifacts/second-game-live-tts/` with a manifest; the one-shot
+  runner was deleted after the run.
+
+## Validation
+
+- Failing test first for the layout assumption: `TestRenderRespectsSetLayout`
+  demands a non-default layout (box upper-left) and asserts the rendered
+  pixels put the dark box where the layout says, before the renderer
+  accepted a layout.
+- Failing test first for the fuzzy floor: `TestFuzzyTextFloorOnRetrievedGarbage`
+  committed the out-of-script reading before the fix and abstains after.
+- `GN_GATE=test-unit go test -race -count=1 ./internal/bench/ ./internal/pipeline/
+  ./internal/games/...` — all green, including the second-game real-Tesseract
+  replay test (3 deterministic runs: bw-a/bw-b commit once each, bw-c abstains,
+  2× speech_cancelled, 0 duplicates, 0 stale).
+- `make bench` runs both holdouts and exits 0: set 001 (recall 97.9%, top-1
+  100%) and set 002 (recall 100%, top-1 100%) both meet the bar; each report
+  lands under `artifacts/bench/` and `artifacts/bench-second/`.
+- The clip generator's byte-determinism is pinned by
+  `TestSecondReplayClipGeneratorDeterministic` (regenerate and compare sha256
+  of every frame + truth.json + timestamps.json against the committed clip).
+- One live TTS provider run over the second set's holdout line (narrator
+  voice, `gn_test_` namespace, removed after; WAV evidence under
+  `artifacts/second-game-live-tts/`).
+
+## Consequences and reversal
+
+Reversal plan: drop the `Layout` field (regenerate 001's profile.json with
+the old constants), delete `bench-synthetic-002`, the second clip/scenario/
+test and the Makefile line. No product code outside `internal/bench`,
+`internal/pipeline` (test), `testdata/`, `scripts/fixtures/` is touched, so
+the reversal is local. The layout data costs one JSON object per set; the
+second holdout adds its sample count of real-OCR replay time to `make bench`
+(~1–2 min at 26 samples, measured at landing).
+
+## Revision (2026-10-20, G12 black-water M7 fix)
+
+The Findings above said `bw-c` commits 0 times "in the scenario". That
+statement is true of the real-Tesseract run only — `internal/pipeline/
+replay_real_second_test.go` — which is the gate this ADR actually
+validated (the replay test, not `TestScenarios`). The M7 harness
+(`internal/scenario/scenarios_test.go`) runs the *same* scenario YAML but
+feeds layer A the **truth-OCR stub** (`truthocr.go`): it answers every
+read from the clip's own `truth.json`, so it reads the Cyrillic page
+exactly and the matcher commits `bw-c` once, `MATCH_EXACT` (text=1.0,
+margin=1.0). That is the correct behaviour for a perfect read — the
+out-of-script abstain property belongs to the real eng engine, not to a
+run whose scripted engine cannot misread — so the stub run was failing the
+shared `message_committed_count: bw-c, count: 0` assertion on a premise its
+own harness does not model. (The runner's companion line "ran 7 scenario(s),
+want 8" was that one failure's count cascade, not a second defect.)
+
+Fix (schema, not threshold, and not a flipped expectation):
+
+1. The scenario schema gains an optional `engines:` scope on
+   `message_committed_count` — a closed vocabulary `tesseract` / `truth`
+   (`ocrEngineNames`, `internal/scenario/scenario.go`), matching the two
+   engines' `ocr.Engine.Name()`.
+2. `Scenario.EvaluateWithOCREngine(engine, …)` grades a run whose harness
+   declares its OCR engine; an assertion scoped to another engine is
+   reported **not-applicable** (a passing row that says why it was not
+   graded) rather than failed or silently skipped. `Evaluate` without a
+   declared engine — the M2 real-Tesseract call site, unchanged — grades
+   every assertion, so the load-bearing `bw-c=0` abstain gate still runs
+   there.
+3. The M7 harness declares `truthEngineName` and the YAML scopes the `bw-c`
+   check to `tesseract`. The stub run now passes with the check reported
+   not-applicable; the real-Tesseract run still demands 0 commits.
+
+No matcher threshold moved: `fuzzyTextFloor` (0.1) is unchanged, and the
+stub's `bw-c` commit is an exact read it is right to commit. Reversal adds
+one line: drop the `engines:` field and the `EvaluateWithOCREngine` path
+(the stub run then regrades the tesseract-only assertion, and the M2 story
+returns to a single shared count).

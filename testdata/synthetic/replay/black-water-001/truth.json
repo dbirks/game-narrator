@@ -1,0 +1,674 @@
+[
+ {
+  "file": "frame-01.png",
+  "ts_ns": 100000000,
+  "box_present": false,
+  "box_alpha": 1.0,
+  "text": "",
+  "text_is_full_line": false,
+  "line": "",
+  "variant": "instant",
+  "rect": {
+   "x": 0.085938,
+   "y": 0.195833,
+   "w": 0.567187,
+   "h": 0.129167
+  },
+  "box": {
+   "x": 0.059375,
+   "y": 0.160417,
+   "w": 0.620313,
+   "h": 0.2
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-02.png",
+  "ts_ns": 200000000,
+  "box_present": false,
+  "box_alpha": 1.0,
+  "text": "",
+  "text_is_full_line": false,
+  "line": "",
+  "variant": "instant",
+  "rect": {
+   "x": 0.085938,
+   "y": 0.195833,
+   "w": 0.567187,
+   "h": 0.129167
+  },
+  "box": {
+   "x": 0.059375,
+   "y": 0.160417,
+   "w": 0.620313,
+   "h": 0.2
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-03.png",
+  "ts_ns": 300000000,
+  "box_present": false,
+  "box_alpha": 1.0,
+  "text": "",
+  "text_is_full_line": false,
+  "line": "",
+  "variant": "instant",
+  "rect": {
+   "x": 0.085938,
+   "y": 0.195833,
+   "w": 0.567187,
+   "h": 0.129167
+  },
+  "box": {
+   "x": 0.059375,
+   "y": 0.160417,
+   "w": 0.620313,
+   "h": 0.2
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-04.png",
+  "ts_ns": 400000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "",
+  "text_is_full_line": false,
+  "line": "",
+  "variant": "instant",
+  "rect": {
+   "x": 0.085938,
+   "y": 0.195833,
+   "w": 0.567187,
+   "h": 0.129167
+  },
+  "box": {
+   "x": 0.059375,
+   "y": 0.160417,
+   "w": 0.620313,
+   "h": 0.2
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-05.png",
+  "ts_ns": 500000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "You paid the ferryman. The crossing is done now.",
+  "text_is_full_line": true,
+  "line": "a",
+  "variant": "instant",
+  "rect": {
+   "x": 0.085938,
+   "y": 0.195833,
+   "w": 0.567187,
+   "h": 0.129167
+  },
+  "box": {
+   "x": 0.059375,
+   "y": 0.160417,
+   "w": 0.620313,
+   "h": 0.2
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-06.png",
+  "ts_ns": 600000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "You paid the ferryman. The crossing is done now.",
+  "text_is_full_line": true,
+  "line": "a",
+  "variant": "instant",
+  "rect": {
+   "x": 0.085938,
+   "y": 0.195833,
+   "w": 0.567187,
+   "h": 0.129167
+  },
+  "box": {
+   "x": 0.059375,
+   "y": 0.160417,
+   "w": 0.620313,
+   "h": 0.2
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-07.png",
+  "ts_ns": 700000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "You paid the ferryman. The crossing is done now.",
+  "text_is_full_line": true,
+  "line": "a",
+  "variant": "instant",
+  "rect": {
+   "x": 0.085938,
+   "y": 0.195833,
+   "w": 0.567187,
+   "h": 0.129167
+  },
+  "box": {
+   "x": 0.059375,
+   "y": 0.160417,
+   "w": 0.620313,
+   "h": 0.2
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-08.png",
+  "ts_ns": 800000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "You paid the ferryman. The crossing is done now.",
+  "text_is_full_line": true,
+  "line": "a",
+  "variant": "instant",
+  "rect": {
+   "x": 0.085938,
+   "y": 0.195833,
+   "w": 0.567187,
+   "h": 0.129167
+  },
+  "box": {
+   "x": 0.059375,
+   "y": 0.160417,
+   "w": 0.620313,
+   "h": 0.2
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-09.png",
+  "ts_ns": 900000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "You paid the ferryman. The crossing is done now.",
+  "text_is_full_line": true,
+  "line": "a",
+  "variant": "instant",
+  "rect": {
+   "x": 0.085938,
+   "y": 0.195833,
+   "w": 0.567187,
+   "h": 0.129167
+  },
+  "box": {
+   "x": 0.059375,
+   "y": 0.160417,
+   "w": 0.620313,
+   "h": 0.2
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-10.png",
+  "ts_ns": 1000000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "This is not a toll. This is a habit.",
+  "text_is_full_line": true,
+  "line": "b",
+  "variant": "instant",
+  "rect": {
+   "x": 0.085938,
+   "y": 0.195833,
+   "w": 0.567187,
+   "h": 0.129167
+  },
+  "box": {
+   "x": 0.059375,
+   "y": 0.160417,
+   "w": 0.620313,
+   "h": 0.2
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-11.png",
+  "ts_ns": 1100000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "This is not a toll. This is a habit.",
+  "text_is_full_line": true,
+  "line": "b",
+  "variant": "instant",
+  "rect": {
+   "x": 0.085938,
+   "y": 0.195833,
+   "w": 0.567187,
+   "h": 0.129167
+  },
+  "box": {
+   "x": 0.059375,
+   "y": 0.160417,
+   "w": 0.620313,
+   "h": 0.2
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-12.png",
+  "ts_ns": 1200000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "This is not a toll. This is a habit.",
+  "text_is_full_line": true,
+  "line": "b",
+  "variant": "instant",
+  "rect": {
+   "x": 0.085938,
+   "y": 0.195833,
+   "w": 0.567187,
+   "h": 0.129167
+  },
+  "box": {
+   "x": 0.059375,
+   "y": 0.160417,
+   "w": 0.620313,
+   "h": 0.2
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-13.png",
+  "ts_ns": 1300000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "This is not a toll. This is a habit.",
+  "text_is_full_line": true,
+  "line": "b",
+  "variant": "instant",
+  "rect": {
+   "x": 0.085938,
+   "y": 0.195833,
+   "w": 0.567187,
+   "h": 0.129167
+  },
+  "box": {
+   "x": 0.059375,
+   "y": 0.160417,
+   "w": 0.620313,
+   "h": 0.2
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-14.png",
+  "ts_ns": 1400000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "This is not a toll. This is a habit.",
+  "text_is_full_line": true,
+  "line": "b",
+  "variant": "instant",
+  "rect": {
+   "x": 0.085938,
+   "y": 0.195833,
+   "w": 0.567187,
+   "h": 0.129167
+  },
+  "box": {
+   "x": 0.059375,
+   "y": 0.160417,
+   "w": 0.620313,
+   "h": 0.2
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-15.png",
+  "ts_ns": 1500000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "Вода помнит то, что люди прячут.",
+  "text_is_full_line": true,
+  "line": "c",
+  "variant": "instant",
+  "rect": {
+   "x": 0.085938,
+   "y": 0.195833,
+   "w": 0.567187,
+   "h": 0.129167
+  },
+  "box": {
+   "x": 0.059375,
+   "y": 0.160417,
+   "w": 0.620313,
+   "h": 0.2
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-16.png",
+  "ts_ns": 1600000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "Вода помнит то, что люди прячут.",
+  "text_is_full_line": true,
+  "line": "c",
+  "variant": "instant",
+  "rect": {
+   "x": 0.085938,
+   "y": 0.195833,
+   "w": 0.567187,
+   "h": 0.129167
+  },
+  "box": {
+   "x": 0.059375,
+   "y": 0.160417,
+   "w": 0.620313,
+   "h": 0.2
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-17.png",
+  "ts_ns": 1700000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "Вода помнит то, что люди прячут.",
+  "text_is_full_line": true,
+  "line": "c",
+  "variant": "instant",
+  "rect": {
+   "x": 0.085938,
+   "y": 0.195833,
+   "w": 0.567187,
+   "h": 0.129167
+  },
+  "box": {
+   "x": 0.059375,
+   "y": 0.160417,
+   "w": 0.620313,
+   "h": 0.2
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-18.png",
+  "ts_ns": 1800000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "Вода помнит то, что люди прячут.",
+  "text_is_full_line": true,
+  "line": "c",
+  "variant": "instant",
+  "rect": {
+   "x": 0.085938,
+   "y": 0.195833,
+   "w": 0.567187,
+   "h": 0.129167
+  },
+  "box": {
+   "x": 0.059375,
+   "y": 0.160417,
+   "w": 0.620313,
+   "h": 0.2
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-19.png",
+  "ts_ns": 1900000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "Вода помнит то, что люди прячут.",
+  "text_is_full_line": true,
+  "line": "c",
+  "variant": "instant",
+  "rect": {
+   "x": 0.085938,
+   "y": 0.195833,
+   "w": 0.567187,
+   "h": 0.129167
+  },
+  "box": {
+   "x": 0.059375,
+   "y": 0.160417,
+   "w": 0.620313,
+   "h": 0.2
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-20.png",
+  "ts_ns": 2000000000,
+  "box_present": true,
+  "box_alpha": 1.0,
+  "text": "Вода помнит то, что люди прячут.",
+  "text_is_full_line": true,
+  "line": "c",
+  "variant": "instant",
+  "rect": {
+   "x": 0.085938,
+   "y": 0.195833,
+   "w": 0.567187,
+   "h": 0.129167
+  },
+  "box": {
+   "x": 0.059375,
+   "y": 0.160417,
+   "w": 0.620313,
+   "h": 0.2
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-21.png",
+  "ts_ns": 2100000000,
+  "box_present": false,
+  "box_alpha": 1.0,
+  "text": "",
+  "text_is_full_line": false,
+  "line": "",
+  "variant": "instant",
+  "rect": {
+   "x": 0.085938,
+   "y": 0.195833,
+   "w": 0.567187,
+   "h": 0.129167
+  },
+  "box": {
+   "x": 0.059375,
+   "y": 0.160417,
+   "w": 0.620313,
+   "h": 0.2
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-22.png",
+  "ts_ns": 2200000000,
+  "box_present": false,
+  "box_alpha": 1.0,
+  "text": "",
+  "text_is_full_line": false,
+  "line": "",
+  "variant": "instant",
+  "rect": {
+   "x": 0.085938,
+   "y": 0.195833,
+   "w": 0.567187,
+   "h": 0.129167
+  },
+  "box": {
+   "x": 0.059375,
+   "y": 0.160417,
+   "w": 0.620313,
+   "h": 0.2
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-23.png",
+  "ts_ns": 2300000000,
+  "box_present": false,
+  "box_alpha": 1.0,
+  "text": "",
+  "text_is_full_line": false,
+  "line": "",
+  "variant": "instant",
+  "rect": {
+   "x": 0.085938,
+   "y": 0.195833,
+   "w": 0.567187,
+   "h": 0.129167
+  },
+  "box": {
+   "x": 0.059375,
+   "y": 0.160417,
+   "w": 0.620313,
+   "h": 0.2
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ },
+ {
+  "file": "frame-24.png",
+  "ts_ns": 2400000000,
+  "box_present": false,
+  "box_alpha": 1.0,
+  "text": "",
+  "text_is_full_line": false,
+  "line": "",
+  "variant": "instant",
+  "rect": {
+   "x": 0.085938,
+   "y": 0.195833,
+   "w": 0.567187,
+   "h": 0.129167
+  },
+  "box": {
+   "x": 0.059375,
+   "y": 0.160417,
+   "w": 0.620313,
+   "h": 0.2
+  },
+  "size": {
+   "w": 640,
+   "h": 480
+  },
+  "fps": 10,
+  "origin": "generated_synthetic"
+ }
+]

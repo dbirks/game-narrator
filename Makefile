@@ -57,9 +57,15 @@ dev:
 ## the test-replay recipe does: it belongs to the test-dolphin gate (the
 ## recorded Dolphin fixture replay, 30-minute budget) and its 10+ minute run
 ## would time out the unit gate's default test timeout.
+##
+## -timeout 25m makes the per-package deadline explicit instead of relying on
+## Go's 10-minute default (issue #15): internal/api's race-enabled suite runs
+## in the several-minute band, and under parallel gate load one run already
+## hit the implicit 10-minute panic inside a migration. 25m is a deliberate
+## ceiling — a package that needs it is a regression to fix, not to absorb.
 test-unit:
 	go vet ./...
-	GN_GATE=test-unit go test -race -skip TestDolphinScenarios ./...
+	GN_GATE=test-unit go test -race -timeout 25m -skip TestDolphinScenarios ./...
 
 ## lint: Go static checks, the frontend lint/format gates and the repo-wide
 ## secret scan in tree mode (the history-including run is the dedicated
@@ -169,7 +175,13 @@ bench:
 	# amendment 1).
 	go build -o $(CURDIR)/artifacts/bench-bin/game-narrator ./cmd/game-narrator
 	OMP_NUM_THREADS=1 $(CURDIR)/artifacts/bench-bin/game-narrator bench --set testdata/bench/bench-synthetic-001 --split holdout --out artifacts/bench
+	# The second game's holdout (ADR-0079, gap audit G12) runs in the same
+	# gate: if either set's holdout misses the bar the recipe fails (the bench
+	# command exits non-zero on a NOT FIT verdict).
+	OMP_NUM_THREADS=1 $(CURDIR)/artifacts/bench-bin/game-narrator bench --set testdata/bench/bench-synthetic-002 --split holdout --out artifacts/bench-second
 	@cat artifacts/bench/report.md
+	@echo "--- second game (bench-synthetic-002) holdout ---"
+	@cat artifacts/bench-second/report.md
 	@if [ -n "$$GAME_NARRATOR_FIXTURE_DIR" ] && [ -n "$$GAME_NARRATOR_GAME_IMAGE_PATH" ]; then \
 		fixtures=""; \
 		for fx in windwaker-newgame windwaker-legend-dense; do \
@@ -265,7 +277,7 @@ test-ui:
 test-dolphin:
 	@GN_GATE=test-dolphin scripts/gates/run-go-gate.sh test-dolphin -count=1 -p 1 -timeout 45m -run Real -skip 'TestRealReOCRFixture$$' ./internal/dolphin/... ; \
 	rc1=$$?; \
-	scripts/gates/run-go-gate.sh test-dolphin-scenarios -count=1 -timeout 30m -run TestDolphinScenarios ./internal/scenario/... ; \
+	GN_GATE=test-dolphin scripts/gates/run-go-gate.sh test-dolphin-scenarios -count=1 -timeout 30m -run TestDolphinScenarios ./internal/scenario/... ; \
 	rc2=$$?; \
 	GN_GATE=test-dolphin scripts/gates/run-go-gate.sh test-dolphin-liveui -count=1 -p 1 -timeout 60m -run 'TestLivePlayUI$$' ./internal/e2e/... ; \
 	rc3=$$?; \

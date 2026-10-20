@@ -53,7 +53,12 @@ test("m5: the settings page and the test harness page", async ({ page }, testInf
   // backup download 403s with origin-mismatch). Same-origin end to end, the
   // page exercises exactly what a production LAN deployment sees.
   const origin = `http://127.0.0.1:${ports.api}`;
-  const consoleErrors = trackConsoleErrors(page);
+  // 503 joins the default 401 on the ignore list: this dev server has no
+  // capture layer wired (no GAME_NARRATOR_CAPTURE_FAKE), so the settings
+  // page's capture-device read answers 503 by design and the page renders
+  // its honest "unavailable" state — the same 503 the setup-wizard and a11y
+  // walks ignore for the same reason (ADR-0078's seam is opt-in per server).
+  const consoleErrors = trackConsoleErrors(page, [401, 503]);
   const shot = (step: string) =>
     page.screenshot({
       path: `test-results/m5-settings-tests-${step}.png`,
@@ -123,9 +128,12 @@ test("m5: the settings page and the test harness page", async ({ page }, testInf
   // asserted here — the values themselves are asserted absent below.
   await expect(page.getByTestId("settings-gateway")).toContainText("GAME_NARRATOR_GATEWAY_URL");
   await expect(page.getByTestId("settings-gateway")).toContainText("presence only");
+  // ADR-0074 made the audio output the one runtime-mutable setting: the note
+  // counts it, and the section the count points at is on the page.
   await expect(page.getByTestId("settings-mutable-note")).toContainText(
-    "Nothing is mutable at runtime",
+    "1 setting(s) are mutable at runtime",
   );
+  await expect(page.getByTestId("settings-audio-output")).toBeVisible();
   await expect(page.getByTestId("settings-storage")).toBeVisible();
   await expect(page.getByTestId("settings-audio")).toBeVisible();
   await expect(page.getByTestId("settings-security")).toContainText("127.0.0.1");

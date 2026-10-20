@@ -284,6 +284,15 @@ func (s *Scheduler) publishEnded(sessionID string, generation int64, utteranceID
 		if lat := s.stopLatency(generation, res); lat > 0 {
 			data["stop_latency_ms"] = lat.Milliseconds()
 		}
+		// Output latency (ADR-0074, docs/spec/13): how long the device side
+		// took to accept the first samples, from the sink's own stamp. Only
+		// sinks that report FirstSampleAt (the pipewire sink) populate it; a
+		// silent field is the honest "not measured", not a fabricated 0.
+		if !res.FirstSampleAt.IsZero() && !res.Started.IsZero() {
+			if lat := res.FirstSampleAt.Sub(res.Started); lat > 0 {
+				data["output_latency_ms"] = float64(lat.Nanoseconds()) / 1e6
+			}
+		}
 	}
 	b, _ := json.Marshal(data)
 	s.publish(events.SpeechEnded, sessionID, b)

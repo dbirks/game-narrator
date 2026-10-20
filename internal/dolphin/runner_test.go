@@ -623,6 +623,66 @@ func synthBoxDark(w, h int) *image.RGBA {
 	return img
 }
 
+// synthBoxBrightScene builds the synthetic double of the box over a BRIGHT
+// outdoor scene (ADR-0065 amendment 2, the G8 telescope): the lookout deck
+// measures letterbox 0.255 (the bright sky top band ~0.51 and the mid-luma
+// deck bottom band ~0.255 — NOT the pure-black 0.000 of the indoor
+// first-dialogue scene) yet carries the same dark dialogue box. Its centre
+// panel is the scene (mid ~90, not a system dialog's >=115 bright panel).
+// The letterbox ceiling alone rejects such a frame (lb 0.255 >= 0.08), so
+// the dark box form must admit it through the centre-panel negative clause
+// (mid.mean < classDarkDialogMinMid).
+func synthBoxBrightScene(w, h int) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	set := func(x, y int, l uint8) { img.SetRGBA(x, y, color.RGBA{R: l, G: l, B: l}) }
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			set(x, y, 90) // the bright outdoor scene's centre (measured mid 90)
+		}
+	}
+	for y := 0; y < 30; y++ {
+		for x := 0; x < w; x++ {
+			set(x, y, 130)    // the bright sky band (measured top ~0.51)
+			set(x, h-1-y, 65) // the mid-luma deck band (measured bottom ~0.255)
+		}
+	}
+	for y := int(0.69 * float64(h)); y < int(0.84*float64(h)); y++ { // the dark box band over the bright scene
+		for x := int(0.31 * float64(w)); x < int(0.75*float64(w)); x++ {
+			set(x, y, 52)
+		}
+	}
+	for _, row := range []float64{0.77, 0.80, 0.83} { // the box text's glyph ticks (white, sparse)
+		for x := int(0.34 * float64(w)); x < int(0.72*float64(w)); x += 4 {
+			for dx := 0; dx < 2; dx++ {
+				set(x+dx, int(row*float64(h)), 240)
+			}
+		}
+	}
+	return img
+}
+
+// synthBrightSceneNoBox is the box-less twin of synthBoxBrightScene: the same
+// bright outdoor scene WITHOUT the dark box band (the box band window shows
+// the bright scene, mean ~90). It must NOT classify as the dark box — the
+// box-band mean clause (bb.mean < classBoxDarkMaxMean) is what keeps a plain
+// bright scene out, independent of the letterbox clause.
+func synthBrightSceneNoBox(w, h int) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	set := func(x, y int, l uint8) { img.SetRGBA(x, y, color.RGBA{R: l, G: l, B: l}) }
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			set(x, y, 90)
+		}
+	}
+	for y := 0; y < 30; y++ {
+		for x := 0; x < w; x++ {
+			set(x, y, 130)
+			set(x, h-1-y, 65)
+		}
+	}
+	return img
+}
+
 // synthNameEntBoxLike builds the synthetic double of the MEASURED failure
 // shape of the 2026-10-19 test-full drive (the false dialogue_box success at
 // 25 s): a name-entry frame whose pulse phase measures the BRIGHT box-band

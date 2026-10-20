@@ -10,6 +10,7 @@ import (
 
 	"github.com/dbirks/game-narrator/internal/capture"
 	"github.com/dbirks/game-narrator/internal/events"
+	"github.com/dbirks/game-narrator/internal/games"
 	"github.com/dbirks/game-narrator/internal/matcher"
 	"github.com/dbirks/game-narrator/internal/recognition"
 	"github.com/dbirks/game-narrator/internal/session"
@@ -27,6 +28,14 @@ type Runner struct {
 	// gates is allocated per Runner (not per Run) and is only meaningful while a
 	// Run is in flight: it is the retrieval hold described on rankGate.
 	gates map[string]*rankGate
+
+	// kindHints is the per-region text-kind hint the matcher's text-kind
+	// component scores against: the region's on-screen role when it names a
+	// class (sign → sign, item → item, …), the runner's fallback hint otherwise
+	// (docs/spec/04 "Visual profiles"). Built from the normalised config, so a
+	// config that claims a region type the vocabulary does not know degrades to
+	// the fallback rather than scoring every reading with a bogus class.
+	kindHints map[string]games.TextKind
 
 	// lastMsg is the id of the last message this run committed ("" before the
 	// first commit). The rank worker reads it for the adjudication request's
@@ -75,17 +84,58 @@ func New(cfg Config) (*Runner, error) {
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
-	return &Runner{cfg: c, cnt: newCounters(c.Trace, c.TraceMax), gates: newGates(c.Regions)}, nil
+	return &Runner{cfg: c, cnt: newCounters(c.Trace, c.TraceMax), gates: newGates(c.Regions), kindHints: newKindHints(c)}, nil
+}
+
+// newKindHints maps every region to the text-kind hint its readings score
+// with: the role's class when the role names one, the runner's fallback hint
+// otherwise. The matcher's text-kind component is where the distinction pays:
+// a sign region whose reads scored with the dialogue fallback would give a
+// dialogue twin of the sign's words the kind component the sign message
+// earns, and the retrieval could commit the wrong class of line.
+func newKindHints(c Config) map[string]games.TextKind {
+	out := make(map[string]games.TextKind, len(c.Regions))
+	for _, r := range c.Regions {
+		if k, ok := r.RegionType.TextKindHint(); ok {
+			out[r.ID] = k
+			continue
+		}
+		out[r.ID] = c.TextKindHint
+	}
+	return out
 }
 
 // Config reports the effective configuration, including the clamps normalize
 // applied, so a caller can log what actually ran rather than what it asked for.
 func (r *Runner) Config() Config { return r.cfg }
 
+// kindOf is the session's message-class lookup for the commitment policy's
+// narrated-class filter (docs/spec/09). The candidate corpus the runner was
+// built against is the only authority on a class; a runner with no index (a
+// harness that ranks on its own evidence) simply cannot name a class, and the
+// filter reads that as "never veto on class" — a silence it cannot explain is
+// not a silence it may impose.
+func (r *Runner) kindOf(messageID string) (games.TextKind, bool) {
+	if r.cfg.Index == nil {
+		return "", false
+	}
+	return r.cfg.Index.KindFor(messageID)
+}
+
 // Stats snapshots the counters and latency table. Safe at any time, including
 // before Run and after it returns (docs/spec/13 exposes exactly this to a health
 // endpoint).
 func (r *Runner) Stats() Stats { return r.cnt.snapshot() }
+
+// ObserveAudioUnderrun books one started playback that ended in a sink failure
+// (docs/spec/13 "playback underruns", ADR-0074). The session's speech wiring
+// calls it from the scheduler's speech.ended events.
+func (r *Runner) ObserveAudioUnderrun() { r.cnt.audioUnderrun() }
+
+// ObserveAudioOutputLatency books one measured output-latency sample (the
+// interval from the sink accepting the playback to the device buffer accepting
+// the first samples, ADR-0074).
+func (r *Runner) ObserveAudioOutputLatency(d time.Duration) { r.cnt.audioOutputLatency(d) }
 
 // Trace returns the retained timeline when Config.Trace is on, oldest first.
 func (r *Runner) Trace() []TraceEntry { return r.cnt.traceSnapshot() }
@@ -134,6 +184,12 @@ type rankRequest struct {
 	// amendment 3) correlates the row with the oracle's frames on this stamp.
 	frameSeq    int64
 	captureTSNS int64
+	// kindHint is this region's text-kind hint (its on-screen role's class,
+	// or the runner's fallback when the role names none): the text-kind
+	// component scores the retrieval against the corpus's stored classes with
+	// it, and the per-region value is what keeps a sign region's reads from
+	// scoring as dialogue (docs/spec/04 "Visual profiles").
+	kindHint games.TextKind
 }
 
 type rankJob struct {
@@ -162,7 +218,8 @@ func (r *Runner) Run(ctx context.Context, src capture.Source, pub session.Publis
 
 	red, err := session.New(r.cfg.SessionID, r.cfg.ProfileRevision, pub,
 		session.WithConfig(r.cfg.Reducer),
-		session.WithTrackerConfig(r.cfg.Tracker))
+		session.WithTrackerConfig(r.cfg.Tracker),
+		session.WithMessageKind(r.kindOf))
 	if err != nil {
 		return fmt.Errorf("pipeline: reducer: %w", err)
 	}
@@ -181,9 +238,16 @@ func (r *Runner) Run(ctx context.Context, src capture.Source, pub session.Publis
 	replies := make(chan rankIn, r.cfg.MaxRankingJobs*len(r.cfg.Regions)+2)
 	ranks := make(chan rankJob, cap(replies))
 
-	for i := 0; i < r.cfg.Workers; i++ {
+	// The OCR workers are the only goroutines that run engine calls, and one
+	// engine call is one child process: MaxConcurrentOCR, not Workers, is the
+	// bound on concurrent recognitions (issue #8: two concurrent Tesseract
+	// processes on the board thrash each other to 19 s each — ADR-0096). Workers stays the jobs
+	// buffer and the rank pool size.
+	for i := 0; i < r.cfg.MaxConcurrentOCR; i++ {
 		wg.Add(1)
 		go func() { defer wg.Done(); r.ocrWorker(runCtx, jobs, done) }()
+	}
+	for i := 0; i < r.cfg.Workers; i++ {
 		wg.Add(1)
 		go func() { defer wg.Done(); r.rankWorker(runCtx, ranks, replies) }()
 	}
@@ -202,7 +266,7 @@ func (r *Runner) Run(ctx context.Context, src capture.Source, pub session.Publis
 	// and reports through redErrC.
 	redErrC := make(chan error, 1)
 	go func() {
-		redErrC <- r.reduceLoop(runCtx, red, in, replies, ranks, pub)
+		redErrC <- r.reduceLoop(runCtx, red, in, replies, ranks, r.cfg.Controls, pub)
 	}()
 	roiErr := r.roiLoop(runCtx, bridge, in, jobs, done)
 	redErr := <-redErrC
@@ -365,7 +429,7 @@ func (r *Runner) rankWorker(ctx context.Context, ranks <-chan rankJob, replies c
 				Text:         j.raw,
 				OCRConf:      j.conf,
 				SceneID:      j.req.scene,
-				TextKindHint: string(r.cfg.TextKindHint),
+				TextKindHint: string(j.req.kindHint),
 			}, r.cfg.RankOptions)
 			// The optional Clef adjudication (docs/spec/05 "candidate retrieval →
 			// graph-aware scoring → optional Clef/VLM adjudication → commitment

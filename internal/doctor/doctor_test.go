@@ -12,9 +12,26 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dbirks/game-narrator/internal/audio"
 	"github.com/dbirks/game-narrator/internal/bootstrap"
 	"github.com/dbirks/game-narrator/internal/store"
 )
+
+// fixedAudioDevices is the enumeration the fake host's AudioDevices seam
+// returns by default: a USB DAC the user could pick, a platform-default null
+// sink the selection routes to when no device is named, and the capture
+// dongle's UAC (USB audio-class) interface — the identity the G5 guard must
+// refuse. A UAC-named sink and a USB DAC share a kind, so the guard reads the
+// identity string, not the kind: this fixture is what pins that difference.
+var fixedAudioDevices = audio.List{
+	Backend:   "synthetic",
+	Synthetic: true,
+	Devices: []audio.Device{
+		{ID: "alsa_output.usb-JBL_Flip_6_0011223344", Name: "JBL Flip 6", Kind: audio.KindUSB},
+		{ID: "auto_null", Name: "Null Output", Kind: audio.KindNull, PlatformDefault: true},
+		{ID: "alsa_output.usb-General_UAC_Device_001", Name: "Generic UAC Device", Kind: audio.KindUSB},
+	},
+}
 
 // The doctor suite must pass on a host with none of the tools installed, so
 // every check is exercised through the injected seams. The two tests that call
@@ -61,6 +78,13 @@ func newFakeHost(t *testing.T) *fakeHost {
 	h.exec("tesseract --version", "tesseract 5.5.3\n leptonica-1.87.0\n")
 	h.exec("pactl", "0\tsink0\tlibpulse-simple protocol-native.c\t1\n1\tsink1\tlibpulse-simple\t0\n")
 	h.exec("aplay", "card 0: Dummy [Dummy], device 0: Dummy HDMI [Dummy HDMI]\n  Subdevices: 1/1\n")
+	// The capture check's mode selection runs --list-formats-ext per capable
+	// node and reads the USB link from sysfs; both get fixture answers so the
+	// suite never depends on the host's real /dev/video* or USB bus
+	// (AGENTS.md rule 3). The formats fixture is a labelled-synthetic
+	// MS2130-class enumeration (testdata/v4l2-formats-ms2130.txt).
+	h.exec("v4l2-ctl -d /dev/video0 --list-formats-ext", v4l2Formats(t, "v4l2-formats-ms2130.txt"))
+	h.exec("v4l2-ctl -d /dev/video1 --list-formats-ext", v4l2Formats(t, "v4l2-formats-ms2130.txt"))
 
 	h.opts = Options{
 		DataDir:      dir,
@@ -71,7 +95,18 @@ func newFakeHost(t *testing.T) *fakeHost {
 		Exec:         h.runCommand,
 		Glob:         h.glob,
 		DeviceOpen:   h.openDevice,
-		Now:          func() time.Time { return time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC) },
+		// The audio.selected check reads the output-device enumeration through
+		// this seam: a fixed, deterministic list (the real enumerator would
+		// run pactl/aplay against the host's live sinks and make the suite
+		// host-dependent, AGENTS.md rule 3).
+		AudioDevices: func(context.Context, func(string) (string, bool)) (audio.List, error) {
+			return fixedAudioDevices, nil
+		},
+		// The USB link behind the fixture capture nodes: a SuperSpeed card on
+		// a SuperSpeed port (the healthy case). Tests that want the downgrade
+		// fault or an unreadable link re-point this.
+		SysfsRoot: fakeSysfs(t, "5000", "5000"),
+		Now:       func() time.Time { return time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC) },
 	}
 	return h
 }
@@ -236,7 +271,8 @@ func TestRunReportsEveryComponentExactlyOnce(t *testing.T) {
 	want := []string{
 		"storage.data_dir", "storage.database",
 		"tools.ffmpeg", "tools.v4l2_ctl", "tools.tesseract",
-		"ocr.controlled_image", "capture.devices", "audio.sinks",
+		"ocr.controlled_image", "capture.devices", "audio.sinks", "audio.selected",
+		"bluetooth.audio", "updates.check",
 		"providers.agent_reasoning", "providers.fast_reasoning",
 		"providers.vision_ocr_fallback", "providers.decision",
 		"providers.voice_design", "providers.voice_clone", "providers.speech_asr",
@@ -275,7 +311,7 @@ func TestGroupsAreDerivedFromIDs(t *testing.T) {
 	want := map[string]string{
 		"storage.data_dir": "Storage", "tools.ffmpeg": "Tools",
 		"ocr.controlled_image": "OCR", "capture.devices": "Capture",
-		"audio.sinks": "Audio", "providers.decision": "Providers",
+		"audio.sinks": "Audio", "audio.selected": "Audio", "providers.decision": "Providers",
 	}
 	rep := h.run()
 	for id, group := range want {
@@ -666,6 +702,50 @@ func v4l2Info(t *testing.T, name string) string {
 	return string(b)
 }
 
+// v4l2Formats reads a --list-formats-ext fixture (synthetic, labelled as
+// such in the file).
+func v4l2Formats(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatalf("fixture %s: %v", name, err)
+	}
+	return string(b)
+}
+
+// fakeSysfs fabricates the minimal sysfs tree the capture check's USB link
+// read walks (internal/capture/usb): class/video4linux/video{0,1}/device
+// symlinks into one USB device directory carrying speed and maxportspeed.
+func fakeSysfs(t *testing.T, speed, maxport string) string {
+	t.Helper()
+	root := t.TempDir()
+	usbDir := filepath.Join(root, "devices", "platform", "soc", "usb", "usb3", "3-1")
+	if err := os.MkdirAll(usbDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, v := range map[string]string{
+		"speed":        speed,
+		"busnum":       "3",
+		"maxportspeed": maxport,
+		"idVendor":     "1bcf",
+		"idProduct":    "2d3d",
+	} {
+		if err := os.WriteFile(filepath.Join(usbDir, name), []byte(v+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, node := range []string{"video0", "video1"} {
+		classDir := filepath.Join(root, "class", "video4linux", node)
+		if err := os.MkdirAll(classDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(usbDir, filepath.Join(classDir, "device")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
 func TestCaptureWithoutDevicesIsNotConfigured(t *testing.T) {
 	h := newFakeHost(t)
 	c := h.check(h.run(), "capture.devices")
@@ -687,6 +767,14 @@ func TestCaptureWithDevicesAndV4L2IsOK(t *testing.T) {
 	}
 	if !h.calledWith("v4l2-ctl -d /dev/video0 --info") || !h.calledWith("v4l2-ctl -d /dev/video1 --info") {
 		t.Fatalf("per-node --info was never run: %v", h.invoked())
+	}
+	// Mode selection (docs/spec/10 preflight): the SuperSpeed card gets the
+	// policy's pick with its reason and the rejected candidate count.
+	if !strings.Contains(c.Detail, "mode selection") || !strings.Contains(c.Detail, "640x480 YUYV @ 30 fps") {
+		t.Fatalf("detail = %q, want the selected mode with the policy's pick", c.Detail)
+	}
+	if !strings.Contains(c.Detail, "super-speed") {
+		t.Fatalf("detail = %q, want the negotiated link class", c.Detail)
 	}
 }
 
@@ -772,6 +860,66 @@ func TestCaptureDeviceDeniedToThisUserIsDegraded(t *testing.T) {
 	mustStatus(t, c, StatusDegraded)
 	if !strings.Contains(c.Remedy, "video group") {
 		t.Fatalf("remedy = %q, want the group-membership fix", c.Remedy)
+	}
+}
+
+// TestCaptureDowngradedUSB3CardAtUSB2IsDegraded is the silent performance
+// fault the link read exists to name (docs/spec/10): a SuperSpeed-class card
+// negotiating HighSpeed works, but its raw modes do not fit the link, and
+// the doctor must say so with the operator action, not after the first
+// flapping session.
+func TestCaptureDowngradedUSB3CardAtUSB2IsDegraded(t *testing.T) {
+	h := newFakeHost(t)
+	h.withDevices("/dev/video0")
+	h.exec("v4l2-ctl -d /dev/video0 --info", v4l2Info(t, "v4l2-uvc-info.txt"))
+	// Same card, USB 2 port: speed 480, port ceiling SuperSpeed.
+	h.opts.SysfsRoot = fakeSysfs(t, "480", "5000")
+	c := h.check(h.run(), "capture.devices")
+	mustStatus(t, c, StatusDegraded)
+	if !strings.Contains(c.Detail, "negotiating USB 2") {
+		t.Fatalf("detail = %q, want the downgrade warning", c.Detail)
+	}
+	if !strings.Contains(c.Remedy, "USB 3") {
+		t.Fatalf("remedy = %q, want the re-seat instruction", c.Remedy)
+	}
+	// The mode itself still fits 480p raw even at HighSpeed: the card is not
+	// dead, it is capped — the selection must still report.
+	if !strings.Contains(c.Detail, "640x480 YUYV @ 30 fps") {
+		t.Fatalf("detail = %q, want the capped mode still selected", c.Detail)
+	}
+}
+
+// TestCaptureUnreadableFormatsIsDegraded: a capable node whose format
+// enumeration fails (wedged node, missing v4l2-ctl on a live card) must not
+// be reported as mode-ready.
+func TestCaptureUnreadableFormatsIsDegraded(t *testing.T) {
+	h := newFakeHost(t)
+	h.withDevices("/dev/video0")
+	h.exec("v4l2-ctl -d /dev/video0 --info", v4l2Info(t, "v4l2-uvc-info.txt"))
+	h.execFail("v4l2-ctl -d /dev/video0 --list-formats-ext", "unable to enumerate formats")
+	c := h.check(h.run(), "capture.devices")
+	mustStatus(t, c, StatusDegraded)
+	if !strings.Contains(c.Remedy, "formats unreadable") {
+		t.Fatalf("remedy = %q, want the fault named", c.Remedy)
+	}
+}
+
+// TestCaptureUnreadableLinkStillSelectsConservatively: sysfs without the card
+// (a non-USB-attached node, or a stripped tree) cannot prove the link class,
+// so the policy falls back to the HighSpeed budget — a conservative mode,
+// never an error and never an invented claim.
+func TestCaptureUnreadableLinkStillSelectsConservatively(t *testing.T) {
+	h := newFakeHost(t)
+	h.withDevices("/dev/video0")
+	h.exec("v4l2-ctl -d /dev/video0 --info", v4l2Info(t, "v4l2-uvc-info.txt"))
+	h.opts.SysfsRoot = t.TempDir() // no class entry: the link is unreadable
+	c := h.check(h.run(), "capture.devices")
+	mustStatus(t, c, StatusOK)
+	if !strings.Contains(c.Detail, "link unreadable") {
+		t.Fatalf("detail = %q, want the unreadable link named", c.Detail)
+	}
+	if !strings.Contains(c.Detail, "640x480 YUYV @ 30 fps") {
+		t.Fatalf("detail = %q, want the conservative HighSpeed pick", c.Detail)
 	}
 }
 
@@ -864,5 +1012,109 @@ func TestAudioNeverPlaysAnything(t *testing.T) {
 		if strings.Contains(call, "play") && !strings.HasPrefix(call, "aplay -l") {
 			t.Fatalf("doctor played audio: %q", call)
 		}
+	}
+}
+
+// --- audio.selected (ADR-0074, gap audit G5) -------------------------------
+
+// TestAudioSelectedPlatformDefaultIsOK pins the default: no env override and
+// no stored row, the selection is the platform route, the platform-default
+// device (the null sink in the fixture) is found, and the check is OK.
+func TestAudioSelectedPlatformDefaultIsOK(t *testing.T) {
+	h := newFakeHost(t)
+	c := h.check(h.run(), "audio.selected")
+	mustStatus(t, c, StatusOK)
+	if !strings.Contains(c.Summary, "auto_null") {
+		t.Fatalf("summary = %q, want the platform-default device named", c.Summary)
+	}
+}
+
+// TestAudioSelectedEnvDeviceExistsIsOK: an env override naming an enumerated
+// device (the USB DAC) is the user's pick and is sound.
+func TestAudioSelectedEnvDeviceExistsIsOK(t *testing.T) {
+	h := newFakeHost(t)
+	h.withEnv(audio.EnvDevice, "alsa_output.usb-JBL_Flip_6_0011223344")
+	c := h.check(h.run(), "audio.selected")
+	mustStatus(t, c, StatusOK)
+	if !strings.Contains(c.Summary, "JBL_Flip_6") {
+		t.Fatalf("summary = %q, want the selected DAC named", c.Summary)
+	}
+}
+
+// TestAudioSelectedMissingDeviceIsDegraded: a selection naming a device the
+// enumeration does not show (pulled the DAC, kept the setting) is DEGRADED
+// with the enumerated ids so the operator can see what to pick instead.
+func TestAudioSelectedMissingDeviceIsDegraded(t *testing.T) {
+	h := newFakeHost(t)
+	h.withEnv(audio.EnvDevice, "alsa_output.usb-Pulled_DAC_999")
+	c := h.check(h.run(), "audio.selected")
+	mustStatus(t, c, StatusDegraded)
+	if !strings.Contains(c.Summary, "Pulled_DAC_999") {
+		t.Fatalf("summary = %q, want the missing device named", c.Summary)
+	}
+	if !strings.Contains(c.Detail, "auto_null") || !strings.Contains(c.Remedy, "Audio output") {
+		t.Fatalf("detail/remedy must name the enumerated ids and the settings page: %q / %q", c.Detail, c.Remedy)
+	}
+}
+
+// TestAudioSelectedUACDongleIsRefused is the G5 guard: the selection naming
+// the capture dongle's UAC (USB audio-class) interface is DEGRADED — that
+// interface is not a speaker — and the remedy points at the DAC. The UVC
+// node present on the fixture host sharpens the detail (the dongle is
+// attached, so its UAC interface is exactly where a UAC-named sink comes
+// from).
+func TestAudioSelectedUACDongleIsRefused(t *testing.T) {
+	h := newFakeHost(t)
+	h.withDevices("/dev/video0")
+	h.withEnv(audio.EnvDevice, "alsa_output.usb-General_UAC_Device_001")
+	c := h.check(h.run(), "audio.selected")
+	mustStatus(t, c, StatusDegraded)
+	if !strings.Contains(c.Summary, "UAC") {
+		t.Fatalf("summary = %q, want the UAC finding named", c.Summary)
+	}
+	if !strings.Contains(c.Detail, "video0") {
+		t.Fatalf("detail = %q, want the attached UVC node named", c.Detail)
+	}
+	if !strings.Contains(c.Remedy, "USB DAC") {
+		t.Fatalf("remedy = %q, want the DAC pointed at", c.Remedy)
+	}
+}
+
+// TestAudioSelectedStoredDeviceIsRead: the stored row (the Settings page's
+// persisted pick) is read from the real store in the data directory and
+// resolves — proof the seam-to-store path, not just env, feeds the check.
+func TestAudioSelectedStoredDeviceIsRead(t *testing.T) {
+	h := newFakeHost(t)
+	ctx := context.Background()
+	st, err := store.Open(ctx, store.DBPath(h.dataDir()))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate store: %v", err)
+	}
+	if err := st.SetAudioSettings(ctx, store.AudioSettings{Device: "alsa_output.usb-JBL_Flip_6_0011223344", SinkKind: "pipewire", MasterVolume: 0.8}); err != nil {
+		t.Fatalf("set audio settings: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	c := h.check(h.run(), "audio.selected")
+	mustStatus(t, c, StatusOK)
+	if !strings.Contains(c.Detail, "(store)") {
+		t.Fatalf("detail = %q, want the stored provenance named", c.Detail)
+	}
+}
+
+// TestAudioSelectedUnresolvableSelectionFails: a stored sink kind this build
+// does not accept cannot resolve; the check is FAIL with the selection fix
+// named, not a silent default.
+func TestAudioSelectedUnresolvableSelectionFails(t *testing.T) {
+	h := newFakeHost(t)
+	h.withEnv(audio.EnvSink, "jack")
+	c := h.check(h.run(), "audio.selected")
+	mustStatus(t, c, StatusFail)
+	if !strings.Contains(c.Summary, "does not resolve") {
+		t.Fatalf("summary = %q", c.Summary)
 	}
 }

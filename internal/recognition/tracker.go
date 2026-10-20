@@ -103,6 +103,16 @@ func (t *Tracker) RegionID() string { return t.regionID }
 // can show what thresholds actually decided a transition.
 func (t *Tracker) Config() Config { return t.cfg }
 
+// SetPredictiveMode switches the tracker's commitment half of the session's
+// conservative/predictive policy (docs/spec/01) mid-session. It is the text
+// machine's half of the same switch the session reducer applies to its own
+// commitment policy: a tracker left on the old value would keep the box
+// REVEALING (or reveal a prefix the session will refuse to commit) after the
+// operator flipped the mode, so the two halves must move together. The session
+// reducer owns every call to its trackers on one goroutine (the single-writer
+// invariant), so the field move needs no lock of its own.
+func (t *Tracker) SetPredictiveMode(on bool) { t.cfg.PredictiveMode = on }
+
 // State reports the current state.
 func (t *Tracker) State() State { return t.state }
 

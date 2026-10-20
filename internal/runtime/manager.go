@@ -1,11 +1,16 @@
 package runtime
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"math"
 	"sync"
+	"sync/atomic"
 
 	"github.com/dbirks/game-narrator/internal/capture"
+	"github.com/dbirks/game-narrator/internal/capture/stack"
 	"github.com/dbirks/game-narrator/internal/events"
 	"github.com/dbirks/game-narrator/internal/jobs"
 	"github.com/dbirks/game-narrator/internal/pipeline"
@@ -70,11 +75,35 @@ var (
 	// here, so the answer is the documented degraded shape, not a 404 that
 	// blames a clip nobody installed.
 	ErrClipsUnavailable = errors.New("runtime: the managed clip store is not configured in this process")
+
+	// The v4l2 (UVC HDMI capture dongle) frame source (ADR-0078): the device
+	// is resolved against the live enumeration by stable id — the
+	// enumeration is the allowlist, the same discipline the replay roots
+	// apply to directories — and the mode is the operator's pinned choice
+	// (while it stays an offered mode) or the ADR-0076 policy's pick.
+	// ErrCaptureUnavailable is the unwired answer (a nil wiring, which
+	// production never is): a process without capture wiring refuses the
+	// kind rather than faking a device, the same no-simulation-theater rule
+	// the dolphin gate applies to the emulator.
+	ErrCaptureDeviceAbsent    = errors.New("runtime: no usable capture device is attached")
+	ErrCaptureDeviceUnknown   = errors.New("runtime: the requested capture device is not in the current enumeration")
+	ErrCaptureModeUnavailable = errors.New("runtime: no offered capture mode fits the selection policy")
+	ErrCaptureUnavailable     = errors.New("runtime: no capture device wiring is configured in this process")
 	// ErrInvalidClipID (ADR-0073): the clip id a session named is not a clip id
 	// at all (the id contract is the traversal boundary, docs/spec/14
 	// "Filesystem"). The answer is 400 with the rule named, never a path the
 	// id almost spelled.
 	ErrInvalidClipID = errors.New("runtime: the clip id is not a valid clip id")
+	// ErrSessionNotRunning: a live control (pause, resume, settings) addressed
+	// to a session that has already reached a terminal state. The control is
+	// refused rather than silently dropped: a pause the session cannot take is
+	// not a pause, and the operator needs the 409 to know the run is over.
+	ErrSessionNotRunning = errors.New("runtime: the session is not running")
+	// ErrInvalidSessionSettings: a mid-session settings request whose mode or
+	// narrated classes are outside the documented vocabulary. The answer is a
+	// 400 naming the rule (the same shape as ErrInvalidAudioSettings), never a
+	// best-guess interpretation of a value the policy cannot read.
+	ErrInvalidSessionSettings = errors.New("runtime: invalid session settings")
 )
 
 // ModeConservative and ModePredictive are the session decision modes
@@ -103,6 +132,28 @@ type FrameSource struct {
 	Kind   string
 	Dir    string
 	ClipID string
+}
+
+// SessionSettings is the mid-session operator policy of PUT
+// /api/v1/sessions/{id}/settings (docs/spec/08 "…/settings", docs/spec/09
+// "/play": the narrated classes and the conservative/predictive toggle).
+// Every field is a pointer: a nil field keeps the session's current value, so
+// a client that only flips the mode does not have to re-send the classes it
+// never touched — the same partial-body rule the audio route follows.
+//
+// Mode is one of the Mode* constants ("" or an unknown word is a 400);
+// NarratedClasses is the set of games.TextKind the session may narrate. The
+// session reducer force-includes dialogue (it is the product), so a request
+// for "signs only" is applied as "dialogue and signs": the runtime records
+// the normalized set on the snapshot, which is what the UI's toggles read.
+type SessionSettings struct {
+	// Mode is the decision mode: conservative or predictive. nil keeps the
+	// session's current value (the partial-body contract).
+	Mode *string `json:"mode,omitempty"`
+	// NarratedClasses is the narrated-class vocabulary: the games.TextKind
+	// words, normalized by the runtime (dialogue first, always present).
+	// nil keeps the session's current value.
+	NarratedClasses *[]string `json:"narrated_classes,omitempty"`
 }
 
 // Options wires the runtime into its neighbours. Store and Hub are mandatory;
@@ -182,6 +233,17 @@ type Options struct {
 	// — production wires no closure, so the seam is unreachable there.
 	ManualSource func() (capture.Source, error)
 
+	// Capture wires the v4l2 (UVC HDMI capture dongle) frame source
+	// (ADR-0078): Resolve answers the session's device and mode (the
+	// capture/stack layer in production: the stable-id allowlist, the
+	// persisted selection, the ADR-0076 policy), and Source builds the
+	// live source for the resolved device (ffmpegpipe.V4L2 in production,
+	// the labelled-synthetic testsrc2 seam under EnvFake). nil (the default)
+	// keeps kind v4l2 answered ErrCaptureUnavailable: the production wiring
+	// is always present, so the nil case is an unwired process refusing
+	// rather than faking a device.
+	Capture *CaptureOptions
+
 	// Speech wires the per-session voice pipeline (docs/spec/07, ADR-0039):
 	// committed lines resolve the speaker's approved voice and play through
 	// the TTS cache, the fenced scheduler and the configured sink. nil
@@ -191,16 +253,46 @@ type Options struct {
 	Log    *slog.Logger
 }
 
+// CaptureOptions is the v4l2 (UVC HDMI capture dongle) wiring's seam pair
+// (ADR-0078): both halves are closures so the runtime's tests run on a fake
+// enumeration and a push-based source without touching v4l2-ctl or FFmpeg,
+// and production passes the capture/stack layer's own functions unchanged.
+type CaptureOptions struct {
+	// Resolve resolves the session's capture device and mode. requestedID
+	// is the session's frame_source.dir: the device's stable id (the API's
+	// id field), or empty for the persisted selection (then the first
+	// usable device). The answer is what the session runs, so a fallback is
+	// visible in the snapshot, not guessed.
+	Resolve func(ctx context.Context, requestedID string) (stack.Resolved, error)
+	// Source builds the live source for the resolved device and mode
+	// (production: the ffmpegpipe.V4L2 constructor, ADR-0076's low-latency
+	// defaults; the source's ID is the "v4l2:<node>" identity the no-signal
+	// wrapper keys on).
+	Source func(ctx context.Context, res stack.Resolved) (capture.Source, error)
+}
+
 // Manager owns the one running session (docs/spec/01 "Key invariants": one
 // active session at a time), its lifecycle events and its dev-trace assets.
 type Manager struct {
 	opts  Options
 	log   *slog.Logger
 	quota int64
+	// masterVolume is the appliance's device-level master volume (ADR-0074),
+	// initialised from SpeechOptions and updated live by SetMasterVolume. It
+	// is float64 bits in a Uint64 (the stdlib atomic of this toolchain has no
+	// Float64 type); the sessions' master sinks read it at every playback.
+	masterVolume atomic.Uint64
 
 	mu       sync.Mutex
 	sessions map[string]*session
 	closed   bool
+	// ocrPool is the process-shared persistent OCR engine (issue #13,
+	// ADR-0100): the warm Tesseract process pool every session's OCR region
+	// reads through when no explicit engine is configured. It is created
+	// lazily on the first session and lives for the process: the 0.59 s warm
+	// startup is paid once at first use, not per session. A configured
+	// Options.OCR (the test seams) is used as given, pool or not.
+	ocrPool *ocr.Pooled
 }
 
 // New registers the lifecycle event names and returns a Manager ready to
@@ -232,10 +324,70 @@ func New(opts Options) (*Manager, error) {
 	if quota <= 0 {
 		quota = DefaultDevTraceQuota
 	}
-	return &Manager{
+	// The device-level master volume defaults to unity: an unset value must
+	// play what the session volume decides, and the atomic's zero value
+	// (bits of 0.0) would read as a muted device.
+	mv := 1.0
+	if opts.Speech != nil && opts.Speech.MasterVolume > 0 {
+		if opts.Speech.MasterVolume <= 1 {
+			mv = opts.Speech.MasterVolume
+		}
+	}
+	mgr := &Manager{
 		opts:     opts,
 		log:      opts.Log,
 		quota:    quota,
 		sessions: map[string]*session{},
-	}, nil
+	}
+	mgr.masterVolume.Store(math.Float64bits(mv))
+	return mgr, nil
 }
+
+// ocrEngine resolves the session's recognition engine: the configured engine
+// (a test seam) as given, else the process-shared warm pool (issue #13,
+// ADR-0100). The pool keeps the Tesseract model loaded across reads — the
+// live A53 read costs the inference only (~0.57 s measured) instead of the
+// 1.13 s per-call process startup (ADR-0096) — and its per-process fallback
+// keeps a broken engine degrading the way ADR-0012 always made it.
+func (m *Manager) ocrEngine() ocr.Engine {
+	if m.opts.OCR != nil {
+		return m.opts.OCR
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.ocrPool == nil {
+		m.ocrPool = ocr.NewPooled(ocr.Tesseract{}, ocr.DefaultPoolSlots)
+	}
+	return m.ocrPool
+}
+
+// loadMasterVolume reports the manager's device-level master volume (ADR-0074)
+// clamped to 0..1. It is the loader the sessions' master sinks and the API
+// snapshot read through.
+func (m *Manager) loadMasterVolume() float64 {
+	v := math.Float64frombits(m.masterVolume.Load())
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
+// SetMasterVolume applies the appliance's device-level master volume (0..1,
+// ADR-0074). It takes effect from the next playback of every session (each
+// master sink reads the value at Play time) and is the API's live update
+// path for the Settings page's master-volume control. The bound is validated
+// here so a caller cannot steer the samples out of range.
+func (m *Manager) SetMasterVolume(v float64) error {
+	if v < 0 || v > 1 {
+		return fmt.Errorf("runtime: master volume must be in 0..1, got %v", v)
+	}
+	m.masterVolume.Store(math.Float64bits(v))
+	return nil
+}
+
+// MasterVolume reports the manager's current device-level master volume
+// (the value the sessions apply, clamped to 0..1).
+func (m *Manager) MasterVolume() float64 { return m.loadMasterVolume() }

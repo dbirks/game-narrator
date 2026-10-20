@@ -626,7 +626,7 @@ func (tx *Tx) validateForPublish(ctx context.Context, p games.Profile) ([]string
 		return problems, mapReadError(op, err)
 	}
 	if messages == 0 {
-		addf("the revision contains no messages, so there is nothing to narrate")
+		addf("the revision contains no messages, so there is nothing to narrate; add dialogue before publishing: import the disc (disc import), stage a script file you have (the setup upload, imported by the agent with import_user_asset), or approve a web text source (the agent proposes one with propose_web_import; after you approve that exact source it is staged by import_web_source) — or enter lines manually")
 	}
 
 	if err := enumerate("message speaker_id does not resolve inside this revision",

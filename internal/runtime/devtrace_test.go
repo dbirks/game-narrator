@@ -2,12 +2,14 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"image"
 	"image/color"
 	"testing"
 
 	"github.com/dbirks/game-narrator/internal/capture"
 	"github.com/dbirks/game-narrator/internal/games"
+	"github.com/dbirks/game-narrator/internal/vision"
 )
 
 // solidFrame builds one deterministic frame: a single colour, a stable hash
@@ -158,5 +160,120 @@ func TestDevTraceStoreRejectsOversized(t *testing.T) {
 	}
 	if _, err := r.storeBytes(context.Background(), big, "image/jpeg"); err == nil {
 		t.Fatal("oversized sample accepted, want a refusal")
+	}
+}
+
+// borderedDevFrame is a 16:9 frame whose active window is the flat-mid-grey
+// rect (20,20)-(300,160) inside pure-black borders — the synthetic shape
+// vision.ActiveArea settles on (AGENTS.md rule 5: generated pixels only).
+func borderedDevFrame(tsNS int64) capture.Frame {
+	img := image.NewRGBA(image.Rect(0, 0, 320, 180))
+	for y := 0; y < 180; y++ {
+		for x := 0; x < 320; x++ {
+			var c color.Color = color.Black
+			if x >= 20 && x < 300 && y >= 20 && y < 160 {
+				c = color.Gray{Y: 128}
+			}
+			img.Set(x, y, c)
+		}
+	}
+	return capture.Frame{
+		Seq:                tsNS,
+		SourceClock:        capture.ClockReplay,
+		CaptureTimestampNS: tsNS,
+		Image:              img,
+		Width:              320,
+		Height:             180,
+		PixFmt:             capture.PixRGBA,
+		Hash:               capture.HashFrame(img),
+	}
+}
+
+// TestDevTraceSampleCarriesTheCropBasis pins the ADR-0082 amendment 1 wiring:
+// with the session's crop options (a settled tracker), the sample names the
+// window it was cut through and the text.observed enrichment carries it, so
+// the developer inspector can show the crop basis.
+func TestDevTraceSampleCarriesTheCropBasis(t *testing.T) {
+	ctx := context.Background()
+	r, err := NewDevTraceRecorder(t.TempDir(), 0)
+	if err != nil {
+		t.Fatalf("NewDevTraceRecorder: %v", err)
+	}
+	f := borderedDevFrame(1_000_000_000)
+	tr := vision.NewTracker(vision.TrackerConfig{})
+	tr.Settle(f.Image) // the one-shot-style settle; the window is the bordered rect
+	r.SetCropOptions(vision.CropOptions{Letterbox: vision.LetterboxDetect, Tracker: tr})
+	regions := []games.Region{{ID: "box", RectX: 0.1, RectY: 0.1, RectW: 0.8, RectH: 0.8}}
+	s, err := r.recordFrame(ctx, f, regions)
+	if err != nil {
+		t.Fatalf("recordFrame: %v", err)
+	}
+	if s == nil {
+		t.Fatal("no sample stored")
+	}
+	if s.basis == nil || !s.basis.Settled {
+		t.Fatalf("basis = %+v, want the settled window", s.basis)
+	}
+	// Fractions of the frame: (20/320, 20/180, 280/320, 140/180).
+	if s.basis.X != 20/320.0 || s.basis.Y != 20/180.0 || s.basis.W != 280/320.0 || s.basis.H != 140/180.0 {
+		t.Fatalf("basis fractions = %.4f,%.4f,%.4f,%.4f, want %.4f,%.4f,%.4f,%.4f",
+			s.basis.X, s.basis.Y, s.basis.W, s.basis.H, 20/320.0, 20/180.0, 280/320.0, 140/180.0)
+	}
+	// The enrichment carries the window and the evidence references.
+	out := attachDevTraceData(mustJSON(map[string]any{"region_id": "box"}), s, "box")
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("enriched payload is not JSON: %v", err)
+	}
+	win, ok := m["active_window"].(map[string]any)
+	if !ok {
+		t.Fatalf("enriched payload has no active_window: %v", m)
+	}
+	if win["x"] != 20/320.0 || win["y"] != 20/180.0 || win["w"] != 280/320.0 || win["h"] != 140/180.0 {
+		t.Fatalf("active_window = %v, want the settled fractions", win)
+	}
+	if win["settled"] != true {
+		t.Fatalf("active_window.settled = %v, want true", win["settled"])
+	}
+	if m["frame_asset"] == nil || m["crop_asset"] == nil {
+		t.Fatalf("enriched payload lost the evidence references: %v", m)
+	}
+}
+
+// TestDevTraceSampleBasisDegradesToWholeFrame pins the other side: a tracker
+// that never settled (a borderless source) and a session without a tracker
+// both name the whole frame, so the inspector can say the crop basis is the
+// full picture.
+func TestDevTraceSampleBasisDegradesToWholeFrame(t *testing.T) {
+	ctx := context.Background()
+	f := solidFrame(color.RGBA{R: 90}, 2_000_000_000) // 4:3, no bars
+	regions := []games.Region{{ID: "box", RectX: 0.1, RectY: 0.1, RectW: 0.8, RectH: 0.8}}
+
+	// A tracker that never settled.
+	r1, err := NewDevTraceRecorder(t.TempDir(), 0)
+	if err != nil {
+		t.Fatalf("NewDevTraceRecorder: %v", err)
+	}
+	tr := vision.NewTracker(vision.TrackerConfig{})
+	r1.SetCropOptions(vision.CropOptions{Letterbox: vision.LetterboxDetect, Tracker: tr})
+	s1, err := r1.recordFrame(ctx, f, regions)
+	if err != nil || s1 == nil {
+		t.Fatalf("recordFrame: %v %v", s1, err)
+	}
+	if s1.basis.Settled || s1.basis.X != 0 || s1.basis.Y != 0 || s1.basis.W != 1 || s1.basis.H != 1 {
+		t.Fatalf("unsettled tracker basis = %+v, want the whole frame", s1.basis)
+	}
+
+	// No tracker at all.
+	r2, err := NewDevTraceRecorder(t.TempDir(), 0)
+	if err != nil {
+		t.Fatalf("NewDevTraceRecorder: %v", err)
+	}
+	s2, err := r2.recordFrame(ctx, solidFrame(color.RGBA{G: 90}, 3_000_000_000), regions)
+	if err != nil || s2 == nil {
+		t.Fatalf("recordFrame: %v %v", s2, err)
+	}
+	if s2.basis.Settled || s2.basis.W != 1 || s2.basis.H != 1 {
+		t.Fatalf("no-tracker basis = %+v, want the whole frame", s2.basis)
 	}
 }

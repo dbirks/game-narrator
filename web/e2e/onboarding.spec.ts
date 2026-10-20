@@ -27,7 +27,11 @@ import { trackConsoleErrors } from "./support/console";
  * allowlist, test-only) that instructs the model to call a tool that does not
  * exist and to use a fabricated approval token; the spec asserts the UI shows
  * the source as untrusted, the timeline contains no such call, nothing was
- * published, and the console stayed clean.
+ * published, and the console stayed clean. Test (c) is the rights-gated web
+ * dump walk (ADR-0077): no disc and no staged script — the model fetches the
+ * labelled-synthetic dump page, proposes that exact source, the spec asserts
+ * the provenance block and approves the review item, and the single-use token
+ * releases the import, the quality report and the publish.
  */
 
 const TESTDATA = resolve(
@@ -198,6 +202,113 @@ test("malicious page: untrusted source shown, the non-existent tool is never cal
   const lastTurn = page.locator('[data-testid="onb-turn-assistant"]').last();
   await expect(lastTurn).toContainText("will not", { timeout: WAIT_MS });
 
+  expect(
+    consoleErrors,
+    `the browser saw faults it did not cause: ${consoleErrors.join(" | ")}`,
+  ).toEqual([]);
+});
+
+/**
+ * The rights-gated web dump path (ADR-0077): a user with no disc and no staged
+ * script. The scripted model fetches the labelled-synthetic dump page (test-only
+ * fixture served by fake-model.mjs through the dev private allowlist), proposes
+ * that exact source, and the run stops at the human review boundary. The spec
+ * reads the provenance block (URL, SHA-256, rights) above the Approve button,
+ * approves, and watches the single-use token do its work: import_web_source and
+ * source_quality run against the real tools, the source is recorded with the
+ * user's asserted rights, and the draft publishes. Only the model is scripted;
+ * the approval boundary, the token and the import are the real thing.
+ */
+test("web import: no disc, approved web dump → publishable profile", async ({ page, request }) => {
+  test.setTimeout(240_000);
+  await expectIsolatedDataDir(serverNameForProject("onboarding"));
+  const consoleErrors = trackConsoleErrors(page, [401]);
+
+  await setScenario(request, "webimport");
+  await signIn(page);
+  await page.goto("/games/new");
+
+  // No file, web research on: the dump page is the only text in this run.
+  await expect(page.getByTestId("onb-setup-form")).toBeVisible();
+  await page.getByTestId("onb-title").fill("Isle Dump Demo");
+  await page.getByTestId("onb-platform").fill("GameCube");
+  await expect(page.getByTestId("onb-web-toggle")).toBeChecked();
+  await page.getByTestId("onb-start").click();
+
+  // ── the fetch and the proposal stop the run at the review boundary ───────
+  const fetchCall = page.getByTestId("onb-tool-fetch_page");
+  await expect(fetchCall, "the fetch lands in the tool timeline").toBeVisible({
+    timeout: WAIT_MS,
+  });
+  await expect(page.getByTestId("onb-tool-status-fetch_page")).toHaveText("succeeded");
+
+  const proposeCall = page.getByTestId("onb-tool-propose_web_import");
+  await expect(proposeCall, "the proposal lands in the tool timeline").toBeVisible({
+    timeout: WAIT_MS,
+  });
+  await expect(page.getByTestId("onb-tool-status-propose_web_import")).toHaveText("succeeded");
+
+  // The pending review item is the proposal's; the provenance block names the
+  // exact source the curator is approving — URL and the SHA-256 prefix of the
+  // raw body the approval pins.
+  const reviewItem = page
+    .locator('[data-testid^="onb-review-item-"]')
+    .filter({ hasText: "propose_web_import" })
+    .first();
+  await expect(reviewItem, "the proposal's review item is pending").toBeVisible({
+    timeout: WAIT_MS,
+  });
+  const provenance = reviewItem.locator('[data-testid^="onb-review-provenance-"]');
+  await expect(provenance).toContainText("127.0.0.1");
+  await expect(provenance).toContainText("rights unknown");
+
+  // Nothing is imported before the approval: no import call exists yet.
+  expect(await page.getByTestId("onb-tool-import_web_source").count()).toBe(0);
+
+  // ── the human approval is the rights assertion ───────────────────────────
+  await reviewItem.locator('[data-testid^="onb-review-approve-"]').click();
+
+  const importCall = page.getByTestId("onb-tool-import_web_source");
+  await expect(importCall, "the approved import runs after the approval").toBeVisible({
+    timeout: WAIT_MS,
+  });
+  await expect(page.getByTestId("onb-tool-status-import_web_source")).toHaveText("succeeded");
+
+  const qualityCall = page.getByTestId("onb-tool-source_quality");
+  await expect(qualityCall, "the quality report runs on the imported source").toBeVisible({
+    timeout: WAIT_MS,
+  });
+  await expect(page.getByTestId("onb-tool-status-source_quality")).toHaveText("succeeded");
+
+  // The source card now carries the user's asserted rights, not unknown.
+  const sourceCard = page
+    .locator('[data-testid^="onb-source-"]')
+    .filter({ has: page.locator("text=dump.txt") });
+  await expect(sourceCard.first(), "the imported dump is shown as a source").toBeVisible({
+    timeout: WAIT_MS,
+  });
+  await expect(sourceCard.first()).toContainText("user_supplied");
+
+  // ── the publish boundary is the human's second, separate act ─────────────
+  await expect(page.getByTestId("onb-review-item-publish")).toBeVisible({
+    timeout: WAIT_MS,
+  });
+  await page.getByTestId("onb-review-approve-publish").click();
+  await expect(page.getByTestId("onb-draft-status")).toHaveText("published", {
+    timeout: WAIT_MS,
+  });
+  await expect(page.getByTestId("onb-tool-status-publish_profile")).toHaveText("succeeded");
+
+  // The library shows the published revision the approved web dump built.
+  await page.goto("/library");
+  await expect(page.getByTestId("game-isle-dump-demo")).toBeVisible();
+  await page.getByTestId("game-isle-dump-demo").click();
+  await expect(
+    page.getByTestId("badge-published"),
+    "the published revision in the library",
+  ).toBeVisible({ timeout: WAIT_MS });
+
+  expectDefaultDataDirUntouched(serverRun("onboarding"));
   expect(
     consoleErrors,
     `the browser saw faults it did not cause: ${consoleErrors.join(" | ")}`,

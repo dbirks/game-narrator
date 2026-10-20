@@ -489,6 +489,36 @@ func (t RegionType) Valid() bool { return regionTypes.Valid(t) }
 // ParseRegionType reads a region type from wire text.
 func ParseRegionType(s string) (RegionType, error) { return regionTypes.Parse(s) }
 
+// TextKindHint reports the text class a region's readings are expected to
+// carry, so the matcher's text-kind component can score a reading of this
+// region against the corpus's stored classes (docs/spec/04 "Visual
+// profiles": each region has a classifier for its on-screen role; docs/spec/05
+// "Message class and speech rules": the class selects the speech rules). The
+// on-screen role implies the class for the regions whose content is one class
+// by construction: a textbox reads a character's spoken line, a sign reads
+// environmental text, an item popup reads an item's text, and a menu or
+// tutorial region reads a UI string. Roles with no single class of their own
+// (subtitles, speaker labels, HUD, other) report false, and a caller keeps
+// its runner-level fallback hint rather than guessing a class the role does
+// not name. The mapping is game-agnostic: it is the vocabulary's own default,
+// not a branch tuned to one game's screens (docs/spec/11 step 4).
+func (t RegionType) TextKindHint() (TextKind, bool) {
+	switch t {
+	case RegionTextbox:
+		return TextDialogue, true
+	case RegionSign:
+		return TextSign, true
+	case RegionItem:
+		return TextItem, true
+	case RegionMenu:
+		return TextMenu, true
+	case RegionTutorial:
+		return TextTutorial, true
+	default:
+		return "", false
+	}
+}
+
 // DetectMethod is how a region's rectangle was obtained, which feeds the
 // reliability weighting in docs/spec/04.
 type DetectMethod string

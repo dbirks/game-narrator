@@ -80,7 +80,7 @@ describe("DiagnosticsPage (unit test with a stubbed fetch fake)", () => {
     expect(await screen.findByTestId("version")).toHaveTextContent("v0.0.0-test");
     expect(screen.getByTestId("commit")).toHaveTextContent("abcdef1");
     expect(screen.getByTestId("platform")).toHaveTextContent("linux/arm64");
-    expect(screen.getByTestId("readiness")).toHaveTextContent("ok");
+    expect(await screen.findByTestId("readiness")).toHaveTextContent("ok");
     expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
   });
 

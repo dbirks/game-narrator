@@ -55,6 +55,16 @@ type PromptContext struct {
 // names and descriptions (configuration, not model output) and renders the
 // enabled-tools section from them.
 func RenderWithTools(pc PromptContext, reg *Registry) string {
+	return RenderWithToolsBase(basePrompt, pc, reg)
+}
+
+// RenderWithToolsBase is the same render over a caller-supplied base template:
+// the assistant agent (internal/assistant, ADR-0099) ships its own versioned
+// template and needs the identical dynamic-section layout without touching
+// the onboarding template's bytes. The base is configuration (an embedded
+// file in the calling package); every dynamic section is bounded exactly as
+// in RenderWithTools.
+func RenderWithToolsBase(base string, pc PromptContext, reg *Registry) string {
 	toolLines := make([]string, 0, len(reg.Names()))
 	for _, name := range reg.Names() {
 		t, _ := reg.Tool(name)
@@ -65,8 +75,8 @@ func RenderWithTools(pc PromptContext, reg *Registry) string {
 		toolLines = append(toolLines, line)
 	}
 	var b strings.Builder
-	b.Grow(len(basePrompt) + 4*maxSectionBytes)
-	b.WriteString(basePrompt)
+	b.Grow(len(base) + 4*maxSectionBytes)
+	b.WriteString(base)
 	b.WriteString("\n")
 	b.WriteString(section("[USER PERMISSIONS]",
 		"caller_role: "+roleName(pc.UserRole)+"\n"+

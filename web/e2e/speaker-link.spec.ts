@@ -146,14 +146,17 @@ test("link the import's speaker placeholders on the characters page", async ({
   // to a different speaker (its own placeholder), so the row reads inferred
   // with the two statuses listed — verified needs the target's lines settled
   // too, which only the curator's own link of the target provides.
+  // The cell lists the distinct statuses in *line* order, and line order is
+  // the ULID order: both lines were minted in the same millisecond at import,
+  // so the random suffix decides which sorts first (internal/games/ids.go —
+  // ids within one millisecond are not monotonic). The pair may read in
+  // either order on any run, so the assertion pins the set — both statuses
+  // present, no third, the row still inferred — not their order.
   const roster = page.getByTestId("character-table");
   const targetRow = roster.getByTestId(`character-row-${slug(TARGET)}`);
   await expect(targetRow.getByTestId(`character-lines-${slug(TARGET)}`)).toHaveText("2");
-  await expect(targetRow.getByTestId(`character-attribution-${slug(TARGET)}`)).toContainText(
-    "inferred",
-  );
-  await expect(targetRow.getByTestId(`character-attribution-${slug(TARGET)}`)).toContainText(
-    "confirmed/proposed",
+  await expect(targetRow.getByTestId(`character-attribution-${slug(TARGET)}`)).toHaveText(
+    /^inferred \(speaker attribution is (?:confirmed\/proposed|proposed\/confirmed), not confirmed\)$/,
   );
   const sourceRosterRow = roster.getByTestId(`character-row-${slug(SOURCE)}`);
   await expect(sourceRosterRow).toContainText("retired");

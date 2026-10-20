@@ -29,6 +29,7 @@ export type SessionState = Schemas["SessionState"];
 export type PipelineStats = Schemas["PipelineStats"];
 export type SessionAudio = Schemas["SessionAudio"];
 export type SessionAudioSettings = Schemas["SessionAudioSettings"];
+export type SessionSettings = Schemas["SessionSettings"];
 export type SpeechCounters = Schemas["SpeechCounters"];
 export type UtteranceState = Schemas["UtteranceState"];
 export type EventEnvelope = Schemas["EventEnvelope"];
@@ -63,6 +64,39 @@ export const sessionsApi = {
    */
   audio(id: string, body: SessionAudioSettings): Promise<Session> {
     return api.post("/api/v1/sessions/{id}/audio", { params: { id }, body }) as Promise<Session>;
+  },
+  /**
+   * The operator's pause (docs/spec/08 "…/pause"): stops new speech and fences
+   * the utterances still queued or playing. Idempotent — a paused session
+   * answers the same snapshot — and the 200 body is the fresh session
+   * snapshot with `paused: true`, which the page's button reads.
+   */
+  pause(id: string): Promise<Session> {
+    return api.post("/api/v1/sessions/{id}/pause", {
+      params: { id },
+      body: {},
+    }) as Promise<Session>;
+  },
+  /**
+   * The operator's resume (docs/spec/08 "…/resume"): the session continues from
+   * the next commit. The text machines kept advancing through the pause (the
+   * observations were real), so the next ready line commits exactly once — a
+   * resume can never burst the paused window's lines.
+   */
+  resume(id: string): Promise<Session> {
+    return api.post("/api/v1/sessions/{id}/resume", {
+      params: { id },
+      body: {},
+    }) as Promise<Session>;
+  },
+  /**
+   * The mid-session operator policy (docs/spec/08 "…/settings"): the decision
+   * mode and the narrated classes. The body is partial — a field left out
+   * keeps the session's current value — and the 200 body is the fresh snapshot
+   * carrying the applied, normalized policy (dialogue first, always present).
+   */
+  settings(id: string, body: SessionSettings): Promise<Session> {
+    return api.put("/api/v1/sessions/{id}/settings", { params: { id }, body }) as Promise<Session>;
   },
 };
 
@@ -106,6 +140,46 @@ export const devApi = {
   /** The only read path into a session's private dev-trace store (no-store). */
   assetUrl(sha256: string): string {
     return `/api/v1/dev/assets/${encodeURIComponent(sha256)}`;
+  },
+  /**
+   * The inspector's fixture recording (ADR-0083): the trace's stored
+   * observation, recorded expectation, utterance audio and frame/crop samples
+   * land as one self-contained directory under the external fixture root
+   * (`GAME_NARRATOR_FIXTURE_DIR`, never the repository). The 201 body names
+   * the directory the fixture landed in.
+   */
+  recordFixture(traceId: string): Promise<Schemas["DevFixtureRecordResponse"]> {
+    return api.post("/api/v1/dev/fixtures", { body: { trace_id: traceId } }) as Promise<
+      Schemas["DevFixtureRecordResponse"]
+    >;
+  },
+  /**
+   * The inspector's re-run (ADR-0083): the stored observation is re-ranked by
+   * the current build's matcher over the run's own immutable revision. The
+   * body carries the recorded ranking, the re-ranked one, the diff and the
+   * note that the model adjudication is not re-invoked by this route.
+   */
+  rerunTrace(traceId: string): Promise<Schemas["DevRerunResponse"]> {
+    return api.post("/api/v1/dev/traces/{trace_id}/rerun", {
+      params: { trace_id: traceId },
+    }) as Promise<Schemas["DevRerunResponse"]>;
+  },
+  /**
+   * The trace's redacted evidence bundle (ADR-0083): one gzip tar of the
+   * redacted event log, the stored samples, the utterance audio and the hash
+   * manifest. A plain URL: the browser carries the session cookie and the
+   * page drives the download from a blob it fetches the same way.
+   */
+  evidenceUrl(traceId: string): string {
+    return `/api/v1/dev/traces/${encodeURIComponent(traceId)}/evidence`;
+  },
+  /**
+   * One utterance's stored audio by its speech cache key (ADR-0083): the key
+   * rides the trace's speech.ready event and the bytes come from the speech
+   * cache the session's playback used. WAV, ETag'd, no-store.
+   */
+  speechAudioUrl(cacheKey: string): string {
+    return `/api/v1/dev/speech/audio?cache_key=${encodeURIComponent(cacheKey)}`;
   },
 };
 

@@ -55,6 +55,21 @@ type devFrameSample struct {
 	ts    int64  // the frame's CaptureTimestampNS (source clock)
 	frame string // sha256 of the downscaled full-frame JPEG
 	crops map[string]string
+	// basis is the crop window the session's crop options mapped the regions
+	// through when this sample was taken: the tracker's accepted window once
+	// one has settled, the whole frame otherwise (fractions of the frame, so
+	// the developer inspector's overlay math needs no frame dimensions).
+	basis *cropBasis
+}
+
+// cropBasis is one sample's crop basis (ADR-0082 amendment 1): where the
+// active picture sits in the frame, in fractions of the frame, and whether
+// the tracker had settled a window at the sampling instant. The developer
+// page draws the region overlay through this box and says so in words — a
+// mis-settled window is visible, not guessed at.
+type cropBasis struct {
+	X, Y, W, H float64
+	Settled    bool
 }
 
 // devHeldAsset is one blob this session's dev-trace store keeps, for the
@@ -77,6 +92,11 @@ type devHeldAsset struct {
 type devTraceRecorder struct {
 	store *assets.Local
 	quota int64
+	// crop is the session's crop options (the tracked active window, ADR-0082
+	// amendment 1), set once at session start before any frame flows, so the
+	// stored crops are the crops the pipeline reads and the samples can name
+	// the window they were cut through.
+	crop vision.CropOptions
 
 	mu       sync.Mutex
 	order    []devHeldAsset // oldest first
@@ -108,6 +128,14 @@ func NewDevTraceRecorder(root string, quota int64) (*devTraceRecorder, error) {
 	}, nil
 }
 
+// SetCropOptions hands the recorder the session's crop options so its stored
+// crops describe the same crop basis the pipeline reads (the tracked
+// active-picture window, ADR-0082 amendment 1). It is called once when the
+// session starts, before the source's pump delivers a frame, so the field
+// needs no lock of its own; reading the tracker's window concurrently with
+// the frame stage's Update is safe because Tracker.Box is mutex-guarded.
+func (r *devTraceRecorder) SetCropOptions(o vision.CropOptions) { r.crop = o }
+
 // recordFrame stores the sampled evidence for one frame and returns the
 // sample, or nil when the sampling gate skipped the frame (unchanged picture
 // within the interval). A store failure is returned, not swallowed: the
@@ -132,7 +160,10 @@ func (r *devTraceRecorder) recordFrame(ctx context.Context, f capture.Frame, reg
 	}
 	crops := map[string]string{}
 	for _, reg := range regions {
-		crop := vision.CropNormalized(img, vision.RectOf(reg), vision.CropOptions{})
+		// The session's own crop options: the stored evidence must be the crop
+		// the OCR stage read, cut through the same window basis it will stamp
+		// on the event (ADR-0082 amendment 1).
+		crop := vision.CropNormalized(img, vision.RectOf(reg), r.crop)
 		if crop == nil || crop.Bounds().Empty() {
 			continue
 		}
@@ -142,7 +173,20 @@ func (r *devTraceRecorder) recordFrame(ctx context.Context, f capture.Frame, reg
 		}
 		crops[reg.ID] = sha
 	}
-	s := devFrameSample{ts: f.CaptureTimestampNS, frame: frameSHA, crops: crops}
+	basis := cropBasis{W: 1, H: 1} // the whole frame, until the tracker says otherwise
+	b := img.Bounds()
+	if tr := r.crop.Tracker; tr != nil {
+		if a, ok := tr.Box(); ok && b.Dx() > 0 && b.Dy() > 0 {
+			basis = cropBasis{
+				X:       float64(a.Min.X-b.Min.X) / float64(b.Dx()),
+				Y:       float64(a.Min.Y-b.Min.Y) / float64(b.Dy()),
+				W:       float64(a.Dx()) / float64(b.Dx()),
+				H:       float64(a.Dy()) / float64(b.Dy()),
+				Settled: true,
+			}
+		}
+	}
+	s := devFrameSample{ts: f.CaptureTimestampNS, frame: frameSHA, crops: crops, basis: &basis}
 	r.mu.Lock()
 	r.samples = append(r.samples, s)
 	r.lastHash = f.Hash
@@ -339,6 +383,19 @@ func attachDevTraceData(data json.RawMessage, s *devFrameSample, regionID string
 	m["frame_asset"] = s.frame
 	if sha, ok := s.crops[regionID]; ok {
 		m["crop_asset"] = sha
+	}
+	// The crop basis of the sample (ADR-0082 amendment 1): the window the
+	// region overlay was cut through, in fractions of the frame, so the
+	// developer inspector can draw the same box and say whether the tracker
+	// had settled when the sample was taken.
+	if s.basis != nil {
+		m["active_window"] = map[string]any{
+			"x":       s.basis.X,
+			"y":       s.basis.Y,
+			"w":       s.basis.W,
+			"h":       s.basis.H,
+			"settled": s.basis.Settled,
+		}
 	}
 	out, err := json.Marshal(m)
 	if err != nil {

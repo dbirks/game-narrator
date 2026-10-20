@@ -549,6 +549,18 @@ function ReviewItems({ runId, state }: { runId: string; state: OnboardingRunStat
               <strong>{item.kind === "publish" ? "Publish the profile" : item.tool}</strong>{" "}
               <span className="muted">— {item.description}</span>
             </p>
+            {item.provenance ? (
+              <div className="review-provenance" data-testid={`onb-review-provenance-${item.id}`}>
+                <p>
+                  <span className="muted">Source</span> {item.provenance.url}
+                </p>
+                <p className="muted">
+                  raw-body sha256{" "}
+                  {item.provenance.sha256 ? `${item.provenance.sha256.slice(0, 16)}…` : "n/a"} ·
+                  retrieved {item.provenance.retrieved_at} · rights {item.provenance.rights}
+                </p>
+              </div>
+            ) : null}
             <div className="review-actions">
               <button
                 type="button"

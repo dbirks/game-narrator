@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dbirks/game-narrator/internal/audio"
 	"github.com/dbirks/game-narrator/internal/games"
 )
 
@@ -57,8 +58,13 @@ type VoiceProfile struct {
 	ApprovedBy        string
 	ApprovedAt        *time.Time
 	Fingerprint       string
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	// Gain is the per-voice output gain (ADR-0074, docs/spec/07 "per-voice
+	// gain"): a linear factor the runtime applies to this voice's samples at
+	// playback (1.0 = unity). It is an output property, not a design
+	// property — it changes no cache key and never re-synthesises (ADR-0074).
+	Gain      float64
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // VoiceAudition is one design candidate of a revision (voice_auditions row).
@@ -122,7 +128,7 @@ type VoiceRegistration struct {
 const voiceProfileCols = `id, character, revision, state, design_instruction,
 		canonical_reference_asset_id, ref_transcript, model_id, embedding_mode,
 		language, audition_ids, consent_provenance, approved_by, approved_at,
-		fingerprint, created_at, updated_at`
+		fingerprint, gain, created_at, updated_at`
 
 const voiceAuditionCols = `id, voice_profile_id, "index", brief, model_id, sample_text,
 		transcript, asset_sha256, duration_ms, sample_rate, origin, request_id,
@@ -144,7 +150,7 @@ func voiceProfileFromRow(row interface{ Scan(dest ...any) error }) (VoiceProfile
 	if err := row.Scan(&p.ID, &p.Character, &p.Revision, &p.State, &p.DesignInstruction,
 		&p.ReferenceAssetID, &p.RefTranscript, &p.ModelID, &p.EmbeddingMode,
 		&p.Language, &aid, &p.ConsentProvenance, &p.ApprovedBy, &approvedAt,
-		&p.Fingerprint, &created, &updated); err != nil {
+		&p.Fingerprint, &p.Gain, &created, &updated); err != nil {
 		return p, err
 	}
 	var err error
@@ -207,6 +213,19 @@ func voiceEmbeddingMode(m string) string {
 	return m
 }
 
+// voiceGain keeps the gain CHECK constraint (0..10, ADR-0074) honest at
+// create time: an out-of-range value is a caller bug the insert must refuse
+// loudly rather than have SQLite reject it as a schema defect.
+func voiceGain(g float64) float64 {
+	if g < audio.GainMin {
+		g = audio.GainMin
+	}
+	if g > audio.GainMax {
+		g = audio.GainMax
+	}
+	return g
+}
+
 // errFromAffected verifies that a write actually touched the expected number
 // of rows: zero rows on an insert is a constraint the caller must surface as
 // a conflict, and one the update expected is the only legal outcome here.
@@ -256,12 +275,13 @@ func (s *Store) CreateVoiceRevision(ctx context.Context, p VoiceProfile) error {
 	}
 	return s.inWrite(ctx, func(ctx context.Context, tx *Tx) error {
 		res, err := tx.exec(ctx, op,
-			"INSERT INTO voice_profiles ("+voiceProfileCols+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+			"INSERT INTO voice_profiles ("+voiceProfileCols+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
 			p.ID, p.Character, p.Revision, p.State, p.DesignInstruction,
 			p.ReferenceAssetID, p.RefTranscript, p.ModelID,
 			voiceEmbeddingMode(p.EmbeddingMode), p.Language,
 			marshalVoiceStringArray(p.AuditionIDs), p.ConsentProvenance,
 			p.ApprovedBy, voiceStamp(p.ApprovedAt), p.Fingerprint,
+			voiceGain(p.Gain),
 			stampMS(p.CreatedAt), stampMS(p.UpdatedAt))
 		if err != nil {
 			return mapWriteError(op, err)
@@ -305,6 +325,40 @@ func (s *Store) UpdateVoiceProfile(ctx context.Context, p VoiceProfile) error {
 			return mapWriteError(op, err)
 		}
 		return errFromAffected(res, op, 1)
+	})
+}
+
+// SetVoiceCharacter re-points a voice revision's character column at another
+// character (ADR-0101). It is the import's re-point: a re-import re-mints the
+// profile's character ids, and a voice whose id the manifest carries again must
+// follow its content to the new roster row rather than stranding the fresh
+// draft without its voices. The narrator key ("narrator") is not a roster row
+// and passes through unchanged by the caller, not by this write.
+//
+// The move is lifecycle-neutral on purpose: the content the ADR-0005 freeze
+// protects — reference, transcript, model, fingerprint, consent, state — is
+// untouched, and the revision number is untouched, because the registry name
+// and the speech cache key derive from it. What moves is the pointer: a row
+// the superseded revision used to read now reads the revision the import just
+// created. The (character, revision) UNIQUE index is the guard: re-pointing
+// onto a character that already holds a different voice at that revision
+// number is ErrConflict, and the import reports it as a conflict rather than
+// failing the whole manifest.
+func (s *Store) SetVoiceCharacter(ctx context.Context, voiceID, character string) error {
+	const op = "set voice character"
+	if strings.TrimSpace(character) == "" {
+		return fmt.Errorf("store: %s: character is empty", op)
+	}
+	return s.inWrite(ctx, func(ctx context.Context, tx *Tx) error {
+		res, err := tx.exec(ctx, op,
+			`UPDATE voice_profiles SET character = ? WHERE id = ?`, character, voiceID)
+		if err != nil {
+			return mapWriteError(op, err)
+		}
+		if err := errFromAffected(res, op, 1); err != nil {
+			return notFound(op, "voice revision "+voiceID)
+		}
+		return nil
 	})
 }
 

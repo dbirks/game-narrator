@@ -99,6 +99,51 @@ func (s *Store) PutSources(ctx context.Context, profileID string, rows []games.S
 	})
 }
 
+// SetSourceRights records the user's rights assertion on one registered
+// source of a draft revision (ADR-0077). It is the only operation that may
+// change rights_status on a registered row: every other provenance field
+// (URI, content hash, retrieval time) is untouched, which is what keeps
+// docs/spec/01 key invariant 6 (provenance is immutable after registration)
+// intact for the fields that say where the bytes came from. The rights
+// position is the field the schema deliberately leaves open — a fetched web
+// page registers as `unknown` — and the publication rights gate is only
+// satisfiable if a human's assertion can land on the row the content rests
+// on; an unrecordable assertion would make the refusal a lock.
+//
+// The sole production caller is the token-gated approved-import path
+// (import_web_source after a consumed human approval), so the assertion
+// always has a spent single-use approval behind it. note is the audit
+// sentence appended to coverage_notes (who asserted, when); it carries no
+// secrets — the approval token itself is never persisted here or anywhere.
+func (s *Store) SetSourceRights(ctx context.Context, profileID, sourceID string, rights games.RightsStatus, note string) error {
+	if !rights.Publishable() {
+		return fmt.Errorf("store: set source rights: %q is not a position a user can assert (user_supplied or licensed); the question stays unknown until a human answers it", rights)
+	}
+	if len(note) > 1024 {
+		return fmt.Errorf("store: set source rights: the audit note is %d bytes, above the 1024-byte bound", len(note))
+	}
+	return s.inWrite(ctx, func(ctx context.Context, tx *Tx) error {
+		const op = "set source rights"
+		return tx.contentWrite(ctx, op, profileID, func() error {
+			existing, err := loadSourceByID(ctx, tx, profileID, sourceID)
+			if err != nil {
+				return err
+			}
+			newNotes := existing.CoverageNotes
+			if note != "" {
+				if newNotes != "" {
+					newNotes += "; "
+				}
+				newNotes += note
+			}
+			_, err = tx.exec(ctx, op,
+				`UPDATE sources SET rights_status = ?, coverage_notes = ? WHERE profile_id = ? AND id = ?`,
+				string(rights), newNotes, profileID, sourceID)
+			return err
+		})
+	})
+}
+
 func (tx *Tx) putSource(ctx context.Context, op string, r games.Source) error {
 	if err := r.Validate(); err != nil {
 		return err

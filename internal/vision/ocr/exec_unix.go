@@ -3,6 +3,7 @@
 package ocr
 
 import (
+	"errors"
 	"os/exec"
 	"syscall"
 	"time"
@@ -29,13 +30,35 @@ const KillWaitGrace = 250 * time.Millisecond
 func supervise(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-		// Negative pid addresses the group. AEPERM here means the child already
-		// exited, which is success for our purposes; exec reports the error and
-		// Wait still reaps it.
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		return killSlot(cmd)
 	}
 	cmd.WaitDelay = KillWaitGrace
+}
+
+// superviseSlot is the pool's variant: the same process group and WaitDelay,
+// but NO Cancel hook — the slot is created with exec.Command (no context:
+// the slot outlives any single read, and Go refuses a Cancel on a
+// non-CommandContext command), and the read's deadline killer kills the
+// group directly through killSlot.
+func superviseSlot(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.WaitDelay = KillWaitGrace
+}
+
+// killSlot SIGKILLs the child's whole process group. The pool's slots are
+// supervised the same way the per-process path is (ADR-0012 §2): a slot whose
+// read hit its deadline must not survive the read, and its kill must not reach
+// the pool's other slots (each slot is its own group). ESRCH means the group
+// already exited, which is success for our purposes.
+func killSlot(cmd *exec.Cmd) error {
+	if cmd.Process == nil {
+		return nil
+	}
+	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+		if errors.Is(err, syscall.ESRCH) || errors.Is(err, syscall.EPERM) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }

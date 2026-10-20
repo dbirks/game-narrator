@@ -16,6 +16,7 @@ package scenario
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -24,6 +25,18 @@ import (
 )
 
 func TestDolphinScenarios(t *testing.T) {
+	// ADR-0065: the recorded-fixture replay belongs to the test-dolphin
+	// gate (its 30-minute phase, its HTML report, its fixture provenance),
+	// so the gate check is the first statement, like the internal/dolphin
+	// TestReal* tests: outside the owning gate the test skips — a plain
+	// skip, not NOT RUN (the fixture capability may be configured on this
+	// host, only the gate differs). This is the test-level half of the
+	// Makefile's `-skip TestDolphinScenarios`: a bare `go test ./...` on a
+	// configured host must not run the replay under the wrong gate's
+	// budget.
+	if os.Getenv(dolphin.EnvGate) != "test-dolphin" {
+		t.Skipf("dolphin scenario replay outside the test-dolphin gate: run via make test-dolphin (it sets %s=test-dolphin; ADR-0065)", dolphin.EnvGate)
+	}
 	root := repoRootFor(t)
 	paths, err := LoadDolphinScenarios(root)
 	if err != nil {

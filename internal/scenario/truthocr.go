@@ -107,7 +107,15 @@ func (e *truthEngine) Recognize(_ context.Context, img image.Image) (ocr.Result,
 }
 
 // Name reports the engine identity for the OCR provenance field.
-func (e *truthEngine) Name() string { return "truth" }
+func (e *truthEngine) Name() string { return truthEngineName }
+
+// truthEngineName is the OCR engine name the harness's scripted engine
+// reports. It is a member of the scenario schema's engines: vocabulary
+// (ocrEngineNames): an assertion scoped to the real engine alone (the eng
+// model's out-of-script behaviour) is not applicable to a run the stub
+// graded, and EvaluateWithOCREngine says so in the report instead of
+// failing it.
+const truthEngineName = "truth"
 
 // readPNG reads one frame from the clip.
 func readPNG(path string) (image.Image, error) {
@@ -132,7 +140,7 @@ func truthOCR(text string, full bool) ocr.Result {
 			conf = 0.91
 		}
 	}
-	res := ocr.Result{Text: text, Engine: "truth", MeanConf: conf}
+	res := ocr.Result{Text: text, Engine: truthEngineName, MeanConf: conf}
 	if text != "" {
 		res.Lines = []ocr.Line{{Text: text, Conf: conf}}
 	}

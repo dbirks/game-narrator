@@ -49,6 +49,106 @@ HCL HD Webcam (usb-0000:00:14.0-3):
 	/dev/media0
 `
 
+// unoQListOutput is `v4l2-ctl --list-devices` verbatim on the UNO Q
+// (v4l-utils 1.30.1, captured 2026-10-21). 1.30.1 prints the grouped layout
+// WITHOUT the category labels the 1.32 dev host prints — the nodes sit
+// directly under the card header — so every device this parses starts with
+// Kind empty and the capture/m2m split has to come from --info (issue #10,
+// the field failure a shim that relabelled from --info worked around).
+// The SoC's venus encoder/decoder pair is the reason the split matters:
+// both are /dev/video nodes a parser that only counts video nodes would
+// hand to the capture path.
+const unoQListOutput = `Qualcomm Venus video encoder (platform:qcom-venus):
+	/dev/video2
+	/dev/video3
+
+USB3.0 Video: USB3.0 Video (usb-xhci-hcd.2.auto-1):
+	/dev/video0
+	/dev/video1
+	/dev/media0
+`
+
+// The --info outputs for the UNO Q's four nodes (v4l2-ctl -d DEV --info,
+// captured on the same host; the card's Serial value replaced with a
+// placeholder — testdata carries no serial numbers). video0 is the UVC
+// capture node, video1 its metadata twin (Device Caps: Metadata Capture
+// only — the Card's Capabilities still list Video Capture, which is why the
+// Device Caps block is the one the classifier must trust), video2/video3
+// the SoC's venus encoder/decoder (memory-to-memory only).
+const unoQInfoVideo0 = `Driver Info:
+	Driver name      : uvcvideo
+	Card type        : USB3.0 Video: USB3.0 Video
+	Bus info         : usb-xhci-hcd.2.auto-1
+	Driver version   : 6.16.7
+	Capabilities     : 0x84a00001
+		Video Capture
+		Metadata Capture
+		Streaming
+		Extended Pix Format
+		Device Capabilities
+	Device Caps      : 0x04200001
+		Video Capture
+		Streaming
+		Extended Pix Format
+Media Driver Info:
+	Driver name      : uvcvideo
+	Model            : USB3.0 Video: USB3.0 Video
+	Serial           : 01234567
+	Bus info         : usb-xhci-hcd.2.auto-1
+	Media version    : 6.16.7
+	Hardware revision: 0x00003100 (12544)
+	Driver version   : 6.16.7
+`
+
+const unoQInfoVideo1 = `Driver Info:
+	Driver name      : uvcvideo
+	Card type        : USB3.0 Video: USB3.0 Video
+	Bus info         : usb-xhci-hcd.2.auto-1
+	Driver version   : 6.16.7
+	Capabilities     : 0x84a00001
+		Video Capture
+		Metadata Capture
+		Streaming
+		Extended Pix Format
+		Device Capabilities
+	Device Caps      : 0x04a00000
+		Metadata Capture
+		Streaming
+		Extended Pix Format
+`
+
+const unoQInfoVideo2 = `Driver Info:
+	Driver name      : qcom-venus
+	Card type        : Qualcomm Venus video encoder
+	Bus info         : platform:qcom-venus
+	Driver version   : 6.16.7
+	Capabilities     : 0x84204000
+		Video Memory-to-Memory Multiplanar
+		Streaming
+		Extended Pix Format
+		Device Capabilities
+	Device Caps      : 0x04204000
+		Video Memory-to-Memory Multiplanar
+		Streaming
+		Extended Pix Format
+`
+
+const unoQInfoVideo3 = `Driver Info:
+	Driver name      : qcom-venus
+	Card type        : Qualcomm Venus video decoder
+	Bus info         : platform:qcom-venus
+	Driver version   : 6.16.7
+	Capabilities     : 0x84204000
+		Video Memory-to-Memory Multiplanar
+		Streaming
+		Extended Pix Format
+		Device Capabilities
+	Device Caps      : 0x04204000
+		Video Memory-to-Memory Multiplanar
+		Streaming
+		Extended Pix Format
+`
+
 // mjpegYUYVFormats is a UVC card offering both formats docs/spec/05 names, with
 // a per-size framerate list and one stepwise interval range.
 const mjpegYUYVFormats = `ioctl: VIDIOC_ENUM_FMT
@@ -162,6 +262,210 @@ func TestParseListDevicesEmptyAndNoise(t *testing.T) {
 		if got := ParseListDevices(out); len(got) != 0 {
 			t.Errorf("%s: parsed %+v, want no devices", name, got)
 		}
+	}
+}
+
+// TestParseListDevicesUNOQ1301Layout is the golden test for the release
+// target's v4l-utils 1.30.1 (issue #10): the grouped layout without category
+// labels. Every node parses with its card name and bus info, the media
+// controller is excluded, and Kind stays empty — the label the parser does
+// not invent is exactly what the --info classification below fills in.
+func TestParseListDevicesUNOQ1301Layout(t *testing.T) {
+	devs := ParseListDevices(unoQListOutput)
+	if len(devs) != 4 {
+		t.Fatalf("parsed %d devices, want 4 (video0..3; media0 is not a device): %+v", len(devs), devs)
+	}
+	byPath := map[string]Device{}
+	for _, d := range devs {
+		byPath[d.Path] = d
+	}
+	if _, ok := byPath["/dev/media0"]; ok {
+		t.Error("/dev/media0 parsed as a device: opening the media controller for capture is the 'device exists, read fails' bug")
+	}
+	for p, name := range map[string]string{
+		"/dev/video0": "USB3.0 Video: USB3.0 Video",
+		"/dev/video1": "USB3.0 Video: USB3.0 Video",
+		"/dev/video2": "Qualcomm Venus video encoder",
+		"/dev/video3": "Qualcomm Venus video encoder",
+	} {
+		d, ok := byPath[p]
+		if !ok {
+			t.Errorf("missing %s", p)
+			continue
+		}
+		if d.Name != name {
+			t.Errorf("%s name = %q, want %q (the card name is what preflight shows the operator)", p, d.Name, name)
+		}
+		if strings.Contains(name, "USB3.0") && d.BusInfo != "usb-xhci-hcd.2.auto-1" {
+			t.Errorf("%s bus info = %q, want the uvc bus identity", p, d.BusInfo)
+		}
+		if strings.Contains(name, "Venus") && d.BusInfo != "platform:qcom-venus" {
+			t.Errorf("%s bus info = %q, want the platform identity", p, d.BusInfo)
+		}
+		if d.Kind != "" {
+			t.Errorf("%s kind = %q, want empty: 1.30.1 prints no category label and the parser must not invent one", p, d.Kind)
+		}
+	}
+}
+
+// TestParseInfoCapsDeviceCapsWins pins the classifier's input rule: the
+// Device Caps block is the node-specific view and wins over the card-wide
+// Capabilities block — the UVC metadata node's Capabilities still list
+// Video Capture, and trusting them would classify the metadata node as a
+// capture source.
+func TestParseInfoCapsDeviceCapsWins(t *testing.T) {
+	if got := ParseInfoCaps(unoQInfoVideo0); got != "Video Capture, Streaming, Extended Pix Format" {
+		t.Errorf("video0 effective caps = %q (the Device Caps block must win)", got)
+	}
+	if got := ParseInfoCaps(unoQInfoVideo1); got != "Metadata Capture, Streaming, Extended Pix Format" {
+		t.Errorf("video1 effective caps = %q, want the Metadata-only Device Caps — the card-wide Capabilities listing Video Capture is exactly the trap", got)
+	}
+	if got := ParseInfoCaps(unoQInfoVideo2); got != "Video Memory-to-Memory Multiplanar, Streaming, Extended Pix Format" {
+		t.Errorf("video2 effective caps = %q, want the m2m class", got)
+	}
+	// A driver that reports no Device Caps block falls back to Capabilities.
+	fallback := "Driver Info:\n\tCapabilities     : 0x84a00001\n\t\tVideo Capture\n\t\tStreaming\n"
+	if got := ParseInfoCaps(fallback); got != "Video Capture, Streaming" {
+		t.Errorf("fallback caps = %q, want the Capabilities block", got)
+	}
+	if got := ParseInfoCaps(unoQListOutput); got != "" {
+		t.Errorf("non---info input parsed as %q, want nothing", got)
+	}
+}
+
+// TestKindFromCaps pins the capture vs m2m split (issue #10): the UVC node is
+// the capture source, the venus encoder/decoder nodes are memory-to-memory
+// and must never reach the format query or the capture path.
+func TestKindFromCaps(t *testing.T) {
+	cases := map[string]string{
+		"Video Capture, Streaming, Extended Pix Format":                      kindCapture,
+		"Metadata Capture, Streaming, Extended Pix Format":                   kindMetadata,
+		"Video Memory-to-Memory Multiplanar, Streaming, Extended Pix Format": kindMemoryM2M,
+		"Video Output, Streaming":                                            kindOutput,
+		"":                                                                   "",
+		"Streaming":                                                          "",
+	}
+	for caps, want := range cases {
+		if got := kindFromCaps(caps); got != want {
+			t.Errorf("kindFromCaps(%q) = %q, want %q", caps, got, want)
+		}
+	}
+}
+
+// TestListWithUNOQClassifiesFromInfoCaps is the end-to-end golden test: the
+// real 1.30.1 --list-devices output plus each node's real --info output,
+// driven through the production ListWith with an injected runner. The UVC
+// capture node comes out usable with its formats; its metadata twin and the
+// venus m2m pair come out non-capture and are never asked for modes.
+func TestListWithUNOQClassifiesFromInfoCaps(t *testing.T) {
+	formatsCalls := map[string]int{}
+	runner := func(ctx context.Context, args ...string) ([]byte, error) {
+		switch {
+		case len(args) == 1 && args[0] == "--list-devices":
+			return []byte(unoQListOutput), nil
+		case len(args) == 3 && args[0] == "-d" && args[2] == "--info":
+			switch args[1] {
+			case "/dev/video0":
+				return []byte(unoQInfoVideo0), nil
+			case "/dev/video1":
+				return []byte(unoQInfoVideo1), nil
+			case "/dev/video2":
+				return []byte(unoQInfoVideo2), nil
+			case "/dev/video3":
+				return []byte(unoQInfoVideo3), nil
+			}
+			return nil, fmt.Errorf("v4l2-ctl: can't open '%s': No such file or directory", args[1])
+		case len(args) == 3 && args[0] == "-d" && args[2] == "--list-formats-ext":
+			formatsCalls[args[1]]++
+			if args[1] == "/dev/video0" {
+				return []byte(mjpegYUYVFormats), nil
+			}
+			t.Errorf("formats queried for %s: a non-capture node must never be asked for modes", args[1])
+			return nil, fmt.Errorf("not reached")
+		}
+		t.Errorf("unexpected v4l2-ctl invocation: %v", args)
+		return nil, errors.New("unexpected invocation")
+	}
+
+	devs, err := ListWith(context.Background(), Options{
+		Run:       runner,
+		ByIDDir:   filepath.Join(t.TempDir(), "absent"),
+		ByPathDir: filepath.Join(t.TempDir(), "absent"),
+	})
+	if err != nil {
+		t.Fatalf("ListWith: %v", err)
+	}
+	byPath := map[string]Device{}
+	for _, d := range devs {
+		byPath[d.Path] = d
+	}
+
+	v0 := byPath["/dev/video0"]
+	if v0.Kind != kindCapture {
+		t.Errorf("video0 kind = %q, want %q (the UVC node is the capture source)", v0.Kind, kindCapture)
+	}
+	if len(v0.Formats) == 0 {
+		t.Errorf("video0 formats = none: %q", v0.FormatsError)
+	}
+	if !v0.Usable() {
+		t.Errorf("video0 not usable: kind=%q formats=%d formatsError=%q", v0.Kind, len(v0.Formats), v0.FormatsError)
+	}
+
+	v1 := byPath["/dev/video1"]
+	if v1.Kind != kindMetadata {
+		t.Errorf("video1 kind = %q, want %q (the metadata twin must not be a capture source)", v1.Kind, kindMetadata)
+	}
+	if v1.Usable() {
+		t.Errorf("video1 (metadata) reported usable: %+v", v1)
+	}
+	if formatsCalls["/dev/video1"] != 0 {
+		t.Errorf("video1 was asked for formats %d times: a metadata node has no modes and the query is a wasted subprocess", formatsCalls["/dev/video1"])
+	}
+
+	for _, p := range []string{"/dev/video2", "/dev/video3"} {
+		v := byPath[p]
+		if v.Kind != kindMemoryM2M {
+			t.Errorf("%s kind = %q, want %q (the venus encoder/decoder is memory-to-memory)", p, v.Kind, kindMemoryM2M)
+		}
+		if v.Usable() {
+			t.Errorf("%s (m2m) reported usable: the SoC's codec node must never be handed to the capture path", p)
+		}
+		if formatsCalls[p] != 0 {
+			t.Errorf("%s was asked for formats %d times: an m2m node has no modes and the query is a wasted subprocess", p, formatsCalls[p])
+		}
+	}
+
+	if formatsCalls["/dev/video0"] != 1 {
+		t.Errorf("video0 formats queries = %d, want exactly 1", formatsCalls["/dev/video0"])
+	}
+}
+
+// TestListWithLabelledLayoutSkipsInfoClassification pins the other half of the
+// rule: when the tool prints category labels (the 1.32 dev host's layout),
+// the labels win and no --info subprocess is spent on classification.
+func TestListWithLabelledLayoutSkipsInfoClassification(t *testing.T) {
+	var infoCalls int
+	runner := func(ctx context.Context, args ...string) ([]byte, error) {
+		switch {
+		case len(args) == 1 && args[0] == "--list-devices":
+			return []byte(modernListOutput), nil
+		case len(args) == 3 && args[0] == "-d" && args[2] == "--info":
+			infoCalls++
+			return []byte(unoQInfoVideo0), nil
+		case len(args) == 3 && args[0] == "-d" && args[2] == "--list-formats-ext":
+			return []byte(mjpegYUYVFormats), nil
+		}
+		return nil, fmt.Errorf("unexpected invocation: %v", args)
+	}
+	if _, err := ListWith(context.Background(), Options{
+		Run:       runner,
+		ByIDDir:   filepath.Join(t.TempDir(), "absent"),
+		ByPathDir: filepath.Join(t.TempDir(), "absent"),
+	}); err != nil {
+		t.Fatalf("ListWith: %v", err)
+	}
+	if infoCalls != 0 {
+		t.Errorf("--info called %d times on a labelled layout: the tool's own label wins, no classification subprocess", infoCalls)
 	}
 }
 

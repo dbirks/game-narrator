@@ -25,7 +25,7 @@ import (
 func stubTesseract(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "fake-tesseract")
-	script := "#!/bin/sh\ncat > /dev/null\n" + body + "\n"
+	script := "#!/bin/sh\n" + body + "\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write stub: %v", err)
 	}
@@ -41,15 +41,16 @@ func tinyImage() image.Image {
 	return i
 }
 
-func TestTesseractRunsRealImageThroughStdin(t *testing.T) {
-	// The stub proves the pipe contract end to end: the PNG arrives on stdin, and
-	// the engine's argv is what we said it would be.
+func TestTesseractRunsRealImageThroughInputFile(t *testing.T) {
+	// The stub proves the input contract end to end: the crop arrives as a PNG
+	// file operand (ADR-0095: file input is the measured-fast path on the A53),
+	// the file decodes, and the engine's argv is what we said it would be.
 	argPath := filepath.Join(t.TempDir(), "argv")
 	t.Setenv("FAKE_ARGV", argPath)
 	stub := stubTesseract(t, `printf '%s\n' "$@" > "$FAKE_ARGV"
 printf 'level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n5\t1\t1\t1\t1\t1\t1\t1\t4\t4\t99\thello\n'
 exit 0`)
-	eng := Tesseract{Path: stub}
+	eng := Tesseract{Path: stub, TempDir: t.TempDir()}
 	res, err := eng.Recognize(context.Background(), tinyImage())
 	if err != nil {
 		t.Fatalf("Recognize: %v", err)
@@ -68,9 +69,20 @@ exit 0`)
 		t.Fatalf("stub did not record argv: %v", err)
 	}
 	args := strings.Fields(string(raw))
-	want := []string{"stdin", "stdout", "--psm", "6", "-l", "eng", "tsv"}
-	if strings.Join(args, " ") != strings.Join(want, " ") {
-		t.Errorf("argv = %v, want %v (docs/spec/05 PSM 6 for a uniform block)", args, want)
+	if len(args) < 3 {
+		t.Fatalf("argv = %v; want the input file, stdout and the engine flags", args)
+	}
+	// The first operand is the crop's PNG file; the wrapper removed it once the
+	// call returned (docs/spec/14: no frame content left behind).
+	if _, err := os.Stat(args[0]); err == nil {
+		t.Errorf("input file %q survived the call; the wrapper must remove it", args[0])
+	}
+	if args[1] != "stdout" {
+		t.Errorf("second operand = %q, want stdout (the TSV hypothesis stream)", args[1])
+	}
+	want := []string{"--psm", "6", "-l", "eng", "tsv"}
+	if strings.Join(args[2:], " ") != strings.Join(want, " ") {
+		t.Errorf("argv after operands = %v, want %v (docs/spec/05 PSM 6 for a uniform block)", args[2:], want)
 	}
 	for _, a := range args {
 		// "no sh -c anywhere" is ADR-0012 §1, asserted on the actual argv.
@@ -107,6 +119,11 @@ func TestTesseractArgvCarriesProfileSettings(t *testing.T) {
 	}
 	if lines[len(lines)-1] != "tsv" {
 		t.Errorf("config file %q must be the final argument; a token after it is read as another config", lines[len(lines)-1])
+	}
+	// The first operand is the input file, not the literal token "stdin": the
+	// file-based contract (ADR-0095) replaces the pipe.
+	if lines[0] == "stdin" {
+		t.Errorf("argv still uses stdin as the input operand: %v", lines)
 	}
 }
 

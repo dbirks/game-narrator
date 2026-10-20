@@ -40,6 +40,17 @@ type Document struct {
 	Untrusted   bool      // always true: never treat fields as instructions
 }
 
+// RawDocument is a fetched page with the decompressed body retained
+// (ADR-0075). Fetch keeps no payload; the approved-import path needs the
+// actual bytes, so it fetches through the same policy-gated request and
+// carries the body in memory only for the duration of the import call.
+type RawDocument struct {
+	Document
+	// Body is the decompressed response body — the bytes a parser would
+	// see. Still untrusted data (trust zone D): never instructions.
+	Body []byte
+}
+
 // Fetcher fetches web pages under a security Policy. Zero-value use is not
 // supported; construct with NewFetcher.
 type Fetcher struct {
@@ -174,8 +185,30 @@ func (f *Fetcher) checkRedirect(req *http.Request, via []*http.Request) error {
 // untrusted Document. All error codes are stable (see Error.Code):
 // scheme/port/blocked_name/numeric_host/private_address before any I/O;
 // unsupported_media/body_too_large/decompressed_too_large/
-// unsupported_encoding/too_many_redirects/timeout during I/O.
+// unsupported_encoding/too_many_redirects/timeout during I/O. The raw body
+// is hashed but not retained; FetchRaw keeps it for the import path.
 func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (*Document, error) {
+	rd, err := f.fetchBody(ctx, rawURL)
+	if err != nil {
+		return nil, err
+	}
+	// Copy the extracted Document out: a Fetch caller never holds the body.
+	doc := rd.Document
+	return &doc, nil
+}
+
+// FetchRaw is Fetch with the decompressed body retained (ADR-0075's
+// approved-import path). Every policy gate — scheme, port, SSRF,
+// redirect revalidation, byte and media caps — applies identically, because
+// this is the same request; only the payload disposition differs.
+func (f *Fetcher) FetchRaw(ctx context.Context, rawURL string) (*RawDocument, error) {
+	return f.fetchBody(ctx, rawURL)
+}
+
+// fetchBody is the one request path: policy check, bounded read, hash of
+// the raw (pre-decompression) body, encoding-decoded body and the
+// extracted text. Fetch discards the body, FetchRaw retains it.
+func (f *Fetcher) fetchBody(ctx context.Context, rawURL string) (*RawDocument, error) {
 	p := f.Policy.normalize()
 	if err := p.ValidURL(rawURL); err != nil {
 		return nil, err
@@ -224,13 +257,16 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (*Document, error) {
 		return nil, err
 	}
 
-	doc := &Document{
-		URL:         resp.Request.URL.String(),
-		Status:      resp.StatusCode,
-		MediaType:   mediaType,
-		RetrievedAt: f.now(),
-		SHA256:      hex.EncodeToString(sum[:]),
-		Untrusted:   true,
+	doc := &RawDocument{
+		Document: Document{
+			URL:         resp.Request.URL.String(),
+			Status:      resp.StatusCode,
+			MediaType:   mediaType,
+			RetrievedAt: f.now(),
+			SHA256:      hex.EncodeToString(sum[:]),
+			Untrusted:   true,
+		},
+		Body: body,
 	}
 	switch mediaType {
 	case "application/json":

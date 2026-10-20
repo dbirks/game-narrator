@@ -390,11 +390,6 @@ func (m *scriptedOnboardingModel) requestCount() int {
 	return len(m.log)
 }
 
-func mustJSON(v any) json.RawMessage {
-	raw, _ := json.Marshal(v)
-	return raw
-}
-
 // wiresJSON renders tool calls in the OpenAI wire shape the fake gateway
 // answers with.
 func wiresJSON(calls []openai.ToolCall) json.RawMessage {

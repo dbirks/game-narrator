@@ -21,7 +21,14 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../../api/client";
 import { devApi, type EventEnvelope, type Session } from "../../api/sessions";
 import { EmptyState, Loading } from "../../components/states";
+import { TraceActions } from "./ActionPanel";
 import { captureMsAt } from "./timeline";
+import {
+  activeWindowFromPayload,
+  cropBasisLabel,
+  regionThroughWindow,
+  windowOutline,
+} from "./window";
 import {
   chainStage,
   decisionFacts,
@@ -178,6 +185,16 @@ function FrameAndCrop({ pinned, session }: { pinned: EventEnvelope; session: Ses
         ? (regions.find((row) => row.id === regionId) ?? regions[0])
         : regions[0];
 
+  // The crop basis the session's crop mapped the region through when the
+  // sample was taken (ADR-0082 amendment 1): the tracked active window, in
+  // fractions of the frame, or the whole frame until it settled. The overlay
+  // is the region rect mapped through that window — the box the pipeline
+  // actually cut — and the window itself gets its own outline when it is not
+  // the whole frame, so a mis-settled window is visible, not guessed at.
+  const win = activeWindowFromPayload(data);
+  const roiBox = regionThroughWindow(region, win);
+  const winBox = windowOutline(win);
+
   const alt =
     captureMs === null
       ? "Captured frame with dialogue region outlined"
@@ -188,15 +205,27 @@ function FrameAndCrop({ pinned, session }: { pinned: EventEnvelope; session: Ses
       {frameSha ? (
         <div className="frame-wrap">
           <img data-testid="frame-image" src={devApi.assetUrl(frameSha)} alt={alt} width={320} />
-          {region ? (
+          {winBox ? (
+            <div
+              className="roi-window"
+              data-testid="roi-window-box"
+              style={{
+                left: `${winBox.left}%`,
+                top: `${winBox.top}%`,
+                width: `${winBox.width}%`,
+                height: `${winBox.height}%`,
+              }}
+            />
+          ) : null}
+          {roiBox ? (
             <div
               className="roi"
               data-testid="roi-box"
               style={{
-                left: `${region.rect_x * 100}%`,
-                top: `${region.rect_y * 100}%`,
-                width: `${region.rect_w * 100}%`,
-                height: `${region.rect_h * 100}%`,
+                left: `${roiBox.left}%`,
+                top: `${roiBox.top}%`,
+                width: `${roiBox.width}%`,
+                height: `${roiBox.height}%`,
               }}
             />
           ) : null}
@@ -206,6 +235,9 @@ function FrameAndCrop({ pinned, session }: { pinned: EventEnvelope; session: Ses
           No stored frame for this observation (dev trace off, or the sample was evicted).
         </p>
       )}
+      <p className="muted" data-testid="crop-basis">
+        {cropBasisLabel(win)}
+      </p>
       {cropSha ? (
         <img
           data-testid="crop-image"
@@ -317,6 +349,7 @@ function TraceDetail({ pinned, session }: { pinned: EventEnvelope; session: Sess
           No commit in this trace yet.
         </p>
       )}
+      <TraceActions traceId={pinned.trace_id as string} session={session} events={page.events} />
       <TraceView traceId={pinned.trace_id as string} page={page} />
     </div>
   );
@@ -480,6 +513,10 @@ function CommitOutcome({
   const message = rawMessage === "" ? "unknown" : displayName(names, rawMessage);
   const eligible = data.speech_eligible === true;
   const reason = str(data.reason);
+  // The corpus's content class for the committed line (ADR-0083): the session
+  // reads it off the candidate index at commit time; "" for an abstain
+  // commit, whose message the corpus could not name.
+  const textKind = str(data.text_kind);
   return (
     <div data-testid="commit-outcome">
       <h3>
@@ -488,6 +525,8 @@ function CommitOutcome({
       <dl className="stats">
         <dt>Message id</dt>
         <dd data-testid="commit-message">{message}</dd>
+        <dt>Text kind</dt>
+        <dd data-testid="commit-text-kind">{textKind || "—"}</dd>
         <dt>Speech eligible</dt>
         <dd data-testid="commit-speech-eligible">{eligible ? "yes" : "no"}</dd>
         <dt>Reason</dt>

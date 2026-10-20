@@ -60,6 +60,24 @@ if [ ! -e /etc/game-narrator/env ]; then
     echo "game-narrator: create /etc/game-narrator/env from /etc/game-narrator/env.example (chmod 0600)"
 fi
 
+# The lingering user session for Bluetooth audio (ADR 0091): the A2DP sink
+# node (bluez_output.<MAC>.1) lives in the service user's USER PipeWire
+# instance (WirePlumber's bluez5 module), which only exists while the user
+# manager runs; on a headless appliance there is no login, so the user
+# manager is made to run via linger. Idempotent; `|| true` without logind.
+# The WirePlumber headless override is the file ADR 0084 verified on the
+# real board — only-if-missing, so an admin-placed copy is never clobbered.
+if command -v loginctl >/dev/null 2>&1; then
+    loginctl enable-linger game-narrator >/dev/null 2>&1 || true
+fi
+install -d -o game-narrator -g game-narrator -m 0700 /var/lib/game-narrator/.config/wireplumber/wireplumber.conf.d
+if [ ! -e /var/lib/game-narrator/.config/wireplumber/wireplumber.conf.d/80-bluez-headless.conf ]; then
+    printf 'wireplumber.profiles = { main = { monitor.bluez.seat-monitoring = disabled } }\n' \
+        > /var/lib/game-narrator/.config/wireplumber/wireplumber.conf.d/80-bluez-headless.conf
+    chown game-narrator:game-narrator /var/lib/game-narrator/.config/wireplumber/wireplumber.conf.d/80-bluez-headless.conf
+    chmod 0600 /var/lib/game-narrator/.config/wireplumber/wireplumber.conf.d/80-bluez-headless.conf
+fi
+
 # Reload systemd so the unit shipped in /usr/lib/systemd/system is picked up.
 if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
     systemctl daemon-reload || true

@@ -8,12 +8,14 @@ package api
 // providers.LoadRoles for the model roles, GAME_NARRATOR_LISTEN,
 // GAME_NARRATOR_DATA_DIR, GAME_NARRATOR_AUDIO_SINK / GAME_NARRATOR_AUDIO_DEVICE,
 // GAME_NARRATOR_WEB_ALLOW_PRIVATE / GAME_NARRATOR_WEB_PRIVATE_ALLOW — plus the
-// build constants cmd/game-narrator pins for the agent budget. Nothing is
-// runtime-mutable: GET renders every value next to the variable (or constant)
-// that controls it, and PUT answers 405 with that same list rather than
-// inventing a write path for a setting that cannot change (AGENTS.md "no
-// simulation theater": a save button that saves nothing is worse than the
-// absence of one).
+// build constants cmd/game-narrator pins for the agent budget. One setting is
+// runtime-mutable: the audio output (ADR-0074) persists through its own route
+// (PUT /api/v1/settings/audio) with the environment as the override layer.
+// Every other value is not mutable: GET renders every value next to the
+// variable (or constant) that controls it, and PUT on this route answers 405
+// with that same list rather than inventing a write path for a setting that
+// cannot change (AGENTS.md "no simulation theater": a save button that saves
+// nothing is worse than the absence of one).
 //
 // Secrets never reach the browser (docs/spec/14): a bearer token is reported
 // only as a presence boolean, and a configured gateway endpoint is reported as
@@ -160,12 +162,6 @@ type versionView struct {
 	Arch      string `json:"arch"`
 }
 
-type updateView struct {
-	AutoUpdate bool   `json:"auto_update"`
-	Docs       string `json:"docs"`
-	Note       string `json:"note"`
-}
-
 type mutableView struct {
 	Count int      `json:"count"`
 	Note  string   `json:"note"`
@@ -198,35 +194,33 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 			Version: s.build.Version, Commit: s.build.Commit, GoVersion: s.build.GoVersion,
 			OS: s.build.GOOS, Arch: s.build.GOARCH,
 		},
-		Update: updateView{
-			AutoUpdate: false,
-			Docs:       "docs/release.md",
-			Note: "There is no auto-update in this build. Replacing the binary is a " +
-				"documented manual step (make release-snapshot on the release host, copy, " +
-				"restart); the version and commit above are what you compare against.",
-		},
+		Update: s.settingsUpdate(),
 		Mutable: mutableView{
-			Count: 0,
-			Note: "Nothing is mutable at runtime in this build: every value comes from an " +
-				"environment variable or a build constant. Change the named variable and " +
-				"restart the service; PUT answers 405 on purpose.",
+			Count: 1,
+			Note: "One setting is mutable at runtime: the audio output (device, sink kind, master " +
+				"volume) persists through PUT /api/v1/settings/audio (ADR-0074); the environment " +
+				"variables below keep their override precedence over the stored value. Every other " +
+				"value comes from an environment variable or a build constant — change the named " +
+				"variable and restart the service; PUT on this route answers 405 on purpose.",
 			Env: mutableSettingEnv(),
 		},
 	})
 }
 
-// handleSettingsPut answers PUT /api/v1/settings (admin role). No setting in
-// this build is runtime-mutable, so the handler declines the method with the
-// full list of variables that control the values: a 405 that is also the
-// documentation.
+// handleSettingsPut answers PUT /api/v1/settings (admin role). No setting of
+// the general configuration is runtime-mutable — the one exception is the
+// audio output, which has its own route (PUT /api/v1/settings/audio,
+// ADR-0074) — so the handler declines the method with the full list of
+// variables that control the values: a 405 that is also the documentation.
 func (s *Server) handleSettingsPut(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Allow", http.MethodGet)
 	s.writeProblem(w, r, http.StatusMethodNotAllowed, "no-mutable-settings",
 		"Method Not Allowed",
-		"no setting of this build is runtime-mutable; the effective configuration is "+
+		"no general setting of this build is runtime-mutable; the effective configuration is "+
 			"read from the environment at start. Change one of: "+joinStrings(mutableSettingEnv())+
 			" (or a role's GAME_NARRATOR_ROLE_<ROLE>_MODEL / _URL / _PROTOCOL / _TIMEOUT / "+
-			"_REASONING_EFFORT override) and restart the service.")
+			"_REASONING_EFFORT override) and restart the service. The one exception is the "+
+			"audio output selection and master volume: PUT /api/v1/settings/audio (ADR-0074).")
 }
 
 // handleAdminBackup answers POST /api/v1/admin/backup (admin role): a

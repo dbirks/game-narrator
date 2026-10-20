@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://game-narrator.example/schema/gnprofile-1.0.schema.json",
+  "$id": "https://game-narrator.example/schema/gnprofile-1.1.schema.json",
   "title": "Game Narrator profile manifest (.gnprofile.json)",
-  "description": "A portable profile revision: edition identity, source provenance pointers, the dialogue graph, regions and publication state. Closed object: an unknown key is a typo or a version skew, and silently ignoring either is how a profile imports with content nobody reviewed (docs/spec/14). Copyrighted source bytes never appear here; sources carry a SHA-256 and a rights state, and text whose rights are unsettled is null with a reason.",
+  "description": "A portable profile revision: edition identity, source provenance pointers, the dialogue graph, regions, approved voice mappings (1.1) and publication state. Closed object: an unknown key is a typo or a version skew, and silently ignoring either is how a profile imports with content nobody reviewed (docs/spec/14). Copyrighted source bytes never appear here; sources carry a SHA-256 and a rights state, and text whose rights are unsettled is null with a reason. Voice reference audio is the same: the manifest carries the SHA-256, and the bytes travel only inside an acknowledged .gnpack (ADR-0101).",
   "type": "object",
   "additionalProperties": false,
   "$comment": "Every content section is required. An absent section and an empty one mean different things ('characters were not considered' vs 'this revision has no characters'), and the exporter always writes [] for a section with no rows — see canonical.go's note on empty sections. Requiring the key makes that distinction impossible to lose in transit.",
@@ -18,12 +18,13 @@
     "messages",
     "message_edges",
     "speaker_assertions",
+    "voices",
     "manifest_digest"
   ],
   "properties": {
     "schema_version": {
-      "const": "1.0",
-      "description": "Compatibility version of this document shape. A reader that does not know a version refuses it rather than ignoring fields it has never seen."
+      "const": "1.1",
+      "description": "Compatibility version of this document shape. A reader that does not know a version refuses it rather than ignoring fields it has never seen. 1.1 adds the voices section and publication.narrator_fallback (ADR-0101)."
     },
     "profile_id": {
       "$ref": "#/$defs/id",
@@ -38,6 +39,7 @@
     "messages": { "type": "array", "items": { "$ref": "#/$defs/message" } },
     "message_edges": { "type": "array", "items": { "$ref": "#/$defs/message_edge" } },
     "speaker_assertions": { "type": "array", "items": { "$ref": "#/$defs/speaker_assertion" } },
+    "voices": { "type": "array", "items": { "$ref": "#/$defs/voice" } },
     "manifest_digest": {
       "$ref": "#/$defs/sha256",
       "description": "SHA-256 over the canonical JSON projection of this document with the digest itself, profile_id and the publication section removed, and every row id replaced by a content-derived alias. Stable across re-import by construction; see internal/profileio/canonical.go."
@@ -103,8 +105,8 @@
     "publication": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Lifecycle of the exported revision. Excluded from manifest_digest: a re-import is a draft by construction, and an approval timestamp is not content.",
-      "required": ["status", "revision"],
+      "description": "Lifecycle of the exported revision. Excluded from manifest_digest: a re-import is a draft by construction, and an approval timestamp is not content. narrator_fallback rides here rather than in a content section because it is a row property of the exported profile (the import applies it to the draft it creates), the way preferred_voice_id travels.",
+      "required": ["status", "revision", "narrator_fallback"],
       "properties": {
         "status": { "$ref": "#/$defs/ProfileStatus" },
         "revision": { "type": "integer", "description": "profiles.revision_num: which revision of the edition this was." },
@@ -112,6 +114,10 @@
         "approved_at": { "$ref": "#/$defs/nullableRfc3339" },
         "author": { "type": "string", "description": "Who published it, as the publication audit recorded it." },
         "preferred_voice_id": { "$ref": "#/$defs/nullableId" },
+        "narrator_fallback": {
+          "type": "boolean",
+          "description": "profiles.narrator_fallback (ADR-0101): when a line's speaker has no approved voice, the narrator voice speaks the line if and only if this is true. A re-import applies it to the draft it creates; the import's default when absent is true, the column's DEFAULT 1."
+        },
         "store_digest": { "type": "string", "description": "profiles.manifest_digest as the store computed it. Audit only: it hashes row ids and so does not survive the re-import that manifest_digest is built to survive." }
       }
     },
@@ -151,7 +157,7 @@
         "portrait": { "$ref": "#/$defs/nullableSha256" },
         "voice_profile_id": {
           "$ref": "#/$defs/nullableId",
-          "description": "Always null in this build: voice definitions are Milestone 4, and the field exists so a manifest written today still validates when they arrive."
+          "description": "The approved voice this character speaks with, when the voices section carries one (ADR-0101): the cross-reference that lets a reader answer 'does this character have a voice' without joining the section by character. Null when the manifest carries no voice for the character."
         }
       }
     },
@@ -281,6 +287,30 @@
         "posterior": { "type": "number" },
         "reviewer": { "$ref": "#/$defs/nullableText", "description": "Required for a manual method, absent for an automated one — a rule that spans two fields, so it lives in games.SpeakerAssertion.Validate." },
         "evidence": { "type": "array" }
+      }
+    },
+
+    "voice": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One approved voice revision (ADR-0101). The id is the voice_profiles id, unmodified by a re-import: the Base registry names a voice from it, and the shared registry is the reason it is stable where every other row id is not. The reference WAV bytes live in the asset store and travel only inside a .gnpack; a pointer whose bytes are absent on import is reported, not written.",
+      "required": ["id", "character", "revision", "state", "reference_sha256", "ref_transcript", "model_id", "fingerprint", "gain", "consent_provenance"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id", "description": "The voice_profiles id. Stable across re-imports on purpose: the registry name and the speech cache key derive from it." },
+        "character": { "type": "string", "description": "A character this manifest defines, or 'narrator' — the runtime's constant speaker for unattributed lines, not a roster row. A re-import remaps the roster ids and passes the narrator through." },
+        "revision": { "type": "integer", "description": "The revision number. The registry name derives from it, so a re-import preserves rather than renumbers it." },
+        "state": { "const": "approved", "description": "Only approved revisions travel: the reference they froze is the only thing a re-import could register, and a draft row has no reference at all." },
+        "reference_sha256": { "$ref": "#/$defs/sha256", "description": "Content address of the approved reference WAV. The pack carries blobs/<sha256>; a default export is the pointer alone." },
+        "ref_transcript": { "type": "string", "description": "The exact transcript of the reference clip, frozen at approval." },
+        "model_id": { "type": "string", "description": "The Base checkpoint model identity the cache keys carry." },
+        "embedding_mode": { "type": "string" },
+        "language": { "type": "string", "description": "BCP-47 tag the synthesis requests name." },
+        "fingerprint": { "type": "string", "description": "SHA-256 over (reference digest, transcript, model): the revision identity every TTS cache key for this voice names." },
+        "gain": { "type": "number", "description": "The per-voice output gain (0..10, the store's column bound; 1 is unity). Checked in Go beside the store's CHECK." },
+        "design_instruction": { "type": "string", "description": "The design brief that shaped the voice. Carried for the audit; the import never re-designs from it." },
+        "consent_provenance": { "type": "string", "description": "docs/spec/14's consent record, frozen at approval. Required on the wire: a voice that arrived without the consent that licensed it is refused." },
+        "approved_by": { "type": "string", "description": "Who approved the revision, as the approval audit recorded it." },
+        "approved_at": { "$ref": "#/$defs/nullableRfc3339", "description": "When the approval happened, at the approving appliance. Dropped from the digest projection like the publication section: an audit moment, not content." }
       }
     }
   }

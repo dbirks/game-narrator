@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -69,6 +70,11 @@ type env struct {
 	// manual is the explicitly-driven frame source seam (docs/spec/12);
 	// nil (the default) keeps kind "manual" refused, the production shape.
 	manual func() (capture.Source, error)
+	// capture is the v4l2 (UVC HDMI capture dongle) wiring (ADR-0078):
+	// nil (the default) keeps kind "v4l2" refused (ErrCaptureUnavailable),
+	// the unwired-process shape; a test that runs a session from the capture
+	// source wires a fake enumeration and a push-based source here.
+	capture *runtime.CaptureOptions
 }
 
 // newEnv builds the environment. With no options the OCR engine is Tesseract
@@ -105,6 +111,7 @@ func newEnv(t *testing.T, opts ...func(*env)) *env {
 		OCRFallback:  e.ocrFallback,
 		Decision:     e.decision,
 		ManualSource: e.manual,
+		Capture:      e.capture,
 		Log:          slog.New(slog.DiscardHandler),
 	})
 	if err != nil {
@@ -167,6 +174,14 @@ func withManualSource(fn func() (capture.Source, error)) func(*env) {
 	return func(e *env) { e.manual = fn }
 }
 
+// withCapture wires the v4l2 capture source's seams (ADR-0078): the test's
+// fake enumeration behind Resolve and its push-based source behind Source,
+// so a kind:v4l2 session runs the same production path (the v4l2: no-signal
+// wrapper included) without a dongle, v4l2-ctl or FFmpeg.
+func withCapture(opts *runtime.CaptureOptions) func(*env) {
+	return func(e *env) { e.capture = opts }
+}
+
 // replayStart is the session request for the synthetic clip with the given
 // toggles; devTrace off plus fake OCR makes a full session take milliseconds.
 func (e *env) replayStart(profileID string, devTrace bool) runtime.StartRequest {
@@ -181,6 +196,29 @@ func (e *env) replayStart(profileID string, devTrace bool) runtime.StartRequest 
 func syntheticClipDir() string {
 	abs, _ := filepath.Abs(syntheticDir)
 	return abs
+}
+
+// clipFrameCount is the number of frame-N.png files in the synthetic clip.
+// A source-driven test pushes exactly the clip's frames, so the count is the
+// stream's length (the test reads the directory rather than hardcoding the
+// corpus size).
+func clipFrameCount(t *testing.T) int {
+	t.Helper()
+	corpusPresent(t)
+	entries, err := os.ReadDir(syntheticDir)
+	if err != nil {
+		t.Fatalf("read clip dir: %v", err)
+	}
+	n := 0
+	for _, en := range entries {
+		if strings.HasSuffix(en.Name(), ".png") {
+			n++
+		}
+	}
+	if n == 0 {
+		t.Fatalf("clip dir has no frames")
+	}
+	return n
 }
 
 func absPath(t *testing.T, p string) string {
@@ -405,4 +443,19 @@ func eventsFrom(t *testing.T, e *env, sessionID string) []events.Envelope {
 		t.Fatalf("read events: %v", err)
 	}
 	return evs
+}
+
+// latestEvent returns the most recent published event of the given name for
+// the session, or nil if none has been published yet. A source-driven test
+// waits on a specific event (a commit) before ending the stream, so the wait
+// is on the event stream — no wall-clock margin decides the assertion.
+func latestEvent(t *testing.T, e *env, sessionID, name string) *events.Envelope {
+	t.Helper()
+	evs := eventsFrom(t, e, sessionID)
+	for i := len(evs) - 1; i >= 0; i-- {
+		if evs[i].Name == name {
+			return &evs[i]
+		}
+	}
+	return nil
 }

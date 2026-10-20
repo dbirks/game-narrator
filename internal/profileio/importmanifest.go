@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/dbirks/game-narrator/internal/assets"
 	"github.com/dbirks/game-narrator/internal/games"
@@ -63,6 +64,21 @@ type ImportManifestReport struct {
 	// token — the exact hazard that ADR documents. It is reported here so an
 	// operator sees what was dropped instead of having to notice its absence.
 	PreferredVoiceID string `json:"preferred_voice_id,omitempty"`
+
+	// The voice half of the answer (ADR-0101): what the manifest's voices
+	// section did on arrival. Written is the rows this import created; Skipped
+	// is the rows a re-import found already present (same id, same fingerprint)
+	// and re-pointed at this draft's characters; the two lists are what an
+	// operator needs to tell "imported" from "imported and speakable" the way
+	// MissingBlobs says it for sources.
+	VoicesWritten    int      `json:"voices_written"`
+	VoicesSkipped    int      `json:"voices_skipped"`
+	VoiceRefsMissing []string `json:"voice_refs_missing,omitempty"`
+	// VoicesConflicts lists the voice ids a (character, revision) slot already
+	// occupied: two different PCs' narrator voices on one board, for instance.
+	// The row was skipped, the import went on — the profile content is the
+	// point, the voice set is additive.
+	VoicesConflicts []string `json:"voices_conflicts,omitempty"`
 }
 
 // ImportManifest reads a `.gnprofile.json` document (or the manifest entry of a
@@ -485,6 +501,120 @@ func importManifest(ctx context.Context, deps Deps, m Manifest, opts ImportManif
 				return fmt.Errorf("profileio: import manifest: assertions: %w", err)
 			}
 		}
+
+		// Voices (ADR-0101). The row keeps its manifest id — the registry name
+		// and the speech cache key derive from it, and re-minting would stop the
+		// board being "a voice id referencing the shared Base registry" — but its
+		// character is remapped to this draft's roster (the narrator key passes
+		// through: it is a constant, not a row this manifest defines). The
+		// revision number is preserved for the same reason as the id.
+		seenMissing := map[string]bool{}
+		for _, v := range m.Voices {
+			charID := narratorKey
+			if v.Character != narratorKey {
+				id, err := ref(v.Character)
+				if err != nil {
+					return err
+				}
+				charID = id
+			}
+			// A voice whose reference bytes are not on this appliance would
+			// resolve to voice_reference_missing on every line of its character:
+			// a worse failure than the narrator fallback the row exists to enable.
+			// The pointer travels without the bytes; the bytes travel in a pack.
+			present := false
+			if deps.Assets != nil {
+				if _, serr := deps.Assets.Stat(work, v.ReferenceSHA256); serr == nil {
+					present = true
+				}
+			}
+			if !present {
+				if !seenMissing[v.ReferenceSHA256] {
+					seenMissing[v.ReferenceSHA256] = true
+					report.VoiceRefsMissing = append(report.VoiceRefsMissing, v.ReferenceSHA256)
+				}
+				continue
+			}
+			switch existing, verr := deps.Store.GetVoiceRevision(work, v.ID); {
+			case verr == nil && existing.Fingerprint != v.Fingerprint:
+				// One id, two contents: a tampered or buggy manifest. The
+				// conservative answer is the refusal a digest mismatch earns —
+				// the whole import fails, because a manifest that lies about one
+				// row has forfeited the trust every other row in it rode on.
+				return fmt.Errorf("%w: voice %s already exists in this store with a different fingerprint: the manifest and the database disagree about what that id names", ErrInvalid, v.ID)
+			case verr == nil:
+				// Re-import: the same id, the same content. Re-point the character
+				// at this draft's roster so the freshly imported revision speaks
+				// with the voices the manifest carries, and count it as present
+				// rather than as a duplicate.
+				if existing.Character != charID {
+					if err := deps.Store.SetVoiceCharacter(work, v.ID, charID); err != nil {
+						return fmt.Errorf("profileio: import manifest: re-point voice %s: %w", v.ID, err)
+					}
+				}
+				report.VoicesSkipped++
+				continue
+			default:
+				if !errors.Is(verr, store.ErrNotFound) {
+					return fmt.Errorf("profileio: import manifest: voice %s: %w", v.ID, verr)
+				}
+				// A (character, revision) slot another voice already holds is a
+				// conflict to report, not a failure: the profile content is the
+				// point, the voice set is additive.
+				conflict := false
+				if slot, cerr := deps.Store.ListVoiceProfiles(work, charID); cerr == nil {
+					for _, r := range slot {
+						if r.Revision == v.Revision {
+							conflict = true
+							break
+						}
+					}
+				}
+				if conflict {
+					report.VoicesConflicts = append(report.VoicesConflicts, v.ID)
+					continue
+				}
+			}
+			approvedAt, perr := parseVoiceTimestamp(v.ApprovedAt)
+			if perr != nil {
+				return fmt.Errorf("%w: voice %s approved_at: %v", ErrInvalid, v.ID, perr)
+			}
+			stamp := time.Now().UTC()
+			row := store.VoiceProfile{
+				ID:                v.ID,
+				Character:         charID,
+				Revision:          v.Revision,
+				State:             store.VoiceStateApproved,
+				DesignInstruction: v.DesignInstruction,
+				ReferenceAssetID:  v.ReferenceSHA256,
+				RefTranscript:     v.RefTranscript,
+				ModelID:           v.ModelID,
+				EmbeddingMode:     v.EmbeddingMode,
+				Language:          v.Language,
+				Fingerprint:       v.Fingerprint,
+				Gain:              v.Gain,
+				ConsentProvenance: v.ConsentProvenance,
+				ApprovedBy:        v.ApprovedBy,
+				ApprovedAt:        approvedAt,
+				CreatedAt:         stamp,
+				UpdatedAt:         stamp,
+			}
+			if err := deps.Store.CreateVoiceRevision(work, row); err != nil {
+				return fmt.Errorf("profileio: import manifest: voice %s: %w", v.ID, err)
+			}
+			report.VoicesWritten++
+		}
+
+		// The narrator fallback the manifest carried (ADR-0101): absent means
+		// the document predates the field and the default — on, the column's
+		// DEFAULT 1 — stands.
+		fallback := true
+		if m.Publication.NarratorFallback != nil {
+			fallback = *m.Publication.NarratorFallback
+		}
+		if err := deps.Store.SetProfileNarratorFallback(work, draft.ID, fallback); err != nil {
+			return fmt.Errorf("profileio: import manifest: narrator fallback: %w", err)
+		}
 		return nil
 	})
 	if err != nil {
@@ -507,6 +637,23 @@ func pagesFor(batch []games.Message, pages []games.MessagePage) []games.MessageP
 		}
 	}
 	return out
+}
+
+// parseVoiceTimestamp reads a manifest's voice approved_at back into the
+// instant the store keeps: RFC-3339, the shape the export writes and the
+// schema's nullableRfc3339 pattern admits. An empty value is the "never
+// approved at a recorded moment" the schema allows beside an approved row,
+// and reads as nil rather than the import's own clock — the approval moment
+// belongs to the approving appliance.
+func parseVoiceTimestamp(s *string) (*time.Time, error) {
+	if s == nil || strings.TrimSpace(*s) == "" {
+		return nil, nil
+	}
+	t, err := time.Parse(time.RFC3339, *s)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
 }
 
 // resolveCatalog finds — or creates, when no target was named — the game and

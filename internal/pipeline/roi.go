@@ -56,20 +56,11 @@ func (r *Runner) analyze(f capture.Frame, reg games.Region) analysis {
 	return a
 }
 
-// darkShare is the fraction of pixels below luma. It walks Pix directly: a
-// 1048×168 crop is 176 k pixels and At() would make that a method call each.
-func darkShare(g *image.Gray, luma uint8) float64 {
-	if g == nil || len(g.Pix) == 0 {
-		return 0
-	}
-	dark := 0
-	for _, v := range g.Pix {
-		if v < luma {
-			dark++
-		}
-	}
-	return float64(dark) / float64(len(g.Pix))
-}
+// darkShare is the fraction of pixels below luma. The walk lives in vision
+// (vision.DarkShare, beside ToGray): the one-shot reader (internal/oneshot)
+// asks the same presence question of its crops, and both call one
+// implementation rather than each carrying a copy.
+func darkShare(g *image.Gray, luma uint8) float64 { return vision.DarkShare(g, luma) }
 
 // ocrJob is one dispatched recognition.
 //

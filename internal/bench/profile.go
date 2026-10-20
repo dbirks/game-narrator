@@ -25,6 +25,43 @@ type ScriptProfile struct {
 	Regions       []Region     `json:"regions"`
 	Messages      []ScriptLine `json:"messages"`
 	Edges         []Edge       `json:"edges"`
+	// Layout is the set's textbox geometry (ADR-0079): the box fractions and
+	// corner shape the frame renderer draws and the region derivation reads.
+	// Data, not code: a set whose box sits elsewhere or has square corners is
+	// a different profile row, never a branch in the renderer. The zero value
+	// is the first set's box (defaultLayout), so pre-ADR-0079 sets keep
+	// rendering byte-identically.
+	Layout Layout `json:"layout,omitempty"`
+}
+
+// Layout is one set's textbox geometry in normalized frame coordinates
+// (ADR-0079). BoxX/BoxY/BoxW/BoxH are the drawn box's fractions; Rounded
+// selects the rounded corners the first set renders. Zero Box* means
+// defaultLayout (the first set's box), which is also what Effective returns
+// for the zero value — the compatibility rule that keeps set 001's committed
+// frames stable.
+type Layout struct {
+	BoxX    float64 `json:"box_x,omitempty"`
+	BoxY    float64 `json:"box_y,omitempty"`
+	BoxW    float64 `json:"box_w,omitempty"`
+	BoxH    float64 `json:"box_h,omitempty"`
+	Rounded bool    `json:"rounded,omitempty"`
+}
+
+// defaultLayout is the first set's box: the bottom box scripts/fixtures/
+// gen-synthetic-textbox.sh draws. It is the renderer's fallback and the
+// zero Layout's meaning, so a profile without a layout renders exactly the
+// frames the pre-ADR-0079 constants rendered.
+var defaultLayout = Layout{BoxX: 0.07, BoxY: 0.72, BoxW: 0.86, BoxH: 0.23, Rounded: true}
+
+// Effective returns the layout with the zero-value fallback applied. A
+// partially filled layout is a profile error (checked at load), so this only
+// decides whole-zero → default.
+func (l Layout) Effective() Layout {
+	if l.BoxX == 0 && l.BoxY == 0 && l.BoxW == 0 && l.BoxH == 0 {
+		return defaultLayout
+	}
+	return l
 }
 
 // ScriptLine is one scripted line with its speaker.
@@ -97,6 +134,17 @@ func LoadScriptProfile(dir string) (*ScriptProfile, error) {
 		if r.ID == "" || r.Type == "" || r.W <= 0 || r.H <= 0 || r.X < 0 || r.Y < 0 || r.X+r.W > 1 || r.Y+r.H > 1 {
 			return nil, fmt.Errorf("profile %s: region %d: id, type and a normalized rect inside [0,1] are required", path, i)
 		}
+	}
+	// The layout, when present, must be a complete box inside the frame: the
+	// renderer derives pixel rects from these fractions, and a partially
+	// filled or out-of-range layout would render a box the region never sees.
+	l := p.Layout
+	if l.BoxX == 0 && l.BoxY == 0 && l.BoxW == 0 && l.BoxH == 0 {
+		// Zero layout: the first set's default box. Accepted, not rewritten —
+		// the on-disk profile keeps rendering by fallback (ADR-0079).
+	} else if l.BoxX <= 0 || l.BoxY <= 0 || l.BoxW <= 0 || l.BoxH <= 0 ||
+		l.BoxX+l.BoxW > 1 || l.BoxY+l.BoxH > 1 {
+		return nil, fmt.Errorf("profile %s: layout is required to be a complete box inside the frame (got %+v)", path, l)
 	}
 	return &p, nil
 }

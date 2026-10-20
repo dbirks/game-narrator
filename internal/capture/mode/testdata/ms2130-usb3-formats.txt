@@ -1,0 +1,22 @@
+# SYNTHETIC FIXTURE — not a recorded capture from the user's RYBOZEN V316B.
+# Authored 2026-10-19 from the documented format set of the Macrosilicon
+# MS2130 USB 3 capture class (uvcvideo, YUYV 4:2:2 to 1920x1080@60; MJPG at
+# 1080p30 on the class's recording path). Shape is stock v4l2-ctl
+# --list-formats-ext output (v4l-utils 1.3x) so it parses through
+# devices.ParseFormatsExt unchanged. The first real device enumeration on
+# the UNO Q supersedes this fixture (docs/spec/10: never assume the modes).
+ioctl: VIDIOC_ENUM_FMT
+	Type: Video Capture
+
+	[0]: 'YUYV' (YUYV 4:2:2)
+		Size: Discrete 640x480
+			Interval: Discrete 0.033s (30.000 fps)
+		Size: Discrete 1280x720
+			Interval: Stepwise 0.017s - 0.033s [30.000 - 60.000 fps]
+		Size: Discrete 1920x1080
+			Interval: Stepwise 0.017s - 0.033s [30.000 - 60.000 fps]
+	[1]: 'MJPG' (Motion-JPEG, compressed)
+		Size: Discrete 1280x720
+			Interval: Stepwise 0.033s - 0.067s [15.000 - 30.000 fps]
+		Size: Discrete 1920x1080
+			Interval: Stepwise 0.033s - 0.500s [2.000 - 30.000 fps]

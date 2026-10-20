@@ -74,6 +74,13 @@ type ProfileMessage struct {
 	ID           string `json:"id"`
 	OriginalText string `json:"original_text"`
 	SceneID      string `json:"scene_id"`
+	// TextKind is the message's content class (dialogue, sign, item, …).
+	// Optional: it defaults to the profile-level text_kind, which is what
+	// keeps a dialogue-only corpus spelling nothing at all. A sign or item
+	// region's line names it here (docs/spec/05 "Message class and speech
+	// rules"), and the pipeline's region-derived hint and the session's
+	// narrated-class veto both read it off the corpus this way.
+	TextKind string `json:"text_kind"`
 }
 
 // ProfileEdge is one row of the message_edges table.
@@ -129,6 +136,11 @@ func LoadProfile(path string) (*Profile, error) {
 			return nil, fmt.Errorf("profile: %s: message id %q appears twice", path, m.ID)
 		}
 		ids[m.ID] = true
+		if m.TextKind != "" {
+			if _, err := games.ParseTextKind(m.TextKind); err != nil {
+				return nil, fmt.Errorf("profile: %s: message %q text_kind %q is not a known content class (%v)", path, m.ID, m.TextKind, err)
+			}
+		}
 	}
 	for i, e := range p.Edges {
 		if !ids[e.From] || !ids[e.To] {
@@ -144,9 +156,16 @@ func LoadProfile(path string) (*Profile, error) {
 	if len(p.Regions) == 0 {
 		return nil, fmt.Errorf("profile: %s: at least one region is required", path)
 	}
+	// The closed set the harness runs: the dialogue box and the two
+	// non-dialogue visual types docs/spec/04 names for the sign/item path
+	// (a sign panel, an item popup). Other region types (subtitle, menu, …)
+	// would rank with the runner's fallback hint, which is not what these
+	// scenarios claim to cover, so the loader refuses them rather than
+	// silently down-grading the scenario's claim.
+	regionTypes := map[string]bool{"textbox": true, "sign": true, "item": true}
 	for i, r := range p.Regions {
-		if r.ID == "" || r.Type != "textbox" {
-			return nil, fmt.Errorf("profile: %s: region %d must be a textbox with an id", path, i)
+		if r.ID == "" || !regionTypes[r.Type] {
+			return nil, fmt.Errorf("profile: %s: region %d must be a textbox, sign or item with an id (got type %q)", path, i, r.Type)
 		}
 		if r.X < 0 || r.Y < 0 || r.W <= 0 || r.H <= 0 || r.X+r.W > 1.0001 || r.Y+r.H > 1.0001 {
 			return nil, fmt.Errorf("profile: %s: region %d rect (%.3f, %.3f, %.3f, %.3f) does not fit the frame", path, i, r.X, r.Y, r.W, r.H)
@@ -155,18 +174,25 @@ func LoadProfile(path string) (*Profile, error) {
 	if p.TextKind == "" {
 		p.TextKind = "dialogue"
 	}
-	if games.TextKind(p.TextKind) != games.TextDialogue {
-		return nil, fmt.Errorf("profile: %s: text_kind %q is not supported by this loader", path, p.TextKind)
+	if _, err := games.ParseTextKind(p.TextKind); err != nil {
+		return nil, fmt.Errorf("profile: %s: text_kind %q is not a known content class (%v)", path, p.TextKind, err)
 	}
 	return &p, nil
 }
 
 // Messages renders the rows as games.Message: original text is kept for
 // display, normalized text is the retrieval key (docs/spec/02 stores the
-// renderings side by side), speech text is what a narrator would say.
+// renderings side by side), speech text is what a narrator would say, and
+// the content class is the message's own text_kind with the profile level as
+// the default (docs/spec/05 "Message class and speech rules").
 func (p *Profile) ToMessages() []games.Message {
+	defaultKind := games.TextKind(p.TextKind)
 	out := make([]games.Message, 0, len(p.Messages))
 	for _, m := range p.Messages {
+		kind := defaultKind
+		if m.TextKind != "" {
+			kind = games.TextKind(m.TextKind)
+		}
 		out = append(out, games.Message{
 			ID:             m.ID,
 			ProfileID:      p.ID,
@@ -174,7 +200,7 @@ func (p *Profile) ToMessages() []games.Message {
 			NormalizedText: fold(m.OriginalText),
 			SpeechText:     m.OriginalText,
 			SceneID:        m.SceneID,
-			TextKind:       games.TextKind(p.TextKind),
+			TextKind:       kind,
 		})
 	}
 	return out

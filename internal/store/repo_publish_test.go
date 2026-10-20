@@ -348,6 +348,14 @@ func TestPublishNeedsReviewAndAnAuthor(t *testing.T) {
 	if !errors.Is(err, ErrUnpublishable) || !strings.Contains(err.Error(), "no messages") {
 		t.Errorf("Publish of an empty revision = %v, want the no-messages finding", err)
 	}
+	// The finding must name the ways out (ADR-0077, gap audit G4): a
+	// research-only revision is not a dead end, and the message says how to
+	// add dialogue — disc import, an approved web source, manual entry.
+	for _, want := range []string{"import the disc", "propose_web_import", "manually"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the no-messages finding does not name %q: %s", want, err)
+		}
+	}
 }
 
 // TestPublishedProfileFollowsThePointerNotTheStatus pins what "the edition's live

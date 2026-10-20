@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/dbirks/game-narrator/internal/games"
+	"github.com/dbirks/game-narrator/internal/store"
 )
 
 // Manifest is the `.gnprofile.json` document (docs/spec/17 "Profile manifest").
@@ -46,6 +47,14 @@ type Manifest struct {
 	Messages          []MessageInfo   `json:"messages"`
 	MessageEdges      []EdgeInfo      `json:"message_edges"`
 	SpeakerAssertions []AssertionInfo `json:"speaker_assertions"`
+	// Voices are the approved voice revisions this revision speaks with
+	// (ADR-0101). Unlike every other section, their ids are not re-minted on
+	// re-import: the Base registry names a voice gn_<id8>_<character>_v<rev>_<digest8>,
+	// a pure function of the id, and a re-import that changed the id would
+	// register a new name for the same content and stop being the shared
+	// registry reference the board and the PC agree on. See canonical.go for
+	// the digest consequence (the id travels literally).
+	Voices []VoiceInfo `json:"voices"`
 
 	// Digest fingerprints content, not rows: see canonical.go for why a digest
 	// that survived nothing but a re-import is the only kind a portable manifest
@@ -82,6 +91,12 @@ type PublicationInfo struct {
 	ApprovedAt       *string             `json:"approved_at"`
 	Author           string              `json:"author"`
 	PreferredVoiceID *string             `json:"preferred_voice_id"`
+	// NarratorFallback is the per-profile narrator fallback (ADR-0101): when a
+	// line's speaker has no approved voice, the narrator voice speaks the line
+	// if and only if this flag is on. nil means the document predates the field
+	// and the reader applies the default, on — the same reading a pre-0015
+	// profile row gets from the column's DEFAULT 1.
+	NarratorFallback *bool `json:"narrator_fallback"`
 	// StoreDigest is profiles.manifest_digest as the store computed it at
 	// publication. It is carried for audit only: it hashes row ids and so
 	// cannot survive a re-import, unlike manifest_digest. Naming both would be
@@ -104,10 +119,12 @@ type SourceInfo struct {
 	RetrievedAt string             `json:"retrieved_at"`
 }
 
-// CharacterInfo is one roster row. `voice_profile_id` is always null in this
-// build: voice definitions are Milestone 4, and the field exists so a manifest
-// written today can carry a voice reference when the voices table arrives
-// without changing schema_version.
+// CharacterInfo is one roster row. `voice_profile_id` names the approved voice
+// this character speaks with, when the manifest carries one (ADR-0101): the
+// field has existed since the sketch for exactly this, and a manifest that
+// lists a character's voice in `voices` without cross-referencing it would
+// force a reader to join two sections by character to answer "does this
+// character have a voice".
 type CharacterInfo struct {
 	ID             string                `json:"id"`
 	Name           string                `json:"name"`
@@ -220,6 +237,38 @@ type AssertionInfo struct {
 	Posterior float64               `json:"posterior"`
 	Reviewer  *string               `json:"reviewer"`
 	Evidence  json.RawMessage       `json:"evidence"`
+}
+
+// VoiceInfo is one approved voice revision (ADR-0101). It is the row the import
+// writes through CreateVoiceRevision with its original id: every field the
+// registry name, the speech cache key and the consent gate derive from is
+// carried, and nothing the Base instance would have to believe the manifest
+// about is carried — the registration itself is rebuilt by the importing
+// appliance's Reconcile pass from this row and the reference blob (the pack's
+// blobs/ entry, keyed by ReferenceSHA256).
+type VoiceInfo struct {
+	ID        string `json:"id"`
+	Character string `json:"character"`
+	Revision  int    `json:"revision"`
+	State     string `json:"state"`
+	// ReferenceSHA256 is the content address of the approved reference WAV in
+	// the asset store. The pointer travels by default; the bytes travel only
+	// inside an acknowledged .gnpack. A reference the asset store does not hold
+	// on import is reported, not written (ADR-0101).
+	ReferenceSHA256   string  `json:"reference_sha256"`
+	RefTranscript     string  `json:"ref_transcript"`
+	ModelID           string  `json:"model_id"`
+	EmbeddingMode     string  `json:"embedding_mode"`
+	Language          string  `json:"language"`
+	Fingerprint       string  `json:"fingerprint"`
+	Gain              float64 `json:"gain"`
+	DesignInstruction string  `json:"design_instruction"`
+	// ConsentProvenance is docs/spec/14's consent record, frozen at approval.
+	// It is required on the wire: a voice that arrived without the consent that
+	// licensed it must not become importable speech material.
+	ConsentProvenance string  `json:"consent_provenance"`
+	ApprovedBy        string  `json:"approved_by"`
+	ApprovedAt        *string `json:"approved_at"`
 }
 
 //
@@ -364,6 +413,39 @@ func (m Manifest) Validate() error {
 			return err
 		}
 	}
+	// Voices are checked in the first pass because their id is a content
+	// identity the digest carries literally (canonical.go): a document with
+	// two rows claiming one voice id is malformed before any re-import could
+	// have made it worse.
+	for _, v := range m.Voices {
+		if err := check("voice", v.ID); err != nil {
+			return err
+		}
+		if v.Revision < 1 {
+			return fmt.Errorf("%w: voice %s has revision %d; revisions start at 1", ErrInvalid, v.ID, v.Revision)
+		}
+		if v.State != store.VoiceStateApproved {
+			return fmt.Errorf("%w: voice %s has state %q; only approved revisions travel (the reference they freeze is the only thing a re-import could register)", ErrInvalid, v.ID, v.State)
+		}
+		if !validHex64(v.ReferenceSHA256) {
+			return fmt.Errorf("%w: voice %s reference %q is not 64 lowercase hex characters", ErrInvalid, v.ID, v.ReferenceSHA256)
+		}
+		if v.Fingerprint == "" {
+			return fmt.Errorf("%w: voice %s has no fingerprint; the speech cache keys on it, so a row without one would be unusable on the other end", ErrInvalid, v.ID)
+		}
+		if strings.TrimSpace(v.ConsentProvenance) == "" {
+			return fmt.Errorf("%w: voice %s has no consent record; docs/spec/14's gate is on approval, and a voice that arrived without the consent that licensed it must not become importable speech material", ErrInvalid, v.ID)
+		}
+		if v.Gain < 0 || v.Gain > 10 {
+			return fmt.Errorf("%w: voice %s gain %v is outside 0..10, the store's column bound", ErrInvalid, v.ID, v.Gain)
+		}
+		// The store's CHECK constraint admits exactly these two; a third
+		// spelling would be a schema violation the import would only surface
+		// as a CHECK error after the transaction opened, so it is named here.
+		if v.EmbeddingMode != "" && v.EmbeddingMode != "registered" && v.EmbeddingMode != "inline" {
+			return fmt.Errorf("%w: voice %s has embedding mode %q; the store admits \"registered\" or \"inline\"", ErrInvalid, v.ID, v.EmbeddingMode)
+		}
+	}
 
 	// Second pass: every optional foreign key must name a row of the right kind.
 	want := func(from, what, id, expect string) error {
@@ -451,8 +533,27 @@ func (m Manifest) Validate() error {
 			return fmt.Errorf("%w: assertion %s method %q", ErrInvalid, a.ID, string(a.Method))
 		}
 	}
+	for _, v := range m.Voices {
+		// The narrator is the one voice whose speaker is not a roster row: its
+		// key is the runtime's constant, not an id this manifest defines. A
+		// voice naming any other undefined character is the same dangling
+		// reference a message's speaker_id would be.
+		if v.Character == narratorKey {
+			continue
+		}
+		if err := want("voice "+v.ID, "character", v.Character, "character"); err != nil {
+			return err
+		}
+	}
 	return nil
 }
+
+// narratorKey is the voice_profiles.character of the narrator voice: the
+// runtime's constant speaker for unattributed lines (internal/runtime), not a
+// characters row. A manifest that names it is saying "the fallback voice
+// travels"; a manifest that names an id this document does not define has a
+// voice pointing at nobody.
+const narratorKey = "narrator"
 
 // validHex64 reports whether s is exactly 64 lowercase hex characters, the shape
 // every content address in this schema has. games.requireHash enforces the same

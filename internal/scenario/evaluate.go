@@ -37,8 +37,32 @@ type Result struct {
 // takes seconds of wall time but its timestamps are the recording's, which is
 // exactly what makes the delay assertion meaningful.
 func (s *Scenario) Evaluate(evs []events.Envelope, stats pipeline.Stats, truth []Truth) Report {
+	return s.evaluate(evs, stats, truth, "")
+}
+
+// EvaluateWithOCREngine is Evaluate for a harness that declares the OCR
+// engine it ran (the M7 truth stub, or the real engine of an M2 replay). An
+// assertion scoped with engines: to other engines is reported not-applicable
+// — a passing row that says why it was not graded, never a silent skip and
+// never a failure for a property the run's engine does not have. The
+// property of one engine (the eng model's blindness to a non-Latin page) is
+// not a defect of a run whose scripted engine answers from the clip's truth,
+// and grading it there would turn the harness into a lie about OCR quality.
+func (s *Scenario) EvaluateWithOCREngine(ocrEngine string, evs []events.Envelope, stats pipeline.Stats, truth []Truth) Report {
+	return s.evaluate(evs, stats, truth, ocrEngine)
+}
+
+func (s *Scenario) evaluate(evs []events.Envelope, stats pipeline.Stats, truth []Truth, ocrEngine string) Report {
 	rep := Report{Results: make([]Result, 0, len(s.Assertions)+1)}
 	for _, a := range s.Assertions {
+		if len(a.Engines) > 0 && ocrEngine != "" && !sliceContains(a.Engines, ocrEngine) {
+			rep.Results = append(rep.Results, Result{
+				Type:   a.Type,
+				Passed: true,
+				Detail: fmt.Sprintf("not applicable: scoped to OCR engine(s) %s, run used OCR engine %q", strings.Join(a.Engines, ", "), ocrEngine),
+			})
+			continue
+		}
 		passed, detail := evaluateAssertion(a, evs, stats, truth)
 		rep.Results = append(rep.Results, Result{Type: a.Type, Passed: passed, Detail: detail})
 	}
@@ -55,6 +79,17 @@ func (s *Scenario) Evaluate(evs []events.Envelope, stats pipeline.Stats, truth [
 	return rep
 }
 
+// sliceContains reports whether s contains v. The engines scope is a closed,
+// two-value list, so a linear scan is the whole implementation.
+func sliceContains(s []string, v string) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
 // evaluateAssertion dispatches one assertion. Load has already validated the
 // shape, so an unknown type here is a bug, not author input.
 func evaluateAssertion(a Assertion, evs []events.Envelope, stats pipeline.Stats, truth []Truth) (bool, string) {
@@ -63,6 +98,8 @@ func evaluateAssertion(a Assertion, evs []events.Envelope, stats pipeline.Stats,
 		return evalMessageDetected(a, evs, truth)
 	case "message_committed_count":
 		return evalCommittedCount(a, evs)
+	case "committed_kind":
+		return evalCommittedKind(a, evs)
 	case "speech_cancelled":
 		return evalSpeechCancelled(a, evs)
 	case "no_duplicate_commit":
@@ -111,6 +148,15 @@ type committedPayload struct {
 	Generation           int64               `json:"generation"`
 	DialogueOccurrenceID string              `json:"dialogue_occurrence_id"`
 	Transitions          []transitionPayload `json:"transitions"`
+	// TextKind is the corpus's content class for the committed message
+	// (dialogue, sign, item, …): "" when the corpus could not name it. The
+	// narrated-class veto's own input, and the developer UI's class display.
+	TextKind string `json:"text_kind"`
+	// SpeechEligible is the session's commitment policy's verdict on the
+	// commit (the narrated-class veto, the abstain, the decision's
+	// safe_to_speak veto). The harness's speak gate and the runtime's speech
+	// layer both read this flag.
+	SpeechEligible bool `json:"speech_eligible"`
 }
 
 // decodeCommitted reads one message.committed payload.
@@ -206,6 +252,36 @@ func evalCommittedCount(a Assertion, evs []events.Envelope) (bool, string) {
 		return false, fmt.Sprintf("message_id %q committed %d time(s), want %d", a.MessageID, n, a.Count)
 	}
 	return true, fmt.Sprintf("message_id %q committed %d time(s), as expected", a.MessageID, n)
+}
+
+// evalCommittedKind: the committed message's content class (docs/spec/05
+// "Message class and speech rules") is the one the scenario names. The class
+// is the corpus's stored text_kind for the committed message, read off the
+// message.committed payload's text_kind field (the session's commitKind), so
+// a sign that commits as dialogue — the matcher's region hint and the corpus
+// class disagreeing — fails here rather than being spoken with the wrong
+// voice and discovered later by a human.
+func evalCommittedKind(a Assertion, evs []events.Envelope) (bool, string) {
+	var kinds []string
+	for _, e := range evs {
+		if e.Name != events.MessageCommitted {
+			continue
+		}
+		p, ok := decodeCommitted(e)
+		if !ok || p.MessageID != a.MessageID {
+			continue
+		}
+		kinds = append(kinds, p.TextKind)
+	}
+	if len(kinds) == 0 {
+		return false, fmt.Sprintf("no message.committed for message_id %q in %d events", a.MessageID, len(evs))
+	}
+	for _, k := range kinds {
+		if k != a.Kind {
+			return false, fmt.Sprintf("message_id %q committed with text_kind %q, want %q (all commits: %v)", a.MessageID, k, a.Kind, kinds)
+		}
+	}
+	return true, fmt.Sprintf("message_id %q committed with text_kind %q (%d commit(s))", a.MessageID, a.Kind, len(kinds))
 }
 
 // speechCancelledPayload is the subset of the speech.cancelled payload the

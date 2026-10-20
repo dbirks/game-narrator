@@ -70,6 +70,45 @@ func TestEvalCommittedCount(t *testing.T) {
 	}
 }
 
+// TestEvalCommittedCountEngineScope covers the engines: scoping: a check
+// scoped to one OCR engine is graded when the run declares that engine (or
+// none), and is reported not-applicable — a passing row, never a failure —
+// when the run's engine is a different one.
+func TestEvalCommittedCountEngineScope(t *testing.T) {
+	a := Assertion{Type: "message_committed_count", MessageID: "demo-page-1", Count: 1, Engines: []string{"tesseract"}}
+	none := []events.Envelope{}
+
+	// A run that declares no engine (the bare Evaluate path) grades the check
+	// like before: zero commits fails count=1.
+	if r := sc(a).Evaluate(none, pipeline.Stats{}, clipTruth); r.Passed {
+		t.Fatalf("scoped check must still be graded when no engine is declared")
+	}
+	// A run on the scoped engine grades it: one commit passes count=1.
+	ones := []events.Envelope{commitEvent("demo-page-1", 1, 1, "occ-1")}
+	if r := sc(a).EvaluateWithOCREngine("tesseract", ones, pipeline.Stats{}, clipTruth); !r.Passed {
+		t.Fatalf("scoped check must pass under its own engine: %+v", r.Results)
+	}
+	// A run on the other engine reports it not-applicable: a passing row that
+	// says why it was not graded, never a failure for a property the run's
+	// engine does not have.
+	if r := sc(a).EvaluateWithOCREngine("truth", ones, pipeline.Stats{}, clipTruth); !r.Passed {
+		t.Fatalf("out-of-scope engine must not fail the check: %+v", r.Results)
+	} else {
+		found := false
+		for _, res := range r.Results {
+			if res.Type == "message_committed_count" && !strings.Contains(res.Detail, "not applicable") {
+				t.Fatalf("not-applicable row must say why, got %q", res.Detail)
+			}
+			if strings.Contains(res.Detail, "not applicable") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("no not-applicable row reported: %+v", r.Results)
+		}
+	}
+}
+
 func TestEvalSpeechCancelled(t *testing.T) {
 	a := Assertion{Type: "speech_cancelled", Reason: "dialogue_advanced", Count: 1}
 	matches := []events.Envelope{ev(events.SpeechCancelled, map[string]any{"reason": "dialogue_advanced", "message_id": "demo-page-1"})}

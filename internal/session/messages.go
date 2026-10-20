@@ -3,6 +3,7 @@ package session
 import (
 	"fmt"
 
+	"github.com/dbirks/game-narrator/internal/games"
 	"github.com/dbirks/game-narrator/internal/matcher"
 	"github.com/dbirks/game-narrator/internal/recognition"
 )
@@ -301,11 +302,12 @@ const (
 	ControlResume         ControlKind = "resume"
 	ControlStop           ControlKind = "stop"
 	ControlProfileChanged ControlKind = "profile_changed"
+	ControlSettings       ControlKind = "settings"
 )
 
 func (k ControlKind) valid() bool {
 	switch k {
-	case ControlPause, ControlResume, ControlStop, ControlProfileChanged:
+	case ControlPause, ControlResume, ControlStop, ControlProfileChanged, ControlSettings:
 		return true
 	default:
 		return false
@@ -324,6 +326,23 @@ type ControlMsg struct {
 	// observation look like a mismatch.
 	NewProfileRevision string
 	Reason             string
+	// Settings is the target policy for ControlSettings: the *complete* state
+	// (mode plus narrated classes), not a diff — the caller (the runtime) has
+	// already merged the request with the session's current policy, so the
+	// reducer only has to apply what it is told.
+	Settings Settings
+}
+
+// Settings is one session's operator policy, changeable mid-session
+// (docs/spec/09 "/play": narrated classes and the conservative/predictive
+// toggle). Predictive is the decision mode's half (conservative when false,
+// predictive when true — the strings live in the runtime, where the wire
+// speaks them). NarratedKinds is the set of text classes the commitment
+// policy may narrate; dialogue is the product and is force-included by the
+// reducer, never by the caller.
+type Settings struct {
+	Predictive    bool
+	NarratedKinds []games.TextKind
 }
 
 func (m ControlMsg) MsgKind() Kind     { return KindControl }
@@ -335,6 +354,16 @@ func (m ControlMsg) Validate() error {
 	}
 	if m.Kind == ControlProfileChanged && m.NewProfileRevision == "" {
 		return fmt.Errorf("profile_changed requires new_profile_revision")
+	}
+	if m.Kind == ControlSettings {
+		if len(m.Settings.NarratedKinds) == 0 {
+			return fmt.Errorf("settings requires narrated_kinds (dialogue is force-included; an empty set is a request, not a shape)")
+		}
+		for _, k := range m.Settings.NarratedKinds {
+			if !k.Valid() {
+				return fmt.Errorf("settings narrated kind %q is not a known text class", string(k))
+			}
+		}
 	}
 	return m.Header.validate(true)
 }

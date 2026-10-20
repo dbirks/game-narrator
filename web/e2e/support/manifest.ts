@@ -1,6 +1,6 @@
 /**
  * `e2e/support/manifest.ts` — builds a schema-valid `.gnprofile.json`
- * (schema 1.0) manifest out of the synthetic profile seed
+ * (schema 1.1) manifest out of the synthetic profile seed
  * (`testdata/synthetic/profiles/dialogue-advance-001.json`) and computes its
  * `manifest_digest` the way the server recomputes it
  * (`internal/profileio/canonical.go`, mirrored line for line).
@@ -98,7 +98,7 @@ interface ManifestCharacter {
 /** The full manifest document: every field present, as the Go struct renders
  *  it after normalization (that exact shape is what the digest hashes). */
 export interface ManifestDocument {
-  schema_version: "1.0";
+  schema_version: "1.1";
   profile_id: string;
   edition: {
     title: string;
@@ -121,6 +121,10 @@ export interface ManifestDocument {
     approved_at: null;
     author: string;
     preferred_voice_id: null;
+    /** ADR-0095: speaks unattributed lines through the narrator voice when a
+     *  speaker has no approved voice. Required on the wire by schema 1.1 and
+     *  excluded from the digest (the whole publication section is). */
+    narrator_fallback: boolean;
     store_digest: string;
   };
   sources: unknown[];
@@ -130,6 +134,9 @@ export interface ManifestDocument {
   messages: ManifestMessage[];
   message_edges: unknown[];
   speaker_assertions: unknown[];
+  /** ADR-0095: the approved voice revisions (schema 1.1). Empty for the
+   *  synthetic seeds — the section is in the digest's section list either way. */
+  voices: unknown[];
   manifest_digest: string;
 }
 
@@ -241,7 +248,7 @@ export function buildManifest(
   }));
 
   const doc: ManifestDocument = {
-    schema_version: "1.0",
+    schema_version: "1.1",
     profile_id: profileId,
     edition: {
       title: options.edition.title,
@@ -264,6 +271,7 @@ export function buildManifest(
       approved_at: null,
       author: "",
       preferred_voice_id: null,
+      narrator_fallback: true,
       store_digest: "",
     },
     sources: [],
@@ -273,6 +281,7 @@ export function buildManifest(
     messages,
     message_edges: edges,
     speaker_assertions: [],
+    voices: [],
     manifest_digest: "",
   };
   doc.manifest_digest = manifestDigest(doc);
@@ -291,7 +300,9 @@ const ALIAS_SECTIONS: { name: string; idKey: string; prefix: string }[] = [
   { name: "speaker_assertions", idKey: "id", prefix: "asr" },
 ];
 
-/** Every array section, in canonical (sorted) order (sectionNames). */
+/** Every array section, in canonical (sorted) order (sectionNames). Schema
+ *  1.1 adds `voices` to the digest's section list (canonical.go
+ *  sectionNames); the seeds carry none. */
 const SECTION_NAMES = [
   "characters",
   "message_edges",
@@ -300,6 +311,7 @@ const SECTION_NAMES = [
   "scenes",
   "speaker_assertions",
   "sources",
+  "voices",
 ] as const;
 
 type Any = unknown;
@@ -364,6 +376,10 @@ export function roundTripManifest(doc: ManifestDocument): ManifestDocument {
   if (p.approved_at === undefined) p.approved_at = null;
   p.author ??= "";
   if (p.preferred_voice_id === undefined) p.preferred_voice_id = null;
+  // Go decodes the wire value into a *bool; an absent key is nil, which the
+  // projection drops with the whole publication section, so the default only
+  // needs to be "present" for the round trip to be stable.
+  if (p.narrator_fallback === undefined) p.narrator_fallback = false;
   p.store_digest ??= "";
 
   for (const name of SECTION_NAMES) {

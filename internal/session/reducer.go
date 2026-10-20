@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/events"
+	"github.com/dbirks/game-narrator/internal/games"
 	"github.com/dbirks/game-narrator/internal/matcher"
 	"github.com/dbirks/game-narrator/internal/recognition"
 )
@@ -49,6 +50,12 @@ type Reducer struct {
 	// trackers and regions are only touched under applyMu.
 	regions    map[string]*region
 	trackerCfg recognition.Config
+	// kindOf names a committed message's text class (dialogue, sign, item, …)
+	// from the candidate index the session was built against; nil — a session
+	// with no corpus view — means "no class is ever known", which the class
+	// filter reads as "never veto on class": a filter that cannot name a line
+	// must not silence it.
+	kindOf func(messageID string) (games.TextKind, bool)
 	// committedKeys remembers occurrence identities that have already been
 	// committed, oldest-evicted, so a replayed or repeated observation cannot
 	// commit the same line twice even after the box has moved on.
@@ -215,6 +222,20 @@ func WithTrackerConfig(c recognition.Config) Option {
 	}
 }
 
+// WithMessageKind names a committed message's text class (dialogue, sign, item, …)
+// for the commitment policy's narrated-class filter (docs/spec/09 "narrated
+// classes"). The wiring is the candidate index's KindFor: the corpus the
+// session was built against is the only authority on a message's class, and a
+// session with no corpus view passes nil and simply never vetoes on class. It
+// is an Option rather than a Config field because it is a per-session
+// *capability* (a function over the session's own index), not a policy bound
+// the operator tunes.
+func WithMessageKind(f func(messageID string) (games.TextKind, bool)) Option {
+	return func(r *Reducer) {
+		r.kindOf = f
+	}
+}
+
 // WithEventLog retains the published envelopes for inspection. The hub is the
 // durable path; this is the in-process one a test or a dev inspector reads.
 type EventLog interface {
@@ -362,16 +383,23 @@ const maxStaleNotices = 64
 
 // State is the reducer's readable state. It is a copy.
 type State struct {
-	SessionID       string        `json:"session_id"`
-	ProfileRevision string        `json:"profile_revision"`
-	Generation      int64         `json:"generation"`
-	AppliedSeq      int64         `json:"applied_seq"`
-	Paused          bool          `json:"paused"`
-	Stopped         bool          `json:"stopped"`
-	SceneID         string        `json:"scene_id,omitempty"`
-	Recent          []string      `json:"recent_message_ids,omitempty"`
-	Regions         []RegionState `json:"regions"`
-	Stale           []StaleNotice `json:"recent_stale,omitempty"`
+	SessionID       string `json:"session_id"`
+	ProfileRevision string `json:"profile_revision"`
+	Generation      int64  `json:"generation"`
+	AppliedSeq      int64  `json:"applied_seq"`
+	Paused          bool   `json:"paused"`
+	Stopped         bool   `json:"stopped"`
+	// PredictiveMode and NarratedKinds are the session's live operator policy
+	// (docs/spec/09): the conservative/predictive half of the decision mode and
+	// the narrated classes the commitment policy applies. They move on a
+	// settings control and are read by the pipeline's ranking gate from here —
+	// the single source the policy and the evidence half agree on.
+	PredictiveMode bool             `json:"predictive_mode"`
+	NarratedKinds  []games.TextKind `json:"narrated_kinds"`
+	SceneID        string           `json:"scene_id,omitempty"`
+	Recent         []string         `json:"recent_message_ids,omitempty"`
+	Regions        []RegionState    `json:"regions"`
+	Stale          []StaleNotice    `json:"recent_stale,omitempty"`
 }
 
 // RegionState is one region's readable state, including the occurrence the
@@ -487,6 +515,8 @@ func (r *Reducer) State() State {
 	// (docs/spec/12 "determinism … under identical inputs").
 	sortRegions(out.Regions)
 	out.Stale = append([]StaleNotice(nil), r.st.Stale...)
+	out.PredictiveMode = r.cfg.PredictiveMode
+	out.NarratedKinds = append([]games.TextKind(nil), r.cfg.NarratedKinds...)
 	return out
 }
 

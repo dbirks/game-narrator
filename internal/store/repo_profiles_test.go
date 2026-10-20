@@ -611,3 +611,58 @@ func truncate(s string) string {
 	}
 	return s
 }
+
+// TestSetProfileNarratorFallback is the store half of the per-profile narrator
+// fallback (ADR-0101, issue #11): the dial defaults on (the runtime's
+// historical behaviour, migration 0015's DEFAULT 1), a write flips and
+// persists it without touching the row version (an editorial setting, not
+// content), and a revision snapshot inherits the setting it is cut from.
+func TestSetProfileNarratorFallback(t *testing.T) {
+	f := newRepoFixture(t)
+	ctx := f.ctx
+
+	// The default reads on.
+	p, v, err := f.s.GetProfile(ctx, f.profile.ID)
+	if err != nil {
+		t.Fatalf("GetProfile: %v", err)
+	}
+	if !p.NarratorFallback {
+		t.Fatalf("a fresh draft's narrator fallback = off, want the migration default on")
+	}
+
+	// Off, then back on: the flag follows the write.
+	for _, want := range []bool{false, true} {
+		if err := f.s.SetProfileNarratorFallback(ctx, f.profile.ID, want); err != nil {
+			t.Fatalf("SetProfileNarratorFallback(%v): %v", want, err)
+		}
+		p, v2, err := f.s.GetProfile(ctx, f.profile.ID)
+		if err != nil {
+			t.Fatalf("GetProfile after set: %v", err)
+		}
+		if p.NarratorFallback != want {
+			t.Fatalf("narrator fallback = %v after set(%v)", p.NarratorFallback, want)
+		}
+		if v2 != v {
+			t.Fatalf("row version moved %d -> %d: the dial is an editorial setting, not content", v, v2)
+		}
+	}
+
+	// A missing profile is ErrNotFound, the way the reads answer.
+	if err := f.s.SetProfileNarratorFallback(ctx, games.NewID(), true); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("set on a missing profile = %v, want ErrNotFound", err)
+	}
+
+	// The snapshot carries the setting it was cut from: a curator who opted
+	// this profile out of the narrator fallback does not silently get the
+	// fallback back on the next revision.
+	if err := f.s.SetProfileNarratorFallback(ctx, f.profile.ID, false); err != nil {
+		t.Fatalf("set off before snapshot: %v", err)
+	}
+	child, err := f.s.NewRevision(ctx, f.profile.ID)
+	if err != nil {
+		t.Fatalf("NewRevision: %v", err)
+	}
+	if child.NarratorFallback {
+		t.Fatalf("the snapshot's narrator fallback = on, want the parent's off inherited")
+	}
+}

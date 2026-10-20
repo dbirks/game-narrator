@@ -88,6 +88,8 @@ assertions:
 		{"unknown assertion", strings.Replace(base, "no_duplicate_commit", "message_detectd", 1), "unknown assertion type"},
 		{"missing assertion field", strings.Replace(base, "  - type: no_duplicate_commit\n", "  - type: message_detected\n    message_id: m\n", 1), "max_delay_ms is required"},
 		{"unexpected assertion field", strings.Replace(base, "  - type: no_duplicate_commit\n", "  - type: no_duplicate_commit\n    grace_ms: 5\n", 1), "unexpected field"},
+		{"engines on a type without the field", strings.Replace(base, "  - type: no_duplicate_commit\n", "  - type: message_detected\n    message_id: m\n    max_delay_ms: 5\n    engines:\n      - tesseract\n", 1), "unexpected field"},
+		{"bad engines value", strings.Replace(base, "  - type: no_duplicate_commit\n", "  - type: message_committed_count\n    message_id: m\n    count: 1\n    engines:\n      - vibes\n", 1), "engines[0] must be one of tesseract, truth"},
 		{"quoted int", strings.Replace(base, "  - type: no_duplicate_commit\n", "  - type: message_detected\n    message_id: m\n    max_delay_ms: \"1500\"\n", 1), "must be a non-negative integer"},
 		{"missing input", strings.Replace(base, "input:\n  frames_dir: d\n  timestamps: timestamps.json\n", "", 1), "input is required"},
 		{"bad inference", strings.Replace(base, "tts: none", "tts: sometimes", 1), "inference.tts must be one of"},

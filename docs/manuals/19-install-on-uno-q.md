@@ -271,6 +271,24 @@ Expected on a fresh install with no hardware attached: capture/audio rows
 `OK`, configured model roles `OK` (or the specific probe failure), no
 `FAIL` on the storage stack.
 
+**What does the device read?** Doctor reports component health; the
+one-shot OCR command answers "what would the pipeline read right now" —
+the session's own capture negotiation, crop, preprocessing, Tesseract and
+matcher over one live frame (issue #1, ADR-0085). The UVC bus is
+single-consumer, so it runs with the service stopped:
+
+```sh
+sudo systemctl stop game-narrator
+sudo sh -c 'set -a; . /etc/game-narrator/env; set +a; game-narrator ocr --device /dev/videoN --data-dir /var/lib/game-narrator'
+sudo systemctl start game-narrator
+```
+
+`--json` for the report, `--game <profile-id>` to rank reads against the
+published profile, `--save-debug DIR` for the source/crop/preprocess
+images, and `--image frame.png` re-runs the pipeline over a saved frame
+(no device needed). Manual 18's "What does the device read right now?" is
+the same check from the hardware side, with the node discovery.
+
 ## Step 7 — Open the UI from another machine
 
 The API is loopback-bound by design, so the safe way in from your laptop is
@@ -356,6 +374,62 @@ Audio **playback** needs the physical path: a USB DAC/speaker on the hub,
 the PipeWire sink the service uses (`GAME_NARRATOR_AUDIO_DEVICE` to pin
 one). Until the DAC is attached, sessions run with speech disabled and the
 report says so — that is an honest state, not a failure.
+
+### Audio over the hub's HDMI port
+
+If an AV receiver is on the hub's HDMI port (USB-C DisplayPort → ANX7625
+bridge chip → hub HDMI), a second, receiver-driven output exists: the
+PipeWire sink `Built-in Audio HDMI Digital Stereo Output`
+(`alsa_output.platform-sound.HDMI__HDMI__sink`, `hw:ArduinoImolaHPH,3`).
+Out of the box it is **silent**: PipeWire negotiates a PCM config
+(S24_LE, MMAP, 10 ms periods, tsched) the bridge does not honor, while
+`aplay -D hw:1,3` on the same PCM is audible. The working ALSA route is
+the **default** one — `SEC_MI2S_RX Audio Mixer MultiMedia4` on (numid
+207), `DISPLAY_PORT_RX Audio Mixer MultiMedia4` off (numid 135);
+**do not change the mixer routes** (the DisplayPort route is a dead end:
+no DP backend in the device tree, prepare fails with `-22`).
+
+Fix (user-level, survives reboot) — on the audio-owning user create
+`~/.config/wireplumber/wireplumber.conf.d/82-hdmi-bridge.conf` pinning
+the sink node to the aplay-equivalent config (issue #5 and
+`skills/uno-q-setup/references/audio.md`, "Audio over the hub HDMI
+(ANX7625 bridge)", have the full measurement):
+
+```ini
+monitor.alsa.rules = [
+  {
+    matches = [
+      {
+        node.name = "~alsa_output.platform-sound.HDMI.*"
+      }
+    ]
+    actions = {
+      update-props = {
+        audio.format = "S16LE"
+        audio.rate = "48000"
+        audio.channels = "2"
+        api.alsa.period-size = 6240
+        api.alsa.period-num   = 4
+        api.alsa.headroom = 0
+        api.alsa.disable-mmap = true
+        api.alsa.disable-tsched = true
+        api.alsa.disable-batch = true
+        session.suspend-timeout-seconds = 0
+      }
+    }
+  }
+]
+```
+
+then `systemctl --user restart wireplumber` (the HDMI sink stays the
+default; the no-suspend setting keeps the receiver's ELD lock alive,
+~520 ms buffer latency is the cost). Verify: while `pw-play tone.wav`
+is running, `/proc/asound/card1/pcm3p/sub0/hw_params` must read
+`RW_INTERLEAVED / S16_LE / 2ch / 48000 / period_size 6240 /
+buffer_size 24960`, state RUNNING, `hw_ptr` advancing, and `dmesg`
+shows `q6asm_dai_prepare: pcm size 99840 period 4 period_sz 6240 vs
+24960 rate 48000 ch 2`. If all of that holds, the user hears the tone
+on the receiver — ask them; it is the acceptance step.
 
 ## Step 10 — First session
 

@@ -26,7 +26,7 @@ A gate whose capabilities are not configured is never green, and
 | Gate | What it runs | Needs (env var names only) |
 | --- | --- | --- |
 | `test-unit` | `go vet` plus all unit tests with `-race` (real/live test families self-skip via `GN_GATE`, below) | — |
-| `test-ui` | frontend typecheck/lint/format/tests, embedded build, Playwright e2e | — |
+| `test-ui` | frontend typecheck/lint/format/tests, embedded build, Playwright e2e (e2e ports derive from a per-run base, `GN_E2E_PORT_BASE`, so concurrent runs in one checkout coexist — ADR-0094) | — |
 | `diagnostics` | `game-narrator doctor --dev` on a fresh build | — |
 | `release-snapshot` | GoReleaser snapshot pipeline (no publishing) | `goreleaser` on PATH; docker optional |
 | `bench` | the synthetic holdout split through the real pipeline (real Tesseract, real matcher) plus the captured-Dolphin holdout (class b) from the external fixtures and the calibration fit, each reported separately | `tesseract` and `magick` on PATH; the captured part also needs `$GAME_NARRATOR_FIXTURE_DIR` (the `windwaker-newgame` and/or `windwaker-legend-dense` fixtures) and `GAME_NARRATOR_GAME_IMAGE_PATH` — absent, it reports NOT RUN with setup steps, never a pass or a failure of the synthetic part |

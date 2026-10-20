@@ -318,6 +318,11 @@ func TestOpenAPIOperationsHaveResponsesAndIDs(t *testing.T) {
 // *state*, and a load balancer must see the same body for ready and not-ready.
 var nonProblemErrors = map[string]map[string]bool{
 	"GET /api/v1/health/ready": {"503": true},
+	// The tone that the device refused answers with its own body (the tone's
+	// constants, the sink and device it was aimed at, played=false and the
+	// failure note): a problem document would lose the evidence of where the
+	// tone went (ADR-0074).
+	"POST /api/v1/audio/test-tone": {"502": true},
 }
 
 func TestOpenAPIErrorResponsesAreProblemJSON(t *testing.T) {

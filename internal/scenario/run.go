@@ -237,7 +237,11 @@ func runScenarioCore(ctx context.Context, repoRoot string, sc *Scenario, framesD
 	if err != nil {
 		return RunResult{}, fmt.Errorf("scenario %s: read events: %v", sc.ID, err)
 	}
-	report := sc.Evaluate(evs, run.pipelineStats, run.truth)
+	// The harness grades the merged timeline declaring its own OCR engine:
+	// layer A reads through the truth stub (truthocr.go), so an assertion
+	// scoped to the real engine (engines: tesseract) is a property of a
+	// different run and is reported not-applicable, never graded here.
+	report := sc.EvaluateWithOCREngine(truthEngineName, evs, run.pipelineStats, run.truth)
 	// The implicit check against the playback half (TTS scenarios): the
 	// sink's directory carries exactly one evidence WAV per started
 	// utterance and no temporary file. It is appended like
@@ -300,6 +304,13 @@ type commitInfo struct {
 	obsSeq     int64
 	tsNS       int64
 	tsMS       int64
+	// speechEligible is the session's own verdict on the commit (its
+	// commitment policy: the narrated-class veto, the abstain, the decision's
+	// safe_to_speak veto — whatever the session decided). The harness speaks
+	// a commit only when the session said it may, the way the runtime's
+	// speech layer reads the same flag: a commit the session marked not
+	// eligible is silence with a reason, not a guess.
+	speechEligible bool
 }
 
 // run is one scenario execution: its resources, its two layers and the
@@ -314,6 +325,17 @@ type run struct {
 	idx       *matcher.Index
 	region    string
 	voice     string
+	// narratedKinds is the scenario's narrated-class setting (docs/spec/09
+	// "/play"): the operator's election both session layers run with. The
+	// pipeline's commitment policy and the sidecar's veto agree on which text
+	// classes the session speaks, so a sign committed in a dialogue-alone
+	// session is silent in the timeline exactly as it would be live.
+	narratedKinds []games.TextKind
+	// kindHint is the primary region's text-kind hint (its on-screen role's
+	// class, the runner's fallback when the role names none): the sidecar's
+	// local retrieval scores the text-kind component with the same per-region
+	// value the pipeline's rank worker uses, so the two layers rank alike.
+	kindHint string
 
 	injector *faultInjector
 	// fault entry indices (-1 when the scenario carries no such fault)
@@ -356,25 +378,56 @@ type run struct {
 	decWG    sync.WaitGroup
 }
 
+// scenarioNarratedKinds renders the scenario's narrated classes as the
+// session stores them: the YAML's names (already validated by Load against
+// the content-class vocabulary) as games.TextKind. An empty list is the
+// documented default — dialogue alone — which the session's own normalizer
+// applies, so the harness never hardcodes the default and drifts from it.
+func scenarioNarratedKinds(sc *Scenario) []games.TextKind {
+	if len(sc.NarratedKinds) == 0 {
+		return nil
+	}
+	out := make([]games.TextKind, 0, len(sc.NarratedKinds))
+	for _, k := range sc.NarratedKinds {
+		out = append(out, games.TextKind(k))
+	}
+	return out
+}
+
+// regionKindHint is the primary region's text-kind hint: its on-screen role's
+// class when the role names one (sign → sign, item → item), the runner's
+// dialogue fallback otherwise — the same rule the pipeline's rank worker
+// applies (games.RegionType.TextKindHint, docs/spec/04 "Visual profiles"), so
+// the sidecar's local retrieval and the pipeline's retrieval score the
+// text-kind component alike.
+func regionKindHint(profile *Profile) string {
+	if k, ok := games.RegionType(profile.Regions[0].Type).TextKindHint(); ok {
+		return string(k)
+	}
+	return "dialogue"
+}
+
 func newRun(sc *Scenario, repoRoot, framesDir string, profile *Profile, truth []Truth, idx *matcher.Index) *run {
 	return &run{
-		sc:        sc,
-		repoRoot:  repoRoot,
-		framesDir: framesDir,
-		profile:   profile,
-		truth:     truth,
-		idx:       idx,
-		region:    profile.Regions[0].ID,
-		voice:     sc.Inference.Voice,
-		idxDrop:   -1,
-		idxDown:   -1,
-		idxDelay:  -1,
-		idxVoice:  -1,
-		idxDup:    -1,
-		spoken:    map[string]bool{},
-		started:   map[string]int64{},
-		degraded:  map[string]bool{},
-		audio:     map[string][]byte{},
+		sc:            sc,
+		repoRoot:      repoRoot,
+		framesDir:     framesDir,
+		profile:       profile,
+		truth:         truth,
+		idx:           idx,
+		region:        profile.Regions[0].ID,
+		voice:         sc.Inference.Voice,
+		narratedKinds: scenarioNarratedKinds(sc),
+		kindHint:      regionKindHint(profile),
+		idxDrop:       -1,
+		idxDown:       -1,
+		idxDelay:      -1,
+		idxVoice:      -1,
+		idxDup:        -1,
+		spoken:        map[string]bool{},
+		started:       map[string]int64{},
+		degraded:      map[string]bool{},
+		audio:         map[string][]byte{},
 	}
 }
 
@@ -527,7 +580,13 @@ func (r *run) run(ctx context.Context) error {
 		Preprocess:      vision.DefaultSteps(),
 		Trace:           true,
 		Mode:            pipeline.ModeReplay,
-		Tracker:         recognition.Config{VoteWindow: 3, StableWindow: 100 * time.Millisecond},
+		// The narrated-class setting the scenario declares (docs/spec/09
+		// "/play"): the pipeline's commitment policy applies the veto, so a
+		// sign or item that commits in a session that did not elect to hear
+		// its class is speech-ineligible in the pipeline's own commit events
+		// — the record of commitment the report grades.
+		Reducer: session.Config{NarratedKinds: r.narratedKinds},
+		Tracker: recognition.Config{VoteWindow: 3, StableWindow: 100 * time.Millisecond},
 	}
 	runner, err := pipeline.New(cfg)
 	if err != nil {
@@ -536,8 +595,17 @@ func (r *run) run(ctx context.Context) error {
 	r.runner = runner
 
 	// --- layer B: the provider sidecar -------------------------------------
+	// The sidecar's commitment policy runs the scenario's narrated classes
+	// (the same set the pipeline layer ran) and names a committed message's
+	// content class off the corpus (the matcher index's KindFor, the wiring
+	// the pipeline's runner uses): with both, the narrated-class veto is live
+	// in the sidecar's commits too, and a sign that the session did not elect
+	// to hear carries speech_eligible false — which the harness's speak gate
+	// reads, the way the runtime's speech layer reads the same flag.
 	pub := &sidecarPub{forward: speechEventNames(), hub: r.hub}
 	sess, err := session.New(sessionID, profileRevision, pub,
+		session.WithConfig(session.Config{NarratedKinds: r.narratedKinds}),
+		session.WithMessageKind(r.idx.KindFor),
 		session.WithTrackerConfig(recognition.Config{VoteWindow: 3, StableWindow: 100 * time.Millisecond}))
 	if err != nil {
 		return fmt.Errorf("session.New (sidecar): %v", err)
@@ -697,7 +765,7 @@ func (r *run) runSidecar(ctx context.Context) error {
 		}
 		lastKey = rs.NormalizedKey
 		obsSeq := rs.ObservationSeq
-		rank := r.idx.Rank(matcher.Observation{Text: rs.RawText, OCRConf: rs.Confidence, TextKindHint: "dialogue"}, matcher.RankOptions{})
+		rank := r.idx.Rank(matcher.Observation{Text: rs.RawText, OCRConf: rs.Confidence, TextKindHint: r.kindHint}, matcher.RankOptions{})
 		res, err = r.session.Apply(ctx, session.RankingMsg{
 			Header:         r.msgHeader(r.session.Generation()),
 			RegionID:       r.region,
@@ -754,14 +822,15 @@ func (r *run) parseCommit(e events.Envelope, obsSeq int64) (commitInfo, bool) {
 		return commitInfo{}, false
 	}
 	return commitInfo{
-		messageID:  p.MessageID,
-		text:       p.Text,
-		occurrence: p.DialogueOccurrenceID,
-		generation: p.Generation,
-		region:     p.RegionID,
-		obsSeq:     obsSeq,
-		tsNS:       tsNS,
-		tsMS:       tsNS / 1e6,
+		messageID:      p.MessageID,
+		text:           p.Text,
+		occurrence:     p.DialogueOccurrenceID,
+		generation:     p.Generation,
+		region:         p.RegionID,
+		obsSeq:         obsSeq,
+		tsNS:           tsNS,
+		tsMS:           tsNS / 1e6,
+		speechEligible: p.SpeechEligible,
 	}, true
 }
 
@@ -776,8 +845,14 @@ func (r *run) handleCommit(ctx context.Context, c commitInfo) {
 	r.advanceFence(c.generation)
 	if r.sc.Inference.Decision == InferenceNone {
 		// Local-chain-only mode: the matcher's commitment is the commitment,
-		// and the voice is requested without a decision gate (the M2 shape).
-		r.speak(ctx, c)
+		// and the voice is requested without a decision gate (the M2 shape) —
+		// unless the session's commitment policy vetoed the utterance (the
+		// line's class is not one the session elected to hear): a commit that
+		// is not speech-eligible stays silent here, the way the runtime's
+		// speech layer reads the same flag.
+		if c.speechEligible {
+			r.speak(ctx, c)
+		}
 		return
 	}
 
@@ -828,7 +903,10 @@ func (r *run) handleCommit(ctx context.Context, c commitInfo) {
 	r.setDegraded(ctx, RoleDecision, false, "recovered")
 
 	choice := dec.Answers[questionLineID].Choice
-	eligible := choice != choiceUnknown
+	// The model may confirm a line, but the session's own verdict stands over
+	// it: a commit the commitment policy marked not eligible (the narrated-
+	// class veto, an abstain) is not spoken no matter what the model said.
+	eligible := choice != choiceUnknown && c.speechEligible
 	msgID := c.messageID
 	if choice == choiceUnknown {
 		msgID = session.UnknownMessage

@@ -1,0 +1,16 @@
+# SYNTHETIC FIXTURE — not a recorded capture from any real card.
+# Authored 2026-10-19 from the documented format set of the Macrosilicon
+# MS2109-class USB 2 capture card (uvcvideo, MJPG only: the USB 2 link cannot
+# carry raw YUYV at 720p and above, so this class exposes compressed MJPG).
+# Shape is stock v4l2-ctl --list-formats-ext output so it parses through
+# devices.ParseFormatsExt unchanged.
+ioctl: VIDIOC_ENUM_FMT
+	Type: Video Capture
+
+	[0]: 'MJPG' (Motion-JPEG, compressed)
+		Size: Discrete 640x480
+			Interval: Stepwise 0.033s - 0.500s [2.000 - 30.000 fps]
+		Size: Discrete 1280x720
+			Interval: Stepwise 0.033s - 0.500s [2.000 - 30.000 fps]
+		Size: Discrete 1920x1080
+			Interval: Stepwise 0.067s - 0.500s [2.000 - 15.000 fps]

@@ -21,6 +21,8 @@ const devTestsPath = "/api/v1/dev/tests" as const;
 const runPath = "/api/v1/dev/tests/scenarios/{rest...}" as const;
 const runStatusPath = "/api/v1/dev/tests/runs/{job_id}" as const;
 const reportPath = "/api/v1/dev/tests/reports/{sha256}" as const;
+const restorePath = "/api/v1/admin/restore" as const;
+const updatesRefreshPath = "/api/v1/settings/updates/refresh" as const;
 
 export function fetchSettings(signal?: AbortSignal): Promise<Settings> {
   return api.get(settingsPath, { signal }) as Promise<Settings>;
@@ -120,3 +122,57 @@ export async function downloadBackup(): Promise<void> {
 
 // The re-exports keep the pages importing everything from one module.
 export type { paths };
+
+// ── backup/restore pair (ADR-0090) ──────────────────────────────────────────
+
+export type RestoreScheduled = components["schemas"]["RestoreScheduled"];
+export type RestoreStatus = components["schemas"]["RestoreStatus"];
+
+/** The post-restart restore status: the settings page's banner reads this. */
+export function fetchRestoreStatus(signal?: AbortSignal): Promise<RestoreStatus> {
+  return api.get(restorePath, { signal }) as Promise<RestoreStatus>;
+}
+
+/**
+ * Upload a backup and schedule the restore (ADR-0090). Like `downloadBackup`,
+ * this is one of the module's non-JSON client paths: the request is a
+ * multipart file part (the client's JSON helper cannot build one) and the
+ * answer is a 202 that precedes the appliance's restart — after which this
+ * page is unreachable until the replacement's boot applies the plan.
+ */
+export async function uploadRestore(backup: File): Promise<RestoreScheduled> {
+  const token = api.csrfTokenValue() ?? csrfTokenFromCookie();
+  const form = new FormData();
+  form.append("backup", backup);
+  const response = await fetch(restorePath, {
+    method: "POST",
+    credentials: "same-origin",
+    body: form,
+    headers: token ? { [CSRF_HEADER]: token } : {},
+  });
+  if (!response.ok) {
+    let detail = `the restore answered HTTP ${response.status}`;
+    try {
+      const problem = (await response.json()) as { detail?: string };
+      if (problem.detail) detail = problem.detail;
+    } catch {
+      // the body is not a problem JSON; the status line is the evidence
+    }
+    throw new ApiError({
+      status: response.status,
+      code: "http-" + response.status,
+      title: "Restore failed",
+      detail,
+    });
+  }
+  return (await response.json()) as RestoreScheduled;
+}
+
+/** The manual re-check of the update notification (ADR-0088). */
+export function refreshUpdates(
+  signal?: AbortSignal,
+): Promise<components["schemas"]["SettingsUpdate"]> {
+  return api.post(updatesRefreshPath, { signal }) as Promise<
+    components["schemas"]["SettingsUpdate"]
+  >;
+}

@@ -68,7 +68,10 @@ type StageLatency struct {
 
 // BottleneckSummary is one run's per-stage latency summary: every measured
 // stage with its p50/p95/max and its share of the end-to-end latency, plus
-// the name of the slowest stage.
+// the name of the slowest stage. The audio output fields are present only
+// when the caller attached them (WithAudio): a bench or soak report that has
+// no audio counters omits them rather than printing zero-rows that read as
+// "measured and empty".
 type BottleneckSummary struct {
 	// Stages is one row per measured stage, in pipeline order (the
 	// end-to-end stage last).
@@ -81,6 +84,23 @@ type BottleneckSummary struct {
 	// instead (the whole run is one stage then). "" when no stage has
 	// samples. Ties resolve to the earlier stage in pipeline order.
 	SlowestStage string `json:"slowest_stage"`
+	// AudioUnderruns and AudioOutputLatency are the run's audio output
+	// counters (ADR-0074, docs/spec/13 "playback underruns"): the started
+	// playbacks that ended in a sink failure, and the sink-accepted →
+	// device-first-sample latency table. Attached with WithAudio; omitted
+	// (zero values) when the caller has no audio counters to report.
+	AudioUnderruns     uint64                  `json:"audio_underruns,omitempty"`
+	AudioOutputLatency pipeline.LatencySummary `json:"audio_output_latency,omitempty"`
+}
+
+// WithAudio attaches the run's audio output counters to the summary
+// (ADR-0074): the underrun count and the output-latency table. The stage
+// rows are untouched — audio is the device's half of the pipeline, not a
+// stage the capture→commit chain measures.
+func (s BottleneckSummary) WithAudio(underruns uint64, outLatency pipeline.LatencySummary) BottleneckSummary {
+	s.AudioUnderruns = underruns
+	s.AudioOutputLatency = outLatency
+	return s
 }
 
 // Bottlenecks computes the summary from one run's own stage stats — the

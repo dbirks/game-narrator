@@ -76,6 +76,7 @@ var annotatedKeywords = map[string]string{
 	"uniqueItems":           "enforced by the uniqueness of the Go map/insert path that builds the value",
 	"contentEncoding":       "binary payloads (an upload part, a .gnpack) are not JSON and are never validated here",
 	"unevaluatedProperties": "asserted true wherever a schema documents an open tail; an absent member is the constraint, so no check is owed",
+	"anyOf":                 "used only for nullable members: the writer emits either the referenced object or JSON null (a nil Go pointer), never a partial object, so the branch the writer omits cannot appear on the wire",
 }
 
 // schemaValidator validates decoded JSON against schemas taken from one OpenAPI

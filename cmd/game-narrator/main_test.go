@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dbirks/game-narrator/internal/assistant"
 	"github.com/dbirks/game-narrator/internal/auth"
 	"github.com/dbirks/game-narrator/internal/bootstrap"
 	"github.com/dbirks/game-narrator/internal/games"
@@ -37,7 +38,7 @@ import (
 // 1, success is 0 (AGENTS.md CLI targets).
 
 func TestRunUnknownCommandExitsTwo(t *testing.T) {
-	code, err := run([]string{"bogus-command"}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	code, err := run([]string{"bogus-command"}, slog.New(slog.NewJSONHandler(io.Discard, nil)), nil)
 	if code != 2 {
 		t.Fatalf("exit code = %d, want 2 (err %v)", code, err)
 	}
@@ -47,7 +48,7 @@ func TestRunUnknownCommandExitsTwo(t *testing.T) {
 }
 
 func TestRunNoArgsExitsTwo(t *testing.T) {
-	code, _ := run(nil, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	code, _ := run(nil, slog.New(slog.NewJSONHandler(io.Discard, nil)), nil)
 	if code != 2 {
 		t.Fatalf("exit code = %d, want 2", code)
 	}
@@ -55,7 +56,7 @@ func TestRunNoArgsExitsTwo(t *testing.T) {
 
 func TestRunServeRejectsBadListenAddress(t *testing.T) {
 	code, err := run([]string{"serve", "--listen", "not-an-address"},
-		slog.New(slog.NewJSONHandler(io.Discard, nil)))
+		slog.New(slog.NewJSONHandler(io.Discard, nil)), nil)
 	if code != 2 {
 		t.Fatalf("exit code = %d, want 2 (err %v)", code, err)
 	}
@@ -65,7 +66,7 @@ func TestRunServeRejectsBadListenAddress(t *testing.T) {
 }
 
 func TestRunServeRejectsUnknownFlag(t *testing.T) {
-	code, _ := run([]string{"serve", "--nope"}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	code, _ := run([]string{"serve", "--nope"}, slog.New(slog.NewJSONHandler(io.Discard, nil)), nil)
 	if code != 2 {
 		t.Fatalf("exit code = %d, want 2", code)
 	}
@@ -81,7 +82,7 @@ func TestRunMigrateEndToEnd(t *testing.T) {
 	dbPath := store.DBPath(dataDir)
 
 	first := captureStdout(t, func() int {
-		code, err := run([]string{"migrate", "--data-dir", dataDir}, log)
+		code, err := run([]string{"migrate", "--data-dir", dataDir}, log, nil)
 		if err != nil {
 			t.Fatalf("migrate: %v", err)
 		}
@@ -118,7 +119,7 @@ func TestRunMigrateEndToEnd(t *testing.T) {
 	st.Close()
 
 	second := captureStdout(t, func() int {
-		code, err := run([]string{"migrate", "--data-dir", dataDir}, log)
+		code, err := run([]string{"migrate", "--data-dir", dataDir}, log, nil)
 		if err != nil {
 			t.Fatalf("second migrate: %v", err)
 		}
@@ -140,7 +141,7 @@ func TestRunMigrateHonoursDataDirPrecedence(t *testing.T) {
 	t.Setenv(bootstrap.EnvDataDir, envDir)
 
 	captureStdout(t, func() int {
-		code, err := run([]string{"migrate"}, log)
+		code, err := run([]string{"migrate"}, log, nil)
 		if err != nil {
 			t.Fatalf("migrate from env: %v", err)
 		}
@@ -155,7 +156,7 @@ func TestRunMigrateHonoursDataDirPrecedence(t *testing.T) {
 
 	flagDir := filepath.Join(t.TempDir(), "from-flag")
 	captureStdout(t, func() int {
-		code, _ := run([]string{"migrate", "--data-dir", flagDir}, log)
+		code, _ := run([]string{"migrate", "--data-dir", flagDir}, log, nil)
 		return code
 	})
 	if _, err := os.Stat(store.DBPath(flagDir)); err != nil {
@@ -175,7 +176,7 @@ func TestRunMigrateUsageAndValidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if code, _ := run(tc.args, log); code != 2 {
+			if code, _ := run(tc.args, log, nil); code != 2 {
 				t.Fatalf("exit code = %d, want 2", code)
 			}
 		})
@@ -200,7 +201,7 @@ func adminTokenForTest(t *testing.T, dataDir string, log *slog.Logger, username,
 	t.Helper()
 	withStdin(t, "correct horse battery staple\n")
 	created := captureStdout(t, func() int {
-		code, err := run([]string{"admin", "create", "--username", username, "--role", role, "--data-dir", dataDir}, log)
+		code, err := run([]string{"admin", "create", "--username", username, "--role", role, "--data-dir", dataDir}, log, nil)
 		if err != nil {
 			t.Fatalf("admin create: %v", err)
 		}
@@ -210,7 +211,7 @@ func adminTokenForTest(t *testing.T, dataDir string, log *slog.Logger, username,
 		t.Fatalf("admin create exit = %d:\n%s", created.code, created.output)
 	}
 	minted := captureStdout(t, func() int {
-		code, err := run([]string{"admin", "token", "--username", username, "--name", name, "--role", role, "--data-dir", dataDir}, log)
+		code, err := run([]string{"admin", "token", "--username", username, "--name", name, "--role", role, "--data-dir", dataDir}, log, nil)
 		if err != nil {
 			t.Fatalf("admin token: %v", err)
 		}
@@ -271,7 +272,7 @@ func TestRunDoctorReportsEveryComponentAsJSON(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "narrator")
 
 	out := captureStdout(t, func() int {
-		code, err := run([]string{"doctor", "--data-dir", dataDir, "--json"}, log)
+		code, err := run([]string{"doctor", "--data-dir", dataDir, "--json"}, log, nil)
 		if err != nil {
 			t.Fatalf("doctor: %v", err)
 		}
@@ -344,7 +345,7 @@ func TestRunDoctorDevAddsEmulatorChecks(t *testing.T) {
 	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
 
 	out := captureStdout(t, func() int {
-		code, _ := run([]string{"doctor", "--data-dir", filepath.Join(t.TempDir(), "d"), "--dev", "--json"}, log)
+		code, _ := run([]string{"doctor", "--data-dir", filepath.Join(t.TempDir(), "d"), "--dev", "--json"}, log, nil)
 		return code
 	})
 	var report struct {
@@ -380,7 +381,7 @@ func TestRunDoctorExitsOneWhenAConfiguredComponentIsBroken(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() int {
-		code, err := run([]string{"doctor", "--data-dir", filepath.Join(blocker, "nested"), "--json"}, log)
+		code, err := run([]string{"doctor", "--data-dir", filepath.Join(blocker, "nested"), "--json"}, log, nil)
 		if err != nil {
 			t.Fatalf("doctor must not return an error for a failing check, only exit 1: %v", err)
 		}
@@ -399,7 +400,7 @@ func TestRunDoctorHumanOutputIsATable(t *testing.T) {
 	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
 
 	out := captureStdout(t, func() int {
-		code, _ := run([]string{"doctor", "--data-dir", filepath.Join(t.TempDir(), "d")}, log)
+		code, _ := run([]string{"doctor", "--data-dir", filepath.Join(t.TempDir(), "d")}, log, nil)
 		return code
 	})
 	for _, want := range []string{"storage.data_dir", "providers.fast_reasoning", "Totals:", "OK", "NOT CONFIGURED"} {
@@ -421,7 +422,7 @@ func TestRunDoctorUsageErrors(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if code, _ := run(tc.args, log); code != 2 {
+			if code, _ := run(tc.args, log, nil); code != 2 {
 				t.Fatalf("exit code = %d, want 2", code)
 			}
 		})
@@ -445,7 +446,12 @@ func TestStoreReadinessTracksTheLiveDatabase(t *testing.T) {
 		t.Fatalf("Migrate: %v", err)
 	}
 
-	ready := storeReadiness(st, log)
+	// The /health/ready answer is the cached integrity verdict (ADR-0097):
+	// run the startup check the way serve does, then exercise the function
+	// serve wires into the endpoint.
+	readiness := store.NewReadiness(st, store.DefaultReadinessInterval, log)
+	readiness.Check(ctx)
+	ready := storeReadiness(st, readiness, log)
 	checks, ok := ready(ctx)
 	if !ok {
 		t.Fatalf("readiness = not ready with a healthy store: %v", checks)
@@ -551,7 +557,9 @@ func TestStoreReadinessRepairsOnlyADamagedFTSIndex(t *testing.T) {
 		t.Fatalf("reopen: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	ready := storeReadiness(st, lc.log)
+	readiness := store.NewReadiness(st, store.DefaultReadinessInterval, lc.log)
+	readiness.Check(ctx)
+	ready := storeReadiness(st, readiness, lc.log)
 	checks, ok := ready(ctx)
 	if !ok {
 		t.Fatalf("readiness = not ready after a damaged FTS index: the guard should have rebuilt it: %v", checks)
@@ -573,7 +581,9 @@ func TestStoreReadinessRepairsOnlyADamagedFTSIndex(t *testing.T) {
 		t.Fatalf("reopen: %v", err)
 	}
 	t.Cleanup(func() { _ = st2.Close() })
-	ready2 := storeReadiness(st2, lc.log)
+	readiness2 := store.NewReadiness(st2, store.DefaultReadinessInterval, lc.log)
+	readiness2.Check(ctx)
+	ready2 := storeReadiness(st2, readiness2, lc.log)
 	checks, ok = ready2(ctx)
 	if ok {
 		t.Fatalf("readiness = ready over damaged content: the guard must refuse to repair it: %v", checks)
@@ -779,7 +789,7 @@ func TestServeMigratesBeforeListening(t *testing.T) {
 	addr := freeListenAddress(t)
 	serveDone := make(chan int, 1)
 	go func() {
-		code, _ := run([]string{"serve", "--listen", addr, "--data-dir", dataDir}, log)
+		code, _ := run([]string{"serve", "--listen", addr, "--data-dir", dataDir}, log, nil)
 		serveDone <- code
 	}()
 
@@ -872,14 +882,14 @@ func TestServeRunsEnqueuedJobsAndStreamsThem(t *testing.T) {
 	// The database is prepared with the *same commands an operator runs* —
 	// migrate, admin create, admin token — so this asserts the CLI and the server
 	// agree on the credential tables, not just that each works alone.
-	if code, err := run([]string{"migrate", "--data-dir", dataDir}, log); err != nil || code != 0 {
+	if code, err := run([]string{"migrate", "--data-dir", dataDir}, log, nil); err != nil || code != 0 {
 		t.Fatalf("migrate: code=%d err=%v", code, err)
 	}
 	token := adminTokenForTest(t, dataDir, log, "admin", "admin", "ci-probe")
 
 	serveDone := make(chan int, 1)
 	go func() {
-		code, err := run([]string{"serve", "--listen", addr, "--data-dir", dataDir}, log)
+		code, err := run([]string{"serve", "--listen", addr, "--data-dir", dataDir}, log, nil)
 		if err != nil {
 			t.Errorf("serve: %v", err)
 		}
@@ -1035,6 +1045,171 @@ func trimForLog(s string) string {
 	return s
 }
 
+// --- serve: boot regression for the assistant.run registration order ------
+
+// TestServeBootsWithAssistantJobKindRegistered is the boot-crash regression:
+// the full serve wiring used to register the assistant.run job kind *after*
+// the runner had already started, so every real boot died with
+// `jobs: Register(assistant.run): runner already started` before the
+// listener opened. The test boots the real wiring the way main dispatches
+// (run("serve", …) over a fresh data dir, no gateway configured) and then
+// makes two assertions the unit tests cannot:
+//   - /api/v1/health/live answers 200 (liveness opens strictly after every
+//     job kind — including assistant.run — is registered, and after
+//     RecoverOnStartup and runner.Start; a late Register is the fatal that
+//     used to end the process here), and
+//   - the assistant kind is not merely registered but live: a message posted
+//     to /api/v1/assistant/messages lands an assistant.run job the runner
+//     claims, and the registered handler executes it. With no
+//     agent_reasoning role configured the attempt ends deterministically —
+//     blocked with provider_unavailable, no network — so the job succeeds
+//     with that result. An unregistered kind would leave the job queued
+//     forever; a registered-but-never-started runner would never claim it.
+func TestServeBootsWithAssistantJobKindRegistered(t *testing.T) {
+	clearGatewayEnv(t)
+	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	dataDir := filepath.Join(t.TempDir(), "assistant-boot")
+	addr := freeListenAddress(t)
+
+	if code, err := run([]string{"migrate", "--data-dir", dataDir}, log, nil); err != nil || code != 0 {
+		t.Fatalf("migrate: code=%d err=%v", code, err)
+	}
+	token := adminTokenForTest(t, dataDir, log, "admin", "admin", "ci-assistant-boot")
+
+	serveDone := make(chan int, 1)
+	go func() {
+		code, err := run([]string{"serve", "--listen", addr, "--data-dir", dataDir}, log, nil)
+		if err != nil {
+			// A non-nil error is the boot failure this test guards against:
+			// the registration-order fatal returned one before the listener
+			// ever opened.
+			t.Errorf("serve: %v", err)
+		}
+		serveDone <- code
+	}()
+	defer func() {
+		select {
+		case code := <-serveDone:
+			// Serve already exited (a boot crash, or a fast drain): its
+			// signal handler is gone, so a SIGTERM would now kill this
+			// process — report and stop, never signal.
+			if code != 0 {
+				t.Errorf("serve exit code = %d, want 0 after a clean drain", code)
+			}
+			return
+		default:
+		}
+		syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		select {
+		case code := <-serveDone:
+			if code != 0 {
+				t.Errorf("serve exit code = %d, want 0 after a clean drain", code)
+			}
+		case <-time.After(20 * time.Second):
+			t.Error("serve did not exit after SIGTERM")
+		}
+	}()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	live := func(url string) bool {
+		deadline := time.Now().Add(60 * time.Second)
+		for time.Now().Before(deadline) {
+			resp, err := client.Get(url)
+			if err == nil {
+				body, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					return true
+				}
+				t.Logf("health/live not yet 200: %d %s", resp.StatusCode, trimForLog(string(body)))
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		return false
+	}
+	if !live("http://" + addr + "/api/v1/health/live") {
+		t.Fatal("serve never answered 200 on /api/v1/health/live (boot crash?)")
+	}
+
+	// Post an assistant message through the API: the route must be wired and
+	// the message must land an assistant.run job on the queue.
+	msg, _ := json.Marshal(map[string]any{
+		"text":    "Synthetic boot probe: report which tool you can use to find a character.",
+		"context": map[string]any{"route": "/characters"},
+	})
+	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/api/v1/assistant/messages", bytes.NewReader(msg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("POST /api/v1/assistant/messages: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("assistant message = %d, want 202: %s", resp.StatusCode, trimForLog(string(body)))
+	}
+	var created struct {
+		ThreadID string `json:"thread_id"`
+		RunID    string `json:"run_id"`
+		JobID    string `json:"job_id"`
+	}
+	if err := json.Unmarshal(body, &created); err != nil || created.JobID == "" {
+		t.Fatalf("assistant message response is not a creation with a job id: %s", trimForLog(string(body)))
+	}
+
+	// The runner must claim the job and the registered assistant.run handler
+	// must execute it to its deterministic no-model outcome: the job
+	// succeeds, and the run it recorded is blocked on provider_unavailable.
+	var (
+		state, kind string
+		result      json.RawMessage
+	)
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		jreq, err := http.NewRequest(http.MethodGet, "http://"+addr+"/api/v1/jobs/"+created.JobID, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		jreq.Header.Set("Authorization", "Bearer "+token)
+		jresp, err := client.Do(jreq)
+		if err == nil {
+			var detail struct {
+				Kind   string          `json:"kind"`
+				State  string          `json:"state"`
+				Result json.RawMessage `json:"result"`
+			}
+			if err := json.NewDecoder(jresp.Body).Decode(&detail); err == nil {
+				state, kind, result = detail.State, detail.Kind, detail.Result
+			}
+			jresp.Body.Close()
+			if state == "succeeded" || state == "failed" || state == "cancelled" {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if kind != assistant.JobKind {
+		t.Fatalf("job kind = %q, want %q", kind, assistant.JobKind)
+	}
+	if state != "succeeded" {
+		t.Fatalf("assistant job %s never succeeded, last state %q (an unregistered kind stays queued forever)", created.JobID, state)
+	}
+	var res struct {
+		State      string `json:"state"`
+		StopReason string `json:"stop_reason"`
+	}
+	if err := json.Unmarshal(result, &res); err != nil {
+		t.Fatalf("job result is not JSON: %s (%v)", trimForLog(string(result)), err)
+	}
+	if res.State != "blocked" || res.StopReason != "provider_unavailable" {
+		t.Fatalf("assistant attempt = %+v, want blocked/provider_unavailable (the deterministic no-model outcome of the registered handler)", res)
+	}
+}
+
 // --- admin: accounts and API tokens (docs/spec/08 "API version and user
 // authentication", docs/spec/14 "local-first, set admin on first run") -------
 
@@ -1047,7 +1222,7 @@ func TestAdminCreateReadsThePasswordFromStdin(t *testing.T) {
 
 	out := captureStdout(t, func() int {
 		withStdin(t, "correct horse battery staple\n")
-		code, err := run([]string{"admin", "create", "--username", "admin", "--role", "admin", "--data-dir", dataDir}, log)
+		code, err := run([]string{"admin", "create", "--username", "admin", "--role", "admin", "--data-dir", dataDir}, log, nil)
 		if err != nil {
 			t.Fatalf("admin create: %v", err)
 		}
@@ -1088,7 +1263,7 @@ func TestAdminCreateReadsThePasswordFromStdin(t *testing.T) {
 	// refused with the rule quoted.
 	dup := captureStdout(t, func() int {
 		withStdin(t, "another fine passphrase\n")
-		code, _ := run([]string{"admin", "create", "--username", "ADMIN", "--role", "viewer", "--data-dir", dataDir}, log)
+		code, _ := run([]string{"admin", "create", "--username", "ADMIN", "--role", "viewer", "--data-dir", dataDir}, log, nil)
 		return code
 	})
 	if dup.code != 1 {
@@ -1096,7 +1271,7 @@ func TestAdminCreateReadsThePasswordFromStdin(t *testing.T) {
 	}
 	weak := captureStdout(t, func() int {
 		withStdin(t, "short\n")
-		code, err := run([]string{"admin", "create", "--username", "weakling", "--data-dir", dataDir}, log)
+		code, err := run([]string{"admin", "create", "--username", "weakling", "--data-dir", dataDir}, log, nil)
 		if !errors.Is(err, errUsage) && err == nil {
 			// A policy failure is a runtime failure (1), not a usage error (2).
 			t.Errorf("weak password returned err=%v, want a non-usage error", err)
@@ -1109,7 +1284,7 @@ func TestAdminCreateReadsThePasswordFromStdin(t *testing.T) {
 	// No stdin at all is a usage error with an actionable message, not a hang.
 	nostdin := captureStdout(t, func() int {
 		withStdin(t, "")
-		code, _ := run([]string{"admin", "create", "--username", "third", "--data-dir", dataDir}, log)
+		code, _ := run([]string{"admin", "create", "--username", "third", "--data-dir", dataDir}, log, nil)
 		return code
 	})
 	if nostdin.code != 2 {
@@ -1118,7 +1293,7 @@ func TestAdminCreateReadsThePasswordFromStdin(t *testing.T) {
 	// An unknown role is usage (2), because the operator can fix the command line.
 	badrole := captureStdout(t, func() int {
 		withStdin(t, "a perfectly fine passphrase\n")
-		code, _ := run([]string{"admin", "create", "--username", "boss", "--role", "supreme", "--data-dir", dataDir}, log)
+		code, _ := run([]string{"admin", "create", "--username", "boss", "--role", "supreme", "--data-dir", dataDir}, log, nil)
 		return code
 	})
 	if badrole.code != 2 {
@@ -1140,7 +1315,7 @@ func createAccount(t *testing.T, dataDir string, log *slog.Logger, username, rol
 	t.Helper()
 	withStdin(t, password+"\n")
 	out := captureStdout(t, func() int {
-		code, err := run([]string{"admin", "create", "--username", username, "--role", role, "--data-dir", dataDir}, log)
+		code, err := run([]string{"admin", "create", "--username", username, "--role", role, "--data-dir", dataDir}, log, nil)
 		if err != nil {
 			t.Fatalf("admin create %s: %v", username, err)
 		}
@@ -1157,7 +1332,7 @@ func createAccount(t *testing.T, dataDir string, log *slog.Logger, username, rol
 func TestAdminTokenPrintsTheSecretOnce(t *testing.T) {
 	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	dataDir := filepath.Join(t.TempDir(), "admin-token")
-	if code, err := run([]string{"migrate", "--data-dir", dataDir}, log); err != nil || code != 0 {
+	if code, err := run([]string{"migrate", "--data-dir", dataDir}, log, nil); err != nil || code != 0 {
 		t.Fatalf("migrate: code=%d err=%v", code, err)
 	}
 	// Each create gets its own stdin: the password is read once per invocation,
@@ -1166,7 +1341,7 @@ func TestAdminTokenPrintsTheSecretOnce(t *testing.T) {
 	createAccount(t, dataDir, log, "reader", "viewer", "a second fine passphrase")
 
 	out := captureStdout(t, func() int {
-		code, err := run([]string{"admin", "token", "--username", "admin", "--name", "ci-harness", "--role", "operator", "--data-dir", dataDir}, log)
+		code, err := run([]string{"admin", "token", "--username", "admin", "--name", "ci-harness", "--role", "operator", "--data-dir", dataDir}, log, nil)
 		if err != nil {
 			t.Fatalf("admin token: %v", err)
 		}
@@ -1212,7 +1387,7 @@ func TestAdminTokenPrintsTheSecretOnce(t *testing.T) {
 
 	// Ceiling: a viewer may not mint an operator token.
 	tooHigh := captureStdout(t, func() int {
-		code, _ := run([]string{"admin", "token", "--username", "reader", "--name", "escalation", "--role", "admin", "--data-dir", dataDir}, log)
+		code, _ := run([]string{"admin", "token", "--username", "reader", "--name", "escalation", "--role", "admin", "--data-dir", dataDir}, log, nil)
 		return code
 	})
 	if tooHigh.code != 1 {
@@ -1224,7 +1399,7 @@ func TestAdminTokenPrintsTheSecretOnce(t *testing.T) {
 	// Omitting --role inherits the owner's role (admin here), which is what an
 	// operator typing `admin token --username admin` expects.
 	inherited := captureStdout(t, func() int {
-		code, _ := run([]string{"admin", "token", "--username", "admin", "--name", "defaulted", "--data-dir", dataDir}, log)
+		code, _ := run([]string{"admin", "token", "--username", "admin", "--name", "defaulted", "--data-dir", dataDir}, log, nil)
 		return code
 	})
 	if inherited.code != 0 {
@@ -1237,7 +1412,7 @@ func TestAdminTokenPrintsTheSecretOnce(t *testing.T) {
 	defer st2.Close()
 	// An unknown account is actionable, not a stack trace.
 	unknown := captureStdout(t, func() int {
-		code, _ := run([]string{"admin", "token", "--username", "ghost", "--name", "x", "--data-dir", dataDir}, log)
+		code, _ := run([]string{"admin", "token", "--username", "ghost", "--name", "x", "--data-dir", dataDir}, log, nil)
 		return code
 	})
 	if unknown.code != 1 {
@@ -1245,7 +1420,7 @@ func TestAdminTokenPrintsTheSecretOnce(t *testing.T) {
 	}
 	// A negative lifetime is usage.
 	neg := captureStdout(t, func() int {
-		code, _ := run([]string{"admin", "token", "--username", "admin", "--name", "x", "--expires-days", "-3", "--data-dir", dataDir}, log)
+		code, _ := run([]string{"admin", "token", "--username", "admin", "--name", "x", "--expires-days", "-3", "--data-dir", dataDir}, log, nil)
 		return code
 	})
 	if neg.code != 2 {
@@ -1256,11 +1431,11 @@ func TestAdminTokenPrintsTheSecretOnce(t *testing.T) {
 func TestAdminListNeverCarriesASecret(t *testing.T) {
 	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	dataDir := filepath.Join(t.TempDir(), "admin-list")
-	if code, _ := run([]string{"migrate", "--data-dir", dataDir}, log); code != 0 {
+	if code, _ := run([]string{"migrate", "--data-dir", dataDir}, log, nil); code != 0 {
 		t.Fatal("migrate failed")
 	}
 	before := captureStdout(t, func() int {
-		code, _ := run([]string{"admin", "list", "--data-dir", dataDir}, log)
+		code, _ := run([]string{"admin", "list", "--data-dir", dataDir}, log, nil)
 		return code
 	})
 	if before.code != 0 || !strings.Contains(before.output, "no accounts") {
@@ -1268,7 +1443,7 @@ func TestAdminListNeverCarriesASecret(t *testing.T) {
 	}
 	createAccount(t, dataDir, log, "operator1", "operator", "correct horse battery staple")
 	after := captureStdout(t, func() int {
-		code, _ := run([]string{"admin", "list", "--data-dir", dataDir}, log)
+		code, _ := run([]string{"admin", "list", "--data-dir", dataDir}, log, nil)
 		return code
 	})
 	if after.code != 0 || !strings.Contains(after.output, "operator1\toperator") {
@@ -1290,7 +1465,7 @@ func TestAdminUsageErrors(t *testing.T) {
 		"extra argument": {"admin", "create", "stray"},
 		"missing data":   {"admin", "create", "--username", "x", "--data-dir", "relative/dir"},
 	} {
-		if code, _ := run(args, log); code != 2 {
+		if code, _ := run(args, log, nil); code != 2 {
 			t.Errorf("%s: exit = %d, want 2", name, code)
 		}
 	}
@@ -1309,7 +1484,7 @@ func TestServeRequiresAuthenticationAndCompletesTheFirstRunCycle(t *testing.T) {
 
 	serveDone := make(chan int, 1)
 	go func() {
-		code, err := run([]string{"serve", "--listen", addr, "--data-dir", dataDir}, log)
+		code, err := run([]string{"serve", "--listen", addr, "--data-dir", dataDir}, log, nil)
 		if err != nil {
 			t.Errorf("serve: %v", err)
 		}
@@ -1413,14 +1588,14 @@ func TestServeCatalogAndImportOverTheWire(t *testing.T) {
 	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	dataDir := filepath.Join(t.TempDir(), "catalog-serve")
 	addr := freeListenAddress(t)
-	if code, err := run([]string{"migrate", "--data-dir", dataDir}, log); err != nil || code != 0 {
+	if code, err := run([]string{"migrate", "--data-dir", dataDir}, log, nil); err != nil || code != 0 {
 		t.Fatalf("migrate: code=%d err=%v", code, err)
 	}
 	token := adminTokenForTest(t, dataDir, log, "admin", "admin", "catalog-probe")
 
 	serveDone := make(chan int, 1)
 	go func() {
-		code, err := run([]string{"serve", "--listen", addr, "--data-dir", dataDir}, log)
+		code, err := run([]string{"serve", "--listen", addr, "--data-dir", dataDir}, log, nil)
 		if err != nil {
 			t.Errorf("serve: %v", err)
 		}
@@ -1716,7 +1891,7 @@ func TestServeWiresTheSessionRuntime(t *testing.T) {
 	// knob (GAME_NARRATOR_REPLAY_ROOTS) rather than the dev-checkout default.
 	t.Setenv("GAME_NARRATOR_REPLAY_ROOTS", clipDir)
 
-	if code, err := run([]string{"migrate", "--data-dir", dataDir}, log); err != nil || code != 0 {
+	if code, err := run([]string{"migrate", "--data-dir", dataDir}, log, nil); err != nil || code != 0 {
 		t.Fatalf("migrate: code=%d err=%v", code, err)
 	}
 	devToken := adminTokenForTest(t, dataDir, log, "dev-user", "developer", "dev-probe")
@@ -1737,7 +1912,7 @@ func TestServeWiresTheSessionRuntime(t *testing.T) {
 
 	serveDone := make(chan int, 1)
 	go func() {
-		code, err := run([]string{"serve", "--listen", addr, "--data-dir", dataDir}, log)
+		code, err := run([]string{"serve", "--listen", addr, "--data-dir", dataDir}, log, nil)
 		if err != nil {
 			t.Errorf("serve: %v", err)
 		}
@@ -1967,7 +2142,7 @@ func TestRunImportDiscUsageErrors(t *testing.T) {
 	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	// No image anywhere: a clean env, an explicit failure with exit 2.
 	t.Setenv(EnvGameImage, "")
-	code, err := run([]string{"import-disc", "--data-dir", t.TempDir()}, log)
+	code, err := run([]string{"import-disc", "--data-dir", t.TempDir()}, log, nil)
 	if code != 2 {
 		t.Fatalf("no image: exit code = %d, want 2 (err %v)", code, err)
 	}
@@ -1975,12 +2150,12 @@ func TestRunImportDiscUsageErrors(t *testing.T) {
 		t.Fatal("no image: expected a usage error")
 	}
 	// An unreadable image path is a runtime failure (exit 1), not usage.
-	code, _ = run([]string{"import-disc", "--data-dir", t.TempDir(), "--image", "/nonexistent/dump.ciso"}, log)
+	code, _ = run([]string{"import-disc", "--data-dir", t.TempDir(), "--image", "/nonexistent/dump.ciso"}, log, nil)
 	if code != 1 {
 		t.Fatalf("unreadable image: exit code = %d, want 1", code)
 	}
 	// An unknown flag is usage (exit 2).
-	code, _ = run([]string{"import-disc", "--nope"}, log)
+	code, _ = run([]string{"import-disc", "--nope"}, log, nil)
 	if code != 2 {
 		t.Fatalf("unknown flag: exit code = %d, want 2", code)
 	}
@@ -2023,7 +2198,7 @@ func TestRunImportDiscEndToEnd(t *testing.T) {
 	}
 
 	first := captureStdout(t, func() int {
-		code, err := run([]string{"import-disc", "--data-dir", dataDir, "--image", imagePath}, log)
+		code, err := run([]string{"import-disc", "--data-dir", dataDir, "--image", imagePath}, log, nil)
 		if err != nil {
 			t.Fatalf("import-disc: %v", err)
 		}
@@ -2070,7 +2245,7 @@ func TestRunImportDiscEndToEnd(t *testing.T) {
 
 	// Idempotency: a second run must report, not duplicate.
 	second := captureStdout(t, func() int {
-		code, err := run([]string{"import-disc", "--data-dir", dataDir, "--image", imagePath}, log)
+		code, err := run([]string{"import-disc", "--data-dir", dataDir, "--image", imagePath}, log, nil)
 		if err != nil {
 			t.Fatalf("second import-disc: %v", err)
 		}

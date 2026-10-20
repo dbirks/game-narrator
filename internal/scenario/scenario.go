@@ -5,6 +5,8 @@ import (
 	"os"
 	"regexp"
 	"strings"
+
+	"github.com/dbirks/game-narrator/internal/games"
 )
 
 // Origin values (docs/spec/12 "provenance"): where the frames and their labels
@@ -68,6 +70,14 @@ type Scenario struct {
 	// Catalog is the docs/test-plan/scenario-catalog.md row (e.g. "GN-T034")
 	// this scenario exercises, when the scenario was authored against a row.
 	Catalog string
+	// NarratedKinds is the operator's narrated-class setting the harness's
+	// two session layers run with (docs/spec/09 "/play": dialogue, +signs,
+	// +items). The commitment policy's narrated-class veto reads it, so a
+	// sign that commits in a session set to dialogue alone is speech-
+	// ineligible in the timeline exactly as it would be in a live session.
+	// Optional: the default is dialogue alone, the product's conservative
+	// default (session.DefaultConfig).
+	NarratedKinds []string
 }
 
 // Input names where the frames and their recording manifest live, as paths
@@ -112,6 +122,15 @@ type Assertion struct {
 	Reason     string
 	Count      int
 	Names      []string
+	// Engines scopes the assertion to the OCR engine the run used (the
+	// closed vocabulary ocrEngineNames). A harness that declares its engine
+	// via EvaluateWithOCREngine reports an out-of-scope assertion
+	// not-applicable instead of grading it: a property of one engine (the
+	// eng model's blindness to a non-Latin page) is not a property of a run
+	// whose scripted engine answers from the clip's truth. Empty (the usual
+	// case) means every engine; Evaluate without a declared engine grades
+	// every assertion, scoped or not.
+	Engines []string
 	// M7 provider-fault assertions.
 	Voice     string // no_voice_substitution: the voice every speech event must name
 	Kind      string // fault_count: the fault kind counted
@@ -119,6 +138,14 @@ type Assertion struct {
 	Recovered bool   // provider_degraded: require the recovery event too
 	Line      int
 }
+
+// ocrEngineNames is the closed vocabulary an assertion's engines: scope may
+// name — the OCR engines a scenario run is graded under. "tesseract" is the
+// real engine (the M2 replay gate, ocr.Tesseract.Name); "truth" is the M7
+// harness's scripted engine that answers every read from the clip's
+// truth.json (truthocr.go, truthEngine.Name). A scope naming anything else
+// is a load error: a promise nobody's harness can satisfy is a typo.
+var ocrEngineNames = map[string]bool{"tesseract": true, "truth": true}
 
 // knownAssertionTypes is the closed vocabulary. An unknown type is a load
 // error: a typo'd assertion must not silently pass the scenario.
@@ -136,6 +163,7 @@ var knownAssertionTypes = map[string]bool{
 	"no_voice_substitution":       true,
 	"fault_count":                 true,
 	"committed_only":              true,
+	"committed_kind":              true,
 	"provider_degraded":           true,
 }
 
@@ -144,7 +172,7 @@ var knownAssertionTypes = map[string]bool{
 // keeps; missing required ones are errors too (see parseAssertions).
 var allowedFields = map[string]map[string]bool{
 	"message_detected":            {"message_id": true, "max_delay_ms": true},
-	"message_committed_count":     {"message_id": true, "count": true},
+	"message_committed_count":     {"message_id": true, "count": true, "engines": true},
 	"speech_cancelled":            {"reason": true, "count": true},
 	"no_duplicate_commit":         {},
 	"no_stale_generation_applied": {},
@@ -156,6 +184,7 @@ var allowedFields = map[string]map[string]bool{
 	"no_voice_substitution":       {"voice": true},
 	"fault_count":                 {"kind": true, "count": true},
 	"committed_only":              {"names": true},
+	"committed_kind":              {"message_id": true, "kind": true},
 	"provider_degraded":           {"role": true, "recovered": true},
 }
 
@@ -213,6 +242,25 @@ func fromNode(root *ynode) (*Scenario, error) {
 		return nil, fmt.Errorf("line %d: origin is required and must be one of generated_synthetic, captured, dolphin, hardware (got %q)", line, origin)
 	}
 	s.Origin = origin
+	// narrated_kinds: the operator's narrated-class setting for the run
+	// (docs/spec/09 "/play"): a list of content-class names the session's
+	// commitment policy may narrate. dialogue is force-included by the
+	// session's own normalizer (it is the product), so a list that forgets it
+	// still runs with dialogue plus what it names.
+	if items, line, ok := root.listAt("narrated_kinds"); ok {
+		if len(items) == 0 {
+			return nil, fmt.Errorf("line %d: narrated_kinds must name at least one content class", line)
+		}
+		for _, item := range items {
+			if item.kind != yscalar || item.str == "" {
+				return nil, fmt.Errorf("line %d: narrated_kinds entries must be non-empty class names", item.line)
+			}
+			if _, err := games.ParseTextKind(item.str); err != nil {
+				return nil, fmt.Errorf("line %d: narrated_kinds entry %q is not a known content class (%v)", item.line, item.str, err)
+			}
+			s.NarratedKinds = append(s.NarratedKinds, item.str)
+		}
+	}
 	s.Profile, _, _ = root.scalarStr("profile")
 	if !root.hasKey("profile") || s.Profile == "" {
 		return nil, fmt.Errorf("line %d: profile is required (non-empty string)", root.vals["profile"].line)
@@ -222,6 +270,13 @@ func fromNode(root *ynode) (*Scenario, error) {
 		return nil, fmt.Errorf("line %d: mode must be %q (got %q)", line, ModeFrameReplay, mode)
 	}
 	s.Mode = mode
+
+	// The blocked flag is read early: a blocked scenario is a registration of
+	// what will be checked once unblocked, and its input reference is not yet
+	// knowable (a dolphin fixture that has not been recorded has no manifest
+	// hash to pin), so the input shape it must satisfy is the relaxed one.
+	statusVal, _, _ := root.scalarStr("status")
+	blocked := statusVal == StatusBlocked
 
 	input, line, ok := inNode(root, "input")
 	if !ok {
@@ -239,11 +294,22 @@ func fromNode(root *ynode) (*Scenario, error) {
 			return nil, fmt.Errorf("line %d: input.fixture %q is not a safe fixture id", fl, f)
 		}
 		s.Input.Fixture = f
-		m, ml, mok := input.scalarStr("manifest_sha256")
-		if !mok || !isHex64(m) {
-			return nil, fmt.Errorf("line %d: origin %q requires input.manifest_sha256 (64 hex chars, the SHA-256 of the fixture's manifest.json)", ml, OriginDolphin)
+		if blocked {
+			// The fixture does not exist yet, so its manifest has no hash to pin:
+			// the reference is completed when the recording lands and the
+			// scenario unblocks. A present value is still checked, so a stale
+			// pin cannot hide in a blocked row.
+			if m, ml, mok := input.scalarStr("manifest_sha256"); mok && !isHex64(m) {
+				return nil, fmt.Errorf("line %d: origin %q input.manifest_sha256 must be 64 hex chars when present (got %q)", ml, OriginDolphin, m)
+			}
+			s.Input.ManifestSHA256, _, _ = input.scalarStr("manifest_sha256")
+		} else {
+			m, ml, mok := input.scalarStr("manifest_sha256")
+			if !mok || !isHex64(m) {
+				return nil, fmt.Errorf("line %d: origin %q requires input.manifest_sha256 (64 hex chars, the SHA-256 of the fixture's manifest.json)", ml, OriginDolphin)
+			}
+			s.Input.ManifestSHA256 = m
 		}
-		s.Input.ManifestSHA256 = m
 		first, fl1, fok1 := input.scalarInt("first")
 		if fok1 {
 			if first < 0 {
@@ -363,7 +429,7 @@ func fromNode(root *ynode) (*Scenario, error) {
 var topLevelKeys = map[string]bool{
 	"schema_version": true, "id": true, "catalog": true, "origin": true, "profile": true,
 	"mode": true, "input": true, "inference": true, "assertions": true,
-	"faults": true, "status": true, "reason": true,
+	"faults": true, "status": true, "reason": true, "narrated_kinds": true,
 	// Carried by the spec's own example; accepted and ignored until a milestone
 	// consumes it.
 	"reports": true,

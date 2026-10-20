@@ -130,6 +130,10 @@ func (s *Service) CreateDraft(ctx context.Context, character, brief string, n in
 		ID: revID, Character: character, Revision: revision,
 		State: store.VoiceStateDraft, DesignInstruction: brief,
 		Language: s.Language, CreatedAt: now, UpdatedAt: now,
+		// A new revision plays at unity (ADR-0074): gain is the user's
+		// calibration, and a draft that would speak silent by default would
+		// read as a fault.
+		Gain: 1.0,
 	}
 	if err := s.Store.CreateVoiceRevision(ctx, rev); err != nil {
 		return store.VoiceProfile{}, fmt.Errorf("voices: create revision: %w", err)
@@ -158,12 +162,17 @@ func (s *Service) CreateAuditions(ctx context.Context, character, brief string, 
 	return got, auditions, nil
 }
 
-// CreateAuditionsOnDraft fills an existing draft revision with audition clips
-// (all the synthetic lines: the draft's count was validated at creation and
-// the lines are fixed). It is the body of the voice.auditions job, and it is
-// idempotent over a crash between AddAuditions and job completion: a draft
-// that already has clips is left untouched.
-func (s *Service) CreateAuditionsOnDraft(ctx context.Context, profileID string) ([]store.VoiceAudition, error) {
+// CreateAuditionsOnDraft fills an existing draft revision with n audition
+// clips from the fixed synthetic lines (never game text, docs/spec/03).
+// n is the requested count (1..len(SyntheticAuditionLines)): the job payload
+// carries it so a crash-restarted job reproduces the same fill. It is the
+// body of the voice.auditions job, and it is idempotent over a crash
+// between AddAuditions and job completion: a draft that already has clips
+// is left untouched.
+func (s *Service) CreateAuditionsOnDraft(ctx context.Context, profileID string, n int) ([]store.VoiceAudition, error) {
+	if n < 1 || n > len(SyntheticAuditionLines) {
+		return nil, fmt.Errorf("voices: audition count must be 1..%d, got %d", len(SyntheticAuditionLines), n)
+	}
 	rev, err := s.Store.GetVoiceRevision(ctx, profileID)
 	if err != nil {
 		return nil, fmt.Errorf("voices: load draft %s: %w", profileID, err)
@@ -178,7 +187,7 @@ func (s *Service) CreateAuditionsOnDraft(ctx context.Context, profileID string) 
 	if len(have) > 0 {
 		return have, nil
 	}
-	return s.fillDraft(ctx, rev, len(SyntheticAuditionLines))
+	return s.fillDraft(ctx, rev, n)
 }
 
 // fillDraft generates and records the audition clips for one draft revision.

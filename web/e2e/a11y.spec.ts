@@ -89,7 +89,11 @@ test("axe: every route of the ui-coverage matrix, WCAG 2.1 A/AA", async ({ page 
   test.setTimeout(600_000);
   test.skip(testInfo.project.name !== "a11y", "runs on the a11y project's fresh appliance");
   const run = serverRun("a11y");
-  const consoleErrors = trackConsoleErrors(page);
+  // 503 joins 401 on the ignore list: on this appliance the capture layer is
+  // unwired (no UVC dongle, no test seam), and the setup wizard's devices step
+  // renders that 503 as its own "no capture layer" note — the machine's
+  // answer, not a fault of the walk.
+  const consoleErrors = trackConsoleErrors(page, [401, 503]);
   const report: Record<string, RouteReport> = {};
 
   const visit = async (name: string, url: string, settle: (page: Page) => Promise<void>) => {
@@ -245,6 +249,17 @@ test("axe: every route of the ui-coverage matrix, WCAG 2.1 A/AA", async ({ page 
       name: "diagnostics (signed in)",
       url: "/diagnostics",
       settle: (page) => settled(page, "readiness"),
+    },
+    {
+      // The first-run wizard as its operator uses it (G9, ADR-0087): the
+      // wizard is admin-only and every step re-reads its own live state, so
+      // the scan sees the same honest states the setup-wizard spec asserts.
+      name: "setup (wizard)",
+      url: "/setup?step=devices",
+      settle: async (page) => {
+        await settled(page, "setup-wizard");
+        await settled(page, "setup-step-devices");
+      },
     },
   ];
   for (const stop of stops) await visit(stop.name, stop.url, stop.settle);

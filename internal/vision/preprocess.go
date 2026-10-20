@@ -40,6 +40,14 @@ type Steps struct {
 	// ship both textbox styles and docs/spec/12 lists "negative contrast" as a
 	// perception case; Tesseract reads dark-on-light far more reliably.
 	AutoInvert bool
+	// RangeNorm normalises the crop's luma range before anything else sees it
+	// (see normalizeLumaRange): a converter that hands the card studio-range
+	// (16–235) pixels in a stream the demuxer declares full-range arrives with
+	// blacks at 16 and whites at 235, and every downstream step — the invert
+	// median, Otsu, the threshold — works on a compressed histogram that reads
+	// as low contrast. The step is a no-op on a full-range picture, which is
+	// the common case (docs/spec/12 "colour range" hardening).
+	RangeNorm bool
 	// Scale is the integer enlargement, 1 for none. Values above 4 are clamped:
 	// OCR cost grows with area and docs/spec/05 caps the useful range.
 	Scale int
@@ -64,7 +72,7 @@ type Steps struct {
 // TestSyntheticFixturesOCR for the numbers. A profile overrides it; nothing here
 // overrides silently.
 func DefaultSteps() Steps {
-	return Steps{AutoInvert: true, Scale: 2, Filter: FilterNearest, Otsu: true, Median3x3: true, Pad: 8}
+	return Steps{AutoInvert: true, RangeNorm: true, Scale: 2, Filter: FilterNearest, Otsu: true, Median3x3: true, Pad: 8}
 }
 
 // Clamp bounds the recipe. Scale and Pad become positive and within the ranges
@@ -100,8 +108,8 @@ func (s Steps) Hash() string {
 	if s.Filter == FilterBilinear {
 		name = "bilinear"
 	}
-	canonical := "gn-pre-v1|" + boolByte(s.AutoInvert) + "|scale=" + itoa(s.Scale) +
-		"|" + name + "|" + boolByte(s.Otsu) + "|" + boolByte(s.Median3x3) +
+	canonical := "gn-pre-v1|" + boolByte(s.AutoInvert) + "|range=" + boolByte(s.RangeNorm) +
+		"|scale=" + itoa(s.Scale) + "|" + name + "|" + boolByte(s.Otsu) + "|" + boolByte(s.Median3x3) +
 		"|pad=" + itoa(s.Pad)
 	sum := sha256.Sum256([]byte(canonical))
 	return hex.EncodeToString(sum[:])
@@ -149,6 +157,9 @@ func Preprocess(img image.Image, s Steps) *image.Gray {
 	g := ToGray(img)
 	if g.Rect.Empty() {
 		return g
+	}
+	if s.RangeNorm {
+		normalizeLumaRange(g)
 	}
 	if s.AutoInvert && ShouldInvert(g) {
 		invert(g)
@@ -283,6 +294,80 @@ const InvertThreshold = 0.5
 // rather than reverse-engineer it from output.
 func ShouldInvert(g *image.Gray) bool { return MedianLuma(g) < InvertThreshold }
 
+// Studio luma range (BT.601 8-bit "limited"): 16..235. A picture that lives
+// only in this window has the studio offset baked in: if the capture chain
+// declared it full-range, its blacks sit at 16 and whites at 235, and OCR
+// sees a 19.5% contrast loss it cannot recover. The normalisation maps the
+// canonical studio window onto the full range (16→0, 235→255, linear inside)
+// and clips outside it.
+const (
+	studioLow  = 16
+	studioHigh = 235
+)
+
+// rangeNormLo/Hi bound the "this looks studio-range" test, in terms of the
+// first/last histogram bin carrying at least 1% of the crop's pixels. A
+// full-range picture has (nearly) something at 0 or 255 — a true black bar,
+// a white text edge — and so does not fire; a studio-range picture has
+// nothing below ~14 and nothing above ~238, and does.
+const (
+	rangeNormLo  = 14
+	rangeNormHi  = 238
+	rangeNormPct = 100 // per-cent: a bin must hold ≥ 1% of the pixels to count
+)
+
+// normalizeLumaRange stretches the crop from the studio window to the full
+// range when the crop's luma content says it is studio-range. It is a no-op
+// otherwise, on purpose: stretching a full-range picture (a dark cave scene
+// whose lowest bin is 8, a bright sky whose highest is 250) would invent
+// contrast the game never drew, and a no-op is the answer the pipeline can
+// defend. It runs in place before scaling and thresholding, so every later
+// step works on the same histogram OCR will see.
+func normalizeLumaRange(g *image.Gray) {
+	var bins [256]int
+	total := 0
+	for y := g.Rect.Min.Y; y < g.Rect.Max.Y; y++ {
+		p := rowPix(g, y)
+		for i := range p {
+			bins[p[i]]++
+			total++
+		}
+	}
+	if total == 0 {
+		return
+	}
+	lo := 0
+	for lo < 256 && bins[lo]*rangeNormPct < total {
+		lo++
+	}
+	hi := 255
+	for hi > 0 && bins[hi]*rangeNormPct < total {
+		hi--
+	}
+	if lo < rangeNormLo || hi > rangeNormHi {
+		return // full-range signature: leave the picture alone
+	}
+	// Linear map of [16,235] onto [0,255]: out = (v-16)*255/219.
+	// Built once as a table; the per-pixel pass is one table read.
+	var lut [256]uint8
+	for v := range lut {
+		m := (v - studioLow) * 255 / (studioHigh - studioLow)
+		switch {
+		case m < 0:
+		case m > 255:
+			m = 255
+		default:
+			lut[v] = uint8(m)
+		}
+	}
+	for y := g.Rect.Min.Y; y < g.Rect.Max.Y; y++ {
+		p := rowPix(g, y)
+		for i := range p {
+			p[i] = lut[p[i]]
+		}
+	}
+}
+
 // Threshold is the outcome of Otsu's method plus the two statistics that say
 // whether the split means anything.
 type Threshold struct {
@@ -412,6 +497,26 @@ func ToGray(img image.Image) *image.Gray {
 		}
 		return out
 	}
+}
+
+// DarkShare is the fraction of the luma pixels below luma. It is the pixel
+// walk behind the pipeline's textbox-presence detector (a dialogue box is a
+// translucent panel darker than the scene, docs/spec/05): the pipeline's ROI
+// stage and the one-shot reader both ask the same question of a crop, so the
+// walk lives here, where ToGray already lives, and both call it rather than
+// each carrying a copy. It walks Pix directly — a 640×480 textbox crop is
+// ~300 k pixels and At() would make that a method call each.
+func DarkShare(g *image.Gray, luma uint8) float64 {
+	if g == nil || len(g.Pix) == 0 {
+		return 0
+	}
+	dark := 0
+	for _, v := range g.Pix {
+		if v < luma {
+			dark++
+		}
+	}
+	return float64(dark) / float64(len(g.Pix))
 }
 
 // lumaOf weights 16-bit channels after un-premultiplying alpha, which is what

@@ -117,13 +117,18 @@ const UnknownMessage = "unknown"
 // reducer made on top of that evidence — matching and committing are different
 // decisions and a trace must show both.
 const (
-	ReasonCommittedExact    = "COMMITTED_EXACT"
-	ReasonCommittedGraph    = "COMMITTED_GRAPH"
-	ReasonCommittedFuzzy    = "COMMITTED_FUZZY"
-	ReasonCommittedKnown    = "COMMITTED_KNOWN"
-	ReasonCommittedAbstain  = "COMMITTED_ABSTAINED"
-	ReasonPredictivePrefix  = "PREDICTIVE_PREFIX"
-	ReasonClefDisambiguated = "CLEF_DISAMBIGUATED"
+	ReasonCommittedExact   = "COMMITTED_EXACT"
+	ReasonCommittedGraph   = "COMMITTED_GRAPH"
+	ReasonCommittedFuzzy   = "COMMITTED_FUZZY"
+	ReasonCommittedKnown   = "COMMITTED_KNOWN"
+	ReasonCommittedAbstain = "COMMITTED_ABSTAINED"
+	// ReasonCommittedNotNarrated: the line is a known message, but its class
+	// (sign, item, …) is not in this session's narrated classes — the box
+	// commits and the text machine advances, the line is just not a line the
+	// operator elected to hear (docs/spec/09 "/play": narrated classes).
+	ReasonCommittedNotNarrated = "COMMITTED_NOT_NARRATED"
+	ReasonPredictivePrefix     = "PREDICTIVE_PREFIX"
+	ReasonClefDisambiguated    = "CLEF_DISAMBIGUATED"
 )
 
 // Cancel reasons for speech.cancelled. dialogue_advanced is the one
@@ -195,6 +200,16 @@ type Config struct {
 	// decays or resets on … pause": a paused runtime should not be deciding what
 	// to say next.
 	AllowCommitWhilePaused bool
+	// NarratedKinds is the operator's narrated-class setting (docs/spec/09
+	// "/play": narrated classes — dialogue, +signs, +items): the set of text
+	// classes the commitment policy may narrate. A committed message whose
+	// class is outside the set still commits (the box advances, the text
+	// machine knows) but is marked not speech-eligible, which the speech
+	// layer reads as "no audio for this line". dialogue is always in the set
+	// — it is the product — so a caller that sends "signs only" gets
+	// "dialogue and signs", never a silent narrator. The zero value takes
+	// the default: dialogue alone.
+	NarratedKinds []games.TextKind
 }
 
 // DefaultConfig is the conservative runtime shape. InboxSize and RecentMessages
@@ -209,7 +224,29 @@ func DefaultConfig() Config {
 		MinPredictiveMargin:    0.2,
 		MaxCandidates:          8,
 		AllowCommitWhilePaused: false,
+		NarratedKinds:          []games.TextKind{games.TextDialogue},
 	}
+}
+
+// normalizeNarratedKinds is the operator's class list as the policy stores it:
+// deduped, unknown classes dropped (a class the vocabulary does not know is
+// not a veto — it is a request the policy cannot read), and dialogue force-
+// included in first position, which is the documented "dialogue is the
+// product" rule made mechanical. An empty or all-unknown input still yields
+// the dialogue default, never an empty set (an empty set would narrate
+// nothing, and that is a request no one made).
+func normalizeNarratedKinds(kinds []games.TextKind) []games.TextKind {
+	out := make([]games.TextKind, 0, len(kinds)+1)
+	seen := make(map[games.TextKind]bool, len(kinds)+1)
+	out = append(out, games.TextDialogue)
+	seen[games.TextDialogue] = true
+	for _, k := range kinds {
+		if k.Valid() && !seen[k] {
+			out = append(out, k)
+			seen[k] = true
+		}
+	}
+	return out
 }
 
 // normalize clamps c rather than rejecting it: a reducer that refused to start
@@ -253,5 +290,6 @@ func (c Config) normalize() Config {
 	if c.AdjudicateMargin > 1 {
 		c.AdjudicateMargin = 1
 	}
+	c.NarratedKinds = normalizeNarratedKinds(c.NarratedKinds)
 	return c
 }

@@ -55,5 +55,19 @@ if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
     systemctl daemon-reload || true
 fi
 
+# Bluetooth session state (ADR 0091) — the same idempotent block as
+# post_install.sh: linger for the headless user PipeWire instance and the
+# only-if-missing WirePlumber headless override.
+if command -v loginctl >/dev/null 2>&1; then
+    loginctl enable-linger game-narrator >/dev/null 2>&1 || true
+fi
+install -d -o game-narrator -g game-narrator -m 0700 /var/lib/game-narrator/.config/wireplumber/wireplumber.conf.d
+if [ ! -e /var/lib/game-narrator/.config/wireplumber/wireplumber.conf.d/80-bluez-headless.conf ]; then
+    printf 'wireplumber.profiles = { main = { monitor.bluez.seat-monitoring = disabled } }\n' \
+        > /var/lib/game-narrator/.config/wireplumber/wireplumber.conf.d/80-bluez-headless.conf
+    chown game-narrator:game-narrator /var/lib/game-narrator/.config/wireplumber/wireplumber.conf.d/80-bluez-headless.conf
+    chmod 0600 /var/lib/game-narrator/.config/wireplumber/wireplumber.conf.d/80-bluez-headless.conf
+fi
+
 echo "game-narrator: upgrade complete (service stopped by the package; start it with: systemctl start game-narrator)"
 exit 0

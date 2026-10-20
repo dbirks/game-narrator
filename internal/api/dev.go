@@ -35,7 +35,13 @@ type devEventsPage struct {
 // handleDevEvents answers GET /api/v1/dev/events with a page of persisted
 // event envelopes, filtered by session and/or name and resumed from a seq.
 // Query: session_id, name (repeatable), since_seq, limit (default 100, max
-// 1000 — the store's own bound).
+// 1000 — the store's own bound). since_seq is INCLUSIVE per the API contract
+// ("first seq to include"): the store's After is strict (seq > cursor), so
+// the route pages from since-1. Paging the strict store predicate from
+// last_seq+1 (the next_seq of the previous page) would silently skip a row
+// appended between the two page reads exactly at last_seq+1 — one lost
+// event per poll window under load (the live per-character run's stream
+// lost ~half its rows this way, including speech.ended).
 func (s *Server) handleDevEvents(w http.ResponseWriter, r *http.Request) {
 	if s.sessions == nil || s.devEvents == nil {
 		s.writeProblem(w, r, http.StatusServiceUnavailable, "dev-inspection-unavailable",
@@ -70,7 +76,7 @@ func (s *Server) handleDevEvents(w http.ResponseWriter, r *http.Request) {
 		limit = n
 	}
 
-	envelopes, err := s.devEvents.After(r.Context(), since, events.Filter{
+	envelopes, err := s.devEvents.After(r.Context(), since-1, events.Filter{
 		SessionID: sessionID,
 		Names:     names,
 	}, limit)
@@ -123,7 +129,10 @@ func (s *Server) handleDevTraces(w http.ResponseWriter, r *http.Request) {
 	scanSeq := int64(0)
 	// scanPages caps the store pages one trace lookup may consume: a trace
 	// that spans more than this of the store's history is broken, not slow,
-	// and the answer says so instead of holding the appliance.
+	// and the answer says so instead of holding the appliance. The store
+	// predicate is strict (seq > cursor), so the continuation cursor is the
+	// LAST scanned seq — +1 would skip the row appended at exactly last+1
+	// between two scan pages (the same off-by-one the events page had).
 	const scanPages = 50
 	for i := 0; i < scanPages; i++ {
 		page, err := s.devEvents.After(r.Context(), scanSeq, events.Filter{}, 1000)
@@ -140,7 +149,7 @@ func (s *Server) handleDevTraces(w http.ResponseWriter, r *http.Request) {
 		if len(page) < 1000 {
 			break // the store is exhausted; the scan is complete
 		}
-		scanSeq = page[len(page)-1].Seq + 1
+		scanSeq = page[len(page)-1].Seq
 	}
 	truncated := len(matched) > limit
 	if truncated {
@@ -148,7 +157,7 @@ func (s *Server) handleDevTraces(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, devEventsPage{
 		Events:    matched,
-		NextSeq:   scanSeq,
+		NextSeq:   scanSeq + 1, // the first seq a continuing scan would include
 		Truncated: truncated,
 	})
 }
@@ -193,7 +202,11 @@ func (s *Server) handleDevSessionBottlenecks(w http.ResponseWriter, r *http.Requ
 			"Session Not Found", fmt.Sprintf("no session with id %q exists in this process", id))
 		return
 	}
-	summary := runtime.Bottlenecks(info.Stats.Latency)
+	// The run's audio output counters ride along when present (ADR-0074):
+	// the underruns and the sink-accepted → device-first-sample latency are
+	// the device's half of the bottleneck question.
+	summary := runtime.Bottlenecks(info.Stats.Latency).WithAudio(
+		info.Stats.AudioUnderruns, info.Stats.AudioOutputLatency)
 	writeJSON(w, http.StatusOK, devBottlenecksResponse{
 		SessionID:         info.ID,
 		State:             info.State,

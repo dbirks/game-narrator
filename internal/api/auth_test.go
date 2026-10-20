@@ -46,10 +46,12 @@ var (
 )
 
 // testAuth is the fixture: a real store, an auth.Service on a controllable clock,
-// and one account plus one API token per role. Tests that need the *unclaimed*
+// and one account plus one API token per role. The store is a private copy of
+// the package's shared migrated template (fixture_test.go, issue #15) rather
+// than a per-test re-migration. Tests that need the *unclaimed*
 // appliance build their own store — see TestSetupFlowClaimsTheApplianceOnce.
 type testAuth struct {
-	t       *testing.T
+	t       testing.TB
 	st      *store.Store
 	repo    *store.AuthStore
 	svc     *auth.Service
@@ -58,17 +60,13 @@ type testAuth struct {
 	limiter *auth.Limiter
 }
 
-func newTestAuth(t *testing.T, extra ...auth.Option) *testAuth {
+func newTestAuth(t testing.TB, extra ...auth.Option) *testAuth {
 	t.Helper()
 	ctx := context.Background()
-	st, err := store.Open(ctx, store.DBPath(t.TempDir()))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	if _, err := st.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
+	// Shared migrated template (fixture_test.go, issue #15): the 16-migration
+	// run happens once per package in TestMain; this test gets the same private
+	// migrated store it always did, via a file copy instead of a re-migration.
+	st := openTemplateStore(t)
 
 	a := &testAuth{t: t, st: st, repo: store.NewAuthStore(st),
 		now: time.Date(2026, time.October, 16, 3, 4, 5, 0, time.UTC)}

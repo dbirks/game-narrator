@@ -1,0 +1,56 @@
+{
+ "schema_version": 1,
+ "id": "bench-synthetic-002",
+ "origin": "generated_synthetic",
+ "description": "Synthetic benchmark script for the structurally different second game (ADR-0079): the invented Black Water dialogue, upper-left square-cornered box, instant page reveal, one non-Latin line. No real game content.",
+ "scene": "synthetic-harbour",
+ "regions": [
+  {
+   "id": "upper-left",
+   "type": "textbox",
+   "x": 0.090625,
+   "y": 0.20208333333333334,
+   "w": 0.5578125,
+   "h": 0.11666666666666667
+  }
+ ],
+ "messages": [
+  {
+   "id": "bw-01",
+   "text": "No coin, no crossing. That is the rule and the whole of it.",
+   "speaker": "ferryman"
+  },
+  {
+   "id": "bw-02",
+   "text": "You paid. I did not say the coin was yours.",
+   "speaker": "ferryman"
+  },
+  {
+   "id": "bw-03",
+   "text": "There is a second ferry. There is always a second ferry.",
+   "speaker": "wren"
+  },
+  {
+   "id": "bw-04",
+   "text": "So the story goes. Stories are cheaper than coins.",
+   "speaker": "wren"
+  },
+  {
+   "id": "bw-05",
+   "text": "Вода помнит то, что люди прячут.",
+   "speaker": "ferryman"
+  },
+  {
+   "id": "bw-06",
+   "text": "This is not a toll. This is a habit.",
+   "speaker": "ferryman"
+  }
+ ],
+ "edges": null,
+ "layout": {
+  "box_x": 0.06,
+  "box_y": 0.16,
+  "box_w": 0.62,
+  "box_h": 0.2
+ }
+}

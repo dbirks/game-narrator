@@ -173,6 +173,11 @@ func (b *bridge) launch(ctx context.Context, spec LaunchSpec) (err error) {
 		b.stopXvfb = stopXvfb
 		b.xvfbOwned = true
 		b.st.XvfbPID = xvfbPID
+		// Record the display as soon as it is OURS, not only when the
+		// emulator starts (step 7 re-sets the same value): a launch failure
+		// between here and step 7 must still leave Stop able to clean up
+		// the Xvfb artifacts of the display it owns.
+		b.st.Display = display
 		b.mu.Unlock()
 		if err := b.waitDisplay(ctx, display); err != nil {
 			return err
@@ -629,6 +634,12 @@ func (b *bridge) Stop() {
 	if xvfbOwned && stopXvfb != nil {
 		if err := stopXvfb(); err != nil {
 			b.log.Warn("dolphin: stopping Xvfb", "display", display, "error", err)
+		} else if display != "" {
+			// A clean exit removes the lock itself; the SIGKILL escalation
+			// (and an abruptly killed run) leave it. Only run after a
+			// SUCCESSFUL stop — a failed stop means the server may still be
+			// up, and its lock stays (issue #7, our-own cleanup half).
+			removeOwnedXvfbArtifacts(display)
 		}
 	}
 	if logF != nil {

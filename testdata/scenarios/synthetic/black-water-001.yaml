@@ -1,0 +1,70 @@
+# E2E scenario for the synthetic 24-frame Black Water clip (docs/spec/17
+# "E2E scenario YAML", docs/spec/12 "Frame replay"; ADR-0078, gap audit G12).
+#
+# The second, structurally different synthetic game: upper-left
+# square-cornered box, INSTANT page reveals (no typewriter), one two-line
+# wrapped page and one non-Latin (Cyrillic) page. Every frame and sentence
+# is generated, not captured from a game (docs/spec/11 "Fixture origins");
+# the origin field carries that claim so a report can never present this as
+# real-game coverage.
+schema_version: 1
+id: synthetic/black-water-001
+origin: generated_synthetic
+profile: black-water-001
+mode: frame_replay
+input:
+  frames_dir: testdata/synthetic/replay/black-water-001
+  timestamps: timestamps.json
+inference:
+  # M2 frame replay runs the local chain (OCR, matcher, session) with no model
+  # endpoints: the synthetic Latin lines rank exactly and the Cyrillic page
+  # must abstain — neither needs a second opinion, so the stricter "none".
+  decision: none
+  tts: none
+assertions:
+  # Instant reveals: the full page is on its first frame. The commit must land
+  # within 1500 ms (capture clock, not wall clock) of that first frame.
+  - type: message_detected
+    message_id: bw-a
+    max_delay_ms: 1500
+  - type: message_detected
+    message_id: bw-b
+    max_delay_ms: 1500
+  # One commitment per page: repeated observations of a stable box must not
+  # re-commit (docs/spec/16 M2 "repeat observation doesn't create duplicate
+  # speech"), even though this clip has no typewriter evidence to lean on —
+  # box geometry + stability alone must be enough, and no more.
+  - type: message_committed_count
+    message_id: bw-a
+    count: 1
+  - type: message_committed_count
+    message_id: bw-b
+    count: 1
+  # The non-Latin page is a property of the REAL OCR engine, not of the
+  # harness: the eng model cannot read it, the pipeline must abstain and
+  # never commit a line it cannot read (docs/spec/05 "abstain, never
+  # fabricate") — a wrong commit there is a speech fabrication, not a miss.
+  # That property exists only where tesseract reads the frames (the M2
+  # real-Tesseract replay gate, ADR-0079): the M7 harness's truth stub
+  # answers every read from the clip's ground truth, reads this page exactly
+  # and commits it once — the correct behaviour for a perfect read — so the
+  # check is scoped to the tesseract engine and the stub run reports it
+  # not-applicable rather than grading an engine property it does not have.
+  - type: message_committed_count
+    message_id: bw-c
+    count: 0
+    engines:
+      - tesseract
+  # Page a's advance cancels its in-flight speech, and the page-c advance
+  # cancels page b's the same way: under tesseract the sidecar's truth-driven
+  # commit of c supplies that advance (the pipeline abstains on c), under the
+  # M7 truth stub the pipeline's own exact commit of c does. Exactly one
+  # cancellation per advance in either harness.
+  - type: speech_cancelled
+    reason: dialogue_advanced
+    count: 2
+  # A dialogue occurrence commits at most once.
+  - type: no_duplicate_commit
+  # The generation fence is absolute: a stale reply must be discarded, never
+  # applied (docs/spec/01 invariant 2).
+  - type: no_stale_generation_applied

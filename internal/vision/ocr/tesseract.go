@@ -14,16 +14,18 @@ import (
 	"time"
 )
 
-// Tesseract runs the `tesseract` binary over a pipe: the preprocessed crop goes
-// in on stdin as a PNG, the TSV hypothesis stream comes back on stdout. Nothing
-// is written to disk, so concurrent regions never contend over a temp file and no
-// frame content is left behind for retention to clean up.
-//
-// The zero value is usable and means `tesseract`, `eng`, PSM 6, default OEM, no
-// whitelist, DefaultTimeout — the docs/spec/05 recommendation for "uniform text
-// blocks". PSM 7 (single line) and a whitelist are profile settings, exposed as
-// fields rather than as a bespoke constructor because a profile stores them as
-// JSON (regions.ocr_settings).
+// Tesseract runs the `tesseract` binary over a temporary file: the
+// preprocessed crop is encoded as PNG into a 0600 file in the system temp dir,
+// the TSV hypothesis stream comes back on stdout, and the file is removed when
+// the call returns. The file — rather than a stdin pipe — is contract
+// hygiene, not a latency trick: on the board the two input paths measured the
+// same speed (ADR-0096), but a stdin pipe is an extra blocking path that a
+// kill mid-read can wedge (a dead child never closes the write end), and the
+// file matches the wrapper's <in> <out> argv shape (ADR-0012). One file per
+// call, unique names, so concurrent regions never contend over a path, and
+// the call leaves no frame content behind: the file is removed on every exit
+// path, and the 0600 mode plus the reboot-wiped /tmp of the release target
+// bound the exposure of a killed process (docs/spec/14).
 type Tesseract struct {
 	// Path is the binary; empty means "tesseract" resolved on PATH. An absolute
 	// path skips resolution, which is how a test points at a stub.
@@ -54,6 +56,10 @@ type Tesseract struct {
 	// cannot grow the heap (docs/spec/13 "backpressure and memory ceilings").
 	StdoutCap  int
 	StderrTail int
+	// TempDir is the directory the input PNG is written to; empty means
+	// os.TempDir(). Tests point it at a temp dir they own; production keeps the
+	// system default (tmpfs on the release target).
+	TempDir string
 }
 
 // Defaults for the fields above, as constants rather than magic numbers so a
@@ -84,10 +90,11 @@ func (t Tesseract) Recognize(ctx context.Context, img image.Image) (Result, erro
 		return Result{}, &Failure{Kind: ErrFailed, Engine: t.Name(), Err: errors.New("no pixels to read")}
 	}
 
-	pngBytes, err := encodePNG(img)
+	inFile, err := t.writeInput(img)
 	if err != nil {
 		return Result{}, &Failure{Kind: ErrFailed, Engine: t.Name(), Err: err}
 	}
+	defer os.Remove(inFile)
 
 	bin, err := t.binary()
 	if err != nil {
@@ -97,7 +104,7 @@ func (t Tesseract) Recognize(ctx context.Context, img image.Image) (Result, erro
 	runCtx, cancel := context.WithTimeoutCause(ctx, t.deadline(), ErrTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(runCtx, bin, t.args()...)
+	cmd := exec.CommandContext(runCtx, bin, append([]string{inFile, "stdout"}, t.args()...)...)
 	supervise(cmd)
 	limit := t.StdoutCap
 	if limit <= 0 {
@@ -111,10 +118,6 @@ func (t Tesseract) Recognize(ctx context.Context, img image.Image) (Result, erro
 	stdout.Grow(1 << 14)
 	out := &stdoutWriter{buf: &stdout, cap: uint64(limit)}
 	errW := &tailWriter{limit: tail}
-	// Stdin is a *bytes.Reader, so exec copies it on its own goroutine and closes
-	// the pipe; a PNG larger than Tesseract is willing to read yields a SIGPIPE
-	// exit code rather than a deadlock.
-	cmd.Stdin = bytes.NewReader(pngBytes)
 	cmd.Stdout = out
 	cmd.Stderr = errW
 
@@ -200,9 +203,10 @@ func (t Tesseract) binary() (string, error) {
 	return exec.LookPath(path)
 }
 
-// args builds argv. The order mirrors the documented CLI: input, output,
-// options, then the config file name — `tsv` last, because a trailing token is
-// read as a config file and `-l eng` after it would be parsed as one too.
+// args builds argv after the input and output operands. The order mirrors the
+// documented CLI: options, then the config file name — `tsv` last, because a
+// trailing token is read as a config file and `-l eng` after it would be parsed
+// as one too.
 func (t Tesseract) args() []string {
 	psm := t.PSM
 	if psm == 0 {
@@ -212,7 +216,7 @@ func (t Tesseract) args() []string {
 	if lang == "" {
 		lang = "eng"
 	}
-	args := []string{"stdin", "stdout", "--psm", strconv.Itoa(psm)}
+	args := []string{"--psm", strconv.Itoa(psm)}
 	if t.OEM > 0 {
 		args = append(args, "--oem", strconv.Itoa(t.OEM))
 	}
@@ -223,12 +227,47 @@ func (t Tesseract) args() []string {
 	return append(args, "tsv")
 }
 
+// writeInput encodes the crop as PNG into a fresh 0600 file and returns its
+// path. The file is the engine's input operand (see the type comment for why a
+// file rather than a pipe); a name from CreateTemp is unique per call, so
+// concurrent regions each own their own file and there is nothing to clean
+// between frames — only the caller's deferred remove.
+func (t Tesseract) writeInput(img image.Image) (string, error) {
+	pngBytes, err := encodePNG(img)
+	if err != nil {
+		return "", err
+	}
+	dir := t.TempDir
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	f, err := os.CreateTemp(dir, "game-narrator-ocr-*.png")
+	if err != nil {
+		return "", fmt.Errorf("vision/ocr: create input file: %w", err)
+	}
+	path := f.Name()
+	if _, err := f.Write(pngBytes); err != nil {
+		f.Close()
+		os.Remove(path)
+		return "", fmt.Errorf("vision/ocr: write input file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(path)
+		return "", fmt.Errorf("vision/ocr: close input file: %w", err)
+	}
+	return path, nil
+}
+
 // encodePNG serializes the crop. Tesseract's leptonica reader takes PNG from a
-// stream, and PNG is lossless, so what the engine sees is exactly the bytes the
-// image hash covered.
+// stream or a file, and PNG is lossless, so what the engine sees is exactly the
+// pixels the image hash covered. The compression level is NoCompression, not
+// BestSpeed: the engine's fixed startup cost (~0.3–0.4 s on the board) leaves
+// no room for the ~0.6 s a zlib pass over a 2064×376 crop costs there (issue
+// #8 measurement), and the file is a same-lifetime 0600 temp, not an egress —
+// the larger bytes are the engine's private business, not the network's.
 func encodePNG(img image.Image) ([]byte, error) {
 	var buf bytes.Buffer
-	enc := &png.Encoder{CompressionLevel: png.BestSpeed}
+	enc := &png.Encoder{CompressionLevel: png.NoCompression}
 	if err := enc.Encode(&buf, img); err != nil {
 		return nil, fmt.Errorf("vision/ocr: encode crop: %w", err)
 	}

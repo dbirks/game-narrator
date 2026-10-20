@@ -43,9 +43,12 @@ func TestStartValidation(t *testing.T) {
 			runtime.ErrUnknownSourceKind, "",
 		},
 		{
-			"v4l2 not implemented",
+			// The capture wiring is unwired in this manager (nil options), so
+			// the kind is refused exactly like the unwired manual seam: an
+			// unwired process refuses rather than fakes a device (ADR-0078).
+			"v4l2 capture unwired",
 			runtime.StartRequest{ProfileID: profileID, FrameSource: runtime.FrameSource{Kind: runtime.SourceKindV4L2}},
-			runtime.ErrSourceUnsupported, "",
+			runtime.ErrCaptureUnavailable, "",
 		},
 		{
 			"dolphin not implemented",

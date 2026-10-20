@@ -34,6 +34,8 @@ Base `/api/v1`; JSON UTF-8; RFC3339 UTC timestamps; UUID/ULID identifiers; `Idem
 | `POST /api/v1/dev/fixtures`, `GET /api/v1/dev/fixtures` | fixture recording and browsing |
 | `POST /api/v1/dev/test-runs`, `GET .../report` | run suite and inspect artifacts |
 | `GET /api/v1/events` | SSE multiplex, Last-Event-ID |
+| `GET /api/v1/status` | one snapshot of what the box is doing (session, setup runs, health, device) plus the canonical status string the bar renders (ADR-0104) |
+| `GET /api/v1/status/stream` | the status snapshot's on-change push: SSE of `status.changed`, Last-Event-ID, ≤2 frames/s (ADR-0104) |
 | `GET /api/v1/openapi.json` | generated OpenAPI contract |
 
 Design nested resource URLs consistently; implementation may rationalize exact forms through ADR. Use document-level JSON schemas and generate TS clients from OpenAPI to avoid manual drift.

@@ -1,0 +1,65 @@
+# GN-T011 (modes S,R,D,L) — item description obtained.
+# Catalog: docs/test-plan/scenario-catalog.md GN-T011 "Item description
+# obtained — item text narrated; not general inventory hover unless
+# configured".
+#
+# The item half of the sign/item runtime path (docs/status/gap-audit G8,
+# docs/spec/04 "Visual profiles", docs/spec/12 release gate): the profile's
+# region is an ITEM region, so the pipeline ranks its reads with the item
+# text-kind hint; the corpus stores the notification as kind item; the commit
+# carries that class; narrated_kinds admits item, so the narrator speaks it —
+# exactly once. The "not general inventory hover unless configured" clause is
+# the narrated_kinds veto itself: an item region whose class the run does not
+# admit commits silently (the sign-opened control shows the same line can be
+# committed without being narrated).
+#
+# Every frame and sentence here is generated, not captured from a game
+# (docs/spec/11 "Fixture origins": scripts/fixtures/gen-synthetic-signitem.sh):
+# the origin field carries that claim so a report can never present this as
+# real-game coverage.
+schema_version: 1
+catalog: GN-T011
+id: synthetic/item-obtained-001
+origin: generated_synthetic
+profile: item-obtained-001
+mode: frame_replay
+# The operator's narrated-class setting for this run: dialogue (the default)
+# plus item.
+narrated_kinds:
+  - dialogue
+  - item
+input:
+  frames_dir: testdata/synthetic/replay/item-obtained-001
+  timestamps: timestamps.json
+inference:
+  # As the sign scenario: the local chain needs no model endpoints, and the
+  # TTS leg is real (the narrator voice speaks the item notification through
+  # the recorded gateway; the implicit audio_evidence_clean check asserts
+  # exactly one evidence WAV).
+  decision: none
+  tts: recorded
+  voice: narrator
+assertions:
+  # The item notification commits within 1500 ms (capture clock, not wall
+  # clock) of the first frame that shows it in full (frame 5, the fade-in).
+  - type: message_detected
+    message_id: itm-a
+    max_delay_ms: 1500
+  # Exactly one commitment: the banner holds through 13 stable frames (the
+  # clip ends with it on screen — the narrator's reading must run to its
+  # terminal outcome); repeated observations must not re-narrate the item.
+  - type: message_committed_count
+    message_id: itm-a
+    count: 1
+  # The commit carries the corpus's class — item, not dialogue.
+  - type: committed_kind
+    message_id: itm-a
+    kind: item
+  # The narrator speaks it with the configured voice — never a
+  # substitution. The terminal outcome exists because the clip ends with
+  # the banner on screen (the harness closes the still-live utterance with
+  # speech.ended at stream end; no region dismissal cancelled it first).
+  - type: no_voice_substitution
+    voice: narrator
+  - type: no_duplicate_commit
+  - type: no_stale_generation_applied

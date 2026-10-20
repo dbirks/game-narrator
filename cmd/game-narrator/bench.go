@@ -23,14 +23,16 @@ import (
 )
 
 const benchUsageText = `usage: game-narrator bench --set DIR --split tuning|holdout|all [--out DIR] [--generate]
-                           [--src-profile PATH] [--seed-base N]
+                           [--src-profile PATH] [--builtin NAME] [--seed-base N]
        game-narrator bench captured --fixture DIR --image PATH --out DIR
        game-narrator bench calibrate --set DIR [--fixture DIR]... [--image PATH] --out DIR
 
 bench: run a labelled benchmark set through the real pipeline (internal/bench,
 ADR-0038) and write report.json, report.md and manifest.json under --out.
---generate writes the set's profile.json and truth.json from the synthetic
-profile (no pipeline run; no magick needed) and exits.
+--generate writes the set's profile.json and truth.json and exits. The
+builtin generators: "harbour" (default) renders the first synthetic set from
+--src-profile; "black-water" (ADR-0075) renders the structurally different
+second set (its lines are fixed in the generator, --src-profile is ignored).
 captured: run the captured-Dolphin holdout (class (b) captured-frame replay):
 the fixture's frames (verified against its manifest's per-frame SHA-256)
 through the same real pipeline, truth from the fixture's oracle, the script
@@ -58,7 +60,7 @@ T plus the Brier / 10-bin ECE and reliability bins before (T = 1) and
 after (the fitted T).
 `
 
-func newBenchFlagSet() (*flag.FlagSet, *string, *string, *string, *bool, *string, *uint64) {
+func newBenchFlagSet() (*flag.FlagSet, *string, *string, *string, *bool, *string, *string, *uint64) {
 	fs := flag.NewFlagSet("bench", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() { fmt.Fprint(os.Stderr, benchUsageText) }
@@ -67,8 +69,9 @@ func newBenchFlagSet() (*flag.FlagSet, *string, *string, *string, *bool, *string
 	out := fs.String("out", "", "output directory (artifacts/<run-id>/bench)")
 	generate := fs.Bool("generate", false, "write profile.json + truth.json and exit")
 	src := fs.String("src-profile", "testdata/synthetic/profiles/dialogue-advance-001.json", "the synthetic profile whose lines are rendered")
+	builtin := fs.String("builtin", "harbour", "the --generate builtin: harbour (the first set from --src-profile) or black-water (the second set, ADR-0075)")
 	seed := fs.Uint64("seed-base", 20260709, "the deterministic seed base recorded in truth.json")
-	return fs, set, split, out, generate, src, seed
+	return fs, set, split, out, generate, src, builtin, seed
 }
 
 func runBench(args []string, log *slog.Logger) (int, error) {
@@ -78,7 +81,7 @@ func runBench(args []string, log *slog.Logger) (int, error) {
 	if len(args) > 0 && args[0] == "captured" {
 		return runBenchCaptured(args[1:], log)
 	}
-	fs, set, split, out, generate, src, seed := newBenchFlagSet()
+	fs, set, split, out, generate, src, builtin, seed := newBenchFlagSet()
 	if err := fs.Parse(args); err != nil {
 		return 2, err
 	}
@@ -88,7 +91,19 @@ func runBench(args []string, log *slog.Logger) (int, error) {
 	}
 
 	if *generate {
-		ts, prof, err := bench.GenerateSamples(*src, *seed)
+		var (
+			ts   *bench.TruthSet
+			prof *bench.ScriptProfile
+			err  error
+		)
+		switch *builtin {
+		case "harbour":
+			ts, prof, err = bench.GenerateSamples(*src, *seed)
+		case "black-water":
+			ts, prof, err = bench.GenerateSecondGameSamples(*seed)
+		default:
+			return 2, fmt.Errorf("%w: unknown --builtin %q (harbour, black-water)", errUsage, *builtin)
+		}
 		if err != nil {
 			return 1, err
 		}

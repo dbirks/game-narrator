@@ -298,6 +298,9 @@ const (
 
 	SessionSceneChanged  = "session.scene_changed"
 	SessionStopped       = "session.stopped"
+	SessionPaused        = "session.paused"
+	SessionResumed       = "session.resumed"
+	SessionSettings      = "session.settings_changed"
 	ProviderDegraded     = "provider.degraded"
 	AgentJobProgress     = "agent.job.progress"
 	AgentReviewRequired  = "agent.review_required"
@@ -351,7 +354,7 @@ var defaultNames = []string{
 	MessageCandidates, MessageCommitted,
 	DecisionRequested, DecisionResolved,
 	SpeechRequested, SpeechReady, SpeechStarted, SpeechCancelled, SpeechEnded,
-	SessionSceneChanged, SessionStopped, ProviderDegraded,
+	SessionSceneChanged, SessionStopped, SessionPaused, SessionResumed, SessionSettings, ProviderDegraded,
 	AgentJobProgress, AgentReviewRequired,
 	SystemHealthChanged, SystemHeartbeat,
 	ProfilePublished, VoiceAuditionReady, SourceProposed, ProfileDiff,

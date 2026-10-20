@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/games"
@@ -24,6 +25,11 @@ const (
 	// MaxWorkers is the same sentence's upper bound; asking for more is clamped,
 	// not refused, because "as many as you allow" is the intent.
 	MaxWorkers = 4
+	// smallBoardCPUs is the core count at or under which live mode serialises
+	// OCR (Config.MaxConcurrentOCR auto-default, issue #8): the release target
+	// is a 4-core A53 board, where two concurrent Tesseract processes thrash
+	// each other (measured 19 s per read against 1.1 s alone — 17×).
+	smallBoardCPUs = 4
 	// DefaultOCRTimeout is ocr.DefaultTimeout — a hard kill for one wedged child
 	// so the frame loop cannot stall behind it.
 	DefaultOCRTimeout = ocr.DefaultTimeout
@@ -203,6 +209,20 @@ type Config struct {
 	// Index is the compiled candidate corpus. Safe to share across Runners.
 	Index *matcher.Index
 
+	// Controls is the operator's live-control half (pause/resume/settings,
+	// docs/spec/08 "…/pause, …/resume, …/settings"), delivered to the session's
+	// single writer. The runtime owns the channel and the reducer consumes it
+	// through Apply, on the same goroutine that applies observations and
+	// rankings — a control that reached the pipeline but not the reducer would
+	// be a pause the operator pressed and the session never felt. nil (the
+	// default) means "no live controls": a session the harness or a test does
+	// not need to steer, and Run simply never selects the channel. The channel
+	// is a plain *send* interface (session.Msg) because the controls the
+	// runtime can express today are all ControlMsg, and the reducer is the
+	// authority on what a message means — the pipeline forwards, it does not
+	// interpret.
+	Controls chan session.Msg
+
 	// Reducer and Tracker are the settings of the two state machines this
 	// pipeline feeds. They are separate configs because they answer separate
 	// questions (what does the box read? what may we say about it?).
@@ -220,8 +240,19 @@ type Config struct {
 	Preprocess vision.Steps
 	Crop       vision.CropOptions
 
-	// Workers is the OCR pool size, clamped to [1, MaxWorkers].
+	// Workers is the OCR pool size, clamped to [1, MaxWorkers]. It bounds the
+	// jobs buffer, not the recognitions: how many engine calls may run at the
+	// same time is MaxConcurrentOCR.
 	Workers int
+	// MaxConcurrentOCR bounds how many OCR engine calls — and therefore how
+	// many engine child processes (Tesseract spawns one per call) — may run
+	// concurrently, clamped to [1, Workers]. Zero takes the measured default:
+	// 1 in live mode on a machine with four or fewer cores, Workers otherwise.
+	// The board measurement behind the default (issue #8, ADR-0096): two
+	// concurrent Tesseract reads on the UNO Q's A53 slow each other to 19 s
+	// against 1.1 s alone (unpinned cores; pinned to disjoint cores the same
+	// runs cost 2.1 s), which is what pushes every live read past its deadline.
+	MaxConcurrentOCR int
 	// OCRTimeout bounds one engine call. A newer frame cancels it earlier when it
 	// can; this is the backstop when no newer frame arrives. In ModeReplay the
 	// per-call budget is ReplayOCRTimeout instead: there no frame supersedes the
@@ -253,8 +284,15 @@ type Config struct {
 	// SceneID seeds matcher observations (matcher.Observation.SceneID). Empty
 	// means "unknown", which scores the scene component neutrally.
 	SceneID string
-	// TextKindHint seeds the matcher's text-kind component. games.TextDialogue
-	// for a textbox region is the honest default.
+	// TextKindHint is the fallback text-kind hint the matcher's text-kind
+	// component scores against for a region whose on-screen role names no
+	// class of its own (subtitle, speaker label, HUD, other); a region whose
+	// role does (textbox → dialogue, sign, item, menu, tutorial —
+	// games.RegionType.TextKindHint) ranks its readings with the role's class
+	// instead, so a sign region's reads score against the corpus's sign
+	// messages without the caller naming a per-region hint (docs/spec/04
+	// "Visual profiles"). games.TextDialogue for the fallback is the honest
+	// default.
 	TextKindHint games.TextKind
 
 	// Trace retains a bounded in-memory frame→state→text→candidate→event timeline
@@ -425,6 +463,25 @@ func (c Config) normalize() Config {
 	}
 	if c.Workers > MaxWorkers {
 		c.Workers = MaxWorkers
+	}
+	// The concurrent-recognition bound (see the field): auto-default is the
+	// measured board behaviour, not an assumption — a live read that must
+	// share the four A53 cores with its neighbour costs 19 s instead of
+	// 1.1 s (issue #8, ADR-0096), so live mode on a small board serialises OCR, and a
+	// caller on a bigger machine (or an explicit value, or a replay, where
+	// reads are per-region serial anyway) keeps the pool width.
+	if c.MaxConcurrentOCR <= 0 {
+		if c.Mode == ModeLive && runtime.NumCPU() <= smallBoardCPUs {
+			c.MaxConcurrentOCR = 1
+		} else {
+			c.MaxConcurrentOCR = c.Workers
+		}
+	}
+	if c.MaxConcurrentOCR < 1 {
+		c.MaxConcurrentOCR = 1
+	}
+	if c.MaxConcurrentOCR > c.Workers {
+		c.MaxConcurrentOCR = c.Workers
 	}
 	if c.OCRTimeout <= 0 {
 		c.OCRTimeout = DefaultOCRTimeout

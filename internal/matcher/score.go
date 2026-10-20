@@ -307,22 +307,43 @@ func (r *ranker) softmaxT(list []*candidate, t float64, dst func(*candidate) *fl
 	}
 }
 
-// fallbackTextFloor is the minimum text score that lets a candidate which arrived
-// only through the global fallback be accepted. The fallback picks by string
-// length, which is not evidence of anything: on a one-message profile a wholly
-// unrelated observation would otherwise come back as a 1.00 probability match,
-// because a softmax over a single candidate is total by definition. Requiring
-// corroboration from the text itself is what keeps "we had nothing" from looking
-// like "we are sure".
-const fallbackTextFloor = 0.5
+// fuzzyTextFloor is the minimum text score that lets a candidate commit on
+// text alone — the fuzzy path. The floor used to guard only the global
+// fallback (the comment that survived was fallbackTextFloor's): ADR-0079's
+// second game moved the same failure one step earlier. An out-of-script
+// reading (the eng model on a Cyrillic page: "BOA3 TO, MPRYYT.") shares one
+// trigram (" to") with one message and is retrieved by the trigram stage,
+// not the fallback; the pool is then a single candidate whose softmax
+// probability is 1.0 by definition, so the probability and margin gates pass
+// and the reading would commit as MATCH_FUZZY on 0.02 of text evidence.
+// Demanding corroboration from the text itself on every winner that is not
+// exact, not a typewriter prefix and not decided by a graph edge is what
+// keeps "we had nothing" from looking like "we are sure", on any route into
+// the pool. The fuzzy path is the only one it can move: exact and prefix
+// commits are excluded by construction, and a graph-deciding winner (edge
+// prior at or above the graph floor) abstains to Clef the same way it did
+// before the extension.
+//
+// The value is evidence-set, not a taste (ADR-0079, measured 2026-10-19 with
+// the real Tesseract 5.5.3 over both synthetic sets, every dialogue sample's
+// first text frame, real pipeline crop and fold): out-of-script garbage reads
+// (the second set's Cyrillic page at all three resolutions) score 0.02–0.037
+// on text, while the worst legitimate read — the second set's short line in
+// the narrow 640×480 and 720×480 boxes, where the line is set at ~15pt —
+// scores 0.19; every other legitimate read in both sets scores ≥0.79. 0.1
+// sits in the measured gap with a ~5× margin to the worst legitimate read.
+// It must stay below that small-box floor: raising it toward 0.5 (the old
+// fallback value) silently drops the two legitimate small-box reads the
+// second set measured, which is how a safety floor becomes a recall tax.
+const fuzzyTextFloor = 0.1
 
 // policy turns scores into speak/don't-speak. Abstaining is cheap and being wrong
 // is not: the runtime either stays silent or asks Clef, and both are recoverable,
 // whereas speaking a line the player never saw is the failure mode docs/spec/05
 // puts at the top of the list.
 func (r *ranker) policy(top *candidate, rest []*candidate) (string, bool) {
-	if top.fallback && !top.exact && !top.prefix && top.edgePrior <= 0 &&
-		top.comps[compIndex(ComponentText)] < fallbackTextFloor {
+	if !top.exact && !top.prefix && top.edgePrior <= 0 &&
+		top.comps[compIndex(ComponentText)] < fuzzyTextFloor {
 		return ReasonAbstained, true
 	}
 	// The acceptance gate runs on the revision-1 (T = 1) probability scale —

@@ -169,7 +169,7 @@ func syntheticFitSource(ctx context.Context, setDir string) (*fitSource, *TruthS
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	dirs, err := RenderSamples(&runSet, framesDir)
+	dirs, err := RenderSamples(&runSet, prof.Layout, framesDir)
 	if err != nil {
 		os.RemoveAll(framesDir)
 		return nil, nil, nil, err

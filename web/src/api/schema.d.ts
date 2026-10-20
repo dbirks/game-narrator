@@ -31,7 +31,7 @@ export interface paths {
     };
     /**
      * Dependency readiness; a failing dependency answers 503.
-     * @description checks is always an object: a dependency appears only once something has probed it, so an empty map honestly means nothing is wired rather than everything works (docs/spec/13).
+     * @description checks is always an object: a dependency appears only once something has probed it, so an empty map honestly means nothing is wired rather than everything works (docs/spec/13). The database check's integrity verdict is cached, not re-run per request (ADR-0097): the full PRAGMA integrity_check runs at startup and on a schedule, and the answer reports the verdict's age in integrity_age_seconds so a stale ok is visible; a failing verdict keeps the fixed error string (no host paths).
      */
     get: operations["getHealthReady"];
     put?: never;
@@ -51,6 +51,146 @@ export interface paths {
     };
     /** Build, Go and machine capacity. Never paths, hostnames or secrets. */
     get: operations["getSystemInfo"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/status": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * One snapshot of what the box is doing, with the canonical status string.
+     * @description The global status bar's read (docs/design/plum-peach Global chrome): the active session (game, mode, capture fps actual vs target, dropped frames, the frame-to-voice p50 the session samples per line, lines spoken), the active onboarding runs (state, stage, characters voiced vs total, elapsed), the health rollup from cached probes only (a component nobody has probed is unknown, never a fresh probe), and the device (version, uptime, bound listen address). status is the server-rendered short string every client shows (RenderStatus): a fresh assembly per request, so a polling viewer gets the same number the push side publishes.
+     */
+    get: operations["getStatus"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/status/stream": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * The status snapshot's on-change push: SSE of status.changed frames with Last-Event-ID resume.
+     * @description The bar's push half. Every frame carries id: <global seq> and the full snapshot as its data (the same shape GET /api/v1/status answers), so a reconnect with Last-Event-ID replays the missed frames from the hub's bounded log and a cursor older than the log gets the resync-required notice, the same machinery the event stream documents (docs/spec/08 Event stream reliability). The push side is one process-wide engine that assembles at 2 Hz and publishes only when the displayed shape changed, coalesced to at most one frame per 500 ms. The stream carries no gameplay text: counters, a status string and health levels, which is what keeps it at the viewer tier of the developer-tier event stream it rides on.
+     */
+    get: operations["getStatusStream"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/search": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * The ⌘K command-palette search: games, characters, lines, traces, settings sections and actions in one grouped response.
+     * @description One debounced call behind the UX-02 overlay (ADR-0098, docs/design/plum-peach). The query is normalised (trimmed, internal whitespace collapsed) and echoed as agent_prompt: the string the overlay's Tab key hands to the agent dock. Groups appear in the fixed order game, character, line, trace, setting, action; an empty group is omitted, and an empty query is the palette's recents mode rather than an error. Scores are higher-is-better within a group: name fields and the static registries rank the match class (exact 3, prefix 2, contains 1) plus a recency boost of at most 1.0, lines rank the trigram index's bm25 negated to the higher-is-better direction plus the same boost, and because the boost stays below the 1.0 class gap, recency can reorder within a match class, never across one. The route is viewer; the body narrows per result: trace rows exist only for a developer-or-above caller, a settings section only for a role that may open the page it links to, and each action verb only for the role it names. Row targets follow the plum-peach IA (ADR-0093): the library focuses a game, cast lives at /games/:id/cast, traces at /traces and health at /health.
+     */
+    get: operations["search"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/diagnostics/host": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * The host vitals: CPU, RAM, storage and thermal state (public).
+     * @description A system-info-class read (docs/spec/08): host capacity and state, no game content, no host paths beyond the data directory's base name, no secrets. Public because the /diagnostics page must work before an account exists; every unmeasurable part answers null with the fact stated (no thermal zones exposed is unknown, not cool).
+     */
+    get: operations["getDiagnosticsHost"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/diagnostics/logs": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * The recent system logs, redacted (developer).
+     * @description The newest records of the process's bounded log ring, every value passed the support-bundle redactor (URLs, tokens, private IPs). Developer tier like the dev-trace evidence route: system logs can carry provider request detail (docs/spec/14). ?limit= defaults to 200, capped 1000; a bad limit is 400, an unwired ring is 503.
+     */
+    get: operations["getDiagnosticsLogs"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/diagnostics/run": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Start a diagnostics run: the host snapshot plus the doctor's probe of the named roles (operator).
+     * @description Answers 202 with the run id and executes out-of-band — a role probe's budget is minutes, and a request that holds that long is a wedged connection. Each named role runs the doctor's own providers.<role> check (ADR-0087: the CLI's probe, never a copy): the content probe, the model-list check and the measured answer latency. Zero roles asks for the host snapshot only; a name that is not one of docs/spec/06's seven is a 400.
+     */
+    post: operations["postDiagnosticsRun"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/diagnostics/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * One diagnostics run's current shape (viewer).
+     * @description A running run reports the host snapshot and the role rows answered so far; a done run adds finished_at. 404 for an id that was never created or already fell out of the bounded store (the 32-newest, one-hour-TTL bound — a probe nobody polls is not appliance state).
+     */
+    get: operations["getDiagnosticsRun"];
     put?: never;
     post?: never;
     delete?: never;
@@ -466,6 +606,26 @@ export interface paths {
      * @description to=published is refused with 409: publication is the validated, digested, pointer-swapped, audited act, not a column write. The reachable targets are in the revision's own next_states.
      */
     post: operations["setProfileStatus"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/profiles/{id}/narrator-fallback": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Set the profile's narrator fallback (ADR-0101).
+     * @description Decides whether a line whose speaker has no approved voice is spoken by the narrator voice. On by default (the profile row's DEFAULT 1) and the historical runtime behaviour; a line the setting holds back is skipped with reason narrator_fallback_disabled, and a line even the narrator could not speak is no_approved_voice.
+     */
+    post: operations["setNarratorFallback"];
     delete?: never;
     options?: never;
     head?: never;
@@ -894,6 +1054,66 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/sessions/{id}/pause": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Pause a running session (idempotent).
+     * @description The operator's pause of docs/spec/08 (“…/pause”). The session's single writer applies it on the same chain as the observations: the commitment policy stops committing (a paused session holds its evidence without deciding), the in-flight recognitions and candidate rankings are cancelled, and the session's speech pipeline fences the audio still queued or playing — a pause pressed mid-line ends that line. The pause is one event (session.paused) on the session's chain, after the cancellations it caused. The 200 body is the session snapshot with paused=true; pausing a paused session is a no-op that returns the same snapshot (a duplicate is not an error the operator needs). A session in a terminal state answers 409 session_not_running: a pause the session cannot take is refused, not dropped.
+     */
+    post: operations["pauseSession"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/sessions/{id}/resume": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Resume a paused session from the next commit (idempotent).
+     * @description The operator's resume of docs/spec/08 (“…/resume”). The session's text machines kept advancing through the pause — the observations were real — so the resume changes no belief: the commitment policy picks up where the evidence stands and the next box that is ready with a valid ranking commits exactly once. A resume can therefore never burst a backlog of the paused window's lines; those decisions were made and are idempotent. The resume is one event (session.resumed) on the session's chain. The 200 body is the session snapshot with paused=false; resuming an unpaused session is a no-op that returns the same snapshot. A session in a terminal state answers 409 session_not_running.
+     */
+    post: operations["resumeSession"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/sessions/{id}/settings": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /**
+     * Apply the mid-session operator policy: the narrated classes and the decision mode.
+     * @description The operator's settings of docs/spec/08 (“…/settings”) and docs/spec/09 (“/play”: the narrated classes “Dialogue / +Signs / +Items” and the Conservative / Predictive toggle). The body is partial: a field left out keeps the session's current value, so a client that only flips the mode never re-sends the classes it never touched. The merged request is validated against the documented vocabulary (mode is conservative or predictive; narrated_classes are the text-kind words) — a value outside it answers 400 invalid_session_settings. The change is one control message to the session's single writer: the decision mode moves the commitment policy and the text machines together, and the narrated classes move the commitment policy's eligibility filter (a committed line whose class is not narrated commits — the box advances and the text machine knows — but is marked not eligible, which is the speech layer's no-audio answer). Every change is one event (session.settings_changed) on the session's chain carrying the applied mode and classes; a request that names the state the session already has is a no-op — no event, because a settings message is an operator-visible change and one that changed nothing would be a lie in the event log. The 200 body is the session snapshot carrying the applied mode and the normalized narrated_classes (dialogue always present, first — the product's default — in the list the UI's toggles read).
+     */
+    put: operations["setSessionSettings"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/dev/events": {
     parameters: {
       query?: never;
@@ -927,7 +1147,11 @@ export interface paths {
      */
     get: operations["listFixtures"];
     put?: never;
-    post?: never;
+    /**
+     * Record one trace as a replayable fixture (developer).
+     * @description Reads the trace's persisted envelopes and writes one trace fixture under the external fixture root — never into the repository (AGENTS.md rule 5). The fixture is the per-occurrence regression unit ADR-0083 defines: the stored observation, the recorded expectation, the utterance's audio and the frame/crop samples when the stores still hold them, plus the labels linked to the trace at save time.
+     */
+    post: operations["recordFixture"];
     delete?: never;
     options?: never;
     head?: never;
@@ -986,6 +1210,66 @@ export interface paths {
      * @description The only read path into a session's private dev-trace store (ADR-0024): text.observed carries the sha256, this route serves the bytes, and the developer-only grant is the privacy boundary (docs/spec/13). 404 covers never-stored, evicted-under-quota and invalid hashes alike.
      */
     get: operations["devAsset"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/dev/speech/audio": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * One utterance's stored audio from the speech cache (developer).
+     * @description The utterance's stored audio, read from the same speech.Cache instance the session's playback used. The cache key rides the trace's speech.ready event. The bytes are served with the entry's SHA-256 as the ETag and no-store, the voice audition audio's pattern; 404 covers evicted and never-stored keys alike, and 503 the unwired voice service.
+     */
+    get: operations["getSpeechAudio"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/dev/traces/{trace_id}/rerun": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Re-run the stored observation of a trace through the current build's matcher (developer).
+     * @description Rebuilds the matcher index from the session's profile revision content (the published revision is immutable, so the corpus is the run's own) and re-ranks the trace's last stored observation. It reports the recorded provider adjudication as recorded and does not re-invoke it: the model is not re-invoked, because the session's decision wiring is fenced per session (ADR-0083 decision 3).
+     */
+    post: operations["rerunTrace"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/dev/traces/{trace_id}/evidence": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * The trace's redacted evidence bundle (developer).
+     * @description One gzip-compressed tar of the trace's export: the redacted event log, the stored frame and crop samples when the dev-trace store holds them, the utterance's audio when the speech cache holds it, the linked labels and a sha256 manifest of every other entry. The developer's explicit export of the tier the role may already see on the page (docs/spec/08), redacted of credentials and network identity; unlike the ADR-0042 support bundle it keeps the gameplay text and the frames, because they are the evidence.
+     */
+    get: operations["getTraceEvidence"];
     put?: never;
     post?: never;
     delete?: never;
@@ -1099,6 +1383,26 @@ export interface paths {
      * @description Idempotent: a voice already present is reported present and nothing is re-uploaded. A conflicting name is reported invalid with the reason, not overwritten (docs/spec/06).
      */
     post: operations["registerVoice"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/voices/{id}/gain": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Set the per-voice output gain (curator).
+     * @description The per-voice gain of docs/spec/07 (ADR-0074): one linear factor, 0..10 (0 silences the voice, 1 unity, the upper bound keeps a calibration slip from hard-clipping the device). The gain is an output property, not a design step: it changes no revision state, no cache key and never re-synthesises — the runtime applies it to the samples at playback, so a line already in the cache plays at the new gain from the next playback. It persists on the voice revision row (voice_profiles.gain, migration 0014), so it travels with the revision the line was cached under.
+     */
+    post: operations["setVoiceGain"];
     delete?: never;
     options?: never;
     head?: never;
@@ -1446,6 +1750,246 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/audio/devices": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * The enumerated output devices with the effective selection (operator).
+     * @description PipeWire through pactl when it answers, ALSA through aplay as the documented fallback, and a labelled-synthetic list when the test seam (GAME_NARRATOR_AUDIO_FAKE_DEVICES) is set — the synthetic flag travels in every answer so a fake list is never mistaken for hardware (ADR-0074). Stable IDs (the PipeWire sink NAME or the ALSA device name — never a numeric index a reboot renumbers), kinds (usb, hdmi, builtin, null, unknown), sample rate/channels, the platform default the OS marks, and the one row the selection resolves to. The selection is env override > persisted store value > built-in default, and every part carries its source so the page can say why a value wins. A backend that is present but failing reports the failure in note and falls through to the next backend — the lister degrades, it does not guess.
+     */
+    get: operations["getAudioDevices"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/audio/test-tone": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * The consent-gated deterministic test tone (operator).
+     * @description The product tone of docs/spec/10 (ADR-0074): a 1.0 s 440 Hz sine at 48 kHz, 16-bit mono, rendered at 0.25 amplitude (about -12 dB — short and quiet: answerable as "something came out of the speaker" without blasting the room). The same bytes the hwsmoke gate and the pipewire sink's round-trip test use, played through the session's sink machinery (the existing sinks) with the effective master volume shaping the samples exactly as it shapes the session's speech. consent is the gate (docs/spec/13: playback is a consented action): without it nothing plays and the 400 names the control. device may name a specific enumerated id to probe; absent, the selected device plays. The filesink leaves the tone's recorded WAV under the data directory and names it (evidence_file): on a machine with no audible output the file is the proof. A tone the device refused is a 502 with the same body (played=false) and the note naming the failure.
+     */
+    post: operations["postAudioTestTone"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/audio/bluetooth/state": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * The Bluetooth adapter state (operator).
+     * @description ADR-0091 (issues #2/#3): the on-board controller condition - powered, discovering, alias - reported, never inferred. The page state badge reads this: available=false hides the section (no Bluetooth in this build), powered=false is the adapter-off state with the remediation. All routes under /api/v1/audio/bluetooth sit on the scope table /api/v1/audio/{rest...} operator grant - the "act on the physical world" tier, like capture.
+     */
+    get: operations["getBluetoothState"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/audio/bluetooth/scan": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * The time-bounded Bluetooth scan (operator).
+     * @description The discovery of issue #2, productised: the BlueZ discovery session is held for the request bound (default 8 s, capped 30 s) and the answer is the inventory it left behind - the audio-capable devices (A2DP sinks) first. A scan that finds nothing is a 200 with the pairing-mode hint in note. The mutation budget is shared: the operations are physical radio work (the inquiry channel is one radio, not a per-caller budget), so every mutation from one address draws on one token bucket and a hot caller gets 429 with Retry-After. The attempt - success or failure - is an audit row (bluetooth.scan).
+     */
+    post: operations["postBluetoothScan"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/audio/bluetooth/devices": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * The known Bluetooth devices with pairing state and A2DP evidence (operator).
+     * @description Every device BlueZ has a record of (paired or merely discovered), with the pairing state (paired, trusted, connected - BlueZ own properties), the A2DP evidence (a2dp_sink / a2dp_source), the selection badge (the device whose A2DP sink the audio selection resolves to) and the repair hint (needs_repair: connected yet no A2DP unit - issue #3 LE-only state).
+     */
+    get: operations["getBluetoothDevices"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/audio/bluetooth/devices/{mac}/pair": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Pair and trust the device (operator).
+     * @description Issue #2's pair step: the appliance registers its NoInputNoOutput agent (it has no display to show a passkey and no keyboard to type one), initiates pairing and, once paired, sets the device trusted - the hand-verified pair+trust in one product operation. A device that demands a PIN it cannot answer fails with the daemon's Authentication reason, which the page surfaces as "this headset needs a PIN". The attempt is an audit row (bluetooth.pair).
+     */
+    post: operations["postBluetoothDevicePair"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/audio/bluetooth/devices/{mac}/trust": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Mark the device trusted (operator).
+     * @description Sets the Trusted property: trusted devices connect without further confirmation. The pair operation already trusts - this is the standalone control for a device paired outside the appliance.
+     */
+    post: operations["postBluetoothDeviceTrust"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/audio/bluetooth/devices/{mac}/connect": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Connect the device and bring up its A2DP sink (operator).
+     * @description Connects the device connectable profiles; the A2DP sink appears in the user PipeWire as bluez_output.<MAC>.1, which is the stable identity the audio selection persists. Connect on a connected device is an idempotent no-op answer.
+     */
+    post: operations["postBluetoothDeviceConnect"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/audio/bluetooth/devices/{mac}/disconnect": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Disconnect the device (operator).
+     * @description Drops the device connections. The pairing information stays; connect brings the sink back up.
+     */
+    post: operations["postBluetoothDeviceDisconnect"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/audio/bluetooth/devices/{mac}/forget": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Forget the device (operator).
+     * @description Removes the device and all its pairing information (BlueZ Adapter1.RemoveDevice). The first step of the repair path - and the standalone control for removing a device paired outside the appliance.
+     */
+    post: operations["postBluetoothDeviceForget"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/audio/bluetooth/devices/{mac}/repair": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Re-pair a "connected but no audio sink" device (operator).
+     * @description Issue #3's fix, productized: the dual-mode headset came back over LE only (a GATT connection, no A2DP unit). The repair forgets the device, rescans forcing the classic BR/EDR transport, re-pairs it (trust included) and reconnects. The headset must be in pairing mode for the rescan - the one step only a human hand can do - and the 502 detail says so when it is not.
+     */
+    post: operations["postBluetoothDeviceRepair"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/settings/audio": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /**
+     * Persist the audio output selection and master volume (admin).
+     * @description The one runtime-mutable setting (ADR-0074): the chosen output device (by its stable enumerated id), the sink kind (dummy, filesink, pipewire) and the device-level master volume (0..1, unity the default). The body is partial: a field left out keeps the stored value. The device is validated against the live enumeration — an id that is not "default" and not enumerated answers 400 with the id named, not a row that plays into a device that does not exist. The environment variables GAME_NARRATOR_AUDIO_SINK / GAME_NARRATOR_AUDIO_DEVICE keep their override precedence (env > store > default) and stay the operator's escape hatch; the answer reports the effective selection with every part's source, so the page says why each value wins. A stored master volume of 0 is the user's silence calibration (the row is the fact); the master volume applies to live sessions immediately, the sink and device from the next session.
+     */
+    put: operations["putAudioSettings"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/admin/backup": {
     parameters: {
       query?: never;
@@ -1457,9 +2001,53 @@ export interface paths {
     put?: never;
     /**
      * A consistent SQLite backup of the live catalogue, as a download (admin).
-     * @description The store's online-backup API writes the snapshot while the live connection keeps serving. Restore is CLI-only (game-narrator db restore): it is a process-lifecycle act and the UI documents it rather than offering a button.
+     * @description The store's online-backup API writes the snapshot while the live connection keeps serving. The restore half of the pair is the admin route POST /api/v1/admin/restore (ADR-0090): the UI uploads a backup there, the server validates it (format, schema marker, integrity, forward-migrations only), makes a pre-restore safety copy, schedules the swap and restarts the process; the CLI (game-narrator db restore) remains the unattended path.
      */
     post: operations["createBackup"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/admin/restore": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * What the last restore did, or that one is pending (admin).
+     * @description The status half of the restore pair (ADR-0090). The UI polls this after the restart: status is none (no restore ever ran and none is pending), pending (a plan is waiting for the next boot), applied or failed. A failed swap that touched the file carries recovered_from_pre_restore: the live database was recovered from the pre-restore copy, so the appliance serves the pre-restore state rather than a dead one. The plan's identity fields (hash, size, schema versions, actor, request id) are the audit facts; absolute paths stay server-side.
+     */
+    get: operations["getRestoreStatus"];
+    put?: never;
+    /**
+     * Upload a backup and schedule its restore (admin).
+     * @description The UI half of backup/restore (ADR-0090, docs/spec/09). The multipart upload carries one backup file (at most 256 MiB). The server validates it before touching anything: SQLite format, the schema_migrations marker (an ordinary database is refused), integrity (PRAGMA integrity_check), and schema — a backup newer than this binary is refused (it must be opened by the release that wrote it), an older one is migrated forward by the normal boot path. Then it writes a pre-restore copy of the live store into the backups directory (the rollback artifact, named in the 202 body), schedules the swap (a plan file in the data directory) and answers 202; the process then runs its normal graceful shutdown, and the replacement's boot applies the swap: the backup is installed over the live file and forward-migrated, and a swap that fails after touching the file recovers the live database from the pre-restore copy, so a bad restore degrades to the pre-restore state rather than a dead appliance. Under the documented deployment (the systemd unit) the replacement is back within seconds; without a supervisor the plan stays pending and the status route says exactly that. Errors (400 malformed upload, 413 oversize, 422 backup-invalid / backup-newer-than-binary, 503 with no store or no restart wired) leave the store untouched. Nothing here is silent: every step is on the event stream as admin.restore.* (admin scope).
+     */
+    post: operations["createRestore"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/settings/updates/refresh": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * The settings page's manual re-check of the update notification (admin).
+     * @description The manual re-check (ADR-0088): the body is the same version-and-updates view GET /api/v1/settings renders, from the fresh answer. The checker's own timeout bounds the call, so an unreachable endpoint answers its error (and the cached answer, when the last check succeeded) instead of holding the page open. The check informs, it never installs: auto_update is false in the body, as in every other answer of this build.
+     */
+    post: operations["refreshSettingsUpdates"];
     delete?: never;
     options?: never;
     head?: never;
@@ -1543,6 +2131,86 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/capture/devices": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * The enumerated capture devices with links, states and the chosen mode (operator).
+     * @description The UVC HDMI capture dongle enumeration (ADR-0078): every node with its stable id (never assumed /dev/videoN), the negotiated USB link (speed, class, the ADR-0076 downgrade flag), the state (ready / no-formats / no-mode / enumeration-error / not-capture) and the mode the session would ask for with its provenance (the operator's pin or the ADR-0076 policy) and reason. The synthetic flag labels the test seam's list (GAME_NARRATOR_CAPTURE_FAKE), and selected_id names the persisted selection a session without an explicit device runs. An empty list is the dongle-unplugged appliance: a real configuration, not a fault.
+     */
+    get: operations["listCaptureDevices"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/capture/devices/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /**
+     * Persist the capture device selection, with an optional pinned mode (operator).
+     * @description The selection writer (ADR-0078): the device is always the path's stable id, and the mode is the operator's optional pin (omit it to record 'the policy decides for this device'). Validated against the live enumeration — an unknown device is 400 and a mode the card does not offer is 400 — so the persisted row can never hold a selection the next session resolution would silently discard. The answer is the saved row.
+     */
+    put: operations["selectCaptureDevice"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/capture/preview": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * One throttled JPEG preview snapshot of the capture device (operator).
+     * @description The preview (ADR-0078): one JPEG frame through a throwaway source — build, start, one frame, encode at quality 60 capped to 1280 px wide, close. The device query parameter names a stable id; absent, the stack's own resolution (the persisted selection, then the first usable device). The route is authenticated and globally throttled: one snapshot in flight and a 500 ms minimum interval, answered 429 with Retry-After when exceeded (docs/spec/08 rate-limits preview streaming). It is also refused 503 capture-busy while a running session holds the same device — the UVC bus is single-consumer, and the answer names the holding session.
+     */
+    get: operations["capturePreview"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/capture/probe": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Run the capture test: grab frames, report freshness/drops, OCR the region (operator).
+     * @description The docs/spec/10 capture test (ADR-0078): grab `frames` (default 20, capped 200) from a throwaway source on the resolved device, report grabbed / dropped / fps / freshness_ms / state / last_error (the freshness and dropped-frame checks), and OCR the requested region (a pixel box; absent, the centre third) of the last frame with the region editor's Tesseract engine. OCR is degradable: a missing engine degrades the ocr block to engine 'unavailable' with the install action, never failing a probe whose frame stats are valid. The device is held 503 capture-busy while a running session runs it.
+     */
+    post: operations["captureProbe"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/corrections": {
     parameters: {
       query?: never;
@@ -1601,6 +2269,86 @@ export interface paths {
      * @description Two request shapes, one 202 body (ADR-0066). Dir shape: a JSON body {"image": "<basename>"} (or ?image=<name>) naming a regular file in the allowlisted import directory; the job reads the image in place and never copies it, so a crash resumes against the same on-disk image. Upload shape: multipart/form-data with a file part carrying the raw image (CISO or plain GCM), streamed into the asset store under the shared upload cap with its hash computed while streaming — real GB-scale discs do not fit the cap by design, and the 202 detail says the directory is the full-image path. The target revision must be a draft (409 otherwise, as on the file import). The job (kind import.disc) opens the image, lets the disc-capable adapter verify the game id and extract the message script, and imports it through the same machinery as the file import: the BMG is content-addressed, a re-import of the same image reconciles by hash instead of duplicating, and the result is a DiscImportReport. The image path is never logged or stored; the report and the source row carry the image's SHA-256 and the game id instead.
      */
     post: operations["importDisc"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/assistant/messages": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Send one dock message (a new thread or a turn in an existing one).
+     * @description The text and the screen context are rendered into one user turn; with a thread_id the turn is appended to that thread's durable conversation, without one a new thread (and its durable agent run) is opened and the turn is the attempt's opening request. The attempt runs as the assistant.run job kind and the reply streams over the event hub (assistant.message for the narrative, assistant.question for NEEDS-YOU and confirmation cards, the loop's step and tool events for the cards' tail). 409 while an attempt for the thread is already queued or running.
+     */
+    post: operations["sendAssistantMessage"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/assistant/answers": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Answer a NEEDS-YOU question or confirmation.
+     * @description The answer becomes a durable user message in the thread's conversation and marks the question row answered (UX-04: the question never blocked the run; this is when the answer is applied). Exactly one follow-up attempt is owed: this call enqueues it when no attempt is in flight and names it in job_id; while an attempt is in flight its post-run hook enqueues it instead and job_id is absent. A confirmation's answer is confirm or cancel; an empty answer defers the question. 404 for a question that is not in the caller's thread; 422 for an invalid confirmation answer.
+     */
+    post: operations["answerAssistantQuestion"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/assistant/threads": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List the caller's assistant threads, newest first.
+     * @description Cursor-paginated (next_cursor, empty on the last page). Each thread shows the state of its durable run, so the dock can show which threads are mid-attempt.
+     */
+    get: operations["listAssistantThreads"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/assistant/threads/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Read one assistant thread's snapshot.
+     * @description The conversation tail (user and assistant turns), the questions (open NEEDS-YOU cards and recent answers) and the tool cards (the run's executed tool calls with state, duration and a result preview). A page that missed the event stream rebuilds from this; a thread the caller does not own is a 404, not a 403.
+     */
+    get: operations["getAssistantThread"];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -1717,6 +2465,8 @@ export interface components {
       published_at?: string;
       preferred_voice_id?: string;
       publication_author?: string;
+      /** @description profiles.narrator_fallback (ADR-0101): whether a line whose speaker has no approved voice is spoken by the narrator voice. Always present; on by default. */
+      narrator_fallback?: boolean;
       /** @description The lifecycle moves this revision can still make, from the transition table. */
       next_states: components["schemas"]["ProfileStatus"][];
     };
@@ -1971,8 +2721,11 @@ export interface components {
     };
     /** @description The .gnprofile.json document (docs/spec/17 formalised, docs/spec/02 Profile portability). It carries source *pointers* and rights-filtered text; the bytes themselves never travel by default. */
     ProfileManifest: {
-      /** @constant */
-      schema_version: "1.0";
+      /**
+       * @description 1.1 adds the voices section and publication.narrator_fallback (ADR-0101).
+       * @constant
+       */
+      schema_version: "1.1";
       profile_id: string;
       edition: {
         slug: string;
@@ -1989,6 +2742,8 @@ export interface components {
         revision: number;
         parent_revision?: number | null;
         author?: string;
+        /** @description profiles.narrator_fallback (ADR-0101): when a line's speaker has no approved voice, the narrator voice speaks the line if and only if this is true. A re-import applies it to the draft it creates; the import's default when absent is true. */
+        narrator_fallback?: boolean;
       };
       sources?: Record<string, never>[];
       characters?: Record<string, never>[];
@@ -1997,6 +2752,8 @@ export interface components {
       messages: Record<string, never>[];
       message_edges?: Record<string, never>[];
       speaker_assertions?: Record<string, never>[];
+      /** @description Approved voice revisions (ADR-0101). Each row keeps its stable id (the registry name and speech cache key derive from it) and carries the reference SHA-256, fingerprint, consent and provenance. The reference WAV bytes travel only inside a .gnpack. */
+      voices?: Record<string, never>[];
       /** @description A fingerprint of content, computed so it survives a re-import's id remapping. */
       manifest_digest: string;
     };
@@ -2025,6 +2782,38 @@ export interface components {
       /** @description Echoed so a client can tell which search this page answers. */
       query: string;
       hits: components["schemas"]["MessageHit"][];
+    };
+    /** @description The ⌘K palette's one response (ADR-0098). groups is always an array, never null: an empty array is the honest nothing-matched, and the omitted-group rule means the array is empty only when every requested kind missed. */
+    SearchResponse: {
+      /** @description The normalised query (trimmed, internal whitespace collapsed), echoed for the list header. */
+      query: string;
+      /** @description Always equal to query after normalisation; present so the Tab key has one source of truth to hand to the agent dock instead of re-deriving it. */
+      agent_prompt: string;
+      groups: components["schemas"]["SearchGroup"][];
+    };
+    SearchGroup: {
+      /** @enum {string} */
+      kind: "game" | "character" | "line" | "trace" | "setting" | "action";
+      items: components["schemas"]["SearchResult"][];
+    };
+    /** @description One palette row. Exactly one of route and action is present: the row either navigates or it executes. score is higher-is-better within the row's group (see the operation's description). */
+    SearchResult: {
+      /** @enum {string} */
+      kind: "game" | "character" | "line" | "trace" | "setting" | "action";
+      /** @description The entity's id, or verb-id:entity-id for action rows. */
+      id: string;
+      title: string;
+      /** @description The second line of the row: the game a character or line belongs to, the platform of a game, or what an action does. */
+      subtitle?: string;
+      /** @description The SPA route ↵ opens (ADR-0093's IA). */
+      route?: string;
+      action?: components["schemas"]["SearchAction"];
+      score: number;
+    };
+    /** @description The API call an action row executes on ↵ instead of navigating. */
+    SearchAction: {
+      method: string;
+      path: string;
     };
     /** @description One revision's roster. Always an array, never null: a generated client typed as Character[] must not receive null. */
     CharacterList: {
@@ -2217,13 +3006,13 @@ export interface components {
      */
     SessionMode: "conservative" | "predictive";
     /**
-     * @description replay reads a recording directory from the configured allowlist; test_pattern is the built-in synthetic source; v4l2 and dolphin are not implemented in this build and answer 501 unsupported_capability.
+     * @description replay reads a recording directory from the configured allowlist; test_pattern is the built-in synthetic source; v4l2 is the UVC HDMI capture dongle (ADR-0078) — dir is the device's stable id (empty: the persisted selection, then the first usable device); dolphin is the dev-only emulator bridge (ADR-0007) and answers 501 unsupported_capability unless its dev gate is met.
      * @enum {string}
      */
     FrameSourceKind: "replay" | "test_pattern" | "v4l2" | "dolphin";
     FrameSource: {
       kind: components["schemas"]["FrameSourceKind"];
-      /** @description Replay recording directory; required for kind replay and must sit under the configured allowlist. */
+      /** @description The replay recording directory for kind replay (required, under the configured allowlist); for kind v4l2 the capture device stable id (ADR-0078; empty = the persisted selection, then the first usable device). */
       dir?: string;
       /** @description A managed-store clip id (from GET /api/v1/replay/clips); with kind replay it selects the clip by id and outranks dir. The id is validated against the clip id contract and its resolved directory still has to pass the replay-root allowlist (ADR-0073). */
       clip_id?: string;
@@ -2269,6 +3058,10 @@ export interface components {
       events: number;
       /** @description Must stay 0: the generation fence is absolute (docs/spec/01 invariant 2). */
       stale_generation_applied: number;
+      /** @description Started playbacks that then ended in a sink failure (ADR-0074, docs/spec/13 "playback underruns"). */
+      audio_underruns?: number;
+      /** @description The output-latency table: sink accepted the playback → the device buffer accepted the first samples. Count 0 when the sink does not report first-sample timestamps. */
+      audio_output_latency?: components["schemas"]["LatencySummary"];
       latency: components["schemas"]["PipelineLatency"];
     };
     /** @description A session's lifecycle state and counters (the API view of the runtime). */
@@ -2295,6 +3088,19 @@ export interface components {
       audio?: components["schemas"]["SessionAudio"];
       /** @description The managed-store clip this run replays (ADR-0073); absent on dir- and device-sourced sessions. */
       clip_id?: string;
+      /** @description The operator's pause state (docs/spec/08 “…/pause, …/resume”): true while the session has stopped committing and speaking. It moves on the pause/resume routes and the snapshot carries it, so the UI's pause button shows the state the server holds, not the click the operator made. */
+      paused?: boolean;
+      /** @description The operator's narrated-class setting (docs/spec/09 “/play”): the text classes the commitment policy narrates, normalized — dialogue first, always present. The default (dialogue alone) is what a session started without a settings call carries; PUT /api/v1/sessions/{id}/settings moves them. */
+      narrated_classes?: components["schemas"]["TextKind"][];
+      /** @description The UVC HDMI capture device's stable id this run uses (kind v4l2, ADR-0078): the device the resolution settled on — the requested id, the persisted selection, or the first usable device. Absent for every other source kind. */
+      capture_device?: string;
+      /** @description The mode the session asked of that device (e.g. "640x480 MJPEG @ 10 fps"); absent for every other source kind. */
+      capture_mode?: string;
+      /**
+       * @description The mode's provenance: the operator's pin or the ADR-0076 policy; absent for every other source kind.
+       * @enum {string}
+       */
+      capture_mode_source?: "saved" | "policy";
     };
     /** @description The session's capture source self-report (the API view of capture.Stats): the source's own ID and lifecycle state, its delivered count and measured rate, the supervised-restart count that separates a one-time device loss from flapping capture, and the last failure text. */
     SessionSource: {
@@ -2323,6 +3129,10 @@ export interface components {
       stages: components["schemas"]["StageLatency"][];
       /** @description The proper sub-stage (capture→OCR or OCR→rank) with the largest p95 — the stage that owns the most of the end-to-end latency. The end-to-end stage is the baseline, never a candidate (it contains both sub-stages); when no sub-stage has samples but the end-to-end stage does, it is named instead. Empty string when no stage has samples. */
       slowest_stage: string;
+      /** @description The run's audio underruns (ADR-0074); present only when the caller attached the audio counters. */
+      audio_underruns?: number;
+      /** @description The run's output-latency table (ADR-0074); present only when the caller attached the audio counters. */
+      audio_output_latency?: components["schemas"]["LatencySummary"];
     };
     /** @description One measured stage of one run's own pipeline latency stats (internal/pipeline: frame_to_ocr, ocr_to_ranked, frame_to_committed). p50_ns and p95_ns are histogram bucket edges (the pipeline buckets by design); max_ns is exact. Wall-clock measurement: a diagnostic, not a verdict (ADR-0064). */
     StageLatency: {
@@ -2348,6 +3158,12 @@ export interface components {
       /** @description Wait this long before starting playback; the wait is fenced, a newer commit during the delay still cancels the waiting utterance. */
       speech_delay_ms?: number;
     };
+    /** @description The mid-session operator policy of PUT /api/v1/sessions/{id}/settings (docs/spec/08 “…/settings”, docs/spec/09 “/play”). Every field is optional and applied when present; a field left out keeps the session's current value. The applied change is one event (session.settings_changed) on the session's chain, and the answer is the snapshot carrying the applied mode and the normalized narrated_classes. */
+    SessionSettings: {
+      mode?: components["schemas"]["SessionMode"];
+      /** @description The text classes the session may narrate. The commitment policy force-includes dialogue (the product), so a request for “signs only” applies as “dialogue and signs”; the normalized list — dialogue first, deduped — is what the snapshot carries. An unknown text-kind word is a 400 invalid_session_settings. */
+      narrated_classes?: components["schemas"]["TextKind"][];
+    };
     /** @description The session's audio half: the sink in use, the live controls, the speech counters and the current utterance (docs/spec/07, docs/spec/13 “did it speak, and why not”). */
     SessionAudio: {
       /**
@@ -2358,7 +3174,13 @@ export interface components {
       muted: boolean;
       volume: number;
       speech_delay_ms: number;
+      /** @description The appliance's device-level master volume (ADR-0074), shared by every session of the process. */
+      master_volume?: number;
       speech: components["schemas"]["SpeechCounters"];
+      /** @description This run's started playbacks that ended in a sink failure — the docs/spec/13 "playback underruns" counter for this session. */
+      underruns?: number;
+      /** @description This run's output-latency table (sink accepted → device first samples); count 0 when the sink does not report first-sample timestamps. */
+      output_latency?: components["schemas"]["LatencySummary"];
       /** @description The session's current audio position; absent until the first speech event. */
       current_utterance?: components["schemas"]["UtteranceState"];
     };
@@ -2475,6 +3297,17 @@ export interface components {
       description: string;
       /** @enum {unknown} */
       state: "pending" | "resolved";
+      /** @description Present on a propose_web_import item (ADR-0075): the exact web source the curator is approving. */
+      provenance?: {
+        /** @description The page URL the approval pins. */
+        url?: string;
+        /** @description SHA-256 of the raw (pre-decompression) body recorded when the page was fetched; the approved import is refused if the re-fetched body no longer hashes to this value. */
+        sha256?: string;
+        /** @description When the page was fetched (UTC). */
+        retrieved_at?: string;
+        /** @description The source rights position before the approval (a web page registers as unknown; approving records the user's assertion). */
+        rights?: string;
+      };
     };
     /** @description One tool invocation of the run (the UI's tool timeline). */
     OnboardingToolCallView: {
@@ -2586,6 +3419,8 @@ export interface components {
       fingerprint?: string;
       /** @description Present once approved: the consent record that gated the freeze (docs/spec/14). */
       consent_provenance?: string;
+      /** @description The per-voice output gain (ADR-0074, docs/spec/07 "per-voice gain"): the linear factor the runtime applies to this voice's samples at playback, after the cache key is computed — a gain change never re-synthesises and never invalidates the cache. 0 silences the voice, 1 unity (the default), 10 the clipping bound. Always present: the row's 1.0 default reads as "the samples unchanged", never as "no gain". */
+      gain: number;
       approved_by?: string;
       /** Format: date-time */
       approved_at?: string;
@@ -2596,6 +3431,15 @@ export interface components {
       updated_at: string;
       /** @description Present on the detail view: the per-instance registration state. */
       registrations?: components["schemas"]["VoiceRegistration"][];
+    };
+    /** @description The per-voice gain update (ADR-0074): one linear factor, 0..10. */
+    VoiceGain: {
+      gain: number;
+    };
+    /** @description The gain answer: the revision id and the gain now stored (the list and detail rows carry the same value from here on). */
+    VoiceGainSaved: {
+      voice_id: string;
+      gain: number;
     };
     /** @description One audition clip: a VoiceDesign candidate on a fixed synthetic line (never game text, docs/spec/03). qa_state is the ASR QA verdict (FR-10, ADR 0061): unknown = not run (role unconfigured or endpoint down), passed, or failed = flagged; approval is refused while an audition is failed until a human reviews its qa_wer/qa_transcript evidence. */
     VoiceAudition: {
@@ -2804,6 +3648,165 @@ export interface components {
       note?: string;
       env: string[];
     };
+    /** @description One enumerated output device (ADR-0074). id is the stable identity the app selects by across reboots: the PipeWire sink NAME or the ALSA device name — never a numeric index. */
+    AudioDevice: {
+      id: string;
+      name: string;
+      /**
+       * @description A USB DAC, an HDMI/displayport/optical output, the platform's built-in output, a virtual null sink, a Bluetooth A2DP sink (the bluez_output.<MAC>.1 node, ADR-0091), or none of the five (unknown - reported, never re-classified).
+       * @enum {string}
+       */
+      kind: "usb" | "hdmi" | "builtin" | "null" | "bluetooth" | "unknown";
+      /** @description The rate the backend reported for the device (e.g. 48000); absent when the backend does not report one. */
+      sample_rate?: string;
+      /** @description The channel count the backend reported; absent when the backend does not report one. */
+      channels?: number;
+      /** @description True for the row the effective selection resolves to (the named id, or the platform default when the selection is "default"). */
+      selected: boolean;
+      /** @description The platform's own default route, marked by the OS, not chosen by the app. */
+      platform_default: boolean;
+    };
+    /** @description The effective audio output selection with the source of every part (ADR-0074): the page shows what will actually happen and where each part came from (env override, the persisted store value, the built-in default). */
+    AudioSelection: {
+      /** @description The output device id ("default" = the platform's own routing). */
+      device: string;
+      device_source: components["schemas"]["SelectionSource"];
+      /** @enum {string} */
+      sink_kind: "dummy" | "filesink" | "pipewire";
+      sink_kind_source: components["schemas"]["SelectionSource"];
+      /** @description The device-level master volume (unity the default; 0 the user's silence calibration). */
+      master_volume: number;
+      master_volume_source: components["schemas"]["SelectionSource"];
+    };
+    /**
+     * @description Where one part of the effective selection came from: the environment override, the persisted store value, or the built-in default.
+     * @enum {string}
+     */
+    SelectionSource: "env" | "store" | "default";
+    /** @description GET /api/v1/audio/devices: one enumeration — the backend that answered, the rows, the synthetic flag (a fake list from the test seam is never mistaken for hardware) and the effective selection. */
+    AudioDevices: {
+      /** @enum {string} */
+      backend: "pipewire" | "alsa" | "synthetic" | "none";
+      /** @description True when the list came from the test seam (GAME_NARRATOR_AUDIO_FAKE_DEVICES): the UI label and the doctor read it. */
+      synthetic: boolean;
+      devices: components["schemas"]["AudioDevice"][];
+      selected: components["schemas"]["AudioSelection"];
+      /** @description A backend-level finding the caller surfaces ("pactl is on PATH but the server is not running", "aplay -L failed") — an empty list with no note would read as "nothing is attached" when the truth is "I could not ask". */
+      note?: string;
+    };
+    /** @description POST /api/v1/audio/test-tone. Consent is the gate: the tone plays only on the page's explicit action (docs/spec/13 makes playback a consented action). */
+    TestToneRequest: {
+      consent: boolean;
+      /** @description An enumerated device id to probe; absent, the selected device plays. */
+      device?: string;
+    };
+    /** @description POST /api/v1/audio/test-tone: what the tone endpoint did, with the tone's constants (the one shared spelling the live check asserts) and the sink/device it played on. */
+    TestToneResponse: {
+      tone: {
+        frequency_hz: number;
+        duration_s: number;
+        sample_rate: number;
+        /** @description The tone's linear amplitude (0.25, about -12 dB). */
+        level: number;
+      };
+      /** @enum {string} */
+      sink: "dummy" | "filesink" | "pipewire";
+      sink_source: components["schemas"]["SelectionSource"];
+      device: string;
+      master_volume: number;
+      played: boolean;
+      duration_ms: number;
+      /** @description The tone's recorded WAV (basename) when the sink is the filesink: on a machine with no audible output the file is the proof. */
+      evidence_file?: string;
+      note?: string;
+    };
+    /** @description PUT /api/v1/settings/audio: the partial body. Every field is optional; a field left out keeps the stored value. */
+    AudioSettingsUpdate: {
+      /** @description The output device id ("default" or an enumerated id). */
+      device?: string;
+      /** @enum {string} */
+      sink_kind?: "dummy" | "filesink" | "pipewire";
+      master_volume?: number;
+    };
+    /** @description PUT /api/v1/settings/audio: the row now stored and the effective selection (env overrides still win, and the sources say so). */
+    AudioSettingsAnswer: {
+      saved: {
+        device: string;
+        sink_kind?: string;
+        master_volume: number;
+      };
+      effective: components["schemas"]["AudioSelection"];
+    };
+    /** @description GET /api/v1/audio/bluetooth/state: the adapter condition. available=false means the Bluetooth controller is not wired into this build (no system bus, no BlueZ daemon) - the page hides the section; powered=false is the adapter-off state the page says out loud with the remediation. */
+    BluetoothState: {
+      available: boolean;
+      /** @description True when the controller is the labelled-synthetic fake (GAME_NARRATOR_BT_FAKE): the ADR-0074 rule that a fake answer never reads as hardware. */
+      synthetic: boolean;
+      /** @description The adapter's Powered property. */
+      powered: boolean;
+      /** @description The adapter's Discovering property: a scan is in progress (ours or another client's). */
+      discovering: boolean;
+      /** @description The adapter's friendly name (the system name). */
+      alias?: string;
+      /** @description A controller-level finding the page surfaces verbatim (the powered-off remediation, the bluez-missing fact). */
+      note?: string;
+    };
+    /** @description One Bluetooth device row (ADR-0091). address is the stable identity - never the BlueZ object path, which is a per-boot allocation. The pairing flags are BlueZ's own Device1 properties (reported, never inferred); the A2DP flags are the UUID evidence. selected and needs_repair are the page's derivations: selected marks the device whose A2DP sink (bluez_output.<MAC>.1) the audio selection resolves to; needs_repair is issue #3's state - BlueZ reports the device connected (a GATT connection counts) yet no A2DP unit exists, the LE-only regression the repair route exists for. */
+    BluetoothDevice: {
+      /** @description The colon-form MAC (normalised upper-case). */
+      address: string;
+      /** @description BlueZ's display name (the remote name when no alias is set); empty while the name has not resolved. */
+      alias?: string;
+      paired: boolean;
+      /** @description The Trusted property: trusted devices connect without further confirmation. */
+      trusted: boolean;
+      /** @description BlueZ's Connected property. A GATT-only connection counts - which is exactly why needs_repair exists. */
+      connected: boolean;
+      /** @description The device advertises the A2DP service: it can receive the narration audio (the audio-capable filter). */
+      a2dp_sink: boolean;
+      /** @description The device advertises the A2DP Source (the reverse direction); reported for the "why is this not a sink" question. */
+      a2dp_source: boolean;
+      /**
+       * Format: int16
+       * @description The last measured signal strength, when BlueZ reports it.
+       */
+      rssi?: number;
+      /** @description Seen in the most recent scan (whether or not paired): a scan that finds only unpaired devices is the "put the headset in pairing mode" evidence. */
+      discovered?: boolean;
+      /** @description True when the effective audio selection resolves to this device's A2DP sink (bluez_output.<MAC>.1). */
+      selected: boolean;
+      /** @description The issue-#3 state: connected and paired yet no A2DP unit. The page offers the re-pair (repair) button. */
+      needs_repair?: boolean;
+    };
+    /** @description GET /api/v1/audio/bluetooth/devices and the scan inventory: every device BlueZ has a record of (paired or merely discovered), with the pairing state, the A2DP evidence and the selection badge. */
+    BluetoothDevices: {
+      synthetic: boolean;
+      devices: components["schemas"]["BluetoothDevice"][];
+      /** @description A scan-level finding (the pairing-mode hint when the scan finds nothing). */
+      note?: string;
+    };
+    /** @description POST /api/v1/audio/bluetooth/scan: the operator bound on how long to hold the discovery open. Absent, the 8 s default; below 1 s clamps to 1 s; above 30 s clamps to 30 s (a longer hold buys nothing - the pairing-mode headset answers in seconds). */
+    BluetoothScanRequest: {
+      /** @description The hold in milliseconds: absent = the 8 s default; below 1 clamps to 1; above 30000 clamps to 30000. */
+      duration_ms?: number;
+    };
+    /** @description The scan answer: the inventory the scan left behind plus the timing the page progress state reports. An empty inventory is a 200 with the pairing-mode hint in note - a scan that finds nothing is an answer, not a failure. */
+    BluetoothScan: {
+      synthetic: boolean;
+      /**
+       * Format: int64
+       * @description How long the discovery actually held the inquiry channel.
+       */
+      elapsed_ms: number;
+      devices: components["schemas"]["BluetoothDevice"][];
+      note?: string;
+    };
+    /** @description The answer of every Bluetooth device mutation (pair, trust, connect, disconnect, forget, repair): the address the operation ran on (the row the page refetches) and the product-level result note. */
+    BluetoothAction: {
+      /** @description The normalised (upper-case) MAC the operation ran on. */
+      address: string;
+      note?: string;
+    };
     SettingsSecurity: {
       listen: string;
       listen_env: string;
@@ -2837,10 +3840,72 @@ export interface components {
       os: string;
       arch: string;
     };
+    /** @description The /settings page's version-and-updates section. current is the running build; latest is what the check last determined (fresh or from the offline cache), null when it knows no release (disabled, never ran, or failed with no cache); available is true only when latest is strictly newer than current and both parsed — a dev build never claims an update exists. */
     SettingsUpdate: {
       auto_update: boolean;
       docs: string;
       note: string;
+      /** @description This build's version stamp (the current of current-vs-latest). */
+      current: string;
+      latest?: components["schemas"]["SettingsUpdateLatest"];
+      /** @description True when latest is strictly newer than current and both parsed. */
+      available: boolean;
+      /** @description When latest was determined; absent when unknown. */
+      checked_at?: string | null;
+      /** @description The offline-cache fallback: the fresh check failed and this is the last good answer. */
+      from_cache?: boolean;
+      /** @description True while no check has completed yet (the first one runs at boot in the background). */
+      checking?: boolean;
+      /** @description The endpoint answered and has no releases yet. */
+      no_releases?: boolean;
+      /** @description The operator turned the check off. */
+      disabled?: boolean;
+      /** @description Set when the fresh check failed (with or without a cached answer): one line, no credentials. */
+      error?: string;
+      /** @description The variables that control the check. */
+      env: string[];
+    };
+    UpdateLatest: {
+      version: string;
+      name?: string;
+      /** @description The release-notes page. */
+      url: string;
+      /** Format: date-time */
+      published_at: string;
+    };
+    /** @description The 202 answer of POST /api/v1/admin/restore (ADR-0090): the plan is durable on disk and the appliance is about to restart. The fields are what the operator reviews before the restart — the backup's identity (hash, size, schema version) and the pre-restore safety net's name. */
+    RestoreScheduled: {
+      /** @enum {string} */
+      status: "restart_scheduled";
+      note: string;
+      pre_restore_backup: string;
+      staged_sha256: string;
+      staged_bytes: number;
+      backup_schema_version: number;
+      binary_latest_schema: number;
+    };
+    /** @description The restore plan's operator-facing projection (base names only: absolute paths are host state and stay server-side, docs/spec/08). */
+    RestorePlan: {
+      staged_sha256: string;
+      staged_bytes: number;
+      backup_schema_version: number;
+      binary_latest_schema: number;
+      pre_restore_backup: string;
+      requested_at: string;
+      actor: string;
+      request_id: string;
+    };
+    /** @description The GET /api/v1/admin/restore answer (ADR-0090): what the last restore did (or that one is pending). The UI polls this after the restart. */
+    RestoreStatus: {
+      /** @enum {string} */
+      status: "none" | "pending" | "applied" | "failed";
+      plan?: components["schemas"]["RestorePlan"];
+      at?: string;
+      error?: string;
+      recovered_from_pre_restore?: boolean;
+      schema_version_before?: number;
+      schema_version_after?: number;
+      migrations_applied?: string[];
     };
     SettingsMutable: {
       /** @description 0 in this build: nothing is runtime-mutable. */
@@ -3122,6 +4187,526 @@ export interface components {
     ClipList: {
       clips: components["schemas"]["Clip"][];
     };
+    /** @description The device's USB link (internal/capture/usb): the negotiated speed, its class, and the ADR-0076 downgrade flag (a SuperSpeed-class port that negotiated USB 2 — the 're-seat' fault). */
+    CaptureLink: {
+      /** @description The negotiated link speed in Mb/s (480 = HighSpeed/USB 2, 5000 = SuperSpeed). */
+      speed_mbps: number;
+      /** @description The speed class (highspeed / superspeed / unknown). */
+      class: string;
+      /** @description True when a faster port negotiated a slower link: re-seat the dongle or try another port (the ADR-0076 fault). */
+      downgraded?: boolean;
+    };
+    /** @description A capture mode: the geometry, the frame rate and the pixel format the device offers and the session asks for. */
+    CaptureMode: {
+      w: number;
+      h: number;
+      fps: number;
+      /** @enum {string} */
+      pix_fmt: "mjpeg" | "yuyv422";
+    };
+    /** @description The mode the session will ask for on the device: the operator's pinned mode when it is still offered (source 'saved'), otherwise the ADR-0076 policy's pick (source 'policy') with the policy's reason and rejected-candidate count, so 'why 720p and not 1080p' stays answerable. */
+    CaptureChosen: {
+      w: number;
+      h: number;
+      fps: number;
+      /** @enum {string} */
+      pix_fmt: "mjpeg" | "yuyv422";
+      /**
+       * @description Who decided the mode: the operator's pin or the ADR-0076 policy.
+       * @enum {string}
+       */
+      source: "saved" | "policy";
+      /** @description The policy reason (the pin names no reason; the policy explains the pick). */
+      reason?: string;
+      /** @description How many offered candidates the policy rejected before this pick. */
+      rejected: number;
+    };
+    /** @description One enumerated capture node: its stable id, the USB link, the state and the chosen mode. */
+    CaptureDevice: {
+      /** @description The device's stable id (the udev by-id name, the by-path name, or the node path): the only name a session or a selection may use. */
+      id: string;
+      /** @description The card name the enumeration printed. */
+      name: string;
+      /** @description The node path (report only — a client never names a path, the enumeration is the allowlist). */
+      path: string;
+      /**
+       * @description ready: a mode fits; no-formats: the node enumerates none; no-mode: none fit the policy; enumeration-error: the format read failed (detail carries the fault); not-capture: a non-capture node.
+       * @enum {string}
+       */
+      state: "ready" | "no-formats" | "no-mode" | "enumeration-error" | "not-capture";
+      link?: components["schemas"]["CaptureLink"];
+      chosen?: components["schemas"]["CaptureChosen"];
+      /** @description The operator action for a non-ready state (the policy refusal, the enumeration fault). */
+      detail?: string;
+    };
+    /** @description GET /api/v1/capture/devices: the enumeration, the current selection and the synthetic flag. */
+    CaptureDevices: {
+      /** @description True when the list is the labelled test seam (GAME_NARRATOR_CAPTURE_FAKE): the UI says so, and no answer is mistaken for hardware. */
+      synthetic: boolean;
+      /** @description The one-line provenance a synthetic list reports. */
+      note?: string;
+      /** @description The persisted selection (the device a session without an explicit id runs); absent when the operator never chose one. */
+      selected_id?: string;
+      selected_mode?: components["schemas"]["CaptureChosen"];
+      devices: components["schemas"]["CaptureDevice"][];
+    };
+    /** @description PUT /api/v1/capture/devices/{id} body: the optional pinned mode. Omitting it records 'the policy decides for this device'. */
+    CaptureSelectionRequest: {
+      mode?: components["schemas"]["CaptureMode"];
+    };
+    /** @description The saved capture selection: the device and, when pinned, the mode. */
+    CaptureSelection: {
+      device_id: string;
+      mode?: components["schemas"]["CaptureMode"];
+    };
+    /** @description A pixel region of the current frame (the probe OCR region, the user-selected box of docs/spec/10). */
+    CaptureBox: {
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+    };
+    /** @description POST /api/v1/capture/probe body: the device (empty = the stack resolution), the frame count (0 = default 20, capped 200) and the OCR region (absent = the centre third). */
+    CaptureProbeRequest: {
+      device?: string;
+      frames?: number;
+      region?: components["schemas"]["CaptureBox"];
+    };
+    /** @description The probe's OCR block: the text read from the region, the box read, and the engine (or 'unavailable' with the install action when the engine is not wired — the degradable half). */
+    CaptureProbeOCR: {
+      text: string;
+      region: components["schemas"]["CaptureBox"];
+      engine: string;
+      /** @description The operator action when the engine did not run. */
+      note?: string;
+    };
+    /** @description POST /api/v1/capture/probe: the docs/spec/10 capture test — the frame stats (freshness and drops) and the OCR block. */
+    CaptureProbe: {
+      /** @description The stable id of the device the probe ran on. */
+      device: string;
+      /** @description The mode asked of the device (e.g. "640x480 MJPEG @ 10 fps"). */
+      mode: string;
+      /** @enum {string} */
+      mode_source: "saved" | "policy";
+      requested: number;
+      grabbed: number;
+      /** @description Frames dropped (slot overwrites) across the grab: the dropped-frame check. */
+      dropped: number;
+      /** @description The measured delivery rate. */
+      fps: number;
+      /** @description Milliseconds since the last frame: the freshness check. */
+      freshness_ms: number;
+      /** @description The source state at the end of the grab. */
+      state: string;
+      /** @description The source last failure text (the operator action). */
+      last_error?: string;
+      ocr?: components["schemas"]["CaptureProbeOCR"];
+    };
+    /** @description The release the update check last determined (fresh or from the offline cache). */
+    SettingsUpdateLatest: {
+      version: string;
+      name?: string;
+      url: string;
+      published_at: string;
+    };
+    /** @description The CPU facts of the host section (ADR-0087). Load averages and the throttle counters are null when the kernel does not expose them (non-Linux, or the sysfs file is absent): null is the honest state, never a zero that reads as measured. */
+    HostCPU: {
+      /** @description The logical core count (runtime.NumCPU). */
+      cores: number;
+      /** @description The 1-minute load average (/proc/loadavg); null when unreadable. */
+      load_1m?: number | null;
+      /** @description The 5-minute load average; null when unreadable. */
+      load_5m?: number | null;
+      /** @description The 15-minute load average; null when unreadable. */
+      load_15m?: number | null;
+      /** @description The summed x86 CPU thermal-throttle counters (/sys/devices/system/cpu/cpu*\/thermal_throttle/throttle_count); null where the kernel does not expose the file (ARM). */
+      throttle_count?: number | null;
+    };
+    /** @description The RAM facts from /proc/meminfo; the whole object is null when the kernel does not expose it. */
+    HostRAM: {
+      total_bytes: number;
+      available_bytes: number;
+    };
+    /** @description The storage facts of the host section. data_dir is the data directory's base name only (the absolute path is a host path and stays server-side, the settingsStorage rule); the byte counts are -1 when the filesystem could not be measured. */
+    HostStorage: {
+      /** @description The data directory's base name; empty when unknown. */
+      data_dir: string;
+      known: boolean;
+      /** @description Free space on the data directory's filesystem; -1 when unmeasured. */
+      free_bytes: number;
+      /** @description Total size of the data directory's filesystem; -1 when unmeasured. */
+      total_bytes: number;
+      /** @description The asset store's byte total; -1 when unmeasured. */
+      asset_store_bytes: number;
+    };
+    /** @description One thermal zone read from /sys/class/thermal (ADR-0087: from sysfs where present). */
+    ThermalZone: {
+      /** @description The zone's type file content (e.g. cpu-thermal). */
+      name: string;
+      /** @description The zone's temperature in Celsius (the temp file's millidegrees / 1000). */
+      celsius: number;
+    };
+    /** @description The thermal state of the host. available is true only when at least one zone read; with no zones the note says so, because an empty list must not read as all cool. */
+    HostThermal: {
+      available: boolean;
+      /** @description The unavailable state's reason (absent when available). */
+      note?: string;
+      zones: components["schemas"]["ThermalZone"][];
+    };
+    /** @description The GET /api/v1/diagnostics/host body: a system-info-class read (docs/spec/08) — host capacity and state, no game content, no host paths beyond the data directory's base name, no secrets. The warnings derive from fixed thresholds (1 GiB free, load above cores, 85 °C, 10% RAM) so the operator can verify each against the same section. */
+    HostReport: {
+      generated_at: string;
+      cpu: components["schemas"]["HostCPU"];
+      ram: components["schemas"]["HostRAM"];
+      storage: components["schemas"]["HostStorage"];
+      thermal: components["schemas"]["HostThermal"];
+      /** @description The derived warnings; empty when nothing crossed a threshold. */
+      warnings: string[];
+    };
+    /** @description The POST /api/v1/diagnostics/run body (ADR-0087): zero to seven of docs/spec/06's role names; empty asks for the host snapshot only. The enumeration is the allowlist — a name that is not one of the seven is a 400. */
+    DiagnosticsRunRequest: {
+      roles?: string[];
+    };
+    /** @description The 202 answer of POST /api/v1/diagnostics/run: the id to poll on GET /api/v1/diagnostics/{id}. */
+    DiagnosticsRunRef: {
+      run_id: string;
+    };
+    /** @description One role's doctor answer in a diagnostics run: the doctor's status (the same vocabulary the CLI's report uses), its summary and remedy, and the probe's measured duration — the latency, as the measured number, never an estimate. */
+    DiagnosticsRole: {
+      /** @description The role name of docs/spec/06. */
+      role: string;
+      /** @description Whether the role has a model configured (the settings page's fact). */
+      configured: boolean;
+      /**
+       * @description The doctor's state for the role's probe.
+       * @enum {string}
+       */
+      status: "OK" | "DEGRADED" | "BLOCKED" | "NOT CONFIGURED" | "FAIL";
+      summary?: string;
+      /** @description The probe's evidence; redacted (the doctor's safeText, never a token). */
+      detail?: string;
+      /** @description The operator action for a non-OK row. */
+      remedy?: string;
+      /** @description The probe's measured wall-clock duration in milliseconds. */
+      duration_ms: number;
+    };
+    /** @description The GET /api/v1/diagnostics/{id} body: the run's current shape. A running run reports the host snapshot and the role rows answered so far, so the page polls one shape; done adds finished_at. 404 (problem) for an id never created or already evicted from the bounded store (32 runs, one-hour TTL after done). */
+    DiagnosticsRun: {
+      id: string;
+      created_at: string;
+      /** @enum {string} */
+      status: "running" | "done";
+      host: components["schemas"]["HostReport"];
+      /** @description The role rows answered so far; empty while none has landed. */
+      roles: components["schemas"]["DiagnosticsRole"][];
+      /** @description The role names the run was asked for. */
+      requested: string[];
+      /** @description Set when the run is done. */
+      finished_at?: string | null;
+    };
+    /** @description One record of the process's log tail. Every message and attribute value has passed the support-bundle redactor (ADR-0042's scrubber: URLs, tokens and private IPs replaced) before it left the process (AGENTS.md rule 5). */
+    LogRecord: {
+      time: string;
+      /** @description The slog level name (INFO, WARN, ERROR, …). */
+      level: string;
+      msg: string;
+      /** @description The record's attributes, values rendered to strings and redacted. */
+      attrs: {
+        [key: string]: string;
+      };
+    };
+    /** @description The GET /api/v1/diagnostics/logs body: the newest records of the process's bounded log ring (developer tier, like the dev-trace evidence route — system logs can carry provider request detail). The tail is process-local: a restart clears it, and the durable redacted path is the support bundle. */
+    DiagnosticsLogs: {
+      /** @description The effective limit (default 200, capped 1000). */
+      limit: number;
+      /** @description The records returned. */
+      count: number;
+      /** @description Oldest first. */
+      records: components["schemas"]["LogRecord"][];
+      note: string;
+    };
+    /** @description One file of a recorded fixture: its path inside the fixture directory, the content's SHA-256 and its size (ADR-0054's manifest shape; a manifest cannot carry its own hash). */
+    DevFixtureEntry: {
+      path: string;
+      sha256: string;
+      size: number;
+    };
+    /** @description A recorded trace fixture's identity and where it landed (ADR-0083), so the operator sees exactly where the evidence left the machine. dir is the external fixture root's entry, named (never an absolute host path the UI should act on). */
+    DevFixture: {
+      id: string;
+      kind: string;
+      dir: string;
+      trace_id: string;
+      session_id: string;
+      profile_id: string;
+      profile_revision: number;
+      entries: components["schemas"]["DevFixtureEntry"][];
+    };
+    /** @description The fixture recording's body: the trace whose observation, expectation, audio and labels become one replayable unit. */
+    DevFixtureRecordRequest: {
+      trace_id: string;
+    };
+    /** @description The 201 body of POST /api/v1/dev/fixtures: the fixture's identity and where it landed. */
+    DevFixtureRecordResponse: {
+      fixture: components["schemas"]["DevFixture"];
+    };
+    /** @description One re-ranked message: the same decomposition the recorded candidates carry (score, probability, components) so the diff the page renders compares like with like. */
+    DevRerunCandidate: {
+      message_id: string;
+      score: number;
+      probability: number;
+      components?: {
+        [key: string]: number;
+      };
+    };
+    /** @description One side of the re-run: the candidate table, the winner's margin, the matcher's reason code and the abstain flag. */
+    DevRerunRanking: {
+      candidates: components["schemas"]["DevRerunCandidate"][];
+      margin: number;
+      reason: string;
+      abstain: boolean;
+    };
+    /** @description One candidate's movement between the two rankings: a null rank or probability is the candidate's absence on that side. */
+    DevRerunDiffRow: {
+      message_id: string;
+      previous_rank?: number | null;
+      current_rank?: number | null;
+      previous_probability?: number | null;
+      current_probability?: number | null;
+      delta?: number | null;
+    };
+    /** @description The re-run's honesty note (ADR-0083 decision 3): whether the recorded trace involved a provider adjudication, and that this route recomputes the local decision path only — the model is not re-invoked, because the session's decision wiring is fenced per session. */
+    DevRerunDecision: {
+      provider_involved: boolean;
+      provider?: string;
+      model?: string;
+      request_id?: string;
+      note: string;
+    };
+    /** @description The 200 body of the re-run: the stored observation it re-ran, the recorded ranking, the re-ranked one, the diff and the decision note. */
+    DevRerunResponse: {
+      trace_id: string;
+      session_id: string;
+      profile_id: string;
+      observation: {
+        event_seq: number;
+        raw_text: string;
+        normalized_key: string;
+        text_state: string;
+        confidence: number;
+        region_id: string;
+        scene_id: string;
+        generation: number;
+      };
+      previous?: components["schemas"]["DevRerunRanking"];
+      current: components["schemas"]["DevRerunRanking"];
+      changed: boolean;
+      diff: components["schemas"]["DevRerunDiffRow"][];
+      decision: components["schemas"]["DevRerunDecision"];
+    };
+    /** @description One snapshot of what the box is doing (docs/design/plum-peach Global chrome). status is the canonical short string the status bar renders, produced by the server (RenderStatus) so every client shows the same text; the structured halves below are what the string is rendered from. */
+    Status: {
+      /**
+       * Format: date-time
+       * @description When this snapshot was assembled (UTC).
+       */
+      updated_at: string;
+      /** @description The canonical status string, e.g. '● live · capture 30fps · 412ms frame→voice', '● agent running · 9 of 12 voiced · 18m 04s' or '5 ok · 1 slow'. A live session's string appends the non-ok health tiles; the idle string is the health rollup. */
+      status: string;
+      /** @description The active narration session; absent when the box is not narrating. */
+      session?: components["schemas"]["StatusSession"];
+      /** @description The active onboarding runs, newest first (usually zero or one); absent when none is live. */
+      setup_runs?: components["schemas"]["StatusSetupRun"][];
+      health: components["schemas"]["StatusHealth"];
+      device: components["schemas"]["StatusDevice"];
+    };
+    /** @description The active session's bar view: the game, the mode, the capture rate actual against target, the dropped frames, the frame-to-voice p50 the session samples per line (the pipeline's frame-to-committed half plus the last-N commit-to-voice half), and the lines the box actually spoke. */
+    StatusSession: {
+      session_id: string;
+      /** @description The game's title; absent while the store cannot name it (unwired store or a profile with no game row). */
+      game?: string;
+      mode: components["schemas"]["SessionMode"];
+      state: components["schemas"]["SessionState"];
+      paused: boolean;
+      /** @description The frame source kind (v4l2, replay, dolphin, test_pattern, manual). */
+      source: string;
+      /** @description The source's measured rate; 0 while it has not delivered frames. */
+      capture_fps: number;
+      /** @description The rate the session asked of its device; absent for source kinds with no named rate. */
+      capture_fps_target?: number;
+      /** @description The pipeline's dropped-frame counter. */
+      frames_dropped: number;
+      /** @description Playbacks the sink started: the lines actually voiced, not the lines committed. */
+      lines_spoken: number;
+      /** @description The bar's latency number in whole milliseconds: the pipeline's frame-to-committed p50 (whole-run, per-line samples) plus the session's commit-to-voice p50 (last-N window), each half contributing when it has samples; 0 while no half does. */
+      frame_to_voice_p50_ms: number;
+      /** @description Lines that went into the commit-to-voice half; 0 means the number is the frame-to-committed half alone. */
+      frame_to_voice_samples: number;
+      ocr_calls: number;
+      ocr_errors: number;
+      elapsed_ms: number;
+      /** Format: date-time */
+      created_at: string;
+    };
+    /** @description One active onboarding run's bar view: the state, the step the agent is on (stage), the characters voiced against the total, and the run's age. */
+    StatusSetupRun: {
+      run_id: string;
+      /** @description The run's game title: the profile's game once the run has a profile, the plan's title before that; absent when neither names one. */
+      game?: string;
+      /**
+       * @description The live run states (docs/spec/03); terminal runs are not status data.
+       * @enum {string}
+       */
+      state: "queued" | "running" | "blocked" | "review";
+      /** @description The newest tool call's name: the step the agent is on; absent before the first tool call. */
+      stage?: string;
+      /** @description Characters with a non-retired voice revision. */
+      voiced: number;
+      /** @description The profile's character count. */
+      characters: number;
+      elapsed_ms: number;
+    };
+    /** @description The six-tile rollup (capture, ocr, decision, tts, agent, storage) in canonical order, with the counts the bar renders as '5 ok · 1 slow'. */
+    StatusHealth: {
+      components: components["schemas"]["StatusHealthComponent"][];
+      ok: number;
+      slow: number;
+      fail: number;
+      /** @description Components nobody has probed; the rollup says so rather than counting them ok. */
+      unknown: number;
+      /** @description The rendered rollup, the idle bar's whole string. */
+      detail: string;
+    };
+    /** @description One health tile: the component's level and its one-line detail (the evidence, or the fact that there is none). */
+    StatusHealthComponent: {
+      /** @enum {string} */
+      id: "capture" | "ocr" | "decision" | "tts" | "agent" | "storage";
+      /**
+       * @description unknown is a component nobody has probed (or is not active), which is not ok: a rollup that counted it ok would lie.
+       * @enum {string}
+       */
+      level: "ok" | "slow" | "fail" | "unknown";
+      detail: string;
+    };
+    /** @description The box itself: the build, how long it has run, and the bound listen address when one was wired. */
+    StatusDevice: {
+      version: string;
+      uptime_ms: number;
+      /** @description The bound listen address (the tailnet address when the host bound the tailnet); absent when the host did not wire it. */
+      listen_addr?: string;
+    };
+    /** @description The dock's current screen (UX-01). Every field optional; a message without context is still a valid turn. Bounded and validated at the write edge: the route is a path-only string, the ids are ULIDs, visible_ids is at most 64 entries. */
+    AssistantScreenContext: {
+      /** @description The screen's route, e.g. /profiles/{id}/characters/{id}. */
+      route?: string;
+      /** @description The game the screen shows, when it names one. */
+      game_id?: string;
+      /** @description The profile revision the screen shows, when it names one. */
+      profile_id?: string;
+      selection?: {
+        /** @description The selection kind, e.g. character or line. */
+        type: string;
+        /** @description The selected object's ULID. */
+        id: string;
+      };
+      /** @description The ids visible on the screen (roster order, timeline order). */
+      visible_ids?: string[];
+    };
+    AssistantMessageRequest: {
+      /** @description An existing thread of the caller; absent or empty opens a new thread. */
+      thread_id?: string;
+      /** @description The operator's message. */
+      text: string;
+      context?: components["schemas"]["AssistantScreenContext"];
+    };
+    /** @description The turn is stored and the attempt queued; the reply streams over the event hub (assistant.message, assistant.question, the loop's step and tool events). */
+    AssistantMessageAccepted: {
+      thread_id: string;
+      /** @description The durable agent run the thread owns. */
+      run_id: string;
+      /** @description The assistant.run attempt that will handle the turn. */
+      job_id: string;
+      /** @description The appended turn's seq (existing threads). */
+      seq?: number;
+    };
+    AssistantAnswerRequest: {
+      thread_id: string;
+      question_id: string;
+      /** @description The operator's answer; for a confirmation card it is confirm or cancel (an empty answer defers the question). */
+      answer: string;
+    };
+    /** @description The answer is durable (a user message in the conversation plus the question row's answered state). Exactly one follow-up attempt is owed: enqueued here when no attempt is in flight (job_id present), otherwise owned by the in-flight attempt's post-run hook (job_id absent). */
+    AssistantAnswerAccepted: {
+      thread_id: string;
+      run_id: string;
+      question_id: string;
+      /** @description The answer's durable message seq. */
+      seq: number;
+      /** @description The follow-up attempt, when this call queued one. */
+      job_id?: string;
+    };
+    AssistantThreadView: {
+      id: string;
+      run_id: string;
+      title: string;
+      /** @description The run's state (queued, running, blocked, review, failed, succeeded, cancelled) or unknown. */
+      state: string;
+      /** Format: date-time */
+      created_at?: string;
+      /** Format: date-time */
+      updated_at?: string;
+    };
+    AssistantThreadList: {
+      threads: components["schemas"]["AssistantThreadView"][];
+      /** @description Empty when this is the last page. */
+      next_cursor?: string;
+    };
+    AssistantTurnView: {
+      seq: number;
+      /** @enum {string} */
+      role: "user" | "assistant";
+      content: string;
+    };
+    /** @description One executed tool call the dock renders as a compact card (name, result, duration, state). */
+    AssistantToolCardView: {
+      id: string;
+      name: string;
+      /** @description The wrapped result's status (succeeded, failed, refused, timeout, cancelled) or the row's own state while pending. */
+      state: string;
+      /** Format: date-time */
+      started_at?: string;
+      /** Format: date-time */
+      finished_at?: string;
+      duration_ms?: number;
+      error?: string;
+      /** @description A bounded preview of the structured result. */
+      result_preview?: string;
+    };
+    /** @description One NEEDS-YOU card: the model's question or a mutating tool's confirmation (UX-04). Unanswered cards carry no answer field. */
+    AssistantQuestionView: {
+      id: string;
+      /** @enum {string} */
+      kind: "question" | "confirmation";
+      prompt: string;
+      options?: string[];
+      /** Format: date-time */
+      created_at?: string;
+      /** @description Present once the operator answered. */
+      answer?: string;
+      /** Format: date-time */
+      answered_at?: string;
+    };
+    /** @description The REST snapshot a page that missed the stream rebuilds from: the conversation tail, the open and recent questions, and the tool cards. */
+    AssistantThreadSnapshot: {
+      id: string;
+      run_id: string;
+      title: string;
+      state: string;
+      stop_reason?: string;
+      turns: components["schemas"]["AssistantTurnView"][];
+      tool_cards: components["schemas"]["AssistantToolCardView"][];
+      questions: components["schemas"]["AssistantQuestionView"][];
+    };
   };
   responses: {
     /** @description RFC 9457 problem+json. code is the stable member of docs/spec/08's error contract; X-Request-Id correlates it with the server log and the event stream. */
@@ -3166,6 +4751,8 @@ export interface components {
     AuditionId: string;
     /** @description Hard upper bound 500; omitted means 100. Out-of-range is refused rather than clamped (docs/spec/08 "hard upper bounds"). */
     CorrectionsLimit: number;
+    /** @description The device's Bluetooth MAC in colon form (AA:BB:CC:DD:EE:FF; case-insensitive, the answer echoes the normalised upper-case form). A malformed address is a 400 invalid-mac - the API never sends a typo to the radio. */
+    BtMac: string;
   };
   requestBodies: never;
   headers: never;
@@ -3245,6 +4832,179 @@ export interface operations {
           "application/json": components["schemas"]["SystemInfo"];
         };
       };
+      default: components["responses"]["Problem"];
+    };
+  };
+  getStatus: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The snapshot. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Status"];
+        };
+      };
+      default: components["responses"]["Problem"];
+    };
+  };
+  getStatusStream: {
+    parameters: {
+      query?: {
+        /** @description Query-string form of the Last-Event-ID header, for clients that cannot set headers. */
+        last_event_id?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description An open status stream. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "text/event-stream": string;
+        };
+      };
+      400: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  search: {
+    parameters: {
+      query?: {
+        /** @description The palette query. Absent or whitespace-only is the recents mode: each requested kind answers with its most recent items. */
+        q?: string;
+        /** @description A comma-separated subset of game, character, line, trace, setting and action; defaults to all of them. An unknown kind is a 400: a silently-ignored kind would be a client bug the response could not show. */
+        kinds?: string;
+        /** @description The per-kind ceiling: the palette shows at most one screen of any one kind, so the bound is tighter than a full search page's. */
+        limit?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The grouped results, in the palette's canonical kind order. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SearchResponse"];
+        };
+      };
+      400: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  getDiagnosticsHost: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The host report. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HostReport"];
+        };
+      };
+      default: components["responses"]["Problem"];
+    };
+  };
+  getDiagnosticsLogs: {
+    parameters: {
+      query?: {
+        limit?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The redacted log tail. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DiagnosticsLogs"];
+        };
+      };
+      400: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  postDiagnosticsRun: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["DiagnosticsRunRequest"];
+      };
+    };
+    responses: {
+      /** @description The run started. */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DiagnosticsRunRef"];
+        };
+      };
+      400: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  getDiagnosticsRun: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The run. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DiagnosticsRun"];
+        };
+      };
+      404: components["responses"]["Problem"];
       default: components["responses"]["Problem"];
     };
   };
@@ -3969,6 +5729,14 @@ export interface operations {
               present_blobs: string[];
               digest: string;
               preferred_voice_id: string;
+              /** @description Approved voice rows written from the manifest voices section (ADR-0101). */
+              voices_written: number;
+              /** @description Voices already held under the same id and fingerprint (a re-import). */
+              voices_skipped: number;
+              /** @description Reference blobs the manifest named that this appliance does not hold; the pointer travels, the bytes travel only inside a .gnpack. These voices are not written. */
+              voice_refs_missing: string[];
+              /** @description Voices whose (character, revision) slot another voice already holds; reported, not written. */
+              voices_conflicts: string[];
             };
           };
         };
@@ -4073,6 +5841,40 @@ export interface operations {
     };
     responses: {
       /** @description Moved. ETag is the new row_version. */
+      200: {
+        headers: {
+          ETag?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Profile"];
+        };
+      };
+      400: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
+      412: components["responses"]["Problem"];
+      428: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  setNarratorFallback: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: components["parameters"]["ProfileId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": {
+          enabled: boolean;
+        };
+      };
+    };
+    responses: {
+      /** @description The dial is set. ETag is the profile's row_version (the write does not bump it, but the token still answers against the revision you last read). */
       200: {
         headers: {
           ETag?: string;
@@ -4885,6 +6687,92 @@ export interface operations {
       default: components["responses"]["Problem"];
     };
   };
+  pauseSession: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The session id returned by POST /api/v1/sessions (a ULID). */
+        id: components["parameters"]["SessionId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The session snapshot with paused=true */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Session"];
+        };
+      };
+      404: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  resumeSession: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The session id returned by POST /api/v1/sessions (a ULID). */
+        id: components["parameters"]["SessionId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The session snapshot with paused=false */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Session"];
+        };
+      };
+      404: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  setSessionSettings: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The session id returned by POST /api/v1/sessions (a ULID). */
+        id: components["parameters"]["SessionId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["SessionSettings"];
+      };
+    };
+    responses: {
+      /** @description The session snapshot with the applied policy (see Session.mode and Session.narrated_classes). */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Session"];
+        };
+      };
+      400: components["responses"]["Problem"];
+      404: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
   devEvents: {
     parameters: {
       query?: {
@@ -4942,6 +6830,33 @@ export interface operations {
         };
       };
       400: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  recordFixture: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["DevFixtureRecordRequest"];
+      };
+    };
+    responses: {
+      /** @description The fixture recorded. */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DevFixtureRecordResponse"];
+        };
+      };
+      404: components["responses"]["Problem"];
       503: components["responses"]["Problem"];
       default: components["responses"]["Problem"];
     };
@@ -5023,6 +6938,83 @@ export interface operations {
           "image/png": string;
         };
       };
+      404: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  getSpeechAudio: {
+    parameters: {
+      query: {
+        cache_key: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The utterance's WAV. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "audio/wav": string;
+        };
+      };
+      400: components["responses"]["Problem"];
+      404: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  rerunTrace: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        trace_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The re-run and its diff. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DevRerunResponse"];
+        };
+      };
+      404: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  getTraceEvidence: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        trace_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The tar.gz evidence bundle. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/gzip": string;
+        };
+      };
+      400: components["responses"]["Problem"];
       404: components["responses"]["Problem"];
       503: components["responses"]["Problem"];
       default: components["responses"]["Problem"];
@@ -5205,6 +7197,44 @@ export interface operations {
       };
       404: components["responses"]["Problem"];
       409: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  setVoiceGain: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Voice revision ULID. A malformed id answers 404, the same as an unknown one. */
+        id: components["parameters"]["VoiceId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["VoiceGain"];
+      };
+    };
+    responses: {
+      /** @description The revision id and the gain now stored. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["VoiceGainSaved"];
+        };
+      };
+      /** @description The gain is out of bounds (invalid_voice_gain). */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      404: components["responses"]["Problem"];
       default: components["responses"]["Problem"];
     };
   };
@@ -5696,6 +7726,639 @@ export interface operations {
       default: components["responses"]["Problem"];
     };
   };
+  getAudioDevices: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The enumeration and the effective selection. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AudioDevices"];
+        };
+      };
+      default: components["responses"]["Problem"];
+    };
+  };
+  postAudioTestTone: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["TestToneRequest"];
+      };
+    };
+    responses: {
+      /** @description The tone played through the named sink and device. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["TestToneResponse"];
+        };
+      };
+      /** @description Consent missing (consent-required), or the named device is not an enumerated output (unknown_audio_device). */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description The tone playback did not complete: the output device is not delivering audio (the body is the tone answer with played=false and the failure note). */
+      502: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["TestToneResponse"];
+        };
+      };
+      /** @description The selected sink kind cannot be built on this host (tone_sink_unavailable). */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      default: components["responses"]["Problem"];
+    };
+  };
+  getBluetoothState: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The adapter state. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["BluetoothState"];
+        };
+      };
+      /** @description The Bluetooth controller is not wired (bluetooth-unwired): no system bus or no BlueZ daemon in this build. */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      default: components["responses"]["Problem"];
+    };
+  };
+  postBluetoothScan: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["BluetoothScanRequest"];
+      };
+    };
+    responses: {
+      /** @description The inventory the scan left behind, with the timing. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["BluetoothScan"];
+        };
+      };
+      /** @description Too many Bluetooth mutations from this address (bluetooth-rate-limited); Retry-After names the wait. */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description The Bluetooth daemon rejected the scan (bluetooth-operation-failed): the detail carries the daemon reason. */
+      502: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description The Bluetooth controller is not wired or the daemon is unreachable (bluetooth-unwired / bluetooth-unavailable). */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      default: components["responses"]["Problem"];
+    };
+  };
+  getBluetoothDevices: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The inventory. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["BluetoothDevices"];
+        };
+      };
+      /** @description The Bluetooth controller is not wired or the daemon is unreachable. */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      default: components["responses"]["Problem"];
+    };
+  };
+  postBluetoothDevicePair: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The device's Bluetooth MAC in colon form (AA:BB:CC:DD:EE:FF; case-insensitive, the answer echoes the normalised upper-case form). A malformed address is a 400 invalid-mac - the API never sends a typo to the radio. */
+        mac: components["parameters"]["BtMac"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The operation succeeded. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["BluetoothAction"];
+        };
+      };
+      /** @description The path's address is not a Bluetooth MAC (invalid-mac). */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description BlueZ has no record of that address (bluetooth-device-unknown): scan, or pair it first. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description Too many Bluetooth mutations from this address (bluetooth-rate-limited); Retry-After names the wait. */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description The Bluetooth daemon rejected the operation (bluetooth-operation-failed): the detail carries the daemon reason, which the page next action depends on. */
+      502: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description The Bluetooth controller is not wired or the daemon is unreachable. */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      default: components["responses"]["Problem"];
+    };
+  };
+  postBluetoothDeviceTrust: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The device's Bluetooth MAC in colon form (AA:BB:CC:DD:EE:FF; case-insensitive, the answer echoes the normalised upper-case form). A malformed address is a 400 invalid-mac - the API never sends a typo to the radio. */
+        mac: components["parameters"]["BtMac"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The operation succeeded. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["BluetoothAction"];
+        };
+      };
+      /** @description The path's address is not a Bluetooth MAC (invalid-mac). */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description BlueZ has no record of that address (bluetooth-device-unknown): scan, or pair it first. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description Too many Bluetooth mutations from this address (bluetooth-rate-limited); Retry-After names the wait. */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description The Bluetooth daemon rejected the operation (bluetooth-operation-failed): the detail carries the daemon reason, which the page next action depends on. */
+      502: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description The Bluetooth controller is not wired or the daemon is unreachable. */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      default: components["responses"]["Problem"];
+    };
+  };
+  postBluetoothDeviceConnect: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The device's Bluetooth MAC in colon form (AA:BB:CC:DD:EE:FF; case-insensitive, the answer echoes the normalised upper-case form). A malformed address is a 400 invalid-mac - the API never sends a typo to the radio. */
+        mac: components["parameters"]["BtMac"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The operation succeeded. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["BluetoothAction"];
+        };
+      };
+      /** @description The path's address is not a Bluetooth MAC (invalid-mac). */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description BlueZ has no record of that address (bluetooth-device-unknown): scan, or pair it first. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description Too many Bluetooth mutations from this address (bluetooth-rate-limited); Retry-After names the wait. */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description The Bluetooth daemon rejected the operation (bluetooth-operation-failed): the detail carries the daemon reason, which the page next action depends on. */
+      502: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description The Bluetooth controller is not wired or the daemon is unreachable. */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      default: components["responses"]["Problem"];
+    };
+  };
+  postBluetoothDeviceDisconnect: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The device's Bluetooth MAC in colon form (AA:BB:CC:DD:EE:FF; case-insensitive, the answer echoes the normalised upper-case form). A malformed address is a 400 invalid-mac - the API never sends a typo to the radio. */
+        mac: components["parameters"]["BtMac"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The operation succeeded. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["BluetoothAction"];
+        };
+      };
+      /** @description The path's address is not a Bluetooth MAC (invalid-mac). */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description BlueZ has no record of that address (bluetooth-device-unknown): scan, or pair it first. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description Too many Bluetooth mutations from this address (bluetooth-rate-limited); Retry-After names the wait. */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description The Bluetooth daemon rejected the operation (bluetooth-operation-failed): the detail carries the daemon reason, which the page next action depends on. */
+      502: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description The Bluetooth controller is not wired or the daemon is unreachable. */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      default: components["responses"]["Problem"];
+    };
+  };
+  postBluetoothDeviceForget: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The device's Bluetooth MAC in colon form (AA:BB:CC:DD:EE:FF; case-insensitive, the answer echoes the normalised upper-case form). A malformed address is a 400 invalid-mac - the API never sends a typo to the radio. */
+        mac: components["parameters"]["BtMac"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The operation succeeded. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["BluetoothAction"];
+        };
+      };
+      /** @description The path's address is not a Bluetooth MAC (invalid-mac). */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description BlueZ has no record of that address (bluetooth-device-unknown): scan, or pair it first. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description Too many Bluetooth mutations from this address (bluetooth-rate-limited); Retry-After names the wait. */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description The Bluetooth daemon rejected the operation (bluetooth-operation-failed): the detail carries the daemon reason, which the page next action depends on. */
+      502: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description The Bluetooth controller is not wired or the daemon is unreachable. */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      default: components["responses"]["Problem"];
+    };
+  };
+  postBluetoothDeviceRepair: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The device's Bluetooth MAC in colon form (AA:BB:CC:DD:EE:FF; case-insensitive, the answer echoes the normalised upper-case form). A malformed address is a 400 invalid-mac - the API never sends a typo to the radio. */
+        mac: components["parameters"]["BtMac"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The operation succeeded. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["BluetoothAction"];
+        };
+      };
+      /** @description The path's address is not a Bluetooth MAC (invalid-mac). */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description BlueZ has no record of that address (bluetooth-device-unknown): scan, or pair it first. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description Too many Bluetooth mutations from this address (bluetooth-rate-limited); Retry-After names the wait. */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description The Bluetooth daemon rejected the operation (bluetooth-operation-failed): the detail carries the daemon reason, which the page next action depends on. */
+      502: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description The Bluetooth controller is not wired or the daemon is unreachable. */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      default: components["responses"]["Problem"];
+    };
+  };
+  putAudioSettings: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AudioSettingsUpdate"];
+      };
+    };
+    responses: {
+      /** @description The row now stored and the effective selection. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AudioSettingsAnswer"];
+        };
+      };
+      /** @description Unknown device (unknown_audio_device), unknown sink kind (invalid_audio_sink) or out-of-range volume (invalid_master_volume). */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      default: components["responses"]["Problem"];
+    };
+  };
   createBackup: {
     parameters: {
       query?: never;
@@ -5712,6 +8375,79 @@ export interface operations {
         };
         content: {
           "application/x-sqlite3": string;
+        };
+      };
+      default: components["responses"]["Problem"];
+    };
+  };
+  getRestoreStatus: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The status. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["RestoreStatus"];
+        };
+      };
+      default: components["responses"]["Problem"];
+    };
+  };
+  createRestore: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "multipart/form-data": {
+          /**
+           * Format: binary
+           * @description The backup file produced by POST /api/v1/admin/backup (at most 256 MiB).
+           */
+          backup: string;
+        };
+      };
+    };
+    responses: {
+      /** @description The restore is scheduled and the appliance is shutting down to apply it. */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["RestoreScheduled"];
+        };
+      };
+      default: components["responses"]["Problem"];
+    };
+  };
+  refreshSettingsUpdates: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The version-and-updates view from the fresh check. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SettingsUpdate"];
         };
       };
       default: components["responses"]["Problem"];
@@ -5809,6 +8545,176 @@ export interface operations {
         };
       };
       404: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  listCaptureDevices: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The enumeration, the selection and the synthetic flag. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CaptureDevices"];
+        };
+      };
+      /** @description The capture layer is unwired into this process, or the enumeration failed; the problem detail carries the operator action. */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      default: components["responses"]["Problem"];
+    };
+  };
+  selectCaptureDevice: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The device's stable id as listCaptureDevices reports it (a by-id, by-path or node path). By-id and by-path ids contain slashes, and the id is a single path segment: percent-encode it in the URL (a '/' becomes %2F, as the web client's URL encoder does). An unencoded id answers 400 device-id-not-encoded rather than a 307 redirect (issue #10). */
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["CaptureSelectionRequest"];
+      };
+    };
+    responses: {
+      /** @description The saved selection. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CaptureSelection"];
+        };
+      };
+      /** @description The device is not in the current enumeration, or the pinned mode is not one the device offers. */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description The capture layer or the selection store is not wired into this process. */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      default: components["responses"]["Problem"];
+    };
+  };
+  capturePreview: {
+    parameters: {
+      query?: {
+        /** @description The capture device's stable id (from listCaptureDevices); absent, the persisted selection then the first usable device. */
+        device?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The JPEG snapshot of the device. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "image/jpeg": string;
+        };
+      };
+      /** @description The requested device is not in the current enumeration. */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description The preview is throttled (one in flight, 500 ms apart); Retry-After says when to try again. */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description No usable device is attached, the device is held by a running session (capture-busy), or the device is not delivering frames. */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      default: components["responses"]["Problem"];
+    };
+  };
+  captureProbe: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["CaptureProbeRequest"];
+      };
+    };
+    responses: {
+      /** @description The probe report: the frame stats and the OCR block. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CaptureProbe"];
+        };
+      };
+      /** @description The requested device is not in the current enumeration, or the body is not valid. */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description No usable device is attached, the device is held by a running session (capture-busy), or the device is not delivering frames. */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
       default: components["responses"]["Problem"];
     };
   };
@@ -5935,6 +8841,122 @@ export interface operations {
       409: components["responses"]["Problem"];
       413: components["responses"]["Problem"];
       422: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  sendAssistantMessage: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AssistantMessageRequest"];
+      };
+    };
+    responses: {
+      /** @description The turn is stored and the attempt queued. */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AssistantMessageAccepted"];
+        };
+      };
+      401: components["responses"]["Problem"];
+      403: components["responses"]["Problem"];
+      404: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
+      422: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  answerAssistantQuestion: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AssistantAnswerRequest"];
+      };
+    };
+    responses: {
+      /** @description The answer is durable and the follow-up is owed. */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AssistantAnswerAccepted"];
+        };
+      };
+      401: components["responses"]["Problem"];
+      403: components["responses"]["Problem"];
+      404: components["responses"]["Problem"];
+      422: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  listAssistantThreads: {
+    parameters: {
+      query?: {
+        /** @description The next_cursor from a previous page. */
+        cursor?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The caller's threads. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AssistantThreadList"];
+        };
+      };
+      401: components["responses"]["Problem"];
+      403: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  getAssistantThread: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The thread ULID. */
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The thread snapshot. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AssistantThreadSnapshot"];
+        };
+      };
+      401: components["responses"]["Problem"];
+      403: components["responses"]["Problem"];
+      404: components["responses"]["Problem"];
       503: components["responses"]["Problem"];
       default: components["responses"]["Problem"];
     };

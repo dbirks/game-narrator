@@ -116,7 +116,12 @@ for (const key of Object.keys(childEnv)) {
   scrubbedProviderVars.push(key);
 }
 
-const manifestDir = join(webRoot, "test-results", "e2e-runs");
+// The per-run manifest + server log directory (ADR-0094): under this run's
+// root, not the checkout's web/test-results — concurrent Playwright runs in
+// the same checkout must not read or delete each other's records. e2e/
+// support/servers.ts derives the identical path from the same environment
+// variable (with the same fallback) to find the manifests.
+const manifestDir = join(runRoot, "e2e-runs");
 await mkdir(manifestDir, { recursive: true });
 // The server's own log, beside the manifest: a webServer whose stderr only
 // reaches Playwright's pipe loses its evidence when the run is interrupted
@@ -151,12 +156,24 @@ await writeFile(
 );
 
 let cleaning = false;
+// The restore walk's launcher opts out of the directory deletion (the spec
+// restarts the appliance itself against this same data directory — its
+// replacement process is the directory's owner for the rest of the walk, and
+// a deletion racing it would unlink the plan, the pre-restore copy and the
+// database under the process that must answer the post-restart reads). The
+// per-run teardown still removes the whole run root when the run ends, so
+// nothing accumulates either way: the two cleanups are deliberately
+// redundant, and this flag only stops the early one (ADR-0090's restart-
+// with-swap is the walk's point).
+const keepDataDir = process.env.GN_E2E_KEEP_DATA_DIR === "1";
 const cleanup = async () => {
   if (cleaning) return;
   cleaning = true;
-  await makeWritable(dataDir);
+  if (!keepDataDir) {
+    await makeWritable(dataDir);
+    await rm(dataDir, { recursive: true, force: true });
+  }
   await rm(manifest, { force: true });
-  await rm(dataDir, { recursive: true, force: true });
 };
 
 /**

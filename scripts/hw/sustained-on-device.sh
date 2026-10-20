@@ -18,8 +18,16 @@
 #                              OCR call, ranking and commit goes through the
 #                              installed serve binary. This is a *replay
 #                              source on the device* — NOT capture evidence.
-#   --source capture           REFUSED with a clear NOT RUN (exit 2) until the
-#                              UVC capture dongle is attached.
+#   --source capture           Probes the appliance over SSH for a
+#                              capture-capable V4L2 node (v4l2-ctl, else the
+#                              kernel's capabilities files): no node is still
+#                              the NOT RUN (exit 2) with the physical-
+#                              connection remediation; with the dongle
+#                              attached the same budget loop runs with
+#                              frame_source {"kind":"v4l2"} — live capture
+#                              evidence, not replay dressed as capture
+#                              (ADR-0078 §5; a live source does not drain,
+#                              so no clip install).
 #
 # Clip install (ADR-0073, the product path — no env file, no restart):
 # the installed appliance ships WITHOUT GAME_NARRATOR_REPLAY_ROOTS and the
@@ -124,22 +132,7 @@ esac
 if [ -z "$source" ]; then
 	source=replay
 fi
-if [ "$source" = "capture" ]; then
-	# No UVC capture dongle is attached to the appliance yet: the run cannot
-	# take live frames, and the replay loop must not be dressed up as capture.
-	cat >&2 <<EOF
-NOT RUN: --source capture is refused until the UVC HDMI capture dongle is
-attached to the UNO Q's powered hub (GameCube -> RCA-to-HDMI -> splitter ->
-dongle, docs/spec/10 "Physical connection"). Today the device has no
-capture-capable V4L2 node and no audio sink, so a capture session would have
-nothing to read. Re-run with --source capture once it is attached (the
-default replay run stays the evidence for this milestone until then):
-  scripts/hw/sustained-on-device.sh ${host} --minutes ${minutes} --source capture
-Capture and audio remain NOT VERIFIED (docs/status/acceptance.md M8).
-EOF
-	exit 2
-fi
-[ "$source" = "replay" ] || {
+[ "$source" = "replay" ] || [ "$source" = "capture" ] || {
 	echo "sustained: --source must be replay or capture (got $source)" >&2
 	exit 1
 }
@@ -156,6 +149,43 @@ for tool in ssh scp curl python3; do
 	command -v "$tool" >/dev/null 2>&1 || { echo "sustained: $tool is not on PATH" >&2; exit 1; }
 done
 
+# ADR-0078 §5: the capture run is refused until the appliance actually
+# exposes a capture-capable V4L2 node — probed over SSH before any of the
+# device's time is spent (v4l2-ctl when the appliance has it, otherwise the
+# kernel's own capabilities files; a metadata-only node does not count).
+if [ "$source" = "capture" ]; then
+	capture_nodes=$(ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" '
+		nodes=""
+		if command -v v4l2-ctl >/dev/null 2>&1; then
+			nodes=$(v4l2-ctl --list-devices 2>/dev/null | grep "^/dev/video" | sed "s/:.*//" | tr "\n" " ")
+		fi
+		if [ -z "$nodes" ]; then
+			for c in /sys/class/video4linux/video*/capabilities; do
+				[ -r "$c" ] || continue
+				if grep -q "^Cap Video Capture " "$c" 2>/dev/null; then
+					nodes="$nodes$(basename "$(dirname "$c")") "
+				fi
+			done
+		fi
+		echo "$nodes"
+	' 2>/dev/null) || capture_nodes=""
+	capture_nodes=$(printf '%s' "$capture_nodes" | tr -s ' \t' ' ' | sed 's/^ //; s/ $//')
+	if [ -z "$capture_nodes" ]; then
+		cat >&2 <<EOF
+NOT RUN: --source capture is refused until the UVC HDMI capture dongle is
+attached to the UNO Q's powered hub (GameCube -> RCA-to-HDMI -> splitter ->
+dongle, docs/spec/10 "Physical connection"). The probe found no
+capture-capable V4L2 node on ${host} (v4l2-ctl / sysfs capabilities). Re-run
+with --source capture once it is attached; until then the default replay run
+stays the evidence for this milestone:
+  scripts/hw/sustained-on-device.sh ${host} --minutes ${minutes} --source capture
+Capture and audio remain NOT VERIFIED (docs/status/acceptance.md M8).
+EOF
+		exit 2
+	fi
+	echo "sustained: capture probe: capture node(s) on ${host}: ${capture_nodes}"
+fi
+
 run_id=sustained-$(date -u +%Y%m%dT%H%M%SZ)
 # Stable fixture identity: the synthetic fixture game/edition is created ONCE
 # (fixed slug + fixed Idempotency-Keys) and every later run replays the
@@ -169,7 +199,7 @@ mkdir -p "$outdir" || exit 1
 tmp=$(mktemp -d) || exit 1
 trap 'rm -rf "$tmp"' EXIT
 
-echo "sustained: run $run_id on $host (source: replay, ${minutes} min)"
+echo "sustained: run $run_id on $host (source: $source, ${minutes} min)"
 
 # Seed the device from the committed synthetic fixture (rule 5): the clip
 # ships verbatim from the repo; the import seed CSV and the region payload
@@ -213,7 +243,7 @@ PY
 cat > "$tmp/runner.sh" <<'RUNNER_EOF'
 #!/bin/sh
 # Device-side runner for the sustained-play run. Invoked:
-#   sh run.sh <minutes> <run-id> <clip-sha256> <game-slug>
+#   sh run.sh <minutes> <run-id> <clip-sha256> <game-slug> <source>
 # Staging dir: /tmp/gn-sustained-<run-id> (clip/, seed.csv, regions.json).
 set -u
 
@@ -221,6 +251,11 @@ MINUTES=$1
 RUN_ID=$2
 CLIP_SHA=$3
 GAME_SLUG=$4
+SOURCE=$5
+[ "$SOURCE" = "replay" ] || [ "$SOURCE" = "capture" ] || {
+	echo "runner: unknown source $SOURCE (want replay or capture)" >&2
+	exit 1
+}
 BASE=/tmp/gn-sustained-$RUN_ID
 OUT=$BASE/out
 mkdir -p "$OUT" || exit 1
@@ -360,7 +395,12 @@ for it in items:
 # the data directory is a replay root by default, so no replay-root
 # configuration and no service restart. A rerun replaces its own clip: a
 # 409 is the "already installed" answer, and the delete-then-reupload keeps
-# the run idempotent without ever touching the env file.
+# the run idempotent without ever touching the env file. The capture source
+# installs nothing (ADR-0078 §5): the dongle's live stream does not drain.
+clip_archive_sha=""
+if [ "$SOURCE" = "capture" ]; then
+	log "capture source: no clip install (the dongle's live stream does not drain)"
+else
 log "installing the clip as $CLIP_ID through POST /api/v1/replay/clips"
 if ! tar -cf "$BASE/clip.tar" -C "$BASE" clip; then
 	log "FAIL: could not tar the staged clip"
@@ -387,6 +427,7 @@ if [ "$api_status" != "201" ]; then
 fi
 clip_archive_sha=$(jqget "$BASE/.body" archive_sha256)
 log "clip installed (archive sha256 ${clip_archive_sha:0:16}…; provenance committed to the asset store)"
+fi
 
 # 4) Catalog through the API: game -> edition -> draft -> import seed ->
 # regions -> review -> publish. The Idempotency store is in-process memory
@@ -514,8 +555,14 @@ fetch_session() {
 }
 
 start_session() {
-
-	body=$(python3 -c 'import json,sys; print(json.dumps({"profile_id": sys.argv[1], "frame_source": {"kind": "replay", "clip_id": sys.argv[2]}, "mode": "conservative"}))' "$profile_id" "$CLIP_ID")
+	if [ "$SOURCE" = "capture" ]; then
+		# The live capture source (ADR-0078): the device and the mode come from
+		# the appliance's persisted capture selection (or the first usable
+		# device); the session snapshot names the device actually used.
+		body=$(python3 -c 'import json,sys; print(json.dumps({"profile_id": sys.argv[1], "frame_source": {"kind": "v4l2"}, "mode": "conservative"}))' "$profile_id")
+	else
+		body=$(python3 -c 'import json,sys; print(json.dumps({"profile_id": sys.argv[1], "frame_source": {"kind": "replay", "clip_id": sys.argv[2]}, "mode": "conservative"}))' "$profile_id" "$CLIP_ID")
+	fi
 	api_status=$(curl -s -o "$BASE/.body" -w '%{http_code}' \
 		-H "Authorization: Bearer $(cat "$TOKEN")" -X POST \
 		--data-binary "$body" "$API/api/v1/sessions")
@@ -776,6 +823,7 @@ fi
 # (ADR-0073) and archive the profile revision (the game and edition rows
 # have no delete route; they stay inert and are recorded).
 clip_removed=0
+if [ "$SOURCE" = "replay" ]; then
 api_status=$(curl -s -o "$BASE/.body" -w '%{http_code}' -X DELETE \
 	-H "Authorization: Bearer $(cat "$TOKEN")" \
 	"$API/api/v1/replay/clips/$CLIP_ID")
@@ -784,6 +832,9 @@ if [ "$api_status" = "204" ]; then
 	log "clip $CLIP_ID deleted -> 204"
 else
 	log "warning: DELETE clip -> $api_status: $(head -c 300 "$BASE/.body")"
+fi
+else
+	log "capture source: no clip to delete (none was installed)"
 fi
 
 get_profile_etag
@@ -806,6 +857,7 @@ log "run complete: $n_sessions session(s) started, $n_failed failed, " \
 
 # 9) Finish: the ops log is written, then the poller is told the run is done.
 {
+	printf 'source=%s\n' "$SOURCE"
 	printf 'clip_store=managed (ADR-0073; no env file, no restart)\n'
 	printf 'clip_id=%s\n' "$CLIP_ID"
 	printf 'clip_archive_sha256=%s\n' "$clip_archive_sha"
@@ -824,7 +876,11 @@ remote_base=/tmp/gn-sustained-$run_id
 echo "sustained: shipping the stage to $host:$remote_base"
 # shellcheck disable=SC2029  # local expansion is intended (paths are literals)
 ssh "$host" "rm -rf $remote_base && mkdir -p $remote_base" || exit 1
-scp -r "$clip_src" "$host:$remote_base/clip" || exit 1
+# The clip frames ride only on the replay source (ADR-0078 §5): a capture run
+# streams the dongle's live V4L2 feed, so the clip directory is not staged.
+if [ "$source" = "replay" ]; then
+	scp -r "$clip_src" "$host:$remote_base/clip" || exit 1
+fi
 scp "$tmp/seed.csv" "$tmp/regions.json" "$tmp/runner.sh" \
 	"$host:$remote_base/" || exit 1
 
@@ -832,7 +888,7 @@ scp "$tmp/seed.csv" "$tmp/regions.json" "$tmp/runner.sh" \
 # must not kill a 30 min run).
 echo "sustained: starting the device runner (detached)"
 # shellcheck disable=SC2029  # local expansion is intended (the runner takes them as args)
-ssh "$host" "sudo -n sh -c 'setsid sh $remote_base/runner.sh $minutes $run_id $clip_sha $game_slug </dev/null >$remote_base/run.stdout 2>&1 & echo detached'" \
+ssh "$host" "sudo -n sh -c 'setsid sh $remote_base/runner.sh $minutes $run_id $clip_sha $game_slug $source </dev/null >$remote_base/run.stdout 2>&1 & echo detached'" \
 	|| { echo "sustained: could not start the runner on the device" >&2; exit 1; }
 
 # ── poll the status file in short chunks ───────────────────────────────────
@@ -1022,7 +1078,7 @@ report = {
     "run_id": run_id,
     "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     "host": "%s (UNO Q; identity anonymised per rule 5)" % host,
-    "source": "replay (committed synthetic clip; NOT capture evidence)",
+    "source": "capture (live UVC HDMI dongle: the sessions' kind is v4l2 and the frames are the device's V4L2 stream — this IS the capture path)" if ops.get("source") == "capture" else "replay (committed synthetic clip; NOT capture evidence)",
     "clip": "testdata/synthetic/replay/dialogue-advance-001",
     "clip_sha256": clip_sha,
     "profile": profile_json,
@@ -1076,17 +1132,21 @@ lines = []
 lines.append("# Sustained-play resource run — %s\n" % run_id)
 lines.append("- Host: `%s` (UNO Q; anonymised per rule 5)" % host)
 lines.append("- Installed version: `%s`" % (ops.get("installed_version") or "unknown"))
-lines.append("- Source: **replay on the running service API** (committed synthetic clip `dialogue-advance-001`, clip sha256 `%s…`)." % clip_sha[:16])
-lines.append("  Per AGENTS.md rule 3 this is a *replay source on the device* — it is NOT capture evidence and NOT hardware acceptance of the capture path.")
+if ops.get("source") == "capture":
+    lines.append("- Source: **live capture on the running service API** (the UVC HDMI dongle's V4L2 stream; every session started with frame_source {\"kind\": \"v4l2\"} and the snapshots name the device and mode the resolution settled on, ADR-0078).")
+else:
+    lines.append("- Source: **replay on the running service API** (committed synthetic clip `dialogue-advance-001`, clip sha256 `%s…`)." % clip_sha[:16])
+    lines.append("  Per AGENTS.md rule 3 this is a *replay source on the device* — it is NOT capture evidence and NOT hardware acceptance of the capture path.")
 lines.append("- Requested %d min; observed %.1f min, %d samples at ~10 s, %d session cycles." % (minutes, report["minutes_observed"], len(samples), len(sessions)))
 lines.append("- Speech: %s" % (
     "audio sink `%s` — the device has no audio sink yet; speech was recorded (filesink), not played. Recorded as such."
     % report["sessions"]["audio_sink"] if audio_wired else
     "none — the session snapshots carry no audio block (voice workflow not wired on this device; no TTS voice "
     "configured, no audio sink present), so speech was disabled for the whole run. Recorded as such."))
-lines.append("- Clip: the committed synthetic clip was uploaded through `POST /api/v1/replay/clips` (the managed clip store, ADR-0073) and deleted through the API after the run — the product path that replaced the env-file operator step. Clip id `%s`, archive sha256 `%s…`, deleted: %s. The service env file was never touched and the service never restarted."
-              % (report["clip_store"]["clip_id"], report["clip_store"]["archive_sha256"][:16] or "?",
-                 "yes" if report["clip_store"]["deleted"] else "no"))
+if ops.get("source") != "capture":
+    lines.append("- Clip: the committed synthetic clip was uploaded through `POST /api/v1/replay/clips` (the managed clip store, ADR-0073) and deleted through the API after the run — the product path that replaced the env-file operator step. Clip id `%s`, archive sha256 `%s…`, deleted: %s. The service env file was never touched and the service never restarted."
+                % (report["clip_store"]["clip_id"], report["clip_store"]["archive_sha256"][:16] or "?",
+                   "yes" if report["clip_store"]["deleted"] else "no"))
 lines.append("\n## Budgets (docs/spec/10 + internal/hwsmoke)\n")
 lines.append("| Check | Result | Measured | Budget |")
 lines.append("| --- | --- | --- | --- |")
@@ -1097,7 +1157,10 @@ lines.append("## Peaks\n")
 for k, v in report["peaks"].items():
     lines.append("- %s: %s" % (k, v))
 lines.append("\n## Not verified (honest NOT VERIFIED, docs/spec/16 M8)\n")
-lines.append("- Capture source: NOT VERIFIED — no UVC capture dongle attached; `--source capture` refuses with NOT RUN until it is.")
+lines.append("- Capture source: %s" % (
+    "EXERCISED — the sessions ran the dongle's V4L2 stream on the running service; the dongle's own negotiated modes and USB link remain subject to the docs/spec/10 preflight."
+    if ops.get("source") == "capture"
+    else "NOT VERIFIED — no UVC capture dongle attached; `--source capture` probes the appliance and refuses with NOT RUN until a capture-capable node is found."))
 lines.append("- Audio playback: NOT VERIFIED — no audio sink; %s." % (
     "filesink evidence only" if audio_wired else "speech was disabled for the run (no voice workflow wired)"))
 lines.append("- Hotplug / power brownout / hub power behaviour: not exercised by this run.")
@@ -1109,7 +1172,10 @@ lines.append("- `device-out/runner.log` — the device runner's own log.")
 lines.append("- `report.json` — this report, machine-readable.")
 lines.append("\n## Cleanup\n")
 lines.append("- Session stopped through `POST /api/v1/sessions/{id}/stop`; profile archived through `POST /api/v1/profiles/{id}/status` (to=archived).")
-lines.append("- The uploaded clip was deleted through `DELETE /api/v1/replay/clips/%s`; the token and /tmp stage are removed from the device. The fixture game/edition rows have no delete route and remain inert." % (report["clip_store"]["clip_id"] or "sustained-replay"))
+if ops.get("source") != "capture":
+    lines.append("- The uploaded clip was deleted through `DELETE /api/v1/replay/clips/%s`; the token and /tmp stage are removed from the device. The fixture game/edition rows have no delete route and remain inert." % (report["clip_store"]["clip_id"] or "sustained-replay"))
+else:
+    lines.append("- No clip was uploaded or deleted (the capture source installs nothing); the token and /tmp stage are removed from the device. The fixture game/edition rows have no delete route and remain inert.")
 lines.append("- The service env file was never read, written or restored by this run (ADR-0073): no operator step, no service restart.")
 with open(outdir + "/report.md", "w") as f:
     f.write("\n".join(lines) + "\n")

@@ -1,0 +1,1491 @@
+{
+ "schema_version": 1,
+ "set": "bench-synthetic-002",
+ "origin": "generated_synthetic",
+ "seed_base": 20261019,
+ "profile_file": "profile.json",
+ "samples": [
+  {
+   "id": "bn0001",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "box.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "No coin, no crossing. That is the rule and the whole of it.",
+   "message_id": "bw-01",
+   "speaker": "ferryman",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Sans",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0002",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "box.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "No coin, no crossing. That is the rule and the whole of it.",
+   "message_id": "bw-01",
+   "speaker": "ferryman",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Sans",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0003",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "box.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "No coin, no crossing. That is the rule and the whole of it.",
+   "message_id": "bw-01",
+   "speaker": "ferryman",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Sans",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0004",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "box.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "You paid. I did not say the coin was yours.",
+   "message_id": "bw-02",
+   "speaker": "ferryman",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Sans",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0005",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "box.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "You paid. I did not say the coin was yours.",
+   "message_id": "bw-02",
+   "speaker": "ferryman",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Sans",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0006",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "box.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "You paid. I did not say the coin was yours.",
+   "message_id": "bw-02",
+   "speaker": "ferryman",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Liberation Sans",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0007",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "box.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "There is a second ferry. There is always a second ferry.",
+   "message_id": "bw-03",
+   "speaker": "wren",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Liberation Sans",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0008",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "box.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "There is a second ferry. There is always a second ferry.",
+   "message_id": "bw-03",
+   "speaker": "wren",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Liberation Sans",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0009",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "box.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "There is a second ferry. There is always a second ferry.",
+   "message_id": "bw-03",
+   "speaker": "wren",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Sans",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0010",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "box.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "So the story goes. Stories are cheaper than coins.",
+   "message_id": "bw-04",
+   "speaker": "wren",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Liberation Sans",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0011",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "box.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "So the story goes. Stories are cheaper than coins.",
+   "message_id": "bw-04",
+   "speaker": "wren",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Liberation Sans",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0012",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "box.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "So the story goes. Stories are cheaper than coins.",
+   "message_id": "bw-04",
+   "speaker": "wren",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Liberation Sans",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0013",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "box.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Вода помнит то, что люди прячут.",
+   "message_id": "bw-05",
+   "speaker": "ferryman",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Sans",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0014",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "box.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Вода помнит то, что люди прячут.",
+   "message_id": "bw-05",
+   "speaker": "ferryman",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Sans",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0015",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "box.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "Вода помнит то, что люди прячут.",
+   "message_id": "bw-05",
+   "speaker": "ferryman",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Noto Sans",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0016",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "box.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "This is not a toll. This is a habit.",
+   "message_id": "bw-06",
+   "speaker": "ferryman",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Sans",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0017",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "box.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "This is not a toll. This is a habit.",
+   "message_id": "bw-06",
+   "speaker": "ferryman",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Sans",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0018",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "box.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "This is not a toll. This is a habit.",
+   "message_id": "bw-06",
+   "speaker": "ferryman",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Liberation Sans",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0019",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "box.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "No coin, no crossing. That is the rule and the whole of it.",
+   "message_id": "bw-01",
+   "speaker": "ferryman",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Liberation Sans",
+    "resolution": "640x480",
+    "noise": 1
+   }
+  },
+  {
+   "id": "bn0020",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "box.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "You paid. I did not say the coin was yours.",
+   "message_id": "bw-02",
+   "speaker": "ferryman",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Sans",
+    "resolution": "640x480",
+    "noise": 1
+   }
+  },
+  {
+   "id": "bn0021",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "box.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "There is a second ferry. There is always a second ferry.",
+   "message_id": "bw-03",
+   "speaker": "wren",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "holdout",
+   "variant": {
+    "font": "Liberation Sans",
+    "resolution": "640x480",
+    "noise": 1
+   }
+  },
+  {
+   "id": "bn0022",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "box.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "So the story goes. Stories are cheaper than coins.",
+   "message_id": "bw-04",
+   "speaker": "wren",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Sans",
+    "resolution": "640x480",
+    "noise": 1
+   }
+  },
+  {
+   "id": "bn0023",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "box.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "This is not a toll. This is a habit.",
+   "message_id": "bw-06",
+   "speaker": "ferryman",
+   "text_kind": "dialogue",
+   "scene": "synthetic-harbour",
+   "intended_speech": true,
+   "split": "tuning",
+   "variant": {
+    "font": "Liberation Sans",
+    "resolution": "640x480",
+    "noise": 1
+   }
+  },
+  {
+   "id": "bn0024",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "box.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "",
+   "message_id": null,
+   "speaker": "unknown",
+   "text_kind": "empty",
+   "scene": "synthetic-harbour",
+   "intended_speech": false,
+   "split": "tuning",
+   "variant": {
+    "font": "",
+    "resolution": "640x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0025",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "box.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "",
+   "message_id": null,
+   "speaker": "unknown",
+   "text_kind": "empty",
+   "scene": "synthetic-harbour",
+   "intended_speech": false,
+   "split": "tuning",
+   "variant": {
+    "font": "",
+    "resolution": "720x480",
+    "noise": 0
+   }
+  },
+  {
+   "id": "bn0026",
+   "frames": [
+    {
+     "file": "absent.png",
+     "ts_ns": 100000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 200000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 300000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 400000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 500000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 600000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 700000000
+    },
+    {
+     "file": "text.png",
+     "ts_ns": 800000000
+    },
+    {
+     "file": "box.png",
+     "ts_ns": 900000000
+    },
+    {
+     "file": "absent.png",
+     "ts_ns": 1000000000
+    }
+   ],
+   "source_text": "",
+   "message_id": null,
+   "speaker": "unknown",
+   "text_kind": "empty",
+   "scene": "synthetic-harbour",
+   "intended_speech": false,
+   "split": "holdout",
+   "variant": {
+    "font": "",
+    "resolution": "1280x720",
+    "noise": 0
+   }
+  }
+ ]
+}

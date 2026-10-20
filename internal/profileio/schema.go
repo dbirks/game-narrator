@@ -13,7 +13,7 @@ import (
 // The manifest schema, embedded so an appliance binary can validate an import
 // without a filesystem dependency (docs/spec/16 M1: "JSON-schema and OpenAPI").
 //
-//go:embed schema/gnprofile-1.0.schema.json
+//go:embed schema/gnprofile-1.1.schema.json
 var schemaSource []byte
 
 // SchemaJSON returns the embedded JSON Schema (draft 2020-12) for

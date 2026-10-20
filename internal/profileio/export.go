@@ -80,6 +80,54 @@ func Export(ctx context.Context, s *store.Store, profileID string, opts ExportOp
 	}
 	withhold := !opts.IncludeSourceBytes
 
+	// The approved voices this revision can actually speak with (ADR-0101):
+	// the roster's characters plus the narrator, the set that resolveVoice
+	// can resolve. A roster character whose voice was approved for an older
+	// revision's row (re-minted ids) is deliberately not here — the voice
+	// follows the character row it was approved for, and this revision's
+	// narrator fallback is the honest answer until the voice is approved
+	// against the current roster.
+	roster := make(map[string]bool, len(content.Characters))
+	for _, ch := range content.Characters {
+		roster[ch.ID] = true
+	}
+	roster[narratorKey] = true
+	allVoices, err := s.ListApprovedVoiceRevisions(ctx)
+	if err != nil {
+		return m, fmt.Errorf("profileio: export %s: voices: %w", profileID, err)
+	}
+	var voiceRows []VoiceInfo
+	voiceByCharacter := map[string]string{}
+	for _, v := range allVoices {
+		if !roster[v.Character] || v.Fingerprint == "" || v.ReferenceAssetID == "" {
+			continue
+		}
+		row := VoiceInfo{
+			ID:                v.ID,
+			Character:         v.Character,
+			Revision:          v.Revision,
+			State:             v.State,
+			ReferenceSHA256:   v.ReferenceAssetID,
+			RefTranscript:     v.RefTranscript,
+			ModelID:           v.ModelID,
+			EmbeddingMode:     v.EmbeddingMode,
+			Language:          v.Language,
+			Fingerprint:       v.Fingerprint,
+			Gain:              v.Gain,
+			DesignInstruction: v.DesignInstruction,
+			ConsentProvenance: v.ConsentProvenance,
+			ApprovedBy:        v.ApprovedBy,
+			ApprovedAt:        nilIfEmptyRfc3339(v.ApprovedAt),
+		}
+		voiceRows = append(voiceRows, row)
+		if v.Character != narratorKey {
+			voiceByCharacter[v.Character] = v.ID
+		}
+	}
+	if voiceRows == nil {
+		voiceRows = []VoiceInfo{}
+	}
+
 	m = Manifest{
 		SchemaVersion: SchemaVersion,
 		ProfileID:     content.Profile.ID,
@@ -104,8 +152,10 @@ func Export(ctx context.Context, s *store.Store, profileID string, opts ExportOp
 			ApprovedAt:       nilIfEmpty(content.Profile.PublishedAt),
 			Author:           content.Profile.PublicationAuthor,
 			PreferredVoiceID: nilIfEmpty(content.Profile.PreferredVoiceID),
+			NarratorFallback: ptrBool(content.Profile.NarratorFallback),
 			StoreDigest:      content.Profile.ManifestDigest,
 		},
+		Voices: voiceRows,
 	}
 
 	for _, src := range content.Sources {
@@ -133,6 +183,10 @@ func Export(ctx context.Context, s *store.Store, profileID string, opts ExportOp
 			Status:       ch.Status,
 			VerifiedRefs: orEmptyJSON(ch.VerifiedSourceRefs, "[]"),
 			Portrait:     nilIfEmpty(ch.PortraitAssetID),
+			// The character's approved voice, when this manifest carries it:
+			// the cross-reference a reader needs to answer "does this character
+			// have a voice" without joining the voices section by character.
+			VoiceProfileID: nilIfEmpty(voiceByCharacter[ch.ID]),
 		})
 	}
 	for _, sc := range content.Scenes {
@@ -307,7 +361,7 @@ func ExportBundle(ctx context.Context, deps Deps, profileID string, opts ExportO
 		return Manifest{}, err
 	}
 
-	refs := SourceBlobRefs(m)
+	refs := PackBlobRefs(m)
 	// Resolve every ref before the first byte, exactly as assets.Export does: a
 	// pack that fails halfway is a corrupt file on the other end of the pipe.
 	for _, ref := range refs {
@@ -373,6 +427,39 @@ func SourceBlobRefs(m Manifest) []string {
 		}
 		seen[src.SHA256] = true
 		out = append(out, src.SHA256)
+	}
+	return out
+}
+
+// VoiceBlobRefs lists the approved reference WAVs the manifest's voices name,
+// deduplicated and sorted. A default export lists them as pointers and withholds
+// them; the pack commits them, which is the only way the importing appliance's
+// Reconcile pass can register the voices from bytes (ADR-0101).
+func VoiceBlobRefs(m Manifest) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, v := range m.Voices {
+		if v.ReferenceSHA256 == "" || seen[v.ReferenceSHA256] {
+			continue
+		}
+		seen[v.ReferenceSHA256] = true
+		out = append(out, v.ReferenceSHA256)
+	}
+	return out
+}
+
+// PackBlobRefs is the union of the pack's two blob families: the source payloads
+// and the voice references. One entry per content hash — a hash the manifest
+// names as both a source and a reference travels once.
+func PackBlobRefs(m Manifest) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, ref := range append(append([]string{}, SourceBlobRefs(m)...), VoiceBlobRefs(m)...) {
+		if seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		out = append(out, ref)
 	}
 	return out
 }
@@ -461,6 +548,20 @@ func nilIfEmpty(s string) *string {
 	}
 	return strPtr(s)
 }
+
+// nilIfEmptyRfc3339 renders a nullable timestamp column: nil when unset, the
+// RFC-3339 instant otherwise (voice approval times travel as written).
+func nilIfEmptyRfc3339(t *time.Time) *string {
+	if t == nil {
+		return nil
+	}
+	s := t.UTC().Format(time.RFC3339)
+	return strPtr(s)
+}
+
+// ptrBool renders a bool as a pointer so a manifest field can distinguish an
+// explicit value from an absent one (publication.narrator_fallback).
+func ptrBool(b bool) *bool { return &b }
 
 // orEmptyJSON keeps a JSON column a JSON value: nil would marshal as null, and
 // 0002_content.sql defaults these to [] or {} instead.

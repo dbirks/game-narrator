@@ -29,6 +29,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/dbirks/game-narrator/internal/audio"
+	"github.com/dbirks/game-narrator/internal/capture/usb"
 	"github.com/dbirks/game-narrator/internal/dolphin"
 	"github.com/dbirks/game-narrator/internal/providers"
 	"github.com/dbirks/game-narrator/internal/providers/openai"
@@ -173,6 +175,11 @@ type Options struct {
 	Glob       func(pattern string) ([]string, error)
 	DeviceOpen func(path string) error
 
+	// SysfsRoot is the sysfs root the capture check's USB link read
+	// (internal/capture/usb) walks; empty means the real /sys. Tests point it
+	// at a fabricated tree so the suite never depends on the host's USB bus.
+	SysfsRoot string
+
 	// Roles overrides providers.LoadRoles (tests); nil resolves from
 	// LookupEnv.
 	Roles map[providers.Role]providers.RoleConfig
@@ -188,6 +195,15 @@ type Options struct {
 	// ASRProbe overrides the transcription probe for the speech_asr role
 	// (tests); nil uses the real asr client.
 	ASRProbe ASRProbe
+	// Updates resolves the update check's state for the updates.check row
+	// (ADR-0088); nil renders the row as NOT CONFIGURED rather than reaching
+	// the network unasked.
+	Updates UpdatesProbe
+	// Bluetooth resolves the Bluetooth surface's state for the
+	// bluetooth.audio row (ADR 0091): the adapter plus the session
+	// prerequisites (linger, the headless override); nil leaves the row
+	// NOT CONFIGURED.
+	Bluetooth BluetoothProbe
 
 	// OCRImage overrides the embedded controlled image.
 	OCRImage []byte
@@ -197,6 +213,12 @@ type Options struct {
 	// AGENTS.md rule 5); nil uses dolphin.FixtureDir ($GAME_NARRATOR_FIXTURE_DIR,
 	// default artifacts/fixtures).
 	FixtureRoot func() string
+
+	// AudioDevices overrides the output-device enumeration the
+	// audio.selected check reads (tests: the real enumerator runs
+	// pactl/aplay subprocesses against the host); nil uses
+	// audio.ListDevices.
+	AudioDevices func(ctx context.Context, lookupEnv func(string) (string, bool)) (audio.List, error)
 
 	// Now stamps the report; nil means time.Now.
 	Now func() time.Time
@@ -209,6 +231,16 @@ func (o *Options) fixtureRoot() string {
 		return o.FixtureRoot()
 	}
 	return dolphin.FixtureDir()
+}
+
+// audioDevices applies the AudioDevices seam (tests point it at a fixture
+// enumeration so the suite never depends on the host's live sinks); nil
+// uses the real enumerator.
+func (o *Options) audioDevices() func(ctx context.Context, lookupEnv func(string) (string, bool)) (audio.List, error) {
+	if o.AudioDevices != nil {
+		return o.AudioDevices
+	}
+	return audio.ListDevices
 }
 
 func (o *Options) withDefaults() Options {
@@ -233,6 +265,9 @@ func (o *Options) withDefaults() Options {
 	}
 	if d.DeviceOpen == nil {
 		d.DeviceOpen = defaultDeviceOpen
+	}
+	if d.SysfsRoot == "" {
+		d.SysfsRoot = usb.DefaultSysfsRoot
 	}
 	if d.Now == nil {
 		d.Now = time.Now
@@ -301,6 +336,15 @@ func Run(ctx context.Context, o Options) Report {
 	r.add(ctx, "ocr.controlled_image", r.opts.Timeout, func(ctx context.Context) Check { return r.checkOCRImage(ctx) })
 	r.add(ctx, "capture.devices", r.opts.Timeout, func(ctx context.Context) Check { return r.checkCaptureDevices(ctx) })
 	r.add(ctx, "audio.sinks", r.opts.Timeout, func(ctx context.Context) Check { return r.checkAudioSinks(ctx) })
+	r.add(ctx, "audio.selected", r.opts.Timeout, func(ctx context.Context) Check { return r.checkAudioSelected(ctx) })
+	// The Bluetooth output row (ADR 0091): the radio plus the session
+	// prerequisites; it degrades rather than fails (a radio-less host is
+	// a DEGRADED appliance, not a broken one).
+	r.add(ctx, "bluetooth.audio", r.opts.Timeout, func(ctx context.Context) Check { return r.checkBluetooth(ctx) })
+	// The update notification (ADR-0088): the probe carries its own bounded
+	// network budget (internal/updates), so the row rides the row's own
+	// deadline like every other check.
+	r.add(ctx, "updates.check", r.opts.Timeout, func(ctx context.Context) Check { return r.checkUpdates(ctx) })
 
 	r.checkRoles(ctx)
 
@@ -408,6 +452,7 @@ var groupNames = map[string]string{
 	"providers": "Providers",
 	"emulator":  "Emulator",
 	"game":      "Game",
+	"updates":   "Updates",
 }
 
 func groupFor(id string) string {

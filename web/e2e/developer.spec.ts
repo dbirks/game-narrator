@@ -282,6 +282,10 @@ test("the developer inspector over a real replay session", async ({
   await page.getByTestId(`event-row-${page1.seq}`).click();
   await expect(page.getByTestId("commit-message")).toHaveText("demo-page-1");
   await expect(page.getByTestId("commit-speech-eligible")).toHaveText(/^(yes|no)$/);
+  // The commit's content class (ADR-0083): the session reads it off the
+  // candidate index at commit time. Both commits in the dialogue-advance
+  // fixture are dialogue lines — the dev UI must say so, not guess.
+  await expect(page.getByTestId("commit-text-kind")).toHaveText("dialogue");
   // The pinned row stays selected while the stream keeps delivering: the
   // detail panel still shows the commit after the terminal event landed.
   await expect(page.getByTestId("commit-message")).toHaveText("demo-page-1");
@@ -317,6 +321,22 @@ test("the developer inspector over a real replay session", async ({
     await crop.evaluate((el) => (el as { naturalWidth: number }).naturalWidth),
     "the crop loaded",
   ).toBeGreaterThan(0);
+  // The crop basis the crop was cut through (ADR-0082 amendment 1): the
+  // payload carries the sample's active window, and the page shows it. This
+  // clip is borderless 4:3, so the tracker never settles — the honest answer
+  // is the whole frame, which is also why the borderless feeds (Dolphin and
+  // the synthetic corpus) keep their historic whole-frame mapping: the
+  // settled-window outline must NOT be drawn for a whole-frame basis, while
+  // the region box is still drawn through the (whole-frame) window.
+  const activeWindow = observed.data.active_window as
+    | { x: number; y: number; w: number; h: number; settled: boolean }
+    | undefined;
+  expect(activeWindow, "the observation's payload carries the crop basis").toBeTruthy();
+  expect(activeWindow).toEqual({ x: 0, y: 0, w: 1, h: 1, settled: false });
+  await expect(page.getByTestId("crop-basis")).toContainText(
+    "Crop basis: full frame (window not settled)",
+  );
+  await expect(page.getByTestId("roi-window-box")).toHaveCount(0);
   await expect(page.getByTestId("ocr-normalized")).toContainText("harbour bell");
   await expect(page.getByTestId("ocr-confidence")).not.toHaveText("—");
   await shot("04-observation-detail");

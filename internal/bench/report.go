@@ -63,7 +63,7 @@ func RunBench(ctx context.Context, setDir, split, outDir, boundsPath string) (*R
 		return nil, err
 	}
 	defer os.RemoveAll(framesDir)
-	dirs, err := RenderSamples(&runSet, framesDir)
+	dirs, err := RenderSamples(&runSet, prof.Layout, framesDir)
 	if err != nil {
 		return nil, err
 	}

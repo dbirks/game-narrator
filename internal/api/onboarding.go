@@ -825,6 +825,7 @@ func (s *Server) onbApproveToolReview(w http.ResponseWriter, r *http.Request, ru
 		return
 	}
 	var toolName string
+	var argsJSON []byte
 	for _, c := range calls {
 		if c.ID != itemID {
 			continue
@@ -832,6 +833,7 @@ func (s *Server) onbApproveToolReview(w http.ResponseWriter, r *http.Request, ru
 		var res agent.Result
 		if json.Unmarshal(c.ResultJSON, &res) == nil && res.ReviewRequired {
 			toolName = c.Name
+			argsJSON = c.ArgsJSON
 		}
 		break
 	}
@@ -840,8 +842,45 @@ func (s *Server) onbApproveToolReview(w http.ResponseWriter, r *http.Request, ru
 			"Unprocessable Entity", "no review-required tool call with that id exists on this run")
 		return
 	}
+	// The approved web-source import (ADR-0077) is the one tool review whose
+	// approval must mint the single-use token the import tool consumes: the
+	// curator's yes to THIS source is the rights assertion, and the token is
+	// how the yes reaches the write boundary without the curator retyping
+	// anything. Other tool reviews (editions, quarantines, auditions) record
+	// the decision in the conversation and need no token.
+	var approval *tools.Approval
+	if toolName == "propose_web_import" {
+		var args struct {
+			ProfileID string `json:"profile_id"`
+			SourceID  string `json:"source_id"`
+		}
+		if err := json.Unmarshal(argsJSON, &args); err != nil || args.ProfileID == "" || args.SourceID == "" {
+			s.writeCodeProblem(w, r, http.StatusUnprocessableEntity, "invalid-review-item", codeValidationFailed,
+				"Unprocessable Entity", "the propose_web_import review item carries no parseable profile_id and source_id arguments; it cannot be approved as an import")
+			return
+		}
+		a, err := s.onb.Approvals.Issue(r.Context(), args.ProfileID, user)
+		if err != nil {
+			s.storeProblem(w, r, err, "issue approval", "approval")
+			return
+		}
+		approval = &a
+	}
 	msg := fmt.Sprintf("A human curator (%s) has reviewed and approved the %s review item (tool call %s). "+
 		"Proceed with the work that review released.", user, toolName, itemID)
+	if approval != nil {
+		var args struct {
+			ProfileID string `json:"profile_id"`
+			SourceID  string `json:"source_id"`
+		}
+		_ = json.Unmarshal(argsJSON, &args)
+		msg = fmt.Sprintf("A human curator (%s) has reviewed and approved the web source this propose_web_import named (tool call %s): "+
+			"the curator asserts the rights to import that specific web source (profile %s, source %s). "+
+			"Its bytes may now be staged exactly once: call import_web_source with profile_id %s, source_id %s and approval_token %s, "+
+			"then source_quality on the imported source. The token is single-use and belongs to this profile only; "+
+			"if the import is refused (for example because the page changed), report the refusal and stop — do not retry with the token.",
+			user, itemID, args.ProfileID, args.SourceID, args.ProfileID, args.SourceID, approval.Token)
+	}
 	content, _ := json.Marshal(map[string]string{"role": "user", "content": msg})
 	if _, err := s.onb.AgentStore.AppendAgentMessage(r.Context(), run.ID, "user", content); err != nil {
 		s.storeProblem(w, r, err, "record approval", "run")
@@ -856,9 +895,15 @@ func (s *Server) onbApproveToolReview(w http.ResponseWriter, r *http.Request, ru
 	s.auditCatalogWrite(r, "onboarding.run.approve", map[string]any{
 		"run_id": run.ID, "review_item": itemID, "tool": toolName,
 	})
-	writeJSON(w, http.StatusAccepted, map[string]any{
+	resp := map[string]any{
 		"run_id": run.ID, "job_id": job.ID, "review_item_id": itemID, "tool": toolName,
-	})
+	}
+	if approval != nil {
+		// The grant's id only — the raw token exists in the conversation the
+		// agent resumes with, exactly as the publish boundary does it (ADR-0028).
+		resp["approval_id"] = approval.ID
+	}
+	writeJSON(w, http.StatusAccepted, resp)
 }
 
 // onboardingRequired is the wiring gate: the onboarding deps AND the

@@ -185,3 +185,108 @@ to `screen == DriveScreenDialogueBox`. The recorded cost of the reversion is
 the 9a99985 evidence above: real/live tests leaking into the unit gate
 under host env, the name-entry false success, and a test-dolphin gate that
 can never be rc 0.
+
+## Amendment (2026-10-20): `TestDolphinScenarios` carries the gate check itself
+
+Decision 2 kept `TestDolphinScenarios` out of the unit and replay gates with
+the recipes' `-skip TestDolphinScenarios` flags, but the test itself carried
+no `GN_GATE` check. On a host with `GAME_NARRATOR_GAME_IMAGE_PATH` and the
+fixtures present, a bare `go test -run TestDolphinScenarios ./internal/scenario/`
+— or any go-test run outside the owning gate — executed the recorded-fixture
+replay, so the test-dolphin gate's ownership was enforced only by the Makefile
+and not by the test.
+
+Amendment:
+
+1. **The test carries the check.** `TestDolphinScenarios`
+   (`internal/scenario/dolphin_test.go`) now checks
+   `os.Getenv(dolphin.EnvGate) != "test-dolphin"` as its first statement and
+   plain-skips ("run via make test-dolphin …") otherwise — the same shape and
+   the same plain-skip (not NOT RUN) semantics as the `internal/dolphin`
+   `TestReal*` tests and the rest of the real/live families.
+2. **The scenario phase sets the gate.** The `make test-dolphin` second
+   phase line gains the `GN_GATE=test-dolphin` prefix
+   (`scripts/gates/run-go-gate.sh test-dolphin-scenarios …`), so the gate
+   keeps running the replay and writing the HTML report exactly as before.
+   The recipes' `-skip TestDolphinScenarios` flags (test-unit, test-replay)
+   stay: they are the budget exclusion (the replay's 30-minute phase does not
+   ride the unit gate's timeout), the test-level check is the ownership
+   exclusion. Both together: the replay runs only under the test-dolphin
+   gate's own recipe line.
+
+Validation: `GN_GATE=test-unit go test -count=1 -run TestDolphinScenarios
+-v ./internal/scenario/` SKIPs with the make-test-dolphin instruction (the
+pre-amendment run on the same host executed and PASSED the scenario
+subtests); `GN_GATE=test-dolphin go test -count=1 -run
+'TestDolphinScenarios/dolphin/boot-letterbox' -v ./internal/scenario/`
+still runs the replay. No such gate audit test existed in the tree (nothing
+greps the test families for the check), so the amendment's first check is
+the audit; `gofmt`/`go vet`/`go build` on the touched package clean.
+
+## Amendment 2 (2026-10-20): the dark box form admits the box over a BRIGHT outdoor scene (the G8 telescope)
+
+The G8 item recording (the telescope on the lookout deck, docs/status/
+blocked.md row 1) restores to a BRIGHT outdoor scene: the measured deck
+frame carries letterbox 0.255 (the bright sky top band ~0.51 over the
+mid-luma deck bottom band ~0.255 — the deck is a rendered bright scene, not
+a letterboxed cinematic), a scene centre (mid) of ~90, and a box-less
+boxband mean of 71. The dark box form's letterbox ceiling
+(`s.Letterbox < classBoxDarkLbMax = 0.08`, calibrated on the pure-black
+margins of the indoor first-dialogue scene, lb 0.000) rejects a box over
+such a scene: the box band's own clauses (dark flat band mean < 68, glyph
+edges >= 0.028, band bright <= 0.08, sparse centre text, quiet lower third)
+hold on the deck's dialogue box, but the ceiling fails at lb 0.255, so
+`ClassOf` returned `dark` and `DriveScreenOf` the `cutscene` family — the
+drive's conversation loop (keyed on `ClassBox`) and the fixture recorder's
+box line family (the `dialogue_box` screen) would both miss every line of
+the deck conversation, and the item box with it. A threshold on the
+letterbox axis cannot separate the case: the measured system screens sit at
+lb 0.156-0.212, BETWEEN the indoor box scene (0.000) and the deck (0.255),
+so raising the ceiling would admit the dialogs instead.
+
+Amendment:
+
+1. **The letterbox ceiling becomes a scene-side guard with a measured
+   negative clause.** The dark box form (`internal/dolphin/signature.go`
+   `ClassOf`) now reads: the box band's own clauses
+   (`l3.bright < promptLowerBrightMax && bb.mean < classBoxDarkMaxMean &&
+   bb.edges >= classBoxDarkInkMin && bb.bright <= classBoxDarkBrightMax &&
+   tx.edges <= classBoxDarkTextMax`) AND (`s.Letterbox < classBoxDarkLbMax`
+   OR `mid.mean < classDarkDialogMinMid`). The centre-panel negative clause
+   is the separator the letterbox axis lacks: a system dialog's bright
+   centre panel measures mid 115+ (`classDarkDialogMinMid`, the dark-family
+   dialog floor), while a bright outdoor scene's centre (the deck measures
+   90) does not. A plain bright scene without the box band still fails the
+   box band's `bb.mean < classBoxDarkMaxMean` (the deck's box-less band
+   measures 71), so the relaxation does not turn every bright scene into a
+   box.
+2. **The classifier is unit-tested on the shape.** New synthetic doubles in
+   `internal/dolphin/runner_test.go` (`synthBoxBrightScene`: the deck's
+   measured lb 0.255 / mid 90 with the dark glyph-inked box band — must
+   classify `ClassBox` and pass `RealBoxForm`; `synthBrightSceneNoBox`: the
+   same scene without the box band — must NOT), and
+   `TestDarkBoxFormBrightScene` in
+   `internal/dolphin/screen_class_realbox_test.go` (unit gate, no `Real`
+   pattern) asserting both plus the indoor dark-box regression. The
+   recorded-frame half (`TestScreenClassRecordedFrames`) keeps proving the
+   existing fixtures: every first-dialogue `dialogue_box` frame is still the
+   real box, no name-entry frame is.
+
+Validation: `TestDarkBoxFormBrightScene` FAILS on the pre-amendment
+classifier (the bright-scene box double measured `class=dark` at lb 0.255
+bb[mean=59 edges=0.037] mid=90 — the exact failure) and PASSES on the
+amended one; `TestDarkBoxFormClauses` and `TestScreenClassRecordedFrames`
+(including the 72 retained first-dialogue frames and the name-entry
+negative check) pass unchanged; `GN_GATE=test-unit go test ./internal/
+dolphin/` green (60 s). The measured deck evidence (the retained
+`artifacts/runs/dolphin-savestate-2026-10-20-085709/` and
+dolphin-telescope-* frames) is the calibration: deck box-less frame
+`lb=0.255 bb[mean=71 edges=0.001] mid=90 class=dark`, the start-scene box
+frames `lb=0.000 bb[mean=46-64 edges=0.031-0.178] class=box`.
+
+Reversal: restore the single-clause dark box form (`s.Letterbox <
+classBoxDarkLbMax && l3.bright < ... && ...`) and delete the two synthetic
+doubles and `TestDarkBoxFormBrightScene`. The recorded cost is the G8 item
+recording's blocker above: the deck conversation's boxes (and the item box)
+classify `cutscene`, the conversation drive never sees a box, and the
+fixture records no box lines.

@@ -70,6 +70,39 @@ func TestDarkBoxFormClauses(t *testing.T) {
 	}
 }
 
+// TestDarkBoxFormBrightScene: the box over a BRIGHT outdoor scene (ADR-0065
+// amendment 2, the G8 telescope's lookout deck — measured lb 0.255, the
+// bright sky top band over the mid-luma deck bottom band, the centre panel
+// the scene at mid ~90). The letterbox ceiling alone rejects such a frame
+// (lb >= classBoxDarkLbMax), so the dark box form admits it through the
+// centre-panel negative clause (mid.mean < classDarkDialogMinMid); the plain
+// bright scene without the box band stays out (the box-band mean clause).
+func TestDarkBoxFormBrightScene(t *testing.T) {
+	// The measured shape (the box over the deck): ClassBox and RealBoxForm.
+	sig := ScreenSigOf(synthBoxBrightScene(320, 240))
+	if c, _ := sig.ClassOf(); c != ClassBox {
+		t.Fatalf("bright-scene box class=%s, want box (lb=%.3f bb[mean=%.0f edges=%.3f] mid=%.0f) — the dark box form must admit the box over a bright scene", c, sig.Letterbox, sig.Regions["boxband"].mean, sig.Regions["boxband"].edges, sig.Regions["mid"].mean)
+	}
+	if !sig.RealBoxForm() {
+		t.Fatalf("bright-scene box RealBoxForm=false: the drive's measured goal must pass its own gate: %s", sig.SigLine())
+	}
+
+	// The box-less twin: the same bright scene without the dark box band is
+	// NOT the box (the box-band mean clause keeps it out — the letterbox
+	// relaxation must not turn every bright scene into a box).
+	sig = ScreenSigOf(synthBrightSceneNoBox(320, 240))
+	if c, _ := sig.ClassOf(); c == ClassBox {
+		t.Fatalf("bright scene WITHOUT the box band class=%s, want not box (bb.mean=%.0f >= the dark cap %.0f): %s", c, sig.Regions["boxband"].mean, classBoxDarkMaxMean, sig.SigLine())
+	}
+
+	// Regression: the dark indoor box (the measured first-dialogue shape,
+	// lb 0.000) still classifies through its own (letterbox) clause.
+	sig = ScreenSigOf(synthBoxDark(320, 240))
+	if c, _ := sig.ClassOf(); c != ClassBox {
+		t.Fatalf("dark indoor box regressed: class=%s, want box", c)
+	}
+}
+
 // TestScreenClassRecordedFrames: the recorded-frame half — the classifier's
 // real-box form on the REAL retained frames of the fixture factory (ADR-0054):
 // no recorded name-entry frame may measure the real-box form (the false

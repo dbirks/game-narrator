@@ -8,6 +8,7 @@ import (
 	"io"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,7 +23,6 @@ import (
 	ses "github.com/dbirks/game-narrator/internal/session"
 	"github.com/dbirks/game-narrator/internal/store"
 	"github.com/dbirks/game-narrator/internal/vision"
-	"github.com/dbirks/game-narrator/internal/vision/ocr"
 )
 
 // Info is the API view of a session: a consistent snapshot of its lifecycle
@@ -34,19 +34,42 @@ type Info struct {
 	ProfileID       string `json:"profile_id"`
 	ProfileRevision string `json:"profile_revision"`
 	Mode            string `json:"mode"`
-	SourceKind      string `json:"frame_source"`
+	// Paused is the operator's pause half (docs/spec/08 "…/pause, …/resume"):
+	// true while the session has stopped committing and speaking, false
+	// otherwise. It moves on the pause/resume routes and the snapshot carries
+	// it, so the UI's pause button shows the state the server holds, not the
+	// click the operator made.
+	Paused bool `json:"paused"`
+	// NarratedClasses is the operator's narrated-class setting (docs/spec/09
+	// "/play"): the text classes the commitment policy narrates, normalized —
+	// dialogue first, always present. The default (dialogue alone) is what a
+	// session started without a settings call carries.
+	NarratedClasses []games.TextKind `json:"narrated_classes"`
+	SourceKind      string           `json:"frame_source"`
 	// ClipID is the managed-store clip this run replays (ADR-0073): the id a
 	// session was started with, so the UI's source line can say which clip is
 	// running rather than only which kind. Empty for dir- and device-sourced
 	// sessions.
-	ClipID      string         `json:"clip_id,omitempty"`
-	DevTrace    bool           `json:"dev_trace"`
-	State       string         `json:"state"`
-	Reason      string         `json:"reason,omitempty"`
-	CreatedAt   time.Time      `json:"created_at"`
-	EndedAt     time.Time      `json:"ended_at,omitempty"`
-	EventCursor int64          `json:"event_cursor"`
-	Stats       pipeline.Stats `json:"stats"`
+	ClipID string `json:"clip_id,omitempty"`
+	// CaptureDevice is the UVC HDMI capture device's stable id this run uses
+	// (kind v4l2, ADR-0078): the device the resolution settled on — the
+	// requested id, the persisted selection, or the first usable device — so
+	// a fallback is visible in the snapshot, not guessed from the request.
+	// Empty for every other source kind.
+	CaptureDevice string `json:"capture_device,omitempty"`
+	// CaptureMode is the mode the session asked of that device (e.g. "640x480
+	// MJPEG @ 10 fps"); empty for every other source kind.
+	CaptureMode string `json:"capture_mode,omitempty"`
+	// CaptureModeSource names the mode's provenance: "saved" (the operator's
+	// pin) or "policy" (the ADR-0076 selection); empty for every other kind.
+	CaptureModeSource string         `json:"capture_mode_source,omitempty"`
+	DevTrace          bool           `json:"dev_trace"`
+	State             string         `json:"state"`
+	Reason            string         `json:"reason,omitempty"`
+	CreatedAt         time.Time      `json:"created_at"`
+	EndedAt           time.Time      `json:"ended_at,omitempty"`
+	EventCursor       int64          `json:"event_cursor"`
+	Stats             pipeline.Stats `json:"stats"`
 	// Audio is the session's speech half — the sink, the live controls, the
 	// speech counters and the current utterance — present when the process
 	// has a voice workflow wired and the session's sink built.
@@ -67,6 +90,17 @@ type Info struct {
 	// the dolphin x11grab source delivered nothing for 25 minutes and
 	// nothing in the snapshot said why).
 	Source SourceInfo `json:"source"`
+	// CaptureFPSTarget is the fps of the capture mode this session asked of
+	// its device (the target half of the status bar's "capture 30fps" line,
+	// against the measured Source.FPS). 0 when the source kind has no named
+	// rate (replay, dolphin, manual, test pattern's rate is carried here
+	// when the source is the test pattern).
+	CaptureFPSTarget float64 `json:"capture_fps_target,omitempty"`
+	// CommitToVoice is the commit→voice latency window the status bar reads
+	// (status.go): per committed line, the wall clock of the commit to the
+	// wall clock of the line's audio starting on the sink, kept for the last
+	// N lines. 0/0 until a line completes the window.
+	CommitToVoice CommitToVoiceSummary `json:"commit_to_voice"`
 }
 
 // SourceInfo is the session's capture source self-report: the source's own
@@ -90,18 +124,36 @@ type SourceInfo struct {
 // dev-trace evidence after it ends; the manager's Close is what releases
 // them, which is when the per-session dev-trace stores stop being served.
 type session struct {
-	m        *Manager
-	id       string
-	cancel   context.CancelFunc
-	done     chan struct{}
-	runner   *pipeline.Runner
-	src      capture.Source
-	mu       sync.Mutex
-	info     Info
-	rec      *devTraceRecorder
-	speech   *speechWiring   // nil when the process has no speech pipeline
-	decision *decisionWiring // nil when the session runs local (no System One decision role)
-	stopKind string          // "", "requested", "closed" — who cancelled the run
+	m      *Manager
+	id     string
+	cancel context.CancelFunc
+	done   chan struct{}
+	runner *pipeline.Runner
+	src    capture.Source
+	// controls is the live-control channel (pause/resume/settings) the manager
+	// sends on and the pipeline's single writer drains: the runtime owns the
+	// channel because it owns the policy, and the pipeline owns the apply
+	// because it owns the writer. Buffered (16) so a burst of operator clicks
+	// never blocks the caller; the depth is a bound, not a queue to fill — a
+	// session that let 16 controls pile unapplied has a dead writer, and the
+	// next control's send failure is how that surfaces.
+	controls chan ses.Msg
+	// ctrlClosed marks the control channel closed: run() closes it the moment
+	// the writer is done, so a control that lands after the run has ended is
+	// refused (sendControl answers false) instead of buffered into a dead
+	// session and answered as applied — a phantom success the operator's UI
+	// would render as "paused" on a session that is already over. Guarded by mu.
+	ctrlClosed bool
+	mu         sync.Mutex
+	info       Info
+	rec        *devTraceRecorder
+	speech     *speechWiring   // nil when the process has no speech pipeline
+	decision   *decisionWiring // nil when the session runs local (no System One decision role)
+	// voiceLat samples the line's commit→voice interval (status.go) for the
+	// status bar; the commit watcher and the speech scheduler's publisher
+	// are its two writers. Always non-nil for a started session.
+	voiceLat *frameVoiceSampler
+	stopKind string // "", "requested", "closed" — who cancelled the run
 }
 
 func (s *session) Snapshot() Info {
@@ -142,6 +194,11 @@ func (s *session) Snapshot() Info {
 		FPS:         st.FPS,
 		LastFrameAt: st.LastFrameAt,
 		LastError:   st.LastError,
+	}
+	if s.voiceLat != nil {
+		if sv := s.voiceLat.snapshot(); sv.Count > 0 {
+			info.CommitToVoice = CommitToVoiceSummary{Count: sv.Count, P50MS: sv.P50.Milliseconds()}
+		}
 	}
 	return info
 }
@@ -212,6 +269,13 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 	if err != nil {
 		return Info{}, fmt.Errorf("runtime: build candidate index: %w", err)
 	}
+	// Speaker-link resolution (ADR-0070's link, ADR-0101): a line whose speaker
+	// character is identified by another live character — the placeholder's name
+	// (the INF1 key the speaker-link folded into the target's aliases) — resolves
+	// to the target, so the line speaks with the target's voice. It is computed
+	// once, here, so the speech pipeline and the decision wiring (whose speaker
+	// options are the same distinct ids) agree on what a speaker is.
+	resolveSpeaker := speakerLinkResolver(content.Characters)
 	// A clip id outranks dir: the id is the product path (ADR-0073), and a
 	// request that names both keeps the id — the directory it would resolve
 	// to is exactly <clips store>/<id>, which is what the id already says.
@@ -223,10 +287,11 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 			return Info{}, err2
 		}
 	}
-	src, err := buildFrameSource(kind, dir, m.effectiveReplayRoots(), m.opts.ReplaySpeed, m.opts.DevDolphin, m.opts.ManualSource, nil)
+	srcB, err := buildFrameSource(ctx, kind, dir, m.effectiveReplayRoots(), m.opts.ReplaySpeed, m.opts.DevDolphin, m.opts.ManualSource, m.opts.Capture, nil)
 	if err != nil {
 		return Info{}, err
 	}
+	src := srcB.src
 
 	id := games.NewID()
 	var rec *devTraceRecorder
@@ -241,7 +306,12 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 	}
 
 	runCtx, cancel := context.WithCancel(context.Background()) // the run outlives the request
-	cfg := m.pipelineConfig(req, published, id, content.Regions, idx, kind)
+	// The live-control channel (pause/resume/settings, docs/spec/08): the
+	// runtime owns it (it owns the policy) and the pipeline's single writer
+	// drains it (it owns the apply). Buffered so a burst of operator clicks
+	// never blocks the caller that pressed them.
+	controls := make(chan ses.Msg, 16)
+	cfg := m.pipelineConfig(req, published, id, content.Regions, idx, kind, mode, controls)
 
 	// The Clef adjudication (docs/spec/05, ADR-0050): when the process has a
 	// configured System One decision role, the session's commitment policy
@@ -268,9 +338,13 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 			if t != "" {
 				texts[msg.ID] = t
 			}
-			if msg.SpeakerID != "" && !speakerSeen[msg.SpeakerID] {
-				speakerSeen[msg.SpeakerID] = true
-				speakers = append(speakers, pipeline.SpeakerOption{ID: msg.SpeakerID})
+			if msg.SpeakerID != "" {
+				// The option is the resolved speaker: a placeholder the curator
+				// linked is offered under the character it was identified as.
+				if sp := resolveSpeaker(msg.SpeakerID); sp != "" && !speakerSeen[sp] {
+					speakerSeen[sp] = true
+					speakers = append(speakers, pipeline.SpeakerOption{ID: sp})
+				}
 			}
 		}
 		cfg.Reducer.Adjudicate = true
@@ -289,23 +363,37 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 	}
 
 	sess := &session{
-		m:      m,
-		id:     id,
-		cancel: cancel,
-		done:   make(chan struct{}),
-		runner: runner,
-		src:    src,
+		m:        m,
+		id:       id,
+		cancel:   cancel,
+		done:     make(chan struct{}),
+		runner:   runner,
+		src:      src,
+		controls: controls,
+		// The sampler exists even when the speech wiring is absent: a
+		// session that never speaks reports 0/0 from it, which is the same
+		// honest shape the snapshot carries from an unwired sink.
+		voiceLat: newFrameVoiceSampler(),
 	}
 	sess.info = Info{
 		ID:              id,
 		ProfileID:       published.ID,
 		ProfileRevision: strconv.Itoa(published.RevisionNum),
 		Mode:            mode,
-		SourceKind:      kind,
-		ClipID:          req.FrameSource.ClipID,
-		DevTrace:        req.DevTrace,
-		State:           StateStarting,
-		CreatedAt:       time.Now().UTC(),
+		// The narrated classes start at the documented default (dialogue
+		// alone); a mid-session settings call is what moves them, and the
+		// snapshot carries the current set so the UI's toggles read the
+		// server's state, not the form's last click.
+		NarratedClasses:   []games.TextKind{games.TextDialogue},
+		SourceKind:        kind,
+		ClipID:            req.FrameSource.ClipID,
+		DevTrace:          req.DevTrace,
+		CaptureDevice:     srcB.device,
+		CaptureMode:       srcB.mode,
+		CaptureModeSource: srcB.modeSource,
+		CaptureFPSTarget:  srcB.modeFPS,
+		State:             StateStarting,
+		CreatedAt:         time.Now().UTC(),
 	}
 	sess.rec = rec
 
@@ -322,7 +410,7 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 			"profile_id":       published.ID,
 			"profile_revision": published.RevisionNum,
 			"mode":             mode,
-			"frame_source":     frameSourceEvent(kind, req.FrameSource.ClipID),
+			"frame_source":     frameSourceEvent(kind, req.FrameSource.ClipID, srcB.device, srcB.mode, srcB.modeSource),
 			"dev_trace":        req.DevTrace,
 			"regions":          len(content.Regions),
 		}),
@@ -342,6 +430,21 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 		m.opts.Jobs.SetForegroundBusy(true)
 	}
 
+	// The no-signal wrapper (internal/capture/signal, docs/spec/12): on the
+	// live v4l2 input it holds frames back from the pipeline while the card
+	// reports no HDMI signal and publishes the capture.signal transitions;
+	// the fixture sources pass through unchanged.
+	src = m.newSignalSource(src, id)
+
+	if rec != nil {
+		// The dev-trace evidence must describe the same crop basis the pipeline
+		// reads: the recorder crops its samples through the session's own crop
+		// options and stamps the active window it sampled on the text.observed
+		// events (ADR-0082 amendment 1). It is set before the source starts, so
+		// no sample can race the assignment.
+		rec.SetCropOptions(cfg.Crop)
+	}
+
 	obs := &observedSource{inner: src, rec: rec, regions: content.Regions, log: m.log}
 	tracePub := &tracePublisher{hub: m.opts.Hub, rec: rec, sessionID: id}
 	var pub ses.Publisher = tracePub
@@ -354,12 +457,32 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 	// misconfiguration must not take the capture down with it.
 	if m.opts.Speech != nil {
 		speakers := make(map[string]string, len(content.Messages))
+		// prewarmTexts is the canonical TTS text of every profile message —
+		// the best prediction of what a later commit of the line will read,
+		// the same precedence the decision wiring renders its texts with.
+		// The prewarm synthesises the successor under this text, so the key
+		// a later commit computes (observed text, the same string for a
+		// confirmed line) resolves to the prewarmed bytes.
+		prewarmTexts := make(map[string]string, len(content.Messages))
 		for _, msg := range content.Messages {
 			if msg.SpeakerID != "" {
-				speakers[msg.ID] = msg.SpeakerID
+				// The line's speaker, through the curator's link (ADR-0070/
+				// ADR-0101): a placeholder the target character's aliases name
+				// speaks with the target's voice, not the placeholder's.
+				speakers[msg.ID] = resolveSpeaker(msg.SpeakerID)
+			}
+			t := msg.OriginalText
+			if t == "" {
+				t = msg.NormalizedText
+			}
+			if t == "" {
+				t = msg.SpeechText
+			}
+			if t != "" {
+				prewarmTexts[msg.ID] = strings.TrimSpace(t)
 			}
 		}
-		if w := m.newSpeechWiring(id, speakers, runCtx); w != nil {
+		if w := m.newSpeechWiring(id, speakers, published.NarratorFallback, runCtx, runner, idx, prewarmTexts, sess.voiceLat); w != nil {
 			sess.speech = w
 			pub = &commitWatcher{w: w, inner: tracePub}
 		}
@@ -440,11 +563,18 @@ func (m *Manager) clipSourceDir(clipID string) (string, error) {
 // kind and the clip id (a slug, never a path) are evidence the developer UI
 // correlates the run to its input with; a dir-shaped source names no path —
 // the event stream is developer-readable and a host path is not event data
-// (docs/spec/14 "Filesystem").
-func frameSourceEvent(kind, clipID string) map[string]any {
+// (docs/spec/14 "Filesystem"). A v4l2 run additionally names the capture
+// device's stable id and the mode it asked (ADR-0078): the correlation the
+// dongle's physical identity and the run's pixels need.
+func frameSourceEvent(kind, clipID, capDevice, capMode, capModeSource string) map[string]any {
 	out := map[string]any{"kind": kind}
 	if clipID != "" {
 		out["clip_id"] = clipID
+	}
+	if capDevice != "" {
+		out["device"] = capDevice
+		out["mode"] = capMode
+		out["mode_source"] = capModeSource
 	}
 	return out
 }
@@ -493,7 +623,14 @@ func (m *Manager) checkRequest(ctx context.Context, req StartRequest) error {
 // pipelineConfig assembles the pipeline from the published content and the
 // session's settings. Replay runs in ModeReplay (lossless, the recording it
 // claims to be); every other source runs live.
-func (m *Manager) pipelineConfig(req StartRequest, published games.Profile, sessionID string, regions []games.Region, idx *matcher.Index, kind string) pipeline.Config {
+// pipelineConfig builds the pipeline's settings for one run. decisionMode is
+// the normalized decision mode (the Mode* constants): it seeds the two halves
+// of the commitment policy that carry it — the session reducer's
+// PredictiveMode and the tracker's — so a predictive session commits the way
+// it was started, and the mid-session settings control is what moves them
+// after. controls is the live-control channel (nil only if the caller does
+// not wire one; the runtime always does).
+func (m *Manager) pipelineConfig(req StartRequest, published games.Profile, sessionID string, regions []games.Region, idx *matcher.Index, kind, decisionMode string, controls chan ses.Msg) pipeline.Config {
 	mode := pipeline.ModeLive
 	// The manual source (the test seam) hands the pipeline a recording it
 	// claims to be — the clip's own frames on the clip's own source clock,
@@ -505,10 +642,12 @@ func (m *Manager) pipelineConfig(req StartRequest, published games.Profile, sess
 	if kind == SourceKindReplay || kind == SourceKindManual {
 		mode = pipeline.ModeReplay
 	}
-	engine := m.opts.OCR
-	if engine == nil {
-		engine = ocr.Tesseract{}
-	}
+	predictive := decisionMode == ModePredictive
+	// The session's engine: the configured engine (a test seam) as given, else
+	// the process-shared warm pool (issue #13, ADR-0100) — the same engine all
+	// of the pipeline's regions share, so the pool's one-read-at-a-time
+	// serialisation (ADR-0100 decision 2) is the session's OCR pacing.
+	engine := m.ocrEngine()
 	cfg := pipeline.Config{
 		Mode:            mode,
 		SessionID:       sessionID,
@@ -516,13 +655,23 @@ func (m *Manager) pipelineConfig(req StartRequest, published games.Profile, sess
 		Regions:         regions,
 		OCR:             engine,
 		Index:           idx,
-		Reducer:         ses.Config{},
-		Tracker:         m.trackerConfig(kind),
+		Reducer:         ses.Config{PredictiveMode: predictive},
+		Tracker:         m.trackerConfig(kind, predictive),
+		Controls:        controls,
 		Preprocess:      vision.DefaultSteps(),
-		Crop:            vision.CropOptions{},
-		// A textbox region is dialogue (the synthetic corpus and the documented
-		// default are both dialogue boxes); per-region text-kind hints land with
-		// profile-level OCR settings, not one session's guess.
+		// One active-picture tracker per session (ADR-0082): the region crops
+		// map through the tracked window once it has settled and the whole
+		// frame until it has; a borderless source (Dolphin) never settles, so
+		// its crops keep mapping the whole frame.
+		Crop: vision.CropOptions{
+			Letterbox: vision.LetterboxDetect,
+			Tracker:   vision.NewTracker(vision.TrackerConfig{}),
+		},
+		// The fallback text-kind hint for regions whose on-screen role names no
+		// class of its own: the dialogue box is the documented default. A region
+		// whose role does name a class (sign, item, menu, tutorial) ranks its
+		// readings with that class — the pipeline derives the per-region hint
+		// from games.RegionType.TextKindHint (docs/spec/04 "Visual profiles").
 		TextKindHint: games.TextDialogue,
 	}
 	if fb := m.opts.OCRFallback; fb != nil && fb.Secondary != nil {
@@ -587,11 +736,19 @@ func difficultFontIn(regions []games.Region) bool {
 // test documents ("tracker tuned to the clip's 10 Hz cadence — documented
 // settings, not fixture branches"). Live sources keep the documented
 // defaults.
-func (m *Manager) trackerConfig(kind string) recognition.Config {
+func (m *Manager) trackerConfig(kind string, predictive bool) recognition.Config {
 	if m.opts.Tracker != (recognition.Config{}) {
-		return m.opts.Tracker
+		cfg := m.opts.Tracker
+		// An explicitly supplied tracker config carries its own thresholds, but
+		// the decision mode is the session's, not the caller's: the test seam
+		// exists to override the cadence knobs, and a predictive session must
+		// still reveal its prefixes (the text machine's half of the mode) even
+		// when the tracker's rest came from Options.
+		cfg.PredictiveMode = predictive
+		return cfg
 	}
 	cfg := recognition.DefaultConfig()
+	cfg.PredictiveMode = predictive
 	// The manual source speaks the recording's recorded clock (its frames
 	// carry the clip's timestamps), so the tracker is sized the same way a
 	// replay session's is: the 10 fps cadence is what the knobs assume.
@@ -615,6 +772,19 @@ func (s *session) run(runCtx context.Context, src *observedSource, pub ses.Publi
 		"source", src.ID(), "dev_trace", s.info.DevTrace)
 
 	err := s.runner.Run(runCtx, src, pub)
+
+	// The writer is done, so the live-control channel closes with it: a pause,
+	// resume or settings that lands after the run ended is a refusal (the
+	// 409 the operator deserves), not a message buffered into a session that
+	// will never read it and reported as applied. Safe to close here — Run
+	// returns only after the writer has exited, so nothing reads it anymore
+	// (the writer treats a closed channel as "the operator stopped steering").
+	s.mu.Lock()
+	if !s.ctrlClosed {
+		close(s.controls)
+		s.ctrlClosed = true
+	}
+	s.mu.Unlock()
 
 	// The session's audio ends with the run: pending synthesis is cancelled,
 	// active playback stops within the scheduler's bound, the sink releases
@@ -722,6 +892,302 @@ func (m *Manager) Get(id string) (Info, bool) {
 		return Info{}, false
 	}
 	return s.Snapshot(), true
+}
+
+// Active reports the session that is starting, running or stopping, with
+// its fresh snapshot — the "active session" the status bar and watchdogs
+// read. The manager's one-active-session invariant (docs/spec/01) means at
+// most one answer exists; the scan is over the bounded finished-sessions
+// map the developer inspector keeps, like ActiveCaptureDevice. A finished
+// session is not active: its final counters are its final counters, and a
+// status bar that narrated them would describe a run that is over.
+func (m *Manager) Active() (Info, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, s := range m.sessions {
+		snap := s.Snapshot()
+		switch snap.State {
+		case StateStarting, StateRunning, StateStopping:
+			return snap, true
+		}
+	}
+	return Info{}, false
+}
+
+// ActiveCaptureDevice reports the v4l2 session that holds a capture device
+// (ADR-0078): the device's stable id and the session that is running it, for
+// the capture preview route's busy check. The UVC bus is single-consumer — a
+// preview and a session on the same device cannot both open it — so the
+// API answers a same-device preview 503 capture-busy (with the session id
+// named) instead of a raw FFmpeg "device or resource busy". A session in a
+// terminal state releases the device, so it is not reported. The one-active-
+// session invariant means at most one such session exists; the scan is over
+// the manager's map, which holds the bounded set of finished sessions the
+// developer inspector keeps.
+func (m *Manager) ActiveCaptureDevice() (deviceID, sessionID string, active bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, s := range m.sessions {
+		snap := s.Snapshot()
+		switch snap.State {
+		case StateStarting, StateRunning, StateStopping:
+		default:
+			continue
+		}
+		if snap.SourceKind == SourceKindV4L2 && snap.CaptureDevice != "" {
+			return snap.CaptureDevice, id, true
+		}
+	}
+	return "", "", false
+}
+
+// Pause stops a running session's commitment and speech
+// (docs/spec/08 "…/pause": "pause stops new speech and fences pending
+// utterances"). It is one control message to the session's single writer:
+// the reducer stops committing (the commit gate reads the paused flag) and
+// cancels the in-flight recognitions and rankings, and the session's speech
+// wiring — subscribed to the same event stream on the same chain — fences
+// the audio still queued or playing. The answer is the session's fresh
+// snapshot (the operator's UI reads paused from it, so the button shows the
+// server's state). Pressing pause on an already-paused session is a no-op
+// that returns the same snapshot: a duplicate is not an error the operator
+// needs.
+func (m *Manager) Pause(id string) (Info, error) {
+	return m.controlSession(id, ses.ControlMsg{
+		Kind:   ses.ControlPause,
+		Reason: "operator",
+	}, func(i Info) (bool, error) {
+		if i.Paused {
+			return true, nil // idempotent: already where the pause wanted to be
+		}
+		return false, nil
+	})
+}
+
+// Resume continues a paused session from the next commit
+// (docs/spec/08 "…/resume"). The session's text machines kept advancing
+// through the pause — the observations were real — so the resume changes no
+// belief: the commit policy picks up where the evidence stands, and the next
+// box that is ready with a valid ranking commits exactly once. A resume can
+// therefore never burst a backlog of the paused window's lines; the backlog
+// was never held, it was observed and decided, and the decisions are
+// idempotent. Symmetric with Pause, resuming an unpaused session is a no-op.
+func (m *Manager) Resume(id string) (Info, error) {
+	return m.controlSession(id, ses.ControlMsg{
+		Kind:   ses.ControlResume,
+		Reason: "operator",
+	}, func(i Info) (bool, error) {
+		if !i.Paused {
+			return true, nil
+		}
+		return false, nil
+	})
+}
+
+// SetSettings applies the operator's mid-session policy (docs/spec/08
+// "…/settings", docs/spec/09 "/play"): the decision mode and the narrated
+// classes. The body is partial (a nil field keeps its current value); the
+// merged request is validated against the documented vocabulary (mode is the
+// Mode* constants, the classes are games.TextKind words), and a request that
+// names the state the session already has is a no-op — no control message, no
+// event — because a settings message is an operator-visible change, and one
+// that changed nothing would be a lie in the event log. The answer is the
+// session's fresh snapshot, which carries the applied mode and classes.
+func (m *Manager) SetSettings(id string, body SessionSettings) (Info, error) {
+	sess, err := m.runningSession(id)
+	if err != nil {
+		return Info{}, err
+	}
+	sess.mu.Lock()
+	cur := sess.info
+	sess.mu.Unlock()
+
+	mode := cur.Mode
+	if body.Mode != nil && *body.Mode != "" {
+		mode = *body.Mode
+	}
+	if mode != ModeConservative && mode != ModePredictive {
+		return Info{}, fmt.Errorf("%w: mode must be %q or %q, got %q",
+			ErrInvalidSessionSettings, ModeConservative, ModePredictive, mode)
+	}
+
+	kinds := cur.NarratedClasses
+	if body.NarratedClasses != nil {
+		kinds = make([]games.TextKind, 0, len(*body.NarratedClasses))
+		for _, w := range *body.NarratedClasses {
+			k := games.TextKind(w)
+			if !validTextKind(k) {
+				return Info{}, fmt.Errorf("%w: unknown text kind %q", ErrInvalidSessionSettings, w)
+			}
+			kinds = append(kinds, k)
+		}
+	}
+
+	norm := normalizeKinds(kinds)
+	sameMode := mode == cur.Mode
+	sameKinds := sameKinds(norm, cur.NarratedClasses)
+	if sameMode && sameKinds {
+		return sess.Snapshot(), nil // the session already has this policy
+	}
+
+	predictive := mode == ModePredictive
+	if !sess.sendControl(ses.ControlMsg{
+		Kind:   ses.ControlSettings,
+		Reason: "operator",
+		Settings: ses.Settings{
+			Predictive:    predictive,
+			NarratedKinds: norm,
+		},
+	}) {
+		return Info{}, fmt.Errorf("%w: the session's writer is not accepting controls", ErrSessionNotRunning)
+	}
+	sess.mu.Lock()
+	if sess.info.State == StateRunning || sess.info.State == StateStarting {
+		sess.info.Mode = mode
+		sess.info.NarratedClasses = norm
+	}
+	sess.mu.Unlock()
+	return sess.Snapshot(), nil
+}
+
+// validTextKind reports whether a games.TextKind word is one of the documented
+// classes. The vocabulary is the spec's; a word outside it is a 400, not a
+// guess — a filter that cannot name a class must not invent one.
+func validTextKind(k games.TextKind) bool {
+	switch k {
+	case games.TextDialogue, games.TextSign, games.TextItem,
+		games.TextMenu, games.TextTutorial, games.TextSystem, games.TextOther:
+		return true
+	default:
+		return false
+	}
+}
+
+// normalizeKinds is the session reducer's narrated-class normalization for the
+// API's sake: dedupe, force dialogue first (the product's default), keep the
+// request's order for the rest. It is the runtime's copy of the rule because
+// the runtime is what validates the request — the reducer would refuse the
+// message anyway, and a 500 is a worse answer than a 400.
+func normalizeKinds(kinds []games.TextKind) []games.TextKind {
+	seen := map[games.TextKind]bool{}
+	out := []games.TextKind{}
+	if len(kinds) == 0 {
+		return []games.TextKind{games.TextDialogue}
+	}
+	// dialogue first when it is requested; when it is not, it is still first,
+	// because the commitment policy force-includes it (the session reducer's
+	// normalize does the same, and the snapshot must show what is applied).
+	if !seen[games.TextDialogue] {
+		out = append(out, games.TextDialogue)
+		seen[games.TextDialogue] = true
+	}
+	for _, k := range kinds {
+		if k == games.TextDialogue || seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, k)
+	}
+	return out
+}
+
+// sameKinds compares two normalized narrated-class lists element-wise. Both
+// sides are normalizeKinds' output (dialogue first, deduped), so value
+// equality is the right test — the order is part of the shape.
+func sameKinds(a, b []games.TextKind) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// controlSession is the shared path of the binary live controls (pause,
+// resume): look the session up, confirm it can still be steered (a terminal
+// session is 409, not a dropped message), apply the idempotence check the
+// caller supplies against the current snapshot, and — when the control is
+// new — hand it to the session's single writer and update the snapshot's
+// operator state. The snapshot the answer carries is taken after the send,
+// so it shows the state the control intended, not the state the click made.
+func (m *Manager) controlSession(id string, ctl ses.ControlMsg, skip func(Info) (bool, error)) (Info, error) {
+	sess, err := m.runningSession(id)
+	if err != nil {
+		return Info{}, err
+	}
+	if skip != nil {
+		if do, err := skip(sess.Snapshot()); err != nil {
+			return Info{}, err
+		} else if do {
+			return sess.Snapshot(), nil
+		}
+	}
+	if !sess.sendControl(ctl) {
+		return Info{}, fmt.Errorf("%w: the session's writer is not accepting controls", ErrSessionNotRunning)
+	}
+	sess.mu.Lock()
+	if sess.info.State == StateRunning || sess.info.State == StateStarting {
+		switch ctl.Kind {
+		case ses.ControlPause:
+			sess.info.Paused = true
+		case ses.ControlResume:
+			sess.info.Paused = false
+		}
+	}
+	sess.mu.Unlock()
+	return sess.Snapshot(), nil
+}
+
+// runningSession looks a session up and answers ErrSessionNotRunning when it
+// has reached a terminal state — the live-control rule: a control is refused,
+// with the 409 the spec names, rather than sent into a run that is already
+// over. A missing session is the distinct ErrSessionNotFound (a 404), because
+// "no such session" and "the session is over" are different answers to the
+// operator.
+func (m *Manager) runningSession(id string) (*session, error) {
+	m.mu.Lock()
+	closed := m.closed
+	m.mu.Unlock()
+	if closed {
+		return nil, ErrManagerClosed
+	}
+	sess, ok := m.sessionByID(id)
+	if !ok {
+		return nil, ErrSessionNotFound
+	}
+	sess.mu.Lock()
+	state := sess.info.State
+	sess.mu.Unlock()
+	if state == StateStopped || state == StateFailed {
+		return nil, ErrSessionNotRunning
+	}
+	return sess, nil
+}
+
+// sendControl hands one live control to the session's single writer. The send
+// is non-blocking into the buffer: the buffer exists so a burst of operator
+// clicks never blocks the caller, and a full buffer means the writer is not
+// draining — a wedged session, which the caller answers as not-running rather
+// than pretending the control landed. A closed channel (the run is over) is
+// the same answer; the close flag is checked under the same lock that run()
+// takes to close, so a control is never sent into a channel that is closing
+// or closed — a send on a closed channel would panic, and a panic in the
+// operator's click handler is a worse answer than the refusal.
+func (s *session) sendControl(m ses.Msg) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ctrlClosed {
+		return false
+	}
+	select {
+	case s.controls <- m:
+		return true
+	default:
+		return false
+	}
 }
 
 // SetAudio applies the operator's live audio controls to one session
@@ -842,5 +1308,61 @@ func (m *Manager) Close() {
 		case <-deadline:
 			m.log.Warn("manager close did not wait out the run", "session_id", s.id)
 		}
+	}
+}
+
+// speakerLinkResolver is the roster's speaker resolution (ADR-0070's link,
+// ADR-0101): a line whose speaker character is identified by another live
+// character — the placeholder's name, the opaque speaker key the
+// speaker-link folded into the target's aliases — resolves to the target, so
+// the line speaks with the character the curator settled the identity to,
+// and with the voice that character carries.
+//
+// The rule is deliberately narrow. It follows the link the speaker-link
+// action leaves behind (placeholder retired, its name in the target's
+// aliases, the lines re-pointed), it resolves at most one hop (a chain of
+// aliases is a roster defect, not a resolution path), and it leaves
+// everything else alone: a speaker that matches no character resolves to
+// itself, an unattributed line stays unattributed, and a retired speaker
+// whose name no live character carries stays retired — nothing is invented,
+// the docs/spec/04 rule for the whole attribution pipeline.
+func speakerLinkResolver(characters []games.Character) func(string) string {
+	names := make(map[string]string, len(characters))
+	byName := map[string]string{}
+	for _, c := range characters {
+		names[c.ID] = c.Name
+		if c.Status == games.CharacterRetired {
+			// A retired row identifies nobody: its identity is the target's.
+			continue
+		}
+		var aliases []string
+		if len(c.Aliases) > 0 {
+			_ = json.Unmarshal(c.Aliases, &aliases)
+		}
+		for _, a := range aliases {
+			if a == "" {
+				continue
+			}
+			if _, taken := byName[a]; !taken {
+				// Two live characters claiming one spelling is a roster
+				// contradiction the import would have reported; the first
+				// stands, and the line keeps its own speaker rather than
+				// guessing between the two.
+				byName[a] = c.ID
+			}
+		}
+	}
+	return func(speakerID string) string {
+		if speakerID == "" {
+			return speakerID
+		}
+		name, known := names[speakerID]
+		if !known || name == "" {
+			return speakerID
+		}
+		if target, ok := byName[name]; ok && target != speakerID {
+			return target
+		}
+		return speakerID
 	}
 }

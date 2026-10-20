@@ -4,7 +4,11 @@
 
 package scenario
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/dbirks/game-narrator/internal/games"
+)
 
 func parseAssertions(items []*ynode) ([]Assertion, error) {
 	out := make([]Assertion, 0, len(items))
@@ -17,7 +21,7 @@ func parseAssertions(items []*ynode) ([]Assertion, error) {
 			return nil, fmt.Errorf("line %d: assertion %d: type is required (string)", item.line, i+1)
 		}
 		if !knownAssertionTypes[typ] {
-			return nil, fmt.Errorf("line %d: unknown assertion type %q (known: message_detected, message_committed_count, speech_cancelled, no_duplicate_commit, no_stale_generation_applied, events_order, no_stale_speech, no_duplicate_speech, late_result_discarded, duplicate_result_discarded, no_voice_substitution, fault_count, committed_only, provider_degraded)", line, typ)
+			return nil, fmt.Errorf("line %d: unknown assertion type %q (known: message_detected, message_committed_count, speech_cancelled, no_duplicate_commit, no_stale_generation_applied, events_order, no_stale_speech, no_duplicate_speech, late_result_discarded, duplicate_result_discarded, no_voice_substitution, fault_count, committed_only, committed_kind, provider_degraded)", line, typ)
 		}
 		a := Assertion{Type: typ, Line: line}
 		allowed := allowedFields[typ]
@@ -52,6 +56,17 @@ func parseAssertions(items []*ynode) ([]Assertion, error) {
 					return nil, fmt.Errorf("line %d: count must be a non-negative integer", l)
 				}
 				a.Count = v
+			case "engines":
+				v, l, ok := item.listAt(k)
+				if !ok || len(v) == 0 {
+					return nil, fmt.Errorf("line %d: engines must be a non-empty list of OCR engine names", l)
+				}
+				for j, n := range v {
+					if n.kind != yscalar || n.str == "" || !ocrEngineNames[n.str] {
+						return nil, fmt.Errorf("line %d: engines[%d] must be one of tesseract, truth (got %q)", n.line, j, n.str)
+					}
+					a.Engines = append(a.Engines, n.str)
+				}
 			case "names":
 				v, l, ok := item.listAt(k)
 				if !ok || len(v) == 0 {
@@ -122,6 +137,16 @@ func parseAssertions(items []*ynode) ([]Assertion, error) {
 		case "committed_only":
 			if len(a.Names) == 0 {
 				return nil, fmt.Errorf("line %d: names is required for %s", line, typ)
+			}
+		case "committed_kind":
+			if a.MessageID == "" {
+				return nil, fmt.Errorf("line %d: message_id is required for %s", line, typ)
+			}
+			if a.Kind == "" {
+				return nil, fmt.Errorf("line %d: kind is required for %s", line, typ)
+			}
+			if _, err := games.ParseTextKind(a.Kind); err != nil {
+				return nil, fmt.Errorf("line %d: kind %q is not a known content class (%v)", line, a.Kind, err)
 			}
 		case "provider_degraded":
 			if a.Role == "" {

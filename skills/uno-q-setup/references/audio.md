@@ -25,14 +25,89 @@ an operator option with the caveats below.
   `/etc/game-narrator/env` (there is no app env variable for the sink —
   it is the OS default sink; see references/install.md).
 
+## Audio over the hub HDMI (ANX7625 bridge)
+
+The UNO Q's USB-C DisplayPort also carries audio into a hub with an
+ANX7625 bridge chip and an HDMI out (verified into a Pioneer VSX-823;
+its ELD is what the sink reports). Despite the sink's name
+(`…HDMI__HDMI__sink`), the path that reaches the receiver is the
+**default** ALSA route — MultiMedia4 → SEC_MI2S → ANX7625 → USB-C DP →
+hub HDMI. Leave the mixer routes alone:
+`SEC_MI2S_RX Audio Mixer MultiMedia4` (numid 207) **on**,
+`DISPLAY_PORT_RX Audio Mixer MultiMedia4` (numid 135) **off**. The
+DisplayPort route is a dead end (no DP backend dai-link in the qcm2290
+device tree; enabling it gives `q6asm_dai_prepare: ret:-22`).
+
+`aplay -D hw:1,3 tone.wav` through it is audible (user-confirmed on the
+receiver). PipeWire's default negotiation on the same sink is **silent**
+while the PCM runs (it picked S24_LE + MMAP + 10 ms periods + tsched,
+and the bridge only reconfigures audio at stream start). Fix — force the
+aplay-equivalent config with a user-level WirePlumber rule,
+`~/.config/wireplumber/wireplumber.conf.d/82-hdmi-bridge.conf`:
+
+```ini
+monitor.alsa.rules = [
+  {
+    matches = [
+      {
+        node.name = "~alsa_output.platform-sound.HDMI.*"
+      }
+    ]
+    actions = {
+      update-props = {
+        audio.format = "S16LE"
+        audio.rate = "48000"
+        audio.channels = "2"
+        api.alsa.period-size = 6240
+        api.alsa.period-num   = 4
+        api.alsa.headroom = 0
+        api.alsa.disable-mmap = true
+        api.alsa.disable-tsched = true
+        api.alsa.disable-batch = true
+        session.suspend-timeout-seconds = 0
+      }
+    }
+  }
+]
+```
+
+then `systemctl --user restart wireplumber` (HDMI sink stays default).
+`session.suspend-timeout-seconds = 0` keeps the stream and the receiver's
+ELD lock alive between narrations (cost: ~520 ms buffer latency).
+
+Verify without ears: with PipeWire playing a WAV, compare
+`/proc/asound/card1/pcm3p/sub0/hw_params` against the aplay reference —
+it must read `RW_INTERLEAVED / S16_LE / 2ch / 48000 / period_size 6240 /
+buffer_size 24960`, state RUNNING, `hw_ptr` advancing, and `dmesg` shows
+`q6asm_dai_prepare: pcm size 99840 period 4 period_sz 6240 vs 24960 rate
+48000 ch 2` (byte-identical to aplay's line). If they match, the user
+should hear the tone — ask them. Issue #5 has the full measurement
+table.
+
 ## Bluetooth (best-effort)
+
+The appliance's web UI does this itself (ADR-0091): Settings → Audio →
+"Bluetooth output" runs the same scan / pair / trust / connect /
+disconnect / forget / repair operations against the same bluetoothd over
+D-Bus — no `bluetoothctl`, no PIN dialog (the NoInputNoOutput agent is the
+product's; a PIN-requiring device gets the daemon's reason). The
+`bluetoothctl` recipe below is the **human fallback** for pre-package
+boards or a UI that is unreachable; both paths drive the same daemon, so
+state does not split. The UI badges the issue-#3 state (connected, no A2DP
+unit) as "needs repair" with a re-pair button, and at boot the service
+holds the stored selection's headset connected (three tries, five seconds
+apart) when it names a `bluez_output.<MAC>.1` sink. `doctor` carries a
+`bluetooth` row (adapter, linger, headless override — degraded, not
+failed, when the radio or session is absent).
 
 `scripts/uno-q-setup/scripts/bluetooth-audio.sh` reports the state
 (read-only) and, with `--apply`, applies the two user-level, reversible
 prerequisites (`loginctl enable-linger` and the WirePlumber headless
-override) for the audio-owning user. Pairing itself you drive with
-`bluetoothctl` — the proven recipe, all of it hand-verified on the real
-board (issue #2, #3 comments, 2026-10-19):
+override) for the audio-owning user. On packaged installs the .deb
+postinst applies both for the `game-narrator` user (and the postrm
+reverses the linger on purge); the script remains the pre-package path.
+Pairing itself you drive with `bluetoothctl` — the proven recipe, all of
+it hand-verified on the real board (issue #2, #3 comments, 2026-10-19):
 
 1. **Scan.** `bluetoothctl --timeout 25 scan on; bluetoothctl devices`
    lists the headphones by name; note the MAC.
@@ -69,7 +144,10 @@ board (issue #2, #3 comments, 2026-10-19):
    (`br-connection-unknown`). Fix: put the headset in pairing mode,
    `remove <MAC>`, rescan forcing the classic transport
    (`bluetoothctl menu scan` → `transport bredr`), then `pair`, `trust`,
-   `connect` again. The A2DP sink reappears and playback works.
+   `connect` again. The A2DP sink reappears and playback works. The web
+   UI's "Repair (re-pair over classic)" button performs exactly this
+   sequence (forget, bounded rescan, re-pair) when the device is badged
+   "needs repair".
 6. **Verify** with a chime and a TTS line: `pw-play chime.wav`,
    `pw-play tts-line.wav`.
 
@@ -92,5 +170,8 @@ board (issue #2, #3 comments, 2026-10-19):
 If `bluetoothctl` shows the device connected but `wpctl get-default
 sink` is not the `bluez_output.…` sink, you hit the headless gotcha
 (step 3): apply the override, `systemctl --user restart wireplumber`,
-re-check. The operator UI is expected to surface this and offer the
-re-pair path (issue #3).
+re-check. The web UI (ADR-0091) surfaces the same state — the device row
+is badged "needs repair" and its repair button re-pairs it; and the
+distinct case of *connected, A2DP unit present, no node at all* is the
+override missing: `doctor` names it and `bluetooth-audio.sh --apply` (or
+the package postinst on a deb install) writes the file.

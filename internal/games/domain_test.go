@@ -762,6 +762,33 @@ func TestEnumBehaviouralHelpers(t *testing.T) {
 			t.Errorf("%s should default to speakable", k)
 		}
 	}
+	// A region's on-screen role implies the text class its readings carry
+	// (docs/spec/04 "Visual profiles"); roles with no single class of their
+	// own keep the runner's fallback hint rather than a guessed class.
+	wantHints := map[RegionType]TextKind{
+		RegionTextbox:      TextDialogue,
+		RegionSign:         TextSign,
+		RegionItem:         TextItem,
+		RegionMenu:         TextMenu,
+		RegionTutorial:     TextTutorial,
+		RegionSubtitle:     "",
+		RegionSpeakerLabel: "",
+		RegionHUD:          "",
+		RegionOther:        "",
+	}
+	for rt, want := range wantHints {
+		got, ok := rt.TextKindHint()
+		if want == "" {
+			if ok {
+				t.Errorf("%s: TextKindHint = %q, want no hint (the role names no class)", rt, got)
+			}
+			continue
+		}
+		if !ok || got != want {
+			t.Errorf("%s: TextKindHint = %q (ok %v), want %q", rt, got, ok, want)
+		}
+	}
+
 	// An inferred edge that claims certainty contradicts docs/spec/04.
 	if EdgeInferred.MaxConfidence() >= 1 {
 		t.Errorf("inferred edges may claim %v, want a value below certainty", EdgeInferred.MaxConfidence())

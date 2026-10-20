@@ -3,6 +3,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Settings } from "../api/settings";
+import { AuthProvider } from "../auth/auth-context";
 import { SettingsPage } from "./Settings";
 
 const settings: Settings = {
@@ -89,11 +90,52 @@ const settings: Settings = {
     auto_update: false,
     docs: "docs/release.md",
     note: "updates are manual",
+    current: "v0.0.0-test",
+    available: false,
+    checking: false,
+    from_cache: false,
+    no_releases: false,
+    disabled: false,
+    env: ["GAME_NARRATOR_UPDATE_CHECK", "GAME_NARRATOR_UPDATE_URL"],
   },
   mutable: {
-    count: 0,
-    note: "",
+    count: 1,
+    note: "One setting is mutable at runtime: the audio output (ADR-0074).",
     env: ["GAME_NARRATOR_GATEWAY_URL", "GAME_NARRATOR_LISTEN", "GAME_NARRATOR_AUDIO_SINK"],
+  },
+};
+
+/** The audio device list the page's "Audio output" section renders (ADR-0074). */
+const audioDevices = {
+  backend: "pipewire",
+  synthetic: false,
+  devices: [
+    {
+      id: "auto_null",
+      name: "Monitor of Autopipe Sink",
+      kind: "null",
+      sample_rate: "48000",
+      channels: 2,
+      selected: true,
+      platform_default: true,
+    },
+    {
+      id: "usb_jbl",
+      name: "JBL USB DAC",
+      kind: "usb",
+      sample_rate: "48000",
+      channels: 2,
+      selected: false,
+      platform_default: false,
+    },
+  ],
+  selected: {
+    device: "auto_null",
+    device_source: "store",
+    sink_kind: "pipewire",
+    sink_kind_source: "store",
+    master_volume: 0.8,
+    master_volume_source: "default",
   },
 };
 
@@ -123,7 +165,9 @@ function renderPage() {
   });
   return render(
     <QueryClientProvider client={client}>
-      <SettingsPage />
+      <AuthProvider>
+        <SettingsPage />
+      </AuthProvider>
     </QueryClientProvider>,
   );
 }
@@ -145,7 +189,13 @@ describe("SettingsPage (unit test with a stubbed fetch fake)", () => {
     installFetch((path) =>
       path === "/api/v1/settings"
         ? fakeResponse(200, settings)
-        : fakeResponse(404, { title: "Not Found" }),
+        : path === "/api/v1/auth/status"
+          ? fakeResponse(200, { setup_required: false, loopback_setup: false })
+          : path === "/api/v1/auth/me"
+            ? fakeResponse(401, { title: "Not Signed In" })
+            : path === "/api/v1/audio/devices"
+              ? fakeResponse(200, audioDevices)
+              : fakeResponse(404, { title: "Not Found" }),
     );
 
     renderPage();
@@ -160,12 +210,22 @@ describe("SettingsPage (unit test with a stubbed fetch fake)", () => {
     expect(roles).toHaveTextContent("<configured>");
 
     expect(screen.getByTestId("settings-mutable-note")).toHaveTextContent(
-      "Nothing is mutable at runtime",
+      "1 setting(s) are mutable at runtime",
     );
     expect(screen.getByTestId("settings-gateway")).toHaveTextContent("GAME_NARRATOR_GATEWAY_URL");
     expect(screen.getByTestId("settings-gateway")).toHaveTextContent("presence only");
     expect(screen.getByTestId("settings-storage")).toHaveTextContent("gn-test");
     expect(screen.getByTestId("settings-audio")).toHaveTextContent("filesink");
+    // The one runtime-mutable setting (ADR-0074): the enumerated devices with
+    // their kinds and marks, the selection's source, and the master volume.
+    const audioOutput = await screen.findByTestId("settings-audio-output");
+    expect(audioOutput).toHaveTextContent("JBL USB DAC");
+    expect(audioOutput).toHaveTextContent("null");
+    expect(screen.getByTestId("audio-device-select")).toHaveValue("auto_null");
+    expect(screen.getByTestId("audio-master-volume-value")).toHaveTextContent("80%");
+    // No synthetic flag: the backend answered, so the list reads as hardware.
+    expect(screen.queryByTestId("audio-output-synthetic")).not.toBeInTheDocument();
+    expect(screen.getByTestId("audio-test-tone")).toBeInTheDocument();
     expect(screen.getByTestId("settings-security")).toHaveTextContent("127.0.0.1:18090");
     expect(screen.getByTestId("settings-imports")).toHaveTextContent("24 steps");
     expect(screen.getByTestId("settings-version")).toHaveTextContent("abcdef1");

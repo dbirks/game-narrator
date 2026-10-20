@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/assets"
@@ -596,23 +597,27 @@ func (c *Cache) lruSize(key CacheKey) int64 {
 }
 
 // Stats returns the decision counters plus the limiter's pending count.
+// The counters are read atomically (see bump); the mutex guards nothing of
+// their own here but is kept for the limiter snapshot below.
 func (c *Cache) Stats() CacheStats {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	pending := int64(c.lim.pending())
+	c.mu.Unlock()
 	return CacheStats{
-		Hits:           c.hits,
-		Misses:         c.misses,
-		QASkips:        c.qaSkips,
-		Generated:      c.generated,
-		Failed:         c.failed,
-		PendingGen:     int64(c.lim.pending()),
-		RefusedDeletes: c.refusedDeletes,
+		Hits:           atomic.LoadInt64(&c.hits),
+		Misses:         atomic.LoadInt64(&c.misses),
+		QASkips:        atomic.LoadInt64(&c.qaSkips),
+		Generated:      atomic.LoadInt64(&c.generated),
+		Failed:         atomic.LoadInt64(&c.failed),
+		PendingGen:     pending,
+		RefusedDeletes: atomic.LoadInt64(&c.refusedDeletes),
 	}
 }
 
-// bump increments a counter. Small wrapper so the counters stay lock-free
-// int64s without a per-bump mutex (torn reads of a 64-bit counter are the
-// only cost, and these are diagnostics, not decisions).
+// bump increments a counter. Atomic (not mutexed) so the counters stay
+// lock-free without a per-bump mutex; Stats loads them atomically too, so
+// a live read (the diagnostics snapshot, the session's wait loops) never
+// races a generation in flight. These are diagnostics, not decisions.
 func (c *Cache) bump(p *int64) {
-	*p++
+	atomic.AddInt64(p, 1)
 }

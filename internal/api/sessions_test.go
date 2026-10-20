@@ -94,6 +94,7 @@ func newSessionEnvWired(t *testing.T, wireSpeech bool) *sessionEnv {
 		OCR:         newTruthOCR(t),
 		Log:         slog.New(slog.DiscardHandler),
 	}
+	var voiceSvc *voices.Service
 	if wireSpeech {
 		va, err := assets.NewLocal(t.TempDir())
 		if err != nil {
@@ -117,6 +118,7 @@ func newSessionEnvWired(t *testing.T, wireSpeech bool) *sessionEnv {
 		e.sink = sink
 		opts.Speech = &runtime.SpeechOptions{Voices: svc, Assets: va,
 			SinkFactory: func() (speech.AudioSink, error) { return sink, nil }}
+		voiceSvc = svc
 	}
 	mgr, err := runtime.New(opts)
 	if err != nil {
@@ -129,12 +131,19 @@ func newSessionEnvWired(t *testing.T, wireSpeech bool) *sessionEnv {
 	t.Cleanup(mgr.Close)
 
 	e.mgr = mgr
-	e.h = a.handler(
+	handlerOpts := []Option{
 		WithStore(a.st),
 		WithEvents(hub),
 		WithDevEvents(mem),
 		WithSessions(mgr),
-	)
+	}
+	// The dev inspector's utterance audio reads the speech cache the session's
+	// playback used (ADR-0083), so the wired voice service rides the handler
+	// too; without it the /dev/speech/audio route answers its documented 503.
+	if voiceSvc != nil {
+		handlerOpts = append(handlerOpts, WithVoices(voiceSvc, nil))
+	}
+	e.h = a.handler(handlerOpts...)
 	return e
 }
 
@@ -452,8 +461,8 @@ func TestSessionStartValidation(t *testing.T) {
 			http.StatusBadRequest, "invalid-mode"},
 		{"unknown source kind", startPayload(e.profileID, "webrtc", clipDir, "conservative", false),
 			http.StatusBadRequest, "unknown-source-kind"},
-		{"v4l2 unsupported", startPayload(e.profileID, "v4l2", "", "conservative", false),
-			http.StatusNotImplemented, "unsupported-capability"},
+		{"v4l2 capture unwired", startPayload(e.profileID, "v4l2", "", "conservative", false),
+			http.StatusServiceUnavailable, "capture-unavailable"},
 		{"dolphin unsupported", startPayload(e.profileID, "dolphin", "", "conservative", false),
 			http.StatusNotImplemented, "unsupported-capability"},
 		{"replay dir outside allowlist", startPayload(e.profileID, "replay", absOutside, "conservative", false),

@@ -39,6 +39,7 @@ import (
 	"io"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -64,6 +65,10 @@ const (
 	// StderrTailBytes bounds how much FFmpeg complaint is kept verbatim, the
 	// same bounded-pipe rule ADR-0012 §2 states for OCR.
 	StderrTailBytes = 2048
+	// DefaultLowLatencyThreadQueueSize is the -thread_queue_size a live V4L2
+	// source asks for (ADR-0076): FFmpeg's default is 1, and 2 absorbs a
+	// two-frame burst of compressed data without adding a frame of latency.
+	DefaultLowLatencyThreadQueueSize = 2
 )
 
 // ErrAlreadyStarted is returned by a second Start on the same Source.
@@ -88,6 +93,25 @@ type Input struct {
 	// as the CPU can and would measure the pipe instead of the supervision;
 	// wrong for real devices, whose real rate is the thing under test.
 	Paced bool
+	// LowLatency adds -fflags nobuffer -flags low_delay: the input must not
+	// buffer ahead of the display (docs/spec/05 latency, ADR-0076). Set by
+	// default on V4L2 sources; the hand-wired sources leave it to the caller.
+	LowLatency bool
+	// ThreadQueueSize bounds the decoder's frame queue (-thread_queue_size);
+	// 0 leaves FFmpeg's default.
+	ThreadQueueSize int
+	// Deinterlace names the deinterlace filter applied after decode:
+	// DeinterlaceBwdif or DeinterlaceYadif for the 480i converters the GameCube
+	// path can produce (docs/spec/12 "capture deinterlacing"), "" for
+	// progressive sources — the default, because a filter on progressive
+	// content only adds a frame of delay.
+	Deinterlace string
+	// ColorRange declares the source's luma range ("limited" or "full") so the
+	// YUV→RGB conversion normalises it (ADR-0076): "limited" emits
+	// setparams=range=tv, "full" setparams=range=full. Empty leaves
+	// FFmpeg's per-format default; the V4L2 constructor declares the documented
+	// range per format (MJPEG is always full, UVC YUYV is studio/limited).
+	ColorRange string
 }
 
 // Source is a capture.Source backed by a piped FFmpeg child.
@@ -154,12 +178,33 @@ func New(in Input, w, h int, fps float64) *Source {
 	}
 }
 
+// Deinterlace filter names for Input.Deinterlace (docs/spec/12 "capture
+// deinterlacing"): bwdif is the default choice for 480i — it deinterlaces
+// only the lines it detects as interlaced and leaves progressive frames
+// alone — while yadif always produces a progressive frame, which is the
+// safer default when the source is interlaced every frame.
+const (
+	DeinterlaceBwdif = "bwdif"
+	DeinterlaceYadif = "yadif"
+
+	// ColorRangeLimited / ColorRangeFull are the Input.ColorRange values:
+	// BT.601 studio range and the full 0–255 range respectively.
+	ColorRangeLimited = "limited"
+	ColorRangeFull    = "full"
+)
+
 // V4L2 builds the UNO Q capture-card source. device is a path discovered by
 // devices.List, never a hardcoded /dev/video0 (docs/spec/05, docs/spec/10).
 // inputFormat is "mjpeg" or "yuyv422" (docs/spec/05: "prefer UVC MJPEG or YUYV
 // depending on hardware"); anything else is refused here rather than handed to
 // FFmpeg, because a typo FFmpeg silently falls back from would report the format
 // the pipeline is not getting.
+//
+// The constructor also sets the live-card defaults (ADR-0076): low-latency
+// demux and decoder flags, the small decode queue, and the documented luma
+// range per format. FPS here is the analysis rate the mode policy chose —
+// passing it as the v4l2 input's -framerate is what makes the *card* deliver
+// at that rate (pre-decode decimation), not the pipeline dropping the rest.
 func V4L2(device string, w, h int, fps float64, inputFormat string) (*Source, error) {
 	switch inputFormat {
 	case "", "mjpeg", "yuyv422":
@@ -170,6 +215,14 @@ func V4L2(device string, w, h int, fps float64, inputFormat string) (*Source, er
 		return nil, errors.New("ffmpegpipe: v4l2 device path is required (docs/spec/10: never assume /dev/video0)")
 	}
 	s := New(Input{Format: "v4l2", Location: device, V4L2Format: inputFormat}, w, h, fps)
+	s.Input.LowLatency = true
+	s.Input.ThreadQueueSize = DefaultLowLatencyThreadQueueSize
+	switch inputFormat {
+	case "mjpeg":
+		s.Input.ColorRange = ColorRangeFull
+	case "yuyv422":
+		s.Input.ColorRange = ColorRangeLimited
+	}
 	s.IDName = "v4l2:" + device
 	return s, nil
 }
@@ -205,6 +258,37 @@ func TestSource(w, h int, fps float64) *Source {
 	return s
 }
 
+// videoFilter builds the input's -vf chain in application order: the luma
+// range declaration first (the YUV→RGB conversion that follows must know the
+// source's range to normalise it), then the deinterlace filter. Empty means
+// no filter. An unknown value is a configuration error: Start refuses it, so
+// a misspelled filter is a counted failure rather than silently dropped argv.
+func (in Input) videoFilter() (string, error) {
+	var parts []string
+	switch in.ColorRange {
+	case "":
+	case ColorRangeLimited:
+		parts = append(parts, "setparams=range=tv")
+	case ColorRangeFull:
+		parts = append(parts, "setparams=range=full")
+	default:
+		return "", fmt.Errorf("ffmpegpipe: color range %q: want %q or %q", in.ColorRange, ColorRangeLimited, ColorRangeFull)
+	}
+	switch in.Deinterlace {
+	case "":
+	case DeinterlaceBwdif:
+		parts = append(parts, "bwdif")
+	case DeinterlaceYadif:
+		// mode 0 (one progressive frame per pair), parity -1 (auto): 480i
+		// converters alternate field order as much as they mind, and guessing
+		// the parity is how a deinterlacer turns a picture into a comb.
+		parts = append(parts, "yadif=0:-1:0")
+	default:
+		return "", fmt.Errorf("ffmpegpipe: deinterlace %q: want %q or %q", in.Deinterlace, DeinterlaceBwdif, DeinterlaceYadif)
+	}
+	return strings.Join(parts, ","), nil
+}
+
 // Args returns the exact FFmpeg argv (without argv[0]) for the current
 // configuration. Exported because the inspector and the evidence bundle record
 // the command that produced a frame — the difference between "we captured
@@ -219,6 +303,17 @@ func (s *Source) Args() []string {
 	args = append(args, "-f", in.Format)
 	if in.Format == "v4l2" && in.V4L2Format != "" {
 		args = append(args, "-input_format", in.V4L2Format)
+	}
+	// Low-latency input flags: a demuxer that buffers and a decoder that queues
+	// both add delay to a live picture, and the supervision (stall watchdog,
+	// single-slot queue) is sized for frames that arrive when the card sends
+	// them (ADR-0076). The thread queue is the decoder-side twin: small enough
+	// not to hold a frame, big enough not to stall on a burst.
+	if in.LowLatency {
+		args = append(args, "-fflags", "nobuffer", "-flags", "low_delay")
+	}
+	if in.ThreadQueueSize > 0 {
+		args = append(args, "-thread_queue_size", strconv.Itoa(in.ThreadQueueSize))
 	}
 	if in.Format == "x11grab" {
 		args = append(args, "-draw_mouse", b01(s.DrawMouse))
@@ -236,6 +331,13 @@ func (s *Source) Args() []string {
 		args = append(args, "-video_size", strconv.Itoa(s.Width)+"x"+strconv.Itoa(s.Height))
 	}
 	args = append(args, "-i", in.Location)
+	if vf, err := in.videoFilter(); err == nil && vf != "" {
+		// Start validates the chain, so an error here only means Args was
+		// called on a hand-built, not-yet-validated source: render the rest of
+		// the argv rather than panic on a configuration error the inspector
+		// should be able to show.
+		args = append(args, "-vf", vf)
+	}
 	// Fixed output side: rgb24 to stdout, no container, so one frame is exactly
 	// Width*Height*3 bytes and the reader parses nothing but pixels.
 	return append(args, "-map", "0:v:0", "-an", "-sn", "-f", "rawvideo", "-pix_fmt", "rgb24", "-")
@@ -286,6 +388,9 @@ func (s *Source) Start(ctx context.Context) (<-chan capture.Frame, error) {
 	}
 	if s.Input.Location == "" {
 		return nil, fmt.Errorf("ffmpegpipe: %s has no input location", s.ID())
+	}
+	if _, err := s.Input.videoFilter(); err != nil {
+		return nil, err
 	}
 	if ctx == nil {
 		ctx = context.Background()

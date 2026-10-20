@@ -41,7 +41,7 @@ import (
 // these columns; anything that will be compared against a caller's token uses
 // profileRowColumns, which adds the version so the row and its guard are read in
 // one statement and cannot come from different instants.
-const profileColumns = "id, edition_id, revision_num, parent_revision, status, manifest_digest, published_at, preferred_voice_id, publication_author"
+const profileColumns = "id, edition_id, revision_num, parent_revision, status, manifest_digest, published_at, preferred_voice_id, publication_author, narrator_fallback"
 
 // profileRowColumns is profileColumns plus the optimistic-locking counter.
 const profileRowColumns = profileColumns + ", row_version"
@@ -77,6 +77,10 @@ func (s *Store) CreateDraftProfile(ctx context.Context, editionID string) (games
 			EditionID:   editionID,
 			RevisionNum: num,
 			Status:      games.StatusDraft,
+			// The flag's default is on: a fresh revision narrates unknown
+			// speakers with the narrator voice, the runtime's historical
+			// behaviour (ADR-0101), until somebody says otherwise.
+			NarratorFallback: true,
 		}
 		if err := p.Validate(); err != nil {
 			return err
@@ -221,10 +225,11 @@ func (tx *Tx) nextRevisionNum(ctx context.Context, editionID string) (int, error
 func (tx *Tx) insertProfile(ctx context.Context, p games.Profile) error {
 	const op = "insert profile"
 	if _, err := tx.exec(ctx, op,
-		`INSERT INTO profiles (id, edition_id, revision_num, parent_revision, status, manifest_digest, published_at, preferred_voice_id, publication_author)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO profiles (id, edition_id, revision_num, parent_revision, status, manifest_digest, published_at, preferred_voice_id, publication_author, narrator_fallback)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID, p.EditionID, p.RevisionNum, nullIntPtr(p.ParentRevision), string(p.Status),
-		p.ManifestDigest, nullStr(p.PublishedAt), nullStr(p.PreferredVoiceID), p.PublicationAuthor); err != nil {
+		p.ManifestDigest, nullStr(p.PublishedAt), nullStr(p.PreferredVoiceID), p.PublicationAuthor,
+		boolInt(p.NarratorFallback)); err != nil {
 		return err
 	}
 	return nil
@@ -345,6 +350,31 @@ func (s *Store) SetProfileStatus(ctx context.Context, profileID string, to games
 	return s.inWrite(ctx, func(ctx context.Context, tx *Tx) error {
 		_, err := tx.setProfileStatus(ctx, "set profile status", profileID, to, expectedRowVersion)
 		return err
+	})
+}
+
+// SetProfileNarratorFallback flips the per-profile narrator fallback
+// (ADR-0101): when a committed line's speaker has no approved voice, the
+// narrator voice speaks the line if and only if this flag is on.
+//
+// Deliberately not a version-guarded compare-and-swap: the flag is an
+// editorial setting, not content — it changes what a line *resolves to*,
+// never what the revision contains — and the same reasoning the import
+// report gives for the absent guarded write of preferred_voice_id applies:
+// moving row_version would 412 a curator mid-edit for a dial nobody is
+// racing on, without protecting any content. The write is a plain
+// upsert-free UPDATE; a missing profile is ErrNotFound like every read.
+func (s *Store) SetProfileNarratorFallback(ctx context.Context, profileID string, enabled bool) error {
+	const op = "set profile narrator fallback"
+	return s.inWrite(ctx, func(ctx context.Context, tx *Tx) error {
+		res, err := tx.exec(ctx, op,
+			`UPDATE profiles SET narrator_fallback = ? WHERE id = ?`, boolInt(enabled), profileID)
+		if err != nil {
+			return mapWriteError(op, err)
+		}
+		// Zero rows affected means the id named no profile: the reads answer
+		// that way, so the write does too.
+		return errFromAffected(res, op, 1)
 	})
 }
 
@@ -505,6 +535,9 @@ func (tx *Tx) NewRevision(ctx context.Context, parentProfileID string) (games.Pr
 		ParentRevision:   &parentNum,
 		Status:           games.StatusDraft,
 		PreferredVoiceID: parent.PreferredVoiceID,
+		// An editorial decision about how this profile narrates unknown
+		// speakers follows the lineage it was made for (ADR-0101).
+		NarratorFallback: parent.NarratorFallback,
 	}
 	if err := fresh.Validate(); err != nil {
 		return parent, err
@@ -743,21 +776,25 @@ func remapValue(v any, remap map[string]string, changed *bool) any {
 // of every profile scan — callers that do not need it (ListProfiles) simply drop it.
 func scanProfileRow(r scanner, op string) (games.Profile, int64, error) {
 	var (
-		p      games.Profile
-		parent sql.NullInt64
-		status string
-		pubAt  sql.NullString
-		voice  sql.NullString
-		rev    int64
+		p        games.Profile
+		parent   sql.NullInt64
+		status   string
+		pubAt    sql.NullString
+		voice    sql.NullString
+		fallback sql.NullInt64
+		rev      int64
 	)
 	if err := r.Scan(&p.ID, &p.EditionID, &p.RevisionNum, &parent, &status,
-		&p.ManifestDigest, &pubAt, &voice, &p.PublicationAuthor, &rev); err != nil {
+		&p.ManifestDigest, &pubAt, &voice, &p.PublicationAuthor, &fallback, &rev); err != nil {
 		return p, 0, mapReadError(op, err)
 	}
 	p.Status = games.ProfileStatus(status)
 	p.ParentRevision = optInt(parent)
 	p.PublishedAt = pubAt.String
 	p.PreferredVoiceID = voice.String
+	// The column is NOT NULL DEFAULT 1 (0015); a NULL would only reach a
+	// pre-migration row, and that reads as the default, on.
+	p.NarratorFallback = !fallback.Valid || fallback.Int64 == 1
 	return p, rev, nil
 }
 

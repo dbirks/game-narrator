@@ -88,6 +88,14 @@ type Profile struct {
 	PublishedAt       string
 	PreferredVoiceID  string
 	PublicationAuthor string
+	// NarratorFallback is the per-profile narrator fallback (ADR-0101):
+	// when a committed line's speaker has no approved voice, the line is
+	// spoken by the narrator voice if this flag is on. A Go bool cannot
+	// distinguish "unset" from off, so the store's writers state it
+	// explicitly (a fresh draft is on — the column's default — and
+	// NewRevision carries it from the parent); a zero value reaching an
+	// insert would read as an explicit opt-out.
+	NarratorFallback bool
 }
 
 // Validate mirrors the profiles table's constraints, including the rule that

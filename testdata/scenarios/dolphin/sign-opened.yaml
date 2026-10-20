@@ -1,0 +1,59 @@
+# dolphin/sign-opened — the Dolphin half of GN-T010 "Sign opened by player"
+# (docs/test-plan/scenario-catalog.md; docs/status/gap-audit G8).
+#
+# BLOCKED (ADR-0037 "blocked ≠ pass"): it registers what the release gate's
+# "one sign/item" scenario will check on a real capture, and it is reported
+# as blocked — never as pass, never as fail — until the unblock steps in
+# docs/status/blocked.md land. The synthetic half of the gate runs green on
+# the same runtime path: synthetic/sign-opened-001 (sign) and
+# synthetic/item-obtained-001 (item).
+#
+# Why blocked: no savestate path to a sign exists in internal/dolphin yet.
+# The recorded savestate fixtures (docs/dolphin/fixture-index.md,
+# artifacts/fixtures/) reach the title, the first gameplay dialogue and the
+# name entry — all textbox/subtitle screens. Driving from any of them to a
+# readable sign requires an unrecorded route (a save-slot load at a sign
+# location or a live drive from the title), and a scenario that asserted on
+# unrecorded frames would present an invented sign as a real one (AGENTS.md
+# rule 5, no simulation theater).
+#
+# Unblock steps (docs/status/blocked.md, row "Dolphin sign savestate"):
+# 1. Record a fixture that reaches a real sign: from the
+#    windwaker-legend-start savestate, drive to a sign (or load a save slot
+#    placed at one), interact with it (A), and record the window in which
+#    the sign text is on screen at the fixture cadence.
+# 2. Pin the fixture: copy the manifest's SHA-256 into
+#    input.manifest_sha256 below.
+# 3. Name the sign line in the profile corpus (the message table the
+#    scenario ranks against) and set the profile's sign region to the
+#    fixture's measured rect.
+# 4. Remove status/reason; the assertions below then run unmodified against
+#    the captured frames.
+schema_version: 1
+catalog: GN-T010
+id: dolphin/sign-opened
+origin: dolphin
+profile: windwaker-newgame
+mode: frame_replay
+status: blocked
+reason: "No savestate path to a sign exists in internal/dolphin: the recorded savestate fixtures reach only textbox/subtitle screens (title, first gameplay dialogue, name entry). Recording a fixture that drives to and opens a real sign is the unblock (docs/status/blocked.md, row Dolphin sign savestate); until then this row is a registration, reported blocked, not pass."
+input:
+  fixture: windwaker-sign-opened
+  # manifest_sha256: pinned when the fixture recording lands (step 2 above).
+  # first / last: the recorded window in which the sign text is on screen.
+inference:
+  decision: recorded
+  tts: recorded
+  voice: dolphin-legend-narrator
+assertions:
+  # What this scenario will assert once unblocked: the sign line commits
+  # exactly once, as kind sign, spoken by the configured voice.
+  - type: message_committed_count
+    message_id: ww-sign-01
+    count: 1
+  - type: committed_kind
+    message_id: ww-sign-01
+    kind: sign
+  - type: no_voice_substitution
+    voice: dolphin-legend-narrator
+  - type: no_duplicate_commit

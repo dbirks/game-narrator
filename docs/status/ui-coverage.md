@@ -9,7 +9,12 @@ Servers: `chromium` = Vite dev server + `go run` API (port 18090); every other
 project runs the **packaged binary** (`make build`) on its own throwaway data
 directory (`web/e2e/serve.mjs`), with the scripted TTS/model instances
 (`fake-tts.mjs`, `fake-model.mjs`) where a spec's comment says so — synthetic
-stubs at the model boundary only (AGENTS.md rule 3). `a11y` (port 18108) is
+stubs at the model boundary only (AGENTS.md rule 3). Every port is derived
+from one per-run base (`GN_E2E_PORT_BASE`; default 18090, so the numbers
+quoted in this doc hold — `auto` probes for a free 30-port band at config
+load, and the run's manifests live under its per-run root in `os.tmpdir()`,
+ADR-0094), so several `make test-ui`-style Playwright runs can share one
+checkout at once. `a11y` (port 18108) is
 covered by the Accessibility section below: axe over every route of this
 matrix, in the states those specs establish.
 

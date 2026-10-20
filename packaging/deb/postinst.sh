@@ -37,6 +37,32 @@ if [ ! -e /etc/game-narrator/env ]; then
     echo "game-narrator: create /etc/game-narrator/env from /etc/game-narrator/env.example (chmod 0600)"
 fi
 
+# The lingering user session for Bluetooth audio (ADR 0091): the A2DP sink
+# node (bluez_output.<MAC>.1) lives in the service user's USER PipeWire
+# instance (WirePlumber's bluez5 module), which only exists while the user
+# manager runs. On a headless appliance there is no login, so the user
+# manager is made to run via linger — enabled here, reversed on purge in
+# postrm. Idempotent; `|| true` on hosts without logind.
+if command -v loginctl >/dev/null 2>&1; then
+    loginctl enable-linger game-narrator >/dev/null 2>&1 || true
+fi
+
+# The WirePlumber headless override (ADR 0091; the file ADR 0084 verified on
+# the real board): without it, WirePlumber 0.5 creates no Bluetooth sink
+# node on a headless appliance — the device pairs and connects, yet no
+# bluez_output.<MAC>.1 appears. The service user's HOME is
+# /var/lib/game-narrator (the sysusers line), so the user-level config path
+# is under it. A file the admin already placed there (the skill's
+# bluetooth-audio.sh --apply, manual 19) is never clobbered: the write is
+# only-if-missing and byte-for-byte the verified recipe.
+install -d -o game-narrator -g game-narrator -m 0700 /var/lib/game-narrator/.config/wireplumber/wireplumber.conf.d
+if [ ! -e /var/lib/game-narrator/.config/wireplumber/wireplumber.conf.d/80-bluez-headless.conf ]; then
+    printf 'wireplumber.profiles = { main = { monitor.bluez.seat-monitoring = disabled } }\n' \
+        > /var/lib/game-narrator/.config/wireplumber/wireplumber.conf.d/80-bluez-headless.conf
+    chown game-narrator:game-narrator /var/lib/game-narrator/.config/wireplumber/wireplumber.conf.d/80-bluez-headless.conf
+    chmod 0600 /var/lib/game-narrator/.config/wireplumber/wireplumber.conf.d/80-bluez-headless.conf
+fi
+
 # Reload systemd so the unit shipped in /lib/systemd/system is picked up.
 if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
     systemctl daemon-reload || true

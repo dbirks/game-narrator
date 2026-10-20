@@ -13,11 +13,11 @@ import (
 
 // The rendering constants mirror scripts/fixtures/gen-synthetic-textbox.sh so
 // the bench frames live in the same visual world as the M2 fixtures (docs/spec/11
-// "Fixture origins"): same box geometry fractions, same dark-panel style, same
-// quantisation. Pixel values scale with s = H/480 so the three capture
+// "Fixture origins"): same dark-panel style, same quantisation. The box geometry
+// fractions are per-set data (Layout, profile.go; ADR-0079): defaultLayout is
+// the first set's box. Pixel values scale with s = H/480 so the three capture
 // resolutions render the same proportionate textbox.
 const (
-	boxX, boxY, boxW, boxH = 0.07, 0.72, 0.86, 0.23
 	borderInset            = 17.0 // px at 480p, scales with s
 	textInsetX, textInsetY = 22.0, 18.0
 	maxPoint               = 40.0
@@ -41,13 +41,48 @@ var NoiseParams = struct {
 }{0.6, 0.4, 1.05, 0.96, 1.2, 4, "rgba(0,0,0,0.15)"}
 
 // frameStepNS and nFrames: a ten-frame sample on a 10 Hz capture clock, the
-// cadence of the M2 replay clip. The box appears at frame 3, the reading is
-// stable over frames 3-8, and frame 9 is an advance (empty box) so the
-// stale/duplicate speech paths are exercised.
+// cadence of the M2 replay clip. The first set's box appears at frame 3, the
+// reading is stable over frames 3-8, and frame 9 is an advance (empty box) so
+// the stale/duplicate speech paths are exercised.
 const (
 	frameStepNS = 100_000_000
 	nFrames     = 10
 )
+
+// frameSchedule is the ten-frame manifest of one sample: the box is present
+// (with the sample's text) on frames 3-9, frames 1-2 have no box, frame 10
+// is absent again (the M2 clip's shape: a long stable hold, then advance).
+func frameSchedule() []Frame {
+	var out []Frame
+	for i := 1; i <= nFrames; i++ {
+		name := "absent.png"
+		if i >= 3 && i <= 9 {
+			name = "text.png"
+		}
+		out = append(out, Frame{File: name, TsNS: int64(i) * frameStepNS})
+	}
+	return out
+}
+
+// instantFrameSchedule is the second set's manifest (ADR-0079): the reveal is
+// the engine behaviour the first set never exercises — the page is whole on
+// its first frame (no typewriter prefixes), held over frames 3-8, frame 9 is
+// the box emptied by the advance, frame 10 dismissed. The tracker's vote and
+// stability policy is graded on the instant shape as well as the typewriter.
+func instantFrameSchedule() []Frame {
+	var out []Frame
+	for i := 1; i <= nFrames; i++ {
+		name := "absent.png"
+		switch {
+		case i >= 3 && i <= 8:
+			name = "text.png"
+		case i == 9:
+			name = "box.png"
+		}
+		out = append(out, Frame{File: name, TsNS: int64(i) * frameStepNS})
+	}
+	return out
+}
 
 // SampleSeed derives the deterministic per-sample seed: a function of the set's
 // seed base and the sample id only, so a re-render of the same sample is
@@ -97,7 +132,11 @@ func GenerateSamples(srcPath string, seedBase uint64) (*TruthSet, *ScriptProfile
 		Origin:        "generated_synthetic",
 		Description:   "Synthetic benchmark script: the docs/spec/11 synthetic profile lines with speaker attribution, for the internal/bench harness (ADR-0038). No real game content.",
 		Scene:         SceneID,
-		Regions:       []Region{{ID: "bottom", Type: "textbox", X: 0.0975, Y: 0.7565, W: 0.8025, H: 0.1515}},
+		// Layout made explicit (ADR-0079): the first set's bottom box, the
+		// default the zero layout falls back to. Frames are byte-identical to
+		// the pre-ADR-0079 constants.
+		Layout:  defaultLayout,
+		Regions: []Region{{ID: "bottom", Type: "textbox", X: 0.0975, Y: 0.7565, W: 0.8025, H: 0.1515}},
 	}
 	for _, m := range src.Messages {
 		prof.Messages = append(prof.Messages, ScriptLine{ID: m.ID, Text: m.OriginalText, Speaker: speakerFor(m.ID)})
@@ -167,23 +206,12 @@ func speakerFor(id string) string {
 	}
 }
 
-// frameSchedule is the ten-frame manifest of one sample.
-func frameSchedule() []Frame {
-	var out []Frame
-	for i := 1; i <= nFrames; i++ {
-		name := "absent.png"
-		if i >= 3 && i <= 9 {
-			name = "text.png"
-		}
-		out = append(out, Frame{File: name, TsNS: int64(i) * frameStepNS})
-	}
-	return out
-}
-
 // RenderSamples renders every frame of the set's samples into framesDir and
 // returns the per-sample frame directories ready for replay. Frames live in a
-// temp dir (the committed set carries truth.json only; ADR-0038).
-func RenderSamples(ts *TruthSet, framesDir string) (map[string]string, error) {
+// temp dir (the committed set carries truth.json only; ADR-0038). layout is
+// the set's box geometry (ADR-0079): the zero layout renders the first set's
+// bottom box, so pre-ADR-0079 callers are unchanged.
+func RenderSamples(ts *TruthSet, layout Layout, framesDir string) (map[string]string, error) {
 	if _, err := exec.LookPath("magick"); err != nil {
 		return nil, fmt.Errorf("NOT RUN: ImageMagick (magick) is required to render bench frames")
 	}
@@ -209,7 +237,7 @@ func RenderSamples(ts *TruthSet, framesDir string) (map[string]string, error) {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, err
 		}
-		if err := renderSampleFrames(&s, fonts, coef, dir, ts.SeedBase); err != nil {
+		if err := renderSampleFrames(&s, fonts, coef, dir, ts.SeedBase, layout); err != nil {
 			return nil, fmt.Errorf("render %s: %v", s.ID, err)
 		}
 		if err := writeManifest(filepath.Join(dir, "timestamps.json"), s.Frames); err != nil {
@@ -220,12 +248,16 @@ func RenderSamples(ts *TruthSet, framesDir string) (map[string]string, error) {
 	return out, nil
 }
 
-func renderSampleFrames(s *Sample, fonts map[string]string, coef map[string]float64, dir string, seedBase uint64) error {
+// frameSchedule is the ten-frame manifest of one sample. (The first set's
+// schedule; instantFrameSchedule is the second set's — ADR-0079.)
+
+func renderSampleFrames(s *Sample, fonts map[string]string, coef map[string]float64, dir string, seedBase uint64, layout Layout) error {
 	r := resolutionOf(s.Variant.Resolution)
 	scl := float64(r.H) / 480.0
 	seed := SampleSeed(seedBase, s.ID)
-	bx, by := int(boxX*float64(r.W)+0.5), int(boxY*float64(r.H)+0.5)
-	bw, bh := int(boxW*float64(r.W)+0.5), int(boxH*float64(r.H)+0.5)
+	l := layout.Effective()
+	bx, by := int(l.BoxX*float64(r.W)+0.5), int(l.BoxY*float64(r.H)+0.5)
+	bw, bh := int(l.BoxW*float64(r.W)+0.5), int(l.BoxH*float64(r.H)+0.5)
 	lines, pt := []string{}, 0
 	if s.TextKind == "dialogue" {
 		var err error
@@ -236,10 +268,13 @@ func renderSampleFrames(s *Sample, fonts map[string]string, coef map[string]floa
 	}
 	for _, f := range s.Frames {
 		kind := "absent"
-		if f.File == "text.png" {
+		switch f.File {
+		case "text.png":
 			kind = "text"
+		case "box.png": // box present, no text: the advance frame of the instant schedule
+			kind = "box"
 		}
-		if err := renderFrame(s, r, scl, seed, bx, by, bw, bh, lines, pt, fonts, kind, filepath.Join(dir, f.File)); err != nil {
+		if err := renderFrame(s, r, scl, seed, bx, by, bw, bh, lines, pt, fonts, kind, l, filepath.Join(dir, f.File)); err != nil {
 			return err
 		}
 	}
@@ -248,19 +283,34 @@ func renderSampleFrames(s *Sample, fonts map[string]string, coef map[string]floa
 
 // renderFrame is one magick invocation: scene, optional box and text, optional
 // analog degradation, quantised PNG. One process per frame keeps the recipe in
-// one place and the argument list the whole derivation.
-func renderFrame(s *Sample, r struct{ W, H int }, scl float64, seed uint32, bx, by, bw, bh int, lines []string, pt int, fonts map[string]string, kind, out string) error {
+// one place and the argument list the whole derivation. kind is "text" (box
+// plus the sample's lines), "box" (the box alone: the instant schedule's
+// advance frame) or "absent" (scene only).
+func renderFrame(s *Sample, r struct{ W, H int }, scl float64, seed uint32, bx, by, bw, bh int, lines []string, pt int, fonts map[string]string, kind string, layout Layout, out string) error {
 	args := []string{"-size", fmt.Sprintf("%dx%d", r.W, r.H), "gradient:#2c4a6e-#9fc0d8",
 		"-fill", "rgba(29,43,35,0.5)", "-draw", fmt.Sprintf("stroke none rectangle 0,%d %d,%d", r.H*2/3, r.W, r.H),
 		"-seed", strconv.Itoa(int(seed)), "-attenuate", "0.22", "+noise", "Gaussian", "-blur", "0x0.7"}
 	if kind != "absent" {
 		m := int(borderInset * scl)
-		rad, stroke := int(16*scl), int(2*scl)
-		args = append(args,
-			"-fill", "rgba(11,16,24,0.82)", "-draw", fmt.Sprintf("stroke none roundrectangle %d,%d %d,%d %d,%d", bx, by, bx+bw-1, by+bh-1, rad, rad),
-			"-stroke", "rgba(207,224,242,0.9)", "-strokewidth", strconv.Itoa(stroke), "-fill", "none",
-			"-draw", fmt.Sprintf("roundrectangle %d,%d %d,%d %d,%d", bx+m/2, by+m/2, bx+bw-1-m/2, by+bh-1-m/2, rad-1, rad-1),
-			"-stroke", "none")
+		stroke := int(2 * scl)
+		fill, edge := "rgba(11,16,24,0.82)", "rgba(207,224,242,0.9)"
+		if layout.Rounded {
+			rad := int(16 * scl)
+			args = append(args,
+				"-fill", fill, "-draw", fmt.Sprintf("stroke none roundrectangle %d,%d %d,%d %d,%d", bx, by, bx+bw-1, by+bh-1, rad, rad),
+				"-stroke", edge, "-strokewidth", strconv.Itoa(stroke), "-fill", "none",
+				"-draw", fmt.Sprintf("roundrectangle %d,%d %d,%d %d,%d", bx+m/2, by+m/2, bx+bw-1-m/2, by+bh-1-m/2, rad-1, rad-1),
+				"-stroke", "none")
+		} else {
+			// Square corners (ADR-0079, second set): the same dark panel and
+			// inner border, drawn as plain rectangles — a shape the presence
+			// test (dark share in the profile region) never depends on.
+			args = append(args,
+				"-fill", fill, "-draw", fmt.Sprintf("stroke none rectangle %d,%d %d,%d", bx, by, bx+bw-1, by+bh-1),
+				"-stroke", edge, "-strokewidth", strconv.Itoa(stroke), "-fill", "none",
+				"-draw", fmt.Sprintf("rectangle %d,%d %d,%d", bx+m/2, by+m/2, bx+bw-1-m/2, by+bh-1-m/2),
+				"-stroke", "none")
+		}
 	}
 	if kind == "text" && len(lines) > 0 {
 		lead := pt + int(5*scl)

@@ -55,6 +55,13 @@ func matrixCases() []routeCase {
 		{http.MethodGet, "/api/v1/capture/preview", auth.RoleOperator, ""},
 		{http.MethodPost, "/api/v1/sessions", auth.RoleOperator, `{}`},
 		{http.MethodPost, "/api/v1/sessions/" + id + "/stop", auth.RoleOperator, ""},
+		// The player's live controls (ADR-0075): pause/resume are idempotent
+		// operator writes; settings is the mid-session policy. All three sit
+		// under the session family's operator grant, and the matrix proves a
+		// viewer's click on the pause button is refused at the gate.
+		{http.MethodPost, "/api/v1/sessions/" + id + "/pause", auth.RoleOperator, ""},
+		{http.MethodPost, "/api/v1/sessions/" + id + "/resume", auth.RoleOperator, ""},
+		{http.MethodPut, "/api/v1/sessions/" + id + "/settings", auth.RoleOperator, `{}`},
 		{http.MethodPost, "/api/v1/voices/" + id + "/register", auth.RoleOperator, ""},
 
 		// curator: import, publish, voices, onboarding

@@ -94,12 +94,14 @@ jobs:
           scripts/gates/secret-scan.sh --history
 
       # make test-unit (docs/spec/16) is `go vet ./...` + `go test -race
-      # ./...`. Local behaviour is unchanged; CI invokes the same commands
-      # directly, adding -json to go test so every failing test becomes a
-      # public check-run annotation (job logs need GitHub auth; the
-      # annotations are the public surface). Keep the package set (`./...`)
-      # and flags (`-race`) in sync with the Makefile target when it
-      # changes. set +o pipefail: the step must reach the annotator even
+      # -timeout 25m ./...`. Local behaviour is unchanged; CI invokes the same
+      # commands directly, adding -json to go test so every failing test becomes
+      # a public check-run annotation (job logs need GitHub auth; the
+      # annotations are the public surface). Keep the package set (`./...`),
+      # the flags (`-race`), and the explicit `-timeout 25m` (issue #15: the
+      # implicit 10-minute per-package default has already killed a run under
+      # load) in sync with the Makefile target when it changes.
+      # set +o pipefail: the step must reach the annotator even
       # when go test fails (the pipeline's exit code is tee's).
       - name: make test-unit (race) as go vet + go test -race -json ./...
         run: |
@@ -109,7 +111,7 @@ jobs:
             echo "::error::go vet ./... failed — see the step log (job logs require GitHub auth)"
             exit 1
           fi
-          go test -race -json ./... 2>artifacts/ci/test-unit.stderr \
+          go test -race -timeout 25m -json ./... 2>artifacts/ci/test-unit.stderr \
             | tee artifacts/ci/test-unit.json
           rc=${PIPESTATUS[0]}
           scripts/gates/annotate-go.sh artifacts/ci/test-unit.json "go test (unit)"

@@ -132,6 +132,15 @@ type Stats struct {
 	// OCRStale counts results that came back after the region had moved on. They
 	// are dropped rather than applied; the counter is what proves the drop.
 	OCRStale uint64 `json:"ocr_stale"`
+	// OCRDeferred counts frames that arrived while the region's read was in
+	// flight and RODE that read instead of superseding it (live mode): the
+	// observation attaches to the outstanding read and resolves with its
+	// result, so a read slower than the frame interval still settles at the
+	// engine's own pace (docs/spec/05's 2–5 Hz OCR cadence) instead of being
+	// cancelled on every changed-hash frame. With OCRCalls and
+	// OCRSkippedByHash it partitions the frames that reached a live region's
+	// dedupe: call it, skip it, or ride the read already running.
+	OCRDeferred uint64 `json:"ocr_deferred"`
 	// OCRErrors counts recognitions that failed for a reason other than
 	// cancellation (timeout, engine failure, unavailable).
 	OCRErrors uint64 `json:"ocr_errors"`
@@ -200,6 +209,20 @@ type Stats struct {
 	// incomplete. Always 0 when Trace is off.
 	TraceDropped uint64 `json:"trace_dropped,omitempty"`
 
+	// AudioUnderruns counts playbacks that STARTED and then ended in a sink
+	// failure: the samples were lost mid-utterance (a dead device, a dropped
+	// write, the player process exiting early). It is docs/spec/13's named
+	// "playback underruns" counter, and it counts only playbacks that reached
+	// the device — a sink that failed before starting is a start failure, not
+	// an underrun (ADR-0074).
+	AudioUnderruns uint64 `json:"audio_underruns"`
+	// AudioOutputLatency is the output-latency table: for each started
+	// playback that reported a first-sample stamp, the interval from the
+	// sink accepting the playback to the device buffer accepting the first
+	// samples. Count 0 when no sink reported first-sample timestamps (the
+	// filesink and dummy do not), which is the honest "not measured".
+	AudioOutputLatency LatencySummary `json:"audio_output_latency"`
+
 	Latency Latency `json:"latency"`
 }
 
@@ -214,6 +237,9 @@ type counters struct {
 	frameOCR  *hist
 	ocrRank   *hist
 	frameComm *hist
+	// audioLat holds the output-latency samples (ADR-0074); the underruns
+	// live on the Stats field itself.
+	audioLat *hist
 
 	traceLog []TraceEntry
 	traceOn  bool
@@ -239,6 +265,7 @@ func newCounters(trace bool, traceMax int) *counters {
 		frameOCR:  newHist(),
 		ocrRank:   newHist(),
 		frameComm: newHist(),
+		audioLat:  newHist(),
 		traceOn:   trace,
 		traceMax:  traceMax,
 	}
@@ -301,6 +328,7 @@ func (c *counters) ocrCall()                 { c.add(func(s *Stats) { s.OCRCalls
 func (c *counters) ocrSkipped()              { c.add(func(s *Stats) { s.OCRSkippedByHash++ }) }
 func (c *counters) ocrCancelled()            { c.add(func(s *Stats) { s.OCRCancelled++ }) }
 func (c *counters) ocrStale()                { c.add(func(s *Stats) { s.OCRStale++ }) }
+func (c *counters) ocrDeferred()             { c.add(func(s *Stats) { s.OCRDeferred++ }) }
 func (c *counters) ocrError()                { c.add(func(s *Stats) { s.OCRErrors++ }) }
 func (c *counters) ocrFallbackFrames()       { c.add(func(s *Stats) { s.OCRFallbackFrames++ }) }
 func (c *counters) ocrFallbackSecondary()    { c.add(func(s *Stats) { s.OCRFallbackSecondaryCalls++ }) }
@@ -333,6 +361,15 @@ func (c *counters) commits(n uint64)  { c.add(func(s *Stats) { s.Commits += n })
 func (c *counters) events(n uint64)   { c.add(func(s *Stats) { s.Events += n }) }
 func (c *counters) staleApplied()     { c.add(func(s *Stats) { s.StaleApplied++ }) }
 
+// audioUnderrun books one started playback that ended in a sink failure
+// (docs/spec/13 "playback underruns", ADR-0074).
+func (c *counters) audioUnderrun() { c.add(func(s *Stats) { s.AudioUnderruns++ }) }
+
+// audioOutputLatency books one measured output-latency sample: the interval
+// from the sink accepting the playback to the device buffer accepting the
+// first samples (ADR-0074).
+func (c *counters) audioOutputLatency(d time.Duration) { c.audioLat.observe(d) }
+
 func (c *counters) snapshot() Stats {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -343,6 +380,7 @@ func (c *counters) snapshot() Stats {
 		OCRToRanked:      c.ocrRank.summary(),
 		FrameToCommitted: c.frameComm.summary(),
 	}
+	s.AudioOutputLatency = c.audioLat.summary()
 	return s
 }
 

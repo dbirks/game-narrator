@@ -31,10 +31,13 @@ type startSessionRequest struct {
 	DevTrace    bool          `json:"dev_trace"`
 }
 
-// startFrameSrc names the frame input. Dir is meaningful for replay only.
-// ClipID (ADR-0073) selects a clip from the managed clip store by id; the
-// runtime resolves it inside the store and re-checks the result against the
-// replay-root allowlist, so the id alone cannot name a path.
+// startFrameSrc names the frame input. Dir is the replay clip's directory
+// for kind replay, and the capture device's stable id for kind v4l2 (ADR-
+// 0078: the enumeration is the allowlist, an empty id resolves the persisted
+// selection then the first usable device). ClipID (ADR-0073) selects a clip
+// from the managed clip store by id; the runtime resolves it inside the store
+// and re-checks the result against the replay-root allowlist, so the id alone
+// cannot name a path.
 type startFrameSrc struct {
 	Kind   string `json:"kind"`
 	Dir    string `json:"dir,omitempty"`
@@ -238,10 +241,37 @@ func (s *Server) sessionProblem(w http.ResponseWriter, r *http.Request, err erro
 		s.writeProblem(w, r, http.StatusBadRequest, "unknown-source-kind",
 			"Bad Request", "frame_source.kind is not a known frame source kind")
 	case errors.Is(err, runtime.ErrSourceUnsupported):
-		// v4l2 and dolphin capture are not implemented in this build; the
-		// answer says exactly that instead of pretending the device failed.
+		// The live capture kinds that are not wired in this process: v4l2
+		// without a capture wiring (an unwired process refuses rather than
+		// fakes a device, ADR-0078) and the dev-only dolphin bridge without
+		// its opt-in/closure. The answer says exactly that instead of
+		// pretending the device failed.
 		s.writeProblem(w, r, http.StatusNotImplemented, "unsupported-capability",
-			"Unsupported Capability", "that frame source kind is not implemented in this build")
+			"Unsupported Capability", "that frame source kind is not available in this build")
+	case errors.Is(err, runtime.ErrCaptureUnavailable):
+		// The v4l2 kind with no capture wiring: the capture subsystem is not
+		// configured in this process, which is a 503 (unavailable) rather
+		// than a 501 — the kind is implemented, the process just has no
+		// dongle layer wired into it (ADR-0078).
+		s.writeCodeProblem(w, r, http.StatusServiceUnavailable, "capture-unavailable",
+			"CAPTURE_UNAVAILABLE", "Service Unavailable",
+			"no capture device layer is wired into this process; the v4l2 frame source cannot run")
+	case errors.Is(err, runtime.ErrCaptureDeviceAbsent):
+		// No dongle attached: the operator action is the physical connection
+		// (docs/spec/08's DEVICE_UNAVAILABLE class).
+		s.writeCodeProblem(w, r, http.StatusServiceUnavailable, "capture-device-unavailable",
+			"DEVICE_UNAVAILABLE", "Service Unavailable",
+			"no usable capture device is attached: connect the UVC HDMI capture dongle and retry")
+	case errors.Is(err, runtime.ErrCaptureDeviceUnknown):
+		// The client named a device the enumeration does not have: a client
+		// error, and the remedy is the device list route.
+		s.writeProblem(w, r, http.StatusBadRequest, "capture-device-unknown",
+			"Bad Request", "the capture device in frame_source.dir is not in the current enumeration: see GET /api/v1/capture/devices for the ids a session may name")
+	case errors.Is(err, runtime.ErrCaptureModeUnavailable):
+		// No offered mode fits the policy: the device is attached but offers
+		// nothing the card's link budget admits (the doctor's remedy).
+		s.writeProblem(w, r, http.StatusServiceUnavailable, "capture-mode-unavailable",
+			"Service Unavailable", "no offered capture mode fits the selection policy: the device offers no format the card's link budget admits")
 	case errors.Is(err, runtime.ErrSourceNotAllowed):
 		s.writeProblem(w, r, http.StatusBadRequest, "source-not-allowed",
 			"Bad Request", "the replay directory is outside the configured allowlist")
@@ -276,3 +306,113 @@ func (s *Server) sessionProblem(w http.ResponseWriter, r *http.Request, err erro
 // mode do not need anywhere near 64 KiB, and a request that does is an attack
 // on the appliance's memory before it is a request at all.
 const maxSessionBodyBytes = 64 << 10
+
+// handleSessionsPause answers POST /api/v1/sessions/{id}/pause:
+// docs/spec/08 "…/pause" — pause stops new speech and fences pending
+// utterances. The call is idempotent (pausing a paused session returns the
+// same snapshot) and the answer is the session's fresh snapshot, whose
+// paused flag the UI's pause button reads. A terminal session answers 409
+// session-not-running: a pause the session cannot take is not a pause.
+func (s *Server) handleSessionsPause(w http.ResponseWriter, r *http.Request) {
+	s.sessionControl(w, r, s.sessions.Pause)
+}
+
+// handleSessionsResume answers POST /api/v1/sessions/{id}/resume:
+// docs/spec/08 "…/resume" — resume continues from the next commit. The
+// session's text machines kept advancing through the pause (the observations
+// were real), so the resume changes no belief and the next ready box commits
+// exactly once: a resume can never burst the paused window's lines, because
+// those decisions were made and are idempotent. Idempotent and snapshot-
+// answered like pause.
+func (s *Server) handleSessionsResume(w http.ResponseWriter, r *http.Request) {
+	s.sessionControl(w, r, s.sessions.Resume)
+}
+
+// handleSessionsSettings answers PUT /api/v1/sessions/{id}/settings:
+// docs/spec/08 "…/settings" and docs/spec/09 "/play" — the operator's
+// mid-session policy, the narrated classes (dialogue / +signs / +items) and
+// the conservative/predictive decision mode. The body is partial: a nil field
+// keeps the session's current value, so a client that only flips the mode
+// never has to re-send the classes it never touched. The answer is the
+// session's fresh snapshot carrying the applied mode and the normalized
+// class list (dialogue always present, first) — what the UI's toggles read.
+func (s *Server) handleSessionsSettings(w http.ResponseWriter, r *http.Request) {
+	if s.sessions == nil {
+		s.writeProblem(w, r, http.StatusServiceUnavailable, "sessions-unavailable",
+			"Sessions Unavailable",
+			"no session runtime is wired in this process; the serve configuration did not start the session manager")
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		s.writeProblem(w, r, http.StatusBadRequest, "invalid-session-id",
+			"Bad Request", "the session id in the path is empty")
+		return
+	}
+	var req runtime.SessionSettings
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxSessionBodyBytes)).Decode(&req); err != nil {
+		s.writeProblem(w, r, http.StatusBadRequest, "invalid-session-settings",
+			"Bad Request", "the settings body is not valid JSON: "+err.Error())
+		return
+	}
+	if req.Mode != nil {
+		m := *req.Mode
+		m = strings.TrimSpace(m)
+		req.Mode = &m
+	}
+	info, err := s.sessions.SetSettings(id, req)
+	if err != nil {
+		s.controlProblem(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
+// sessionControl is the shared path of the binary live controls (pause,
+// resume): the 503 unwired-runtime answer, the id/path validation, the
+// manager call, the documented problem mapping and the snapshot answer.
+func (s *Server) sessionControl(w http.ResponseWriter, r *http.Request, call func(id string) (runtime.Info, error)) {
+	if s.sessions == nil {
+		s.writeProblem(w, r, http.StatusServiceUnavailable, "sessions-unavailable",
+			"Sessions Unavailable",
+			"no session runtime is wired in this process; the serve configuration did not start the session manager")
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		s.writeProblem(w, r, http.StatusBadRequest, "invalid-session-id",
+			"Bad Request", "the session id in the path is empty")
+		return
+	}
+	info, err := call(id)
+	if err != nil {
+		s.controlProblem(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
+// controlProblem maps the live-control sentinels onto their documented
+// answers: 404 for a missing session, 400 for a settings value outside the
+// documented vocabulary, 409 for a session that has already reached a
+// terminal state (the control is refused, not dropped), 503 for the unwired
+// or closing runtime.
+func (s *Server) controlProblem(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, runtime.ErrSessionNotFound):
+		s.writeProblem(w, r, http.StatusNotFound, "session-not-found",
+			"Session Not Found", fmt.Sprintf("no session with id %q exists in this process", r.PathValue("id")))
+	case errors.Is(err, runtime.ErrInvalidSessionSettings):
+		s.writeProblem(w, r, http.StatusBadRequest, "invalid-session-settings",
+			"Bad Request", err.Error())
+	case errors.Is(err, runtime.ErrSessionNotRunning):
+		s.writeProblem(w, r, http.StatusConflict, "session-not-running",
+			"Session Not Running", "the session has reached a terminal state; the control was refused, not dropped")
+	case errors.Is(err, runtime.ErrManagerClosed):
+		s.writeProblem(w, r, http.StatusServiceUnavailable, "runtime-closed",
+			"Runtime Closed", "the session runtime is shutting down; try again once the process is up")
+	default:
+		s.writeProblem(w, r, http.StatusInternalServerError, "internal-error",
+			"Internal Error", "applying the session control failed; see the server log for this request_id")
+	}
+}

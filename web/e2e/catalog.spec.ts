@@ -341,12 +341,14 @@ test("first run to published revision, through the browser", async ({ page, requ
 
   // What the browser saved is the same document the API serves, and it is the
   // versioned manifest of docs/spec/05 rather than an ad-hoc dump.
+  // 1.1 since ADR-0101 (the manifest gained the voices section and the
+  // per-profile narrator fallback; the version bump is its contract).
   const downloaded = JSON.parse(readFileSync(exportPath, "utf8"));
-  expect(downloaded.schema_version).toBe("1.0");
+  expect(downloaded.schema_version).toBe("1.1");
   expect(downloaded.publication.status).toBe("published");
 
   const manifest = await (await api.get(`/api/v1/profiles/${profileId}/export`)).json();
-  expect(manifest.schema_version).toBe("1.0");
+  expect(manifest.schema_version).toBe("1.1");
   expect(manifest.profile_id).toBe(profileId);
   expect(manifest.publication.status).toBe("published");
   expect(manifest.messages.length).toBe(53);

@@ -320,6 +320,25 @@ func (h *harness) control(kind ControlKind, newRev string) Result {
 	return res
 }
 
+// controlSettings sends the mid-session operator policy (docs/spec/09
+// "/play"): the complete target state, as the runtime merges it — the
+// harness plays the runtime's half here.
+func (h *harness) controlSettings(predictive bool, kinds ...games.TextKind) Result {
+	h.seq++
+	res, err := h.r.Apply(h.ctx, ControlMsg{
+		Header: Header{SessionID: h.r.st.SessionID, Seq: h.seq, Generation: h.r.Generation(), ProfileRevision: h.profile},
+		Kind:   ControlSettings,
+		Settings: Settings{
+			Predictive:    predictive,
+			NarratedKinds: kinds,
+		},
+	})
+	if err != nil {
+		h.t.Fatalf("Apply(control settings): %v", err)
+	}
+	return res
+}
+
 // --- reads ---------------------------------------------------------------
 
 func (h *harness) regionState(id string) recognition.State {

@@ -3,6 +3,8 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -110,7 +112,7 @@ func newGates(regions []games.Region) map[string]*rankGate {
 // landed after the session had gone, or spun on the closed channel re-arming a
 // grace timer on every iteration and never returned at all.
 func (r *Runner) reduceLoop(ctx context.Context, red *session.Reducer, in <-chan *obsIn,
-	replies <-chan rankIn, ranks chan<- rankJob, pub session.Publisher) error {
+	replies <-chan rankIn, ranks chan<- rankJob, controls <-chan session.Msg, pub session.Publisher) error {
 	defer close(ranks)
 	gates := r.gates
 
@@ -208,6 +210,54 @@ func (r *Runner) reduceLoop(ctx context.Context, red *session.Reducer, in <-chan
 				return nil
 			}
 
+		case ctl, ok := <-controls:
+			if !ok {
+				controls = nil // the operator stopped steering; stop selecting the closed channel
+				continue
+			}
+			// This channel carries the operator's live controls and nothing else
+			// (the runtime's pause/resume/settings are its only senders); a
+			// different message shape on it is a wiring fault, and it fails the run
+			// rather than being applied through a door it was never meant for.
+			cm, isControl := ctl.(session.ControlMsg)
+			if !isControl {
+				return fmt.Errorf("pipeline: non-control message %T on the live-control channel", ctl)
+			}
+			// The control rides the same single writer as the observations, so it
+			// gets the same identity stamp at the same place: the header describes
+			// the world the message is sent *from*, and a live control is sent from
+			// the writer itself — its own session, its current revision, and the
+			// generation standing at the moment of the apply (the writer is the only
+			// applier, so nothing can commit between the read and the Apply). A
+			// headerless control is sent from nowhere: the session fence reads that
+			// as other_session and drops it without an event — the operator's pause
+			// dies in the log, and the runtime's snapshot lies "paused" on top of a
+			// session that kept speaking (the 2026-10-19 G7 controls: every live
+			// control was fenced out this way).
+			cm.Header = session.Header{
+				SessionID:       r.cfg.SessionID,
+				Generation:      red.Generation(),
+				ProfileRevision: r.cfg.ProfileRevision,
+			}
+			// The operator's live control (pause/resume/settings) lands on the
+			// same single writer as every other state change: it goes through
+			// Apply, so it is fenced by the same session/revision/generation
+			// rules as an observation and it emits its own event
+			// (session.paused, session.resumed, session.settings_changed) in the
+			// stream's order. A refused control is not a run failure: a control
+			// that arrives after the session has stopped is dropped (the stop
+			// already owns the terminal state), and one the reducer declined as
+			// a duplicate was applied by an earlier, identical message — the
+			// runtime's own bookkeeping holds the applied state either way.
+			if res, err := red.Apply(ctx, cm); err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, session.ErrStopped) {
+					continue
+				}
+				return err
+			} else if !res.Applied && res.Reason != "" {
+				_ = res.Reason
+			}
+
 		case <-ctx.Done():
 			return ctx.Err()
 
@@ -279,8 +329,17 @@ func (r *Runner) maybeRank(ctx context.Context, red *session.Reducer, head *redu
 			continue
 		}
 		ready := rs.TextState == recognition.StateReady
+		// The predictive gate reads the session's *live* decision mode from the
+		// reducer's state, not the pipeline's frozen config copy: the mode is
+		// switchable mid-session (a settings control), and the config copy would
+		// hold the start-time value forever — a gate that cannot see the switch
+		// would keep dispatching prefix rankings after the operator chose
+		// conservative (or stop before one who chose predictive). The session's
+		// PredictiveMode is the single source the commitment policy and the
+		// evidence half agree on; the tracker's per-region PredictiveMode is set
+		// from it by the same control, so one read is the whole gate.
 		waitingPredictive := rs.TextState == recognition.StateRevealing &&
-			r.cfg.Reducer.PredictiveMode && r.cfg.Tracker.PredictiveMode
+			st.PredictiveMode
 		if (!ready && !waitingPredictive) || rs.Text == "" {
 			continue
 		}
@@ -312,6 +371,7 @@ func (r *Runner) maybeRank(ctx context.Context, red *session.Reducer, head *redu
 			ocrAt:       v.ocrAt,
 			frameSeq:    v.obs.FrameSeq,
 			captureTSNS: v.obs.CaptureTimestampNS,
+			kindHint:    r.kindHints[rs.RegionID],
 		}
 		if a := head.anchors[rs.RegionID]; a != nil {
 			req.entered, req.ocrAt = a.entered, a.ocrAt

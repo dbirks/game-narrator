@@ -187,3 +187,19 @@ func (s *Store) IntegrityCheck(ctx context.Context) error {
 	}
 	return nil
 }
+
+// SchemaMigrationsPresent reports whether the database carries the
+// schema_migrations table — the marker of a migrated Game Narrator database.
+// Restore refuses a source without it (a non-database file or an un-migrated
+// snapshot must abort the restore rather than replace the destination with
+// something empty), and the API's restore validation asks the same question
+// before a restart is scheduled (internal/restore.ValidateBackup).
+func (s *Store) SchemaMigrationsPresent(ctx context.Context) (bool, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+		schemaMigrationsTable).Scan(&count); err != nil {
+		return false, fmt.Errorf("store: checking %s: %w", schemaMigrationsTable, err)
+	}
+	return count > 0, nil
+}

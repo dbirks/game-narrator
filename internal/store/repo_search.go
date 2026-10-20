@@ -124,9 +124,8 @@ func ftsPhrase(query string) string {
 	return `"` + strings.ReplaceAll(query, `"`, `""`) + `"`
 }
 
-// likePrefix escapes the LIKE wildcards and appends the prefix operator. The
-// escape character itself is escaped first, or escaping the others would escape
-// its own escape character.
-func likePrefix(query string) string {
-	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(query) + "%"
-}
+// likePrefix escapes the LIKE wildcards and appends the prefix operator.
+// wildcardEscape (repo_search_global.go) does the escaping: the escape
+// character itself first, or escaping the others would escape its own escape
+// character.
+func likePrefix(query string) string { return wildcardEscape(query) + "%" }

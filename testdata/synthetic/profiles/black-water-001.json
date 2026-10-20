@@ -1,0 +1,30 @@
+{
+  "id": "black-water-001",
+  "origin": "generated_synthetic",
+  "description": "Synthetic dialogue profile for the generated 24-frame Black Water replay clip testdata/synthetic/replay/black-water-001 (docs/spec/11 'Fixture origins', ADR-0078). Structurally different from dialogue-advance-001: upper-left square-cornered box, instant page reveals, one two-line wrapped page and one non-Latin (Cyrillic) page the eng OCR model cannot read — the pipeline is expected to abstain on it and commit nothing (docs/spec/05 'abstain, never fabricate'). The three real lines are the clip's invented sentences; the rest are invented distractors so ranking a page is a real decision. No real game text.",
+  "text_kind": "dialogue",
+  "messages": [
+    { "id": "bw-a", "original_text": "You paid the ferryman. The crossing is done now." },
+    { "id": "bw-b", "original_text": "This is not a toll. This is a habit." },
+    { "id": "bw-c", "original_text": "Вода помнит то, что люди прячут." },
+    { "id": "bw-x01", "original_text": "You paid the ferryman at the first crossing." },
+    { "id": "bw-x02", "original_text": "The habit is older than the toll, and the toll is older than the ferry." },
+    { "id": "bw-x03", "original_text": "A second ferry appears when the first one is forgotten." },
+    { "id": "bw-x04", "original_text": "The water keeps what people throw to it." },
+    { "id": "bw-x05", "original_text": "Coins do not cross. Only people cross." }
+  ],
+  "edges": [
+    { "from": "bw-a", "to": "bw-b", "type": "next", "confidence": 0.9 },
+    { "from": "bw-b", "to": "bw-c", "type": "next", "confidence": 0.9 }
+  ],
+  "regions": [
+    {
+      "id": "upper-left",
+      "type": "textbox",
+      "x": 0.085938,
+      "y": 0.195833,
+      "w": 0.567188,
+      "h": 0.129167
+    }
+  ]
+}

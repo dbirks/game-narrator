@@ -214,6 +214,30 @@ func (a *AgentStore) GetAgentRun(ctx context.Context, id string) (AgentRun, erro
 	return r, nil
 }
 
+// LatestAgentToolCall is the status bar's stage read (status.go): the
+// run's newest tool call, by seq — the step the agent is on, pending or
+// settled. One statement with a LIMIT, the bounded shape the 2 Hz status
+// poll owes the table. A run with no tool calls answers the zero value
+// with a nil error ("no stage yet"), like every other read here: an
+// empty answer, not an error.
+func (a *AgentStore) LatestAgentToolCall(ctx context.Context, runID string) (AgentToolCall, error) {
+	const op = "latest agent tool call"
+	var tc AgentToolCall
+	err := a.s.inRead(ctx, func(ctx context.Context, q queryable) error {
+		return q.queryRow(ctx, op,
+			`SELECT id, run_id, seq, name, status FROM tool_calls WHERE run_id = ?
+			 ORDER BY seq DESC LIMIT 1`, runID,
+		).Scan(&tc.ID, &tc.RunID, &tc.Seq, &tc.Name, &tc.Status)
+	})
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return AgentToolCall{}, nil
+		}
+		return AgentToolCall{}, mapReadError(op, err)
+	}
+	return tc, nil
+}
+
 // SetAgentRunState moves the run to a new state, recording the stop reason
 // for non-success stops. It is the single write path for state transitions,
 // so updated_at and the state stay consistent under the CHECKs.

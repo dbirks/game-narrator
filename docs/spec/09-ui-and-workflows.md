@@ -4,6 +4,15 @@
 
 React + TypeScript + Vite; lightweight UI component system (Radix-style accessible primitives or similar) and TanStack Query for API state, React Router for pages. Use a small shared application store for live session state and SSE event reducer. Generate typed REST client from OpenAPI. Build `web/dist` at compile time and embed through `//go:embed` in Go, with SPA fallback restricted to frontend paths. In development Vite proxy targets Go API; production has no Node runtime requirement.
 
+## Redesign (Plum & Peach)
+
+The UI above is being restyled and reorganised under the "Plum & Peach" design system, adopted by ADR 0093 (2026-10-20). This section is a pointer; the historical route and requirement text below is kept as written.
+
+- Design system and screen spec (tokens, themes, global chrome, screens 2a–2i, accessibility): `docs/design/plum-peach/README.md`.
+- Functional requirements implied by the design review (agent context, ⌘K search, auto-cast, non-blocking questions, correction feedback, live setup board, single live status stream, view toggles, theming, kid mode, appliance audio/HDMI needs): `docs/design/plum-peach/product-notes.md` (UX-01…).
+- Phased implementation plan: `docs/design/plum-peach/plan.md`.
+- Binding decisions: CSS custom-property tokens only (no runtime-injected styles, per ADR 0011), self-hosted Fredoka/Space Mono (SIL OFL 1.1, licence text shipped with the font files), and the IA changes — Cast merges Characters and Voices at `/games/:id/cast`, Developer becomes Traces at `/traces`, Diagnostics becomes Health at `/health`, and Play merges the now-speaking and operator views behind a "show workings" toggle (old routes redirect).
+
 ## Routes and page requirements
 
 - `/setup` first-run wizard: detect device, configure auth/storage/gateway roles, run test audio, review data/privacy settings.

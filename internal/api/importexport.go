@@ -812,6 +812,15 @@ func (s *Server) handleImportManifest(w http.ResponseWriter, r *http.Request) {
 			"present_blobs":      present,
 			"digest":             report.Digest,
 			"preferred_voice_id": report.PreferredVoiceID,
+			// The voice section's own report (ADR-0101): what the import wrote,
+			// what it skipped because the store already held the id, what it
+			// withheld because the reference bytes are not on this appliance
+			// (re-import the pack to carry them), and what it could not place
+			// because the (character, revision) slot is taken.
+			"voices_written":     report.VoicesWritten,
+			"voices_skipped":     report.VoicesSkipped,
+			"voice_refs_missing": orEmptyList(report.VoiceRefsMissing),
+			"voices_conflicts":   orEmptyList(report.VoicesConflicts),
 		},
 	})
 }

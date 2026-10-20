@@ -27,11 +27,15 @@ import (
 	"github.com/dbirks/game-narrator/internal/assets"
 	"github.com/dbirks/game-narrator/internal/auth"
 	"github.com/dbirks/game-narrator/internal/bootstrap"
+	"github.com/dbirks/game-narrator/internal/bt"
+	"github.com/dbirks/game-narrator/internal/capture/stack"
 	"github.com/dbirks/game-narrator/internal/dolphin"
 	"github.com/dbirks/game-narrator/internal/events"
 	"github.com/dbirks/game-narrator/internal/games/adapter"
+	"github.com/dbirks/game-narrator/internal/logbuf"
 	rt "github.com/dbirks/game-narrator/internal/runtime"
 	"github.com/dbirks/game-narrator/internal/store"
+	"github.com/dbirks/game-narrator/internal/updates"
 	"github.com/dbirks/game-narrator/internal/webassets"
 )
 
@@ -140,6 +144,22 @@ type Server struct {
 	// claim an appliance with no runtime.
 	sessions *rt.Manager
 
+	// capture is the UVC HDMI capture device layer (ADR-0078): the device
+	// list and selection (GET/PUT /api/v1/capture/devices[/{id}]), the
+	// throttled preview snapshot (GET /api/v1/capture/preview) and the capture
+	// probe (POST /api/v1/capture/probe). The selection/operation logic lives
+	// in internal/capture/stack so the session runtime and the API resolve
+	// one spelling of the same device and mode. nil answers 503 for the same
+	// honest-degradation reason as every other unwired subsystem: an empty
+	// device list would claim an appliance with no capture hardware.
+	capture *stack.Stack
+	// capturePreviewInFlight and capturePreviewLastNano are the preview's
+	// global throttle state (ADR-0078 §3): one snapshot in flight, a 500 ms
+	// minimum interval, shared by every request because the budget is the
+	// decode cores and the USB bus, not the caller.
+	capturePreviewInFlight int32
+	capturePreviewLastNano int64
+
 	// devEvents is the durable event log behind the developer inspector's REST
 	// pages (dev.go). It is the same store the hub persists into, so the pages
 	// show exactly what the SSE stream would have shown, minus the live tail.
@@ -150,6 +170,13 @@ type Server struct {
 	// queue the runs execute as, the run log and the human approval tokens.
 	// nil answers 503 under /api/v1/onboarding (ADR-0028).
 	onb *onbDeps
+
+	// assistantDeps wires the context-aware assistant routes (assistant.go,
+	// ADR-0099): the thread→run ownership tables, the durable queue the
+	// attempts run as and the tool backends (voices, sessions, event log).
+	// nil answers 503 under /api/v1/assistant; a nil tool backend degrades
+	// the tool that needs it to a failed envelope, not the whole route.
+	assistantDeps *assistantDeps
 
 	// idempotency remembers the responses of keyed creates so a retried POST
 	// cannot create two games (docs/spec/08 "Conventions"). It is per-process by
@@ -200,6 +227,52 @@ type Server struct {
 	// workerOnce starts the scenario.run worker at most once per process
 	// (tests_worker.go), from the run route after the enqueue.
 	workerOnce sync.Once
+
+	// updatesChecker is the appliance's update notification (ADR-0088): a
+	// bounded check against the releases of the repository this build belongs
+	// to, with the offline cache in the data directory. nil means this process
+	// has no update check wired (test servers): the /settings page keeps its
+	// static note and the refresh route answers 503.
+	updatesChecker *updates.Checker
+
+	// restarter is the process-replacement seam behind POST /api/v1/admin/restore
+	// (ADR-0090): the handler schedules the restore plan and answers, and this
+	// function then replaces the process image (same arguments) so the boot
+	// applies the plan before the listener comes up. nil means this process
+	// cannot restart in place (test servers): the route answers 503.
+	restarter func() error
+
+	// diagRuns is the bounded in-memory store of diagnostics runs (ADR-0087).
+	// It is internal state, not wiring, so New builds it and it always exists —
+	// the route degrades on the probe seams, not on the store.
+	diagRuns *diagnosticsRunStore
+
+	// logRing is the process's log tail (ADR-0087, docs/spec/09 /diagnostics
+	// "system logs (redacted)"). nil means no ring is wired and the logs route
+	// answers 503 — the honest-degradation rule every unwired subsystem follows.
+	logRing *logbuf.Ring
+
+	// btController is the Bluetooth surface (ADR-0087, issues #2/#3): the
+	// BlueZ D-Bus client on the appliance, the labelled-synthetic fake under
+	// GAME_NARRATOR_BT_FAKE, nil in builds without it. nil answers 503 under
+	// /api/v1/audio/bluetooth (the section hides itself there). The rate limit
+	// is shared by every mutation (the inquiry channel is one radio, not a
+	// per-caller budget) and is internal state, like the idempotency store.
+	btController bt.Controller
+	btLimiter    *auth.Limiter
+
+	// The status bar's backend (docs/design/plum-peach "Global chrome").
+	// The two caches are internal state like diagRuns — built in New, always
+	// present — and the engine is the process's single push loop, started
+	// lazily by the stream route (a process whose clients poll by GET pays
+	// no push at all). The stream degrades on the hub seam (503, like
+	// /events); the GET never does: its seams degrade to "unknown" and "no
+	// active session", which are the honest shapes.
+	statusMu         sync.Mutex
+	statusEng        *statusEngine
+	statusEngineOnce sync.Once
+	gameTitle        *gameTitleCache
+	statusReadiness  *statusReadinessCache
 }
 
 // ReadinessFunc answers GET /api/v1/health/ready. It returns the per-dependency
@@ -293,6 +366,16 @@ func WithSessions(mgr *rt.Manager) Option {
 	return func(s *Server) { s.sessions = mgr }
 }
 
+// WithCapture wires the UVC HDMI capture device layer (ADR-0078) behind the
+// capture routes: the device list and selection, the throttled preview and
+// the capture probe. The stack owns the selection and the source builder, so
+// the session runtime and the API agree on which device and mode is opened.
+// nil answers 503 under /api/v1/capture for the same honest-degradation
+// reason as every other unwired subsystem.
+func WithCapture(st *stack.Stack) Option {
+	return func(s *Server) { s.capture = st }
+}
+
 // WithDevEvents wires the durable event log behind the developer inspector's
 // REST pages (GET /api/v1/dev/events, /api/v1/dev/traces/{trace_id}). The
 // production call passes the same store the hub persists into; a nil store
@@ -369,6 +452,43 @@ func WithTrustedProxy(cidrs ...string) Option {
 	}
 }
 
+// WithUpdates wires the update check (ADR-0088) behind the /settings page's
+// version-and-updates section and the refresh route. A nil checker keeps the
+// page's static note and makes the refresh route answer 503.
+func WithUpdates(c *updates.Checker) Option {
+	return func(s *Server) { s.updatesChecker = c }
+}
+
+// WithRestarter wires the process-replacement seam behind
+// POST /api/v1/admin/restore (ADR-0090). The handler answers first and calls
+// it after; a nil restarter makes the route answer 503.
+func WithRestarter(f func() error) Option {
+	return func(s *Server) { s.restarter = f }
+}
+
+// WithLogRing wires the process's log tail behind GET /api/v1/diagnostics/logs
+// (ADR-0087): the redacted recent system logs. A nil ring keeps the route
+// answering 503 — a logs section that shows an empty tail because nobody wired
+// a ring would read as "no errors", which is the lie docs/spec/13 forbids.
+func WithLogRing(ring *logbuf.Ring) Option {
+	return func(s *Server) { s.logRing = ring }
+}
+
+// WithBluetoothController wires the Bluetooth output surface (ADR-0087,
+// issues #2/#3) behind /api/v1/audio/bluetooth: the BlueZ D-Bus client on the
+// appliance, the labelled-synthetic fake in the test seams. nil keeps the
+// routes answering 503 — the page's section hides itself on available=false.
+func WithBluetoothController(c bt.Controller) Option {
+	return func(s *Server) { s.btController = c }
+}
+
+// WithBluetoothLimiter replaces the shared mutation bucket the Bluetooth
+// routes draw on (tests install a small bucket to reach the 429 without
+// burning the real window; production keeps the default from New).
+func WithBluetoothLimiter(l *auth.Limiter) Option {
+	return func(s *Server) { s.btLimiter = l }
+}
+
 // New constructs an API server. A zero BuildInfo or nil logger is tolerated.
 // By default the UI comes from webassets.FS(), i.e. whatever Vite output was
 // compiled into the binary.
@@ -383,12 +503,28 @@ func New(build bootstrap.BuildInfo, startedAt time.Time, log *slog.Logger, opts 
 		webFS:       webassets.FS(),
 		policy:      auth.DefaultPolicy(),
 		idempotency: newIdempotencyStore(),
+		diagRuns:    newDiagnosticsRunStore(),
+		// The status bar's caches (status.go): internal state, so New builds
+		// them and they always exist.
+		gameTitle:       newGameTitleCache(),
+		statusReadiness: &statusReadinessCache{},
+		// The Bluetooth mutation budget (bt.go): internal state, so it always
+		// exists — the route degrades on the controller seam, not on it.
+		btLimiter: auth.NewLimiter(btLimiterCapacity, btLimiterWindow, time.Now),
 	}
 	for _, opt := range opts {
 		opt(s)
 	}
 	if s.webFS == nil {
 		s.webFS = emptyFS{}
+	}
+	// The status bar's event name joins the hub's closed vocabulary the way
+	// every other subsystem's extra names do (the jobs runner, the region
+	// preview, the runtime's session signals): registered once here, before
+	// any handler can publish one, so a publish of status.changed is
+	// validated like every other event and an unknown name stays unknown.
+	if err := events.Register(statusEventName); err != nil {
+		log.Error("status: cannot register the status event name", "error", err)
 	}
 	return s
 }
@@ -414,6 +550,26 @@ func (s *Server) Handler() http.Handler {
 	routes.register(mux, http.MethodGet, "/api/v1/health/live", s.handleLive)
 	routes.register(mux, http.MethodGet, "/api/v1/health/ready", s.handleReady)
 	routes.register(mux, http.MethodGet, "/api/v1/system/info", s.handleSystemInfo)
+	// The global status bar's backend (docs/design/plum-peach "Global
+	// chrome"): the snapshot read and its on-change push (status.changed
+	// through the same hub the event stream uses). Both are viewer reads —
+	// the bar is on every screen, including the kiosk viewer's.
+	routes.register(mux, http.MethodGet, "/api/v1/status", s.handleStatus)
+	routes.register(mux, http.MethodGet, "/api/v1/status/stream", s.handleStatusStream)
+	// The ⌘K command-palette search (ADR-0098, docs/design/plum-peach UX-02):
+	// one viewer read that groups games, characters, lines, traces, settings
+	// sections and actions. The route is viewer like the status bar it sits
+	// next to; which result kinds a caller actually gets is the handler's
+	// business (traces developer-only, settings and verbs role-filtered).
+	routes.register(mux, http.MethodGet, "/api/v1/search", s.handleSearch)
+	// The diagnostics surface (ADR-0087, docs/spec/09 /diagnostics): the public
+	// host vitals, the model-role probe runs (the scope table's two reserved
+	// /api/v1/diagnostics grants, the concrete /logs path registered before the
+	// {id} template so it wins) and the redacted log tail.
+	routes.register(mux, http.MethodGet, "/api/v1/diagnostics/host", s.handleDiagnosticsHost)
+	routes.register(mux, http.MethodGet, "/api/v1/diagnostics/logs", s.handleDiagnosticsLogs)
+	routes.register(mux, http.MethodPost, "/api/v1/diagnostics/run", s.handleDiagnosticsRun)
+	routes.register(mux, http.MethodGet, "/api/v1/diagnostics/{id}", s.handleDiagnosticsGet)
 	routes.register(mux, http.MethodGet, "/api/v1/events", s.developerScopedEvents(s.handleEvents))
 
 	// Authentication and account management (docs/spec/08 "API version and user
@@ -451,6 +607,45 @@ func (s *Server) Handler() http.Handler {
 	routes.register(mux, http.MethodGet, "/api/v1/sessions/{id}", s.handleSessionsGet)
 	routes.register(mux, http.MethodPost, "/api/v1/sessions/{id}/stop", s.handleSessionsStop)
 	routes.register(mux, http.MethodPost, "/api/v1/sessions/{id}/audio", s.handleSessionsAudio)
+	// The output-audio product surface (ADR-0074, gap audit G5): the
+	// enumerated devices with the effective selection, and the consent-gated
+	// deterministic test tone through the same sinks the session plays.
+	routes.register(mux, http.MethodGet, "/api/v1/audio/devices", s.handleAudioDevicesGet)
+	routes.register(mux, http.MethodPost, "/api/v1/audio/test-tone", s.handleAudioTestTone)
+	// The Bluetooth output surface (ADR-0087, issues #2/#3): the adapter
+	// state, the time-bounded scan, the audio-capable inventory and the
+	// pairing lifecycle (pair+trust, connect, disconnect, forget, and the
+	// re-pair repair for the LE-only "no audio sink" state). Every route sits
+	// under the scope table's /api/v1/audio/{rest...} operator grant — the
+	// "act on the physical world" tier, like capture — and the selection
+	// itself is the operator/admin audio settings route above, which persists
+	// the sink identity bluez_output.<MAC>.1.
+	routes.register(mux, http.MethodGet, "/api/v1/audio/bluetooth/state", s.handleBtState)
+	routes.register(mux, http.MethodPost, "/api/v1/audio/bluetooth/scan", s.handleBtScan)
+	routes.register(mux, http.MethodGet, "/api/v1/audio/bluetooth/devices", s.handleBtDevices)
+	routes.register(mux, http.MethodPost, "/api/v1/audio/bluetooth/devices/{mac}/pair", s.btDeviceAction("pair", btPairBound, "the device is paired and trusted: connect it to bring up its audio sink", func(c bt.Controller, ctx context.Context, mac string) error { return c.Pair(ctx, mac) }))
+	routes.register(mux, http.MethodPost, "/api/v1/audio/bluetooth/devices/{mac}/trust", s.btDeviceAction("trust", btForgetBound, "the device is marked trusted: bluez will connect it without further confirmation", func(c bt.Controller, ctx context.Context, mac string) error { return c.Trust(ctx, mac, true) }))
+	routes.register(mux, http.MethodPost, "/api/v1/audio/bluetooth/devices/{mac}/connect", s.btDeviceAction("connect", btConnectBound, "the device is connected: its A2DP sink is now an audio output (bluez_output.<MAC>.1)", func(c bt.Controller, ctx context.Context, mac string) error { return c.Connect(ctx, mac) }))
+	routes.register(mux, http.MethodPost, "/api/v1/audio/bluetooth/devices/{mac}/disconnect", s.btDeviceAction("disconnect", btConnectBound, "the device is disconnected", func(c bt.Controller, ctx context.Context, mac string) error { return c.Disconnect(ctx, mac) }))
+	routes.register(mux, http.MethodPost, "/api/v1/audio/bluetooth/devices/{mac}/forget", s.btDeviceAction("forget", btForgetBound, "the device and its pairing information were removed: pair it again to use it", func(c bt.Controller, ctx context.Context, mac string) error { return c.Forget(ctx, mac) }))
+	routes.register(mux, http.MethodPost, "/api/v1/audio/bluetooth/devices/{mac}/repair", s.btDeviceAction("repair", btRepairBound, "the device was re-paired over the classic transport and reconnected: its A2DP sink should be up (the headset must have been in pairing mode for the rescan)", func(c bt.Controller, ctx context.Context, mac string) error { return c.Repair(ctx, mac) }))
+	// The UVC HDMI capture device surface (ADR-0078): the device list with
+	// the negotiated link and the chosen mode, the persisted selection, the
+	// throttled preview snapshot and the capture probe. The scope table grants
+	// /api/v1/capture/{rest...} to operator (a capture preview and a session
+	// source are "act on the physical world" actions, docs/spec/10).
+	routes.register(mux, http.MethodGet, "/api/v1/capture/devices", s.handleCaptureDevices)
+	routes.register(mux, http.MethodPut, "/api/v1/capture/devices/{id}", s.handleCaptureSelect)
+	routes.register(mux, http.MethodGet, "/api/v1/capture/preview", s.handleCapturePreview)
+	routes.register(mux, http.MethodPost, "/api/v1/capture/probe", s.handleCaptureProbe)
+	// The operator's live controls of docs/spec/08 ("…/pause, …/resume,
+	// …/settings"): pause/resume stop and restart the commitment and the
+	// speech, and settings changes the narrated classes and the decision mode
+	// mid-session. All three are operator (the session-scoped scope grant),
+	// and each emits its own session event on the session's chain.
+	routes.register(mux, http.MethodPost, "/api/v1/sessions/{id}/pause", s.handleSessionsPause)
+	routes.register(mux, http.MethodPost, "/api/v1/sessions/{id}/resume", s.handleSessionsResume)
+	routes.register(mux, http.MethodPut, "/api/v1/sessions/{id}/settings", s.handleSessionsSettings)
 
 	// Developer inspection (docs/spec/08 "APIs": dev/events, dev/traces; the
 	// asset route is ADR-0024's sampled-evidence read path). All three sit
@@ -463,6 +658,14 @@ func (s *Server) Handler() http.Handler {
 	routes.register(mux, http.MethodGet, "/api/v1/dev/sessions/{id}/bottlenecks", s.handleDevSessionBottlenecks)
 	routes.register(mux, http.MethodGet, "/api/v1/dev/traces/{trace_id}", s.handleDevTraces)
 	routes.register(mux, http.MethodGet, "/api/v1/dev/assets/{sha256}", s.handleDevAsset)
+	// The developer inspector's per-event actions (ADR-0083): the trace
+	// fixture recorded into the external fixture root (the POST half of the
+	// fixture pair above), the stored observation's re-run with its diff, the
+	// trace's redacted evidence bundle, and one utterance's stored audio.
+	routes.register(mux, http.MethodPost, "/api/v1/dev/fixtures", s.handleDevFixtureRecord)
+	routes.register(mux, http.MethodPost, "/api/v1/dev/traces/{trace_id}/rerun", s.handleDevTraceRerun)
+	routes.register(mux, http.MethodGet, "/api/v1/dev/traces/{trace_id}/evidence", s.handleDevTraceEvidence)
+	routes.register(mux, http.MethodGet, "/api/v1/dev/speech/audio", s.handleDevSpeechAudio)
 
 	// Developer Dolphin bridge (docs/spec/11, ADR-0007): launch, status,
 	// input, screenshot and stop for the isolated, dev-only emulator. The
@@ -489,12 +692,28 @@ func (s *Server) Handler() http.Handler {
 
 	// The /settings page (docs/spec/09): the effective configuration, read-only
 	// where it comes from the environment, with the backup download. Admin by
-	// the scope table's grants below; PUT answers 405 on purpose (no setting
-	// of this build is runtime-mutable — settings.go says so with the env
-	// names the change would have to go through).
+	// the scope table's grants below; PUT answers 405 on purpose for the
+	// general settings (the one runtime-mutable setting, the audio output,
+	// has its own route — settings.go says so with the env names the change
+	// would have to go through).
 	routes.register(mux, http.MethodGet, "/api/v1/settings", s.handleSettingsGet)
 	routes.register(mux, http.MethodPut, "/api/v1/settings", s.handleSettingsPut)
+	// The one runtime-mutable setting (ADR-0074): the audio output selection
+	// and master volume persist in the store; the env variables keep their
+	// override precedence (internal/audio.Resolve documents it).
+	routes.register(mux, http.MethodPut, "/api/v1/settings/audio", s.handleAudioSettingsPut)
 	routes.register(mux, http.MethodPost, "/api/v1/admin/backup", s.handleAdminBackup)
+	// The restore half of the backup/restore pair (ADR-0090): the admin uploads
+	// a backup produced by the route above; the handler validates it, takes
+	// the automatic pre-restore backup, schedules the plan and restarts the
+	// process so the boot applies it before the listener comes up. GET is the
+	// post-restart status read (the UI polls it after the restart).
+	routes.register(mux, http.MethodPost, "/api/v1/admin/restore", s.handleAdminRestore)
+	routes.register(mux, http.MethodGet, "/api/v1/admin/restore", s.handleAdminRestoreStatus)
+	// The update notification's manual re-check (ADR-0088): the settings
+	// page's "check now" button. Bounded by the checker's own timeout, so a
+	// hung endpoint cannot hold the page open.
+	routes.register(mux, http.MethodPost, "/api/v1/settings/updates/refresh", s.handleSettingsUpdatesRefresh)
 
 	// Onboarding agent (docs/spec/08 "APIs", ADR-0028): the run lives as a
 	// durable agent.run job; this surface starts, chats with, watches and
@@ -509,6 +728,19 @@ func (s *Server) Handler() http.Handler {
 	routes.register(mux, http.MethodPost, "/api/v1/onboarding/runs/{id}/cancel", s.handleOnboardingCancel)
 	routes.register(mux, http.MethodPost, "/api/v1/onboarding/runs/{id}/approve", s.handleOnboardingApprove)
 	routes.register(mux, http.MethodPost, "/api/v1/onboarding/uploads", s.handleOnboardingUpload)
+
+	// Context-aware assistant (ADR-0099, docs/design/plum-peach UX-01/04/05):
+	// the agent dock's backend. One thread is one durable agent run; a
+	// message appends a turn and enqueues an assistant.run attempt, and the
+	// reply streams over the event hub (the loop's step/tool events plus
+	// assistant.message and assistant.question). The scope table grants the
+	// whole prefix to operator and up: every mutation the dock can trigger
+	// is confirmation-gated or a catalogue draft write, and nothing here
+	// publishes.
+	routes.register(mux, http.MethodPost, "/api/v1/assistant/messages", s.handleAssistantMessages)
+	routes.register(mux, http.MethodPost, "/api/v1/assistant/answers", s.handleAssistantAnswers)
+	routes.register(mux, http.MethodGet, "/api/v1/assistant/threads", s.handleAssistantThreads)
+	routes.register(mux, http.MethodGet, "/api/v1/assistant/threads/{id}", s.handleAssistantThread)
 
 	// Catalog, profile lifecycle and portability (docs/spec/08 "APIs": games,
 	// editions, profiles, messages, characters, regions, import, export,
@@ -529,6 +761,7 @@ func (s *Server) Handler() http.Handler {
 	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}", s.handleProfileGet)
 	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/revisions", s.handleProfileRevision)
 	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/status", s.handleProfileStatus)
+	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/narrator-fallback", s.handleNarratorFallback)
 	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/publish", s.handleProfilePublish)
 	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/publish-actions", s.handlePublishActions)
 	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/messages", s.handleMessagesList)
@@ -584,6 +817,9 @@ func (s *Server) Handler() http.Handler {
 	routes.register(mux, http.MethodPost, "/api/v1/voices/{id}/register", s.handleVoiceRegister)
 	routes.register(mux, http.MethodPost, "/api/v1/voices/{id}/preview", s.handleVoicePreview)
 	routes.register(mux, http.MethodGet, "/api/v1/voices/{id}/registrations", s.handleVoiceRegistrations)
+	// The per-voice output gain (ADR-0074, docs/spec/07 "per-voice gain"): an
+	// output property applied at playback, never by re-synthesis.
+	routes.register(mux, http.MethodPost, "/api/v1/voices/{id}/gain", s.handleVoiceGain)
 
 	// The machine-readable contract itself. Public: it is how a client learns to
 	// authenticate, and it carries no game content and no host paths.
@@ -601,6 +837,23 @@ func (s *Server) Handler() http.Handler {
 	// therefore dispatched here, ahead of the mux; anything a registered route
 	// claims still goes through it.
 	dispatch := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The capture device ids (by-id / by-path) are full device paths, so
+		// they contain slashes. The contract is a percent-encoded id in the
+		// path (a %2F-escaped segment the mux routes to {id} and decodes); a
+		// client that sends the raw id instead arrives here as a multi-segment
+		// path the mux would normalize with a 307 before a 404 (issue #10's
+		// field observation). Answer the miss with the actionable 400 instead.
+		// The test is on the escaped path: an encoded id carries %2F there, a
+		// raw id carries literal "/". Only the select route takes an id in the
+		// path (the preview and probe carry it as a query/body field).
+		if r.Method == http.MethodPut {
+			const captureSelectPrefix = "/api/v1/capture/devices/"
+			if rest, ok := strings.CutPrefix(r.URL.EscapedPath(), captureSelectPrefix); ok && strings.Contains(rest, "/") {
+				s.writeProblem(w, r, http.StatusBadRequest, "device-id-not-encoded",
+					"Bad Request", "the capture device id in the path contains raw slashes: by-id and by-path ids are full device paths, so the id must be percent-encoded in the URL (a '/' becomes %2F, as the web client's URL encoder does); GET /api/v1/capture/devices reports the ids")
+				return
+			}
+		}
 		if !strings.HasPrefix(r.URL.Path, apiRoot) && !routes.matches(r.Method, r.URL.Path) {
 			s.serveStatic(w, r)
 			return

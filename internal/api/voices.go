@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/dbirks/game-narrator/internal/assets"
+	"github.com/dbirks/game-narrator/internal/audio"
 	"github.com/dbirks/game-narrator/internal/store"
 	"github.com/dbirks/game-narrator/internal/voices"
 )
@@ -73,6 +74,11 @@ type voiceRevisionDTO struct {
 	CreatedAt         string                 `json:"created_at"`
 	UpdatedAt         string                 `json:"updated_at"`
 	Registrations     []voiceRegistrationDTO `json:"registrations,omitempty"`
+	// Gain is the per-voice output gain (ADR-0074, docs/spec/07 "per-voice
+	// gain"): the linear factor the runtime applies to this voice's samples
+	// at playback. 1.0 (unity) is the constant default; an absent member
+	// would read as "no gain at all", so it is always present.
+	Gain float64 `json:"gain"`
 }
 
 // voiceDetailDTO is GET /api/v1/voices/{id}: the revision plus its audition
@@ -169,6 +175,7 @@ func toVoiceRevisionDTO(p store.VoiceProfile, regs []store.VoiceRegistration) vo
 		ApprovedBy:  p.ApprovedBy,
 		AuditionIDs: ids,
 		CreatedAt:   fmtTime(p.CreatedAt), UpdatedAt: fmtTime(p.UpdatedAt),
+		Gain: p.Gain,
 	}
 	if p.ApprovedAt != nil {
 		dto.ApprovedAt = fmtTime(*p.ApprovedAt)
@@ -367,7 +374,7 @@ func (s *Server) handleVoiceAuditionsCreate(w http.ResponseWriter, r *http.Reque
 			"Service Unavailable", "the job queue is not configured; audition generation is unavailable")
 		return
 	}
-	payload, err := json.Marshal(voices.JobPayload{ProfileID: rev.ID})
+	payload, err := json.Marshal(voices.JobPayload{ProfileID: rev.ID, Count: req.Count})
 	if err != nil {
 		s.writeCodeProblem(w, r, http.StatusInternalServerError, "encode-fault", "INTERNAL",
 			"Internal Server Error", "the audition job could not be prepared")
@@ -506,6 +513,63 @@ func (s *Server) handleVoiceRegistrations(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, voiceRegistrationsDTO{VoiceID: id, Registrations: toVoiceRegistrationDTOs(regs)})
+}
+
+// ── POST /api/v1/voices/{id}/gain ───────────────────────────────────────────
+
+// voiceGainRequest is the body of the per-voice gain update (ADR-0074,
+// docs/spec/07 "per-voice gain"): one linear factor, 0..10.
+type voiceGainRequest struct {
+	Gain float64 `json:"gain"`
+}
+
+// handleVoiceGain serves POST /api/v1/voices/{id}/gain. The gain is an output
+// property: it changes no revision state, no cache key and never
+// re-synthesises — the runtime applies it to the samples at playback, so a
+// line already in the cache plays at the new gain from the next playback.
+// It persists on the voice revision row (voice_profiles.gain), so it travels
+// with the revision the line was cached under (ADR-0074). It sits on s.store
+// rather than the voices service's Store interface: gain is the appliance's
+// calibration, not a design step, and the interface's test fakes do not
+// carry it.
+func (s *Server) handleVoiceGain(w http.ResponseWriter, r *http.Request) {
+	if !s.voiceRequired(w, r) {
+		return
+	}
+	if s.store == nil {
+		s.writeCodeProblem(w, r, http.StatusServiceUnavailable, "store-not-wired",
+			"SUBSYSTEM_UNAVAILABLE", "Service Unavailable",
+			"the settings store is not wired into this build")
+		return
+	}
+	id, ok := s.idFromPath(w, r, "id")
+	if !ok {
+		return
+	}
+	var req voiceGainRequest
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err := dec.Decode(&req); err != nil {
+		s.writeProblem(w, r, http.StatusBadRequest, "invalid_voice_gain",
+			"Bad Request", "the voice gain body is not valid JSON")
+		return
+	}
+	if err := audio.ValidateGain(req.Gain); err != nil {
+		s.writeProblem(w, r, http.StatusBadRequest, "invalid_voice_gain",
+			"Bad Request", "the voice gain is out of bounds: "+err.Error())
+		return
+	}
+	if err := s.store.UpdateVoiceGain(r.Context(), id, req.Gain); err != nil {
+		s.storeProblem(w, r, err, "update voice gain", "voice")
+		return
+	}
+	writeJSON(w, http.StatusOK, voiceGainResponse{VoiceID: id, Gain: req.Gain})
+}
+
+// voiceGainResponse is the POST …/gain answer: the revision id and the gain
+// now stored (the list and detail rows carry the same value from here on).
+type voiceGainResponse struct {
+	VoiceID string  `json:"voice_id"`
+	Gain    float64 `json:"gain"`
 }
 
 // ── error mapping ───────────────────────────────────────────────────────────

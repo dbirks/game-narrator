@@ -169,8 +169,12 @@ func TestSettingsNotConfiguredAndImmutable(t *testing.T) {
 	}
 
 	mutable, _ := body["mutable"].(map[string]any)
-	if mutable["count"] != float64(0) {
-		t.Errorf("mutable.count = %v, want 0 (this build has no runtime-mutable setting)", mutable["count"])
+	if mutable["count"] != float64(1) {
+		t.Errorf("mutable.count = %v, want 1 (the audio output is the one runtime-mutable setting, ADR-0074)", mutable["count"])
+	}
+	note, _ := mutable["note"].(string)
+	if !strings.Contains(note, "/api/v1/settings/audio") {
+		t.Errorf("mutable.note does not name the audio settings route: %q", note)
 	}
 	env, _ := mutable["env"].([]any)
 	found := false

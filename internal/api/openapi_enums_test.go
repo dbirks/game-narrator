@@ -19,10 +19,14 @@ import (
 	"testing"
 
 	"github.com/dbirks/game-narrator/internal/agent"
+	"github.com/dbirks/game-narrator/internal/audio"
 	"github.com/dbirks/game-narrator/internal/auth"
+	"github.com/dbirks/game-narrator/internal/capture/stack"
+	"github.com/dbirks/game-narrator/internal/doctor"
 	"github.com/dbirks/game-narrator/internal/dolphin"
 	"github.com/dbirks/game-narrator/internal/games"
 	"github.com/dbirks/game-narrator/internal/profileio"
+	"github.com/dbirks/game-narrator/internal/restore"
 	"github.com/dbirks/game-narrator/internal/runtime"
 	"github.com/dbirks/game-narrator/internal/store"
 )
@@ -55,10 +59,21 @@ var domainEnums = map[string]string{
 // validated table, each with where the values come from, so they are asserted
 // rather than waved through.
 var literalEnums = map[string][]string{
+	// The ⌘K palette (ADR-0098): the six result categories internal/api/
+	// search.go writes. kindOrder is their canonical group order, and the
+	// schema's enum is that list, so the test pins both to one variable.
+	"SearchGroup.properties.kind":  kindOrder,
+	"SearchResult.properties.kind": kindOrder,
 	// internal/store/repo_publish.go writes exactly these action values and these
 	// two results.
 	"PublishAction.properties.action": {"publish", "archive", "rejected"},
 	"PublishAction.properties.result": {"succeeded", "rejected"},
+	// The restore status route (ADR-0090) answers the states internal/restore
+	// writes: the page's banner renders exactly these four words.
+	"RestoreStatus.properties.status": {restore.StatusNone, restore.StatusPending, restore.StatusApplied, restore.StatusFailed},
+	// The 202 of the restore upload answers exactly one word (the handler's
+	// view type writes it; the route's other answers are Problem objects).
+	"RestoreScheduled.properties.status": {"restart_scheduled"},
 	// internal/api/api.go's handleReady answers one of two words.
 	"HealthStatus.properties.status": {"ok", "fail"},
 	// The 202 of the one route that enqueues this kind.
@@ -106,18 +121,59 @@ var literalEnums = map[string][]string{
 	// status route, so the vocabulary is pinned here like the other
 	// api-owned literals.
 	"DolphinStatus.properties.state": {string(dolphin.StateStopped), string(dolphin.StateLaunching), string(dolphin.StateRunning), string(dolphin.StateFailed)},
+	// The global status bar's rollup (docs/design/plum-peach, ADR-0104):
+	// the level vocabulary internal/api/status.go writes (unknown is the
+	// not-probed state the rollup refuses to count as ok) and the component
+	// ids in their canonical bar order. The setup-run state is the live
+	// subset of the onboarding run states: the store's ListActiveAgentRuns
+	// selects exactly these four, and the terminal states are not status data.
+	"StatusHealthComponent.properties.level": {statusLevelOK, statusLevelSlow, statusLevelFail, statusLevelUnknown},
+	"StatusHealthComponent.properties.id":    {statusComponents[0], statusComponents[1], statusComponents[2], statusComponents[3], statusComponents[4], statusComponents[5]},
+	"StatusSetupRun.properties.state":        {string(agent.StateQueued), string(agent.StateRunning), string(agent.StateBlocked), string(agent.StateReview)},
 	// The session audio half (M4, ADR-0039): the sink kinds internal/runtime
 	// builds (a factory sink is named by the sink it supplies) and the speech
 	// lifecycle phases the wiring and the scheduler write into
 	// UtteranceState — inline strings in internal/runtime/speech.go and
 	// internal/speech/scheduler.go, pinned the same way as the session states.
-	"SessionAudio.properties.sink":    {runtime.SinkDummy, runtime.SinkFile, runtime.SinkPipeWire},
-	"UtteranceState.properties.phase": {"requested", "ready", "playing", "ended", "cancelled", "skipped", "muted", "failed"},
+	"SessionAudio.properties.sink": {runtime.SinkDummy, runtime.SinkFile, runtime.SinkPipeWire},
+	// The diagnostics run surface (ADR-0087): the run's lifecycle words
+	// (internal/api's own diagnosticsRunning/diagnosticsDone) and the doctor's
+	// status vocabulary a role row reports — the same words the CLI's report
+	// prints, from internal/doctor's constants, never a copy.
+	"DiagnosticsRun.properties.status":  {string(diagnosticsRunning), string(diagnosticsDone)},
+	"DiagnosticsRole.properties.status": {doctor.StatusOK, doctor.StatusDegraded, doctor.StatusBlocked, doctor.StatusNotConfigured, doctor.StatusFail},
+	// The output-audio product surface (ADR-0074): the same sink-kind spelling
+	// the session sink uses (internal/audio aliases runtime's constants), the
+	// device kinds the enumerator classifies, the selection provenance, and
+	// the backends ListDevices answers with (the inline names of
+	// internal/audio/backend.go).
+	"AudioSelection.properties.sink_kind":      {runtime.SinkDummy, runtime.SinkFile, runtime.SinkPipeWire},
+	"AudioSettingsUpdate.properties.sink_kind": {runtime.SinkDummy, runtime.SinkFile, runtime.SinkPipeWire},
+	"TestToneResponse.properties.sink":         {runtime.SinkDummy, runtime.SinkFile, runtime.SinkPipeWire},
+	"AudioDevice.properties.kind":              {string(audio.KindUSB), string(audio.KindHDMI), string(audio.KindBuiltin), string(audio.KindNull), string(audio.KindBluetooth), string(audio.KindUnknown)},
+	"SelectionSource":                          {audio.SourceEnv, audio.SourceStore, audio.SourceDefault},
+	"AudioDevices.properties.backend":          {"pipewire", "alsa", "synthetic", "none"},
+	"UtteranceState.properties.phase":          {"requested", "ready", "playing", "ended", "cancelled", "skipped", "muted", "failed"},
 	// The region OCR preview (docs/spec/09) writes these two vocabularies in
 	// internal/api/regions_preview.go: the frame source it admits and the
 	// textbox verdict the panel detector answers.
 	"PreviewResult.properties.source":          {"upload", "fixture"},
 	"PreviewResult.properties.textbox_verdict": {"present", "absent"},
+	// The capture device surface (ADR-0078): the state words internal/capture/
+	// stack reports for a device, the pixel formats the ADR-0076 policy admits,
+	// and the mode provenance the selection layer writes (the operator's pin or
+	// the policy's pick).
+	"CaptureDevice.properties.state":         {stack.StateReady, stack.StateNoFormats, stack.StateNoMode, stack.StateEnumerationErr, stack.StateNotCapture},
+	"CaptureMode.properties.pix_fmt":         {"mjpeg", "yuyv422"},
+	"CaptureChosen.properties.pix_fmt":       {"mjpeg", "yuyv422"},
+	"CaptureChosen.properties.source":        {stack.ModeSourceSaved, stack.ModeSourcePolicy},
+	"CaptureProbe.properties.mode_source":    {stack.ModeSourceSaved, stack.ModeSourcePolicy},
+	"Session.properties.capture_mode_source": {stack.ModeSourceSaved, stack.ModeSourcePolicy},
+	// The context-aware assistant dock (ADR-0099): the turn roles the store's
+	// assistant rows carry and the two NEEDS-YOU card kinds the loop emits
+	// (assistant.question events, docs/spec/08).
+	"AssistantTurnView.properties.role":     {"user", "assistant"},
+	"AssistantQuestionView.properties.kind": {"question", "confirmation"},
 }
 
 func TestOpenAPIEnumVocabulariesMatchTheDomainEnums(t *testing.T) {

@@ -32,8 +32,14 @@ import (
 	"github.com/dbirks/game-narrator/internal/agent/tools"
 	"github.com/dbirks/game-narrator/internal/api"
 	"github.com/dbirks/game-narrator/internal/assets"
+	"github.com/dbirks/game-narrator/internal/assistant"
+	"github.com/dbirks/game-narrator/internal/audio"
 	"github.com/dbirks/game-narrator/internal/auth"
 	"github.com/dbirks/game-narrator/internal/bootstrap"
+	"github.com/dbirks/game-narrator/internal/bt"
+	"github.com/dbirks/game-narrator/internal/capture"
+	"github.com/dbirks/game-narrator/internal/capture/mode"
+	"github.com/dbirks/game-narrator/internal/capture/stack"
 	"github.com/dbirks/game-narrator/internal/clips"
 	"github.com/dbirks/game-narrator/internal/doctor"
 	"github.com/dbirks/game-narrator/internal/events"
@@ -43,15 +49,18 @@ import (
 	"github.com/dbirks/game-narrator/internal/games/adapter/windwaker"
 	"github.com/dbirks/game-narrator/internal/gcdisc"
 	"github.com/dbirks/game-narrator/internal/jobs"
+	"github.com/dbirks/game-narrator/internal/logbuf"
 	"github.com/dbirks/game-narrator/internal/pipeline"
 	"github.com/dbirks/game-narrator/internal/providers"
 	"github.com/dbirks/game-narrator/internal/providers/asr"
 	"github.com/dbirks/game-narrator/internal/providers/openai"
 	"github.com/dbirks/game-narrator/internal/providers/router"
 	"github.com/dbirks/game-narrator/internal/providers/tts"
+	"github.com/dbirks/game-narrator/internal/restore"
 	"github.com/dbirks/game-narrator/internal/runtime"
 	"github.com/dbirks/game-narrator/internal/speech"
 	"github.com/dbirks/game-narrator/internal/store"
+	"github.com/dbirks/game-narrator/internal/updates"
 	"github.com/dbirks/game-narrator/internal/vision/ocr"
 	"github.com/dbirks/game-narrator/internal/voices"
 	"github.com/dbirks/game-narrator/internal/web"
@@ -67,6 +76,7 @@ commands:
   doctor   probe every configured component and report honestly
   support-bundle  build a redacted diagnostics archive for support (docs/spec/13)
   import-disc import the user's own Wind Waker disc into a local profile
+  ocr      run the product's recognition on one live frame or image (issue #1)
   version  print build information and exit
   help     show this message
 
@@ -118,6 +128,10 @@ environment:
     	comma-separated CIDRs whose X-Forwarded-Proto may mark session cookies
     	Secure (a TLS reverse proxy in front of the appliance). Unset by default:
     	no forwarded header is trusted at all.
+  GAME_NARRATOR_READINESS_INTERVAL
+    	schedule of the database integrity check behind /health/ready
+    	(ADR-0097): a Go duration such as 5m; unset or malformed falls back to
+    	the 5m default. The full check never runs per request.
 `
 
 const adminUsageText = `usage: game-narrator admin <subcommand> [flags] --data-dir DIR
@@ -242,6 +256,21 @@ const EnvGameImage = "GAME_NARRATOR_GAME_IMAGE_PATH"
 // with the directory's contents beyond basenames and never logs the path.
 const EnvImportDir = "GAME_NARRATOR_IMPORT_DIR"
 
+// EnvReadinessInterval is the schedule of the database integrity check that
+// backs /health/ready (ADR-0097): a Go duration ("5m", "30s"); unset or
+// malformed falls back to store.DefaultReadinessInterval. The full check
+// costs ~3 s on the A53, so the interval is a trade between how stale a
+// corruption answer may be and how often the target pays that cost.
+const EnvReadinessInterval = "GAME_NARRATOR_READINESS_INTERVAL"
+
+// EnvBluetoothFake is the Bluetooth surface's labelled-synthetic seam
+// (ADR-0091): "1" or "true" wires the deterministic fake controller (no
+// radio, no bus) instead of BlueZ over D-Bus — the same pattern as
+// GAME_NARRATOR_CAPTURE_FAKE and the audio fake devices. UI development,
+// contract checks and the Playwright walk run against it; every answer the
+// fake serves is labelled synthetic.
+const EnvBluetoothFake = "GAME_NARRATOR_BT_FAKE"
+
 // importDiscGameIDPrefix is the game-id prefix the reference adapter accepts.
 // A disc whose id does not start with it is refused before any parse, so a
 // mislabelled image cannot be imported under the Wind Waker adapter's rules.
@@ -276,9 +305,17 @@ func main() {
 }
 
 func mainRun(args []string) int {
-	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	// The process log is JSON to stderr (the journald). ADR-0087 adds a
+	// bounded fan-out copy: the in-process ring that /diagnostics' redacted
+	// logs section reads. The stderr handler stays first — the operator can
+	// always read the real log even if the ring is broken.
+	ring := logbuf.New(logbuf.DefaultCapacity)
+	log := slog.New(logbuf.Fanout(
+		slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}),
+		ring.Handler(),
+	))
 
-	code, err := run(args, log)
+	code, err := run(args, log, ring)
 	if err != nil && !errors.Is(err, errUsage) {
 		log.Error("fatal", "error", err)
 	}
@@ -287,7 +324,7 @@ func mainRun(args []string) int {
 
 var errUsage = errors.New("usage")
 
-func run(args []string, log *slog.Logger) (int, error) {
+func run(args []string, log *slog.Logger, ring *logbuf.Ring) (int, error) {
 	if len(args) == 0 {
 		fmt.Fprint(os.Stderr, usageText, serveUsageText)
 		return 2, errUsage
@@ -298,10 +335,10 @@ func run(args []string, log *slog.Logger) (int, error) {
 		fmt.Println(bootstrap.Version())
 		return 0, nil
 	case "help", "-h", "--help":
-		fmt.Print(usageText, serveUsageText, migrateUsageText, adminUsageText, doctorUsageText, benchUsageText, importDiscUsageText, supportBundleUsageText)
+		fmt.Print(usageText, serveUsageText, migrateUsageText, adminUsageText, doctorUsageText, benchUsageText, importDiscUsageText, supportBundleUsageText, ocrUsageText)
 		return 0, nil
 	case "serve":
-		return runServe(args[1:], log)
+		return runServe(args[1:], log, ring)
 	case "migrate":
 		return runMigrate(args[1:], log)
 	case "admin":
@@ -314,6 +351,8 @@ func run(args []string, log *slog.Logger) (int, error) {
 		return runBench(args[1:], log)
 	case "import-disc":
 		return runImportDisc(args[1:], log)
+	case "ocr":
+		return runOCR(args[1:], log)
 	default:
 		fmt.Fprintf(os.Stderr, "game-narrator: unknown command %q\n\n%s%s", cmd, usageText, serveUsageText)
 		return 2, fmt.Errorf("%w: unknown command %q", errUsage, cmd)
@@ -327,7 +366,7 @@ func newServeFlagSet() *flag.FlagSet {
 	return fs
 }
 
-func runServe(args []string, log *slog.Logger) (int, error) {
+func runServe(args []string, log *slog.Logger, ring *logbuf.Ring) (int, error) {
 	fs := newServeFlagSet()
 	listen := fs.String("listen", "",
 		"TCP listen address; overrides "+bootstrap.EnvListen+" (default "+bootstrap.DefaultListen+")")
@@ -374,11 +413,41 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 	for _, name := range applied {
 		log.Info("migration applied", "migration", name)
 	}
+
+	// A pending restore swap (ADR-0090) applies after this build's
+	// migrations and before the ready answer: the previous process took the
+	// pre-restore copy, wrote the plan and shut down, and this boot is the
+	// restart it was counting on. A failed swap recovers the pre-restore
+	// snapshot and still serves; the only hard failure is one that cannot
+	// even open that. st is reassigned to the swapped store, so the deferred
+	// close below releases the store the process actually runs on.
+	st, restoreOutcome, err := restore.Apply(ctx, cfg.DataDir, st, log)
+	if err != nil {
+		return 1, fmt.Errorf("applying the pending restore plan: %w", err)
+	}
+	if restoreOutcome != nil {
+		log.Info("restore plan resolved at boot", "status", restoreOutcome.Status, "error", restoreOutcome.Error)
+	}
+
 	schemaVersion, err := st.SchemaVersion(ctx)
 	if err != nil {
 		return 1, fmt.Errorf("reading schema version: %w", err)
 	}
 	log.Info("database ready", "applied", len(applied), "schema_version", schemaVersion)
+
+	// Readiness cache (ADR-0097): the full integrity check runs here, before
+	// the listener opens, and then on a schedule — never per request, where
+	// the 2 s probe budget the A53 cannot meet (issue #9) made every answer
+	// a 503. A startup verdict failure (an unrepairable file) does not stop
+	// the boot: /health/ready answers 503 from the cached verdict and the
+	// operator path is backup/restore.
+	rdyInterval := readinessInterval(os.LookupEnv)
+	readiness := store.NewReadiness(st, rdyInterval, log)
+	readiness.Check(ctx)
+	if _, ok, _, _ := readiness.Snapshot(); !ok {
+		log.Warn("startup integrity check did not pass: /health/ready answers 503 from the cached verdict until the next scheduled check passes", "interval", rdyInterval.String())
+	}
+	go readiness.Run(ctx)
 
 	// The content-addressed asset store (ADR-0014) sits beside the database in the
 	// same durable directory, because a backup that restores one and not the other
@@ -510,16 +579,6 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 			return 1, fmt.Errorf("registering %s job kind: %w", voices.JobKind, err)
 		}
 	}
-	recovery, err := jobsStore.RecoverOnStartup(ctx, runner.ResumableKinds())
-	if err != nil {
-		return 1, fmt.Errorf("recovering interrupted jobs: %w", err)
-	}
-	log.Info("job recovery complete",
-		"marked_recoverable", len(recovery.Marked), "requeued", len(recovery.Requeued))
-	if err := runner.Start(ctx); err != nil {
-		return 1, fmt.Errorf("starting job runner: %w", err)
-	}
-	log.Info("job runner started")
 
 	// Session runtime (Milestone 2, ADR-0024): the one live pipeline run, its
 	// lifecycle events and its developer-trace evidence. Dev-trace storage
@@ -551,16 +610,36 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 	// silent, never the run.
 	var speechOpts *runtime.SpeechOptions
 	if voiceSvc != nil {
-		sinkKind, device, err := audioSinkFromEnv(os.LookupEnv)
+		// The session's audio output resolves through the one function the
+		// API's audio routes also use (ADR-0074): the environment is the
+		// operator's override, the store row is the user's selection, the
+		// built-in defaults (filesink, the platform-default sink) come last.
+		var stored *audio.Stored
+		if as, ok, sErr := st.GetAudioSettings(ctx); sErr != nil {
+			return 1, fmt.Errorf("reading the stored audio settings: %w", sErr)
+		} else if ok {
+			stored = &audio.Stored{
+				Device:       as.Device,
+				SinkKind:     as.SinkKind,
+				MasterVolume: as.MasterVolume,
+				Set:          true,
+			}
+		}
+		sel, err := audio.Resolve(os.LookupEnv, stored)
 		if err != nil {
 			return 1, fmt.Errorf("audio sink configuration: %w", err)
 		}
+		log.Info("audio output resolved",
+			"sink", sel.SinkKind, "sink_source", sel.SinkKindSource,
+			"device", sel.Device, "device_source", sel.DeviceSource,
+			"master_volume", sel.MasterVolume, "master_source", sel.MasterVolumeSource)
 		speechOpts = &runtime.SpeechOptions{
 			Voices:         voiceSvc,
 			Assets:         assetStore,
-			Sink:           sinkKind,
+			Sink:           sel.SinkKind,
 			FileSinkDir:    filepath.Join(cfg.DataDir, "audio"),
-			PipeWireTarget: device,
+			PipeWireTarget: sel.Device,
+			MasterVolume:   sel.MasterVolume,
 		}
 	}
 	// The VLM OCR fallback (docs/spec/05, ADR-0040): wired only when the
@@ -584,6 +663,15 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 	if err != nil {
 		return 1, fmt.Errorf("wiring the Clef decision role: %w", err)
 	}
+	// Capture stack (ADR-0078): the process's one capture layer — the device
+	// enumeration, the ADR-0076 mode selection, the persisted selection and
+	// the V4L2 source seam. The same instance feeds both the session runtime
+	// (a v4l2 session resolves the selection and opens the node) and the API
+	// (the device surface, preview and probe), so the selection that starts a
+	// session and the one the Settings page shows are the same row. The fake
+	// seam (GAME_NARRATOR_CAPTURE_FAKE) is the ADR's labelled-synthetic test
+	// path; production wires the real ffmpegpipe V4L2 constructor.
+	capStack := stack.DefaultOptions(os.LookupEnv, captureSelectionStore{st: st}, log)
 	sessions, err := runtime.New(runtime.Options{
 		Store:       st,
 		Hub:         hub,
@@ -594,7 +682,13 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 		Speech:      speechOpts,
 		OCRFallback: ocrFallback,
 		Decision:    decisionOpts,
-		Log:         log,
+		Capture: &runtime.CaptureOptions{
+			Resolve: capStack.Resolve,
+			Source: func(ctx context.Context, res stack.Resolved) (capture.Source, error) {
+				return capStack.Source(ctx, res.NodePath(), res.Mode)
+			},
+		},
+		Log: log,
 	})
 	if err != nil {
 		return 1, fmt.Errorf("creating the session runtime: %w", err)
@@ -613,6 +707,34 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 		"dev_trace_root", filepath.Base(devTraceDir),
 		"clip_store", filepath.Base(clipsDir),
 		"replay_roots", len(runtime.DefaultReplayRoots(os.LookupEnv)))
+
+	// The context-aware assistant (ADR-0099): the assistant.run kind executes
+	// the same durable loop with the assistant's own allowlist and versioned
+	// prompt. The model is the same agent_reasoning role boundary the
+	// onboarding run uses (qwen3-8-27b today; that gateway rejects
+	// response_format and tool_choice, so the loop's prompt-and-validate is
+	// the contract the assistant's tools rely on). A missing role is the same
+	// degraded mode as for onboarding: the routes stay up, the attempt blocks
+	// with the reason and resumes once configured. The tool backends degrade
+	// individually: a nil voice service or session manager leaves the routes
+	// serving and the tools that need them answering a failed envelope.
+	assistantHandler, err := newAssistantWiring(st, hub, voiceSvc, sessions, eventStore, runner)
+	if err != nil {
+		return 1, fmt.Errorf("wiring the assistant agent: %w", err)
+	}
+	if err := runner.Register(assistant.JobKind, assistantHandler, assistant.JobHandlerOpts()); err != nil {
+		return 1, fmt.Errorf("registering %s job kind: %w", assistant.JobKind, err)
+	}
+	recovery, err := jobsStore.RecoverOnStartup(ctx, runner.ResumableKinds())
+	if err != nil {
+		return 1, fmt.Errorf("recovering interrupted jobs: %w", err)
+	}
+	log.Info("job recovery complete",
+		"marked_recoverable", len(recovery.Marked), "requeued", len(recovery.Requeued))
+	if err := runner.Start(ctx); err != nil {
+		return 1, fmt.Errorf("starting job runner: %w", err)
+	}
+	log.Info("job runner started")
 
 	// Auth store (docs/spec/08 "API version and user authentication", ADR-0016):
 	// created before the listener so a process that cannot read its own
@@ -660,12 +782,84 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 		log.Info("event hub closed")
 	}()
 
+	// The update notification (ADR-0088): the appliance's bounded check
+	// against the releases of the repository this build belongs to, with its
+	// offline cache in the data directory. The first check runs in the
+	// background, so the settings page renders either the cached answer or
+	// the honest "first check still running" — an offline appliance never
+	// makes the page wait for a network it does not have.
+	updateCfg := updates.ConfigFromEnv(os.LookupEnv, filepath.Join(cfg.DataDir, "updates", "latest.json"))
+	updatesChecker := updates.New(updateCfg)
+	if updateCfg.Enabled {
+		log.Info("update check ready", "repo", updateCfg.Repo, "interval", updateCfg.Interval.String())
+		go updatesChecker.Start(ctx)
+	} else {
+		log.Info("update check disabled by configuration")
+	}
+
+	// The process-replacement seam behind POST /api/v1/admin/restore
+	// (ADR-0090): the handler answers the 202 first, and this closure then
+	// runs the process's normal graceful shutdown. Under the documented
+	// deployment (the systemd unit, Restart=always) the supervisor brings
+	// the replacement up within seconds and its boot applies the pending
+	// plan; without a supervisor the plan stays pending and the status
+	// route says exactly that — a restore that cannot be applied is never
+	// pretended to be.
+	restarter := func() error {
+		// Flush grace for the 202: the response is written into the
+		// connection and the kernel delivers it after the socket closes.
+		time.Sleep(300 * time.Millisecond)
+		cancelRun()
+		return nil
+	}
+
+	// The Bluetooth output surface (ADR-0091, issues #2/#3): the labelled-
+	// synthetic seam first (GAME_NARRATOR_BT_FAKE, the capture-fake pattern),
+	// then the real D-Bus controller; a bus the process cannot reach leaves
+	// the surface unwired on purpose (honest degradation over a fake radio).
+	var btController bt.Controller
+	switch v := os.Getenv(EnvBluetoothFake); {
+	case v == "1" || strings.EqualFold(v, "true"):
+		btController = bt.DefaultFake()
+		log.Warn("the Bluetooth surface is the LABELLED-SYNTHETIC fake (GAME_NARRATOR_BT_FAKE): no radio is touched")
+	default:
+		c, err := bt.New(ctx)
+		if err != nil {
+			log.Warn("the Bluetooth surface is unwired (the routes answer 503 and the page hides the section)", "error", err)
+		} else {
+			btController = c
+		}
+	}
+	if btController != nil {
+		// The ADR-0091 auto-reconnect: when the persisted audio selection is
+		// a BlueZ A2DP sink (bluez_output.<MAC>.1, the stored row or the
+		// operator's environment override) the radio is told to hold that
+		// device connected before the first narration is spoken. BlueZ
+		// reconnects trusted devices itself; the bounded retry covers the
+		// states it does not (the LE-only connection of issue #3, a device
+		// still waking from pairing mode). It runs in the background and
+		// logs honestly — a narration run is never held up on a speaker.
+		var storedDevice string
+		if as, ok, sErr := st.GetAudioSettings(ctx); sErr != nil {
+			log.Warn("reading the stored audio selection for the Bluetooth auto-reconnect", "error", sErr)
+		} else if ok {
+			storedDevice = as.Device
+		}
+		go btAutoReconnect(runCtx, btController, os.LookupEnv, storedDevice, log)
+	}
+
 	apiOpts := []api.Option{
-		api.WithReadiness(storeReadiness(st, log)),
+		api.WithReadiness(storeReadiness(st, readiness, log)),
 		api.WithEvents(hub),
 		api.WithJobs(jobsStore),
 		api.WithSessions(sessions),
 		api.WithOnboarding(runner, store.NewAgentStore(st), tools.NewSQLiteApprovals(st)),
+		// The context-aware assistant (ADR-0099): the dock's backend. The
+		// same store the catalog routes read (the tools work on catalogue
+		// rows), the runner the attempts queue on, the hub the reply cards
+		// publish to, and the tool backends (voice service, session runtime,
+		// durable event log) each at their real seams.
+		api.WithAssistant(st, runner, hub, voiceSvc, sessions, eventStore),
 		api.WithDevEvents(eventStore),
 		api.WithAuth(auth.NewService(authRepo, auth.WithLogger(log)), authRepo),
 		api.WithStore(st),
@@ -683,7 +877,27 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 		// managed directory the runtime treats as a replay root. Both halves
 		// are wired here, so the API answers the real store rather than 503.
 		api.WithClips(assetStore, clipsDir),
+		// The capture device surface (ADR-0078): the same stack the runtime
+		// resolves through, so the preview and probe read the device the
+		// selection row names, and the busy check sees the running session's
+		// hold on it.
+		api.WithCapture(capStack),
 		api.WithTrustedProxy(trustedProxyCIDRs(os.LookupEnv)...),
+		// The redacted recent system logs (ADR-0087): the bounded fan-out
+		// copy of the process log the /diagnostics page tails. Wired here,
+		// so the route reads the real ring rather than 503.
+		api.WithLogRing(ring),
+		// The restore pair's two process-lifecycle seams (ADR-0090) and the
+		// update check the /settings page renders (ADR-0088).
+		api.WithRestarter(restarter),
+		api.WithUpdates(updatesChecker),
+		// The Bluetooth output surface (ADR-0091, issues #2/#3): the real
+		// controller talks to BlueZ over D-Bus (the AgentManager's
+		// NoInputNoOutput agent plus the adapter and device ObjectManager
+		// interfaces); a bus the process cannot reach degrades to unwired —
+		// the routes answer 503 and the page hides the section, never an
+		// empty 200 that would read as "no devices".
+		api.WithBluetoothController(btController),
 	}
 	if voiceSvc != nil {
 		// The queue is what the 202 audition create enqueues onto; the same
@@ -704,35 +918,6 @@ func runServe(args []string, log *slog.Logger) (int, error) {
 	}
 	<-shutdownDone
 	return 0, nil
-}
-
-// audioSinkFromEnv reads the session's audio sink configuration
-// (docs/spec/07, ADR-0039): GAME_NARRATOR_AUDIO_SINK picks dummy (the test
-// default: paces and records, plays nothing), filesink (the production
-// default: one WAV per started playback under the data directory) or
-// pipewire (the named sink of GAME_NARRATOR_AUDIO_DEVICE; the presence
-// preflight and its file-sink degradation are the wiring's own job).
-// An unknown value fails the boot loudly, the same way a malformed role
-// env does.
-func audioSinkFromEnv(lookupEnv func(string) (string, bool)) (kind, device string, err error) {
-	const sinkEnv = "GAME_NARRATOR_AUDIO_SINK"
-	const deviceEnv = "GAME_NARRATOR_AUDIO_DEVICE"
-	rawSink, _ := lookupEnv(sinkEnv)
-	kind = strings.TrimSpace(rawSink)
-	if kind == "" {
-		kind = runtime.SinkFile
-	}
-	switch kind {
-	case runtime.SinkDummy, runtime.SinkFile, runtime.SinkPipeWire:
-	default:
-		return "", "", fmt.Errorf("unknown %s %q (want dummy, filesink or pipewire)", sinkEnv, kind)
-	}
-	rawDevice, _ := lookupEnv(deviceEnv)
-	device = strings.TrimSpace(rawDevice)
-	if device == "" {
-		device = "default"
-	}
-	return kind, device, nil
 }
 
 // AssetDir is the content-addressed asset root of a data directory
@@ -814,6 +999,98 @@ func newAgentWiring(st *store.Store, assetStore *assets.Local, adapters *adapter
 		return nil, nil, err
 	}
 	return handler, func() {}, nil
+}
+
+// newAssistantWiring assembles the assistant agent's job handler (ADR-0099):
+// the same agent_reasoning model boundary as the onboarding run, the
+// assistant's own Deps (store quartet, hub, tool backends, queue) and the
+// per-attempt registry the tools close over. The tool backends degrade
+// individually — a nil voice service or session manager leaves the routes
+// serving and the tools that need them answering a failed envelope — so
+// nils are passed straight through and only the required store quartet is a
+// wiring fault the handler refuses.
+func newAssistantWiring(
+	st *store.Store,
+	hub *events.Hub,
+	voiceSvc *voices.Service,
+	sessions *runtime.Manager,
+	eventStore events.Store,
+	enq assistant.JobEnqueuer,
+) (jobs.Handler, error) {
+	roles, err := providers.LoadRoles(os.LookupEnv)
+	if err != nil {
+		return nil, fmt.Errorf("loading provider roles: %w", err)
+	}
+	roleReg := providers.NewRegistry(roles)
+	chatRouter := router.New(roleReg, router.Options{})
+	// The same model boundary as the onboarding run: one router call over the
+	// agent_reasoning role. The assistant's prompt-and-validate loop is what
+	// that role's gateway (qwen3-8-27b today) supports.
+	model := agent.RouterCall(roleReg, chatRouter)
+
+	deps := assistant.Deps{
+		Store:      st,
+		AgentStore: store.NewAgentStore(st),
+		Threads:    store.NewThreadStore(st),
+		Questions:  store.NewQuestionStore(st),
+		Hub:        hub,
+		Events:     eventStore,
+		Queue:      enq,
+	}
+	if voiceSvc != nil {
+		deps.Voices = voiceSvc
+	}
+	if sessions != nil {
+		deps.Sessions = narrationController{mgr: sessions}
+	}
+	return assistant.NewJobHandler(model, deps, roles[providers.RoleAgentReasoning].Model)
+}
+
+// narrationController adapts *runtime.Manager to the assistant's
+// NarrationController: the tool's start/stop maps onto the session
+// lifecycle the /api/v1/sessions routes drive, so the dock's "start
+// narrating" and the page's start button start the same kind of session
+// (one at a time, the runtime's own invariant). The frame-source kind
+// defaults to v4l2 — the appliance's live HDMI capture path — and the mode
+// defaults to conservative, the same defaults the API's start route applies.
+type narrationController struct{ mgr *runtime.Manager }
+
+func (n narrationController) StartSession(ctx context.Context, req assistant.StartNarration) (assistant.SessionRef, error) {
+	kind := req.FrameSourceKind
+	if kind == "" {
+		kind = runtime.SourceKindV4L2
+	}
+	mode := req.Mode
+	if mode == "" {
+		mode = runtime.ModeConservative
+	}
+	info, err := n.mgr.Start(ctx, runtime.StartRequest{
+		ProfileID:   req.ProfileID,
+		FrameSource: runtime.FrameSource{Kind: kind},
+		Mode:        mode,
+	})
+	if err != nil {
+		return assistant.SessionRef{}, err
+	}
+	return assistant.SessionRef{
+		SessionID: info.ID, ProfileID: info.ProfileID,
+		Mode: info.Mode, State: info.State,
+	}, nil
+}
+
+func (n narrationController) StopActiveSession(ctx context.Context) (assistant.SessionRef, error) {
+	info, ok := n.mgr.Active()
+	if !ok {
+		return assistant.SessionRef{}, fmt.Errorf("no session is running")
+	}
+	stopped, err := n.mgr.Stop(info.ID)
+	if err != nil {
+		return assistant.SessionRef{}, err
+	}
+	return assistant.SessionRef{
+		SessionID: stopped.ID, ProfileID: stopped.ProfileID,
+		Mode: stopped.Mode, State: stopped.State,
+	}, nil
 }
 
 // newVoiceWiring builds the voice workflow from the same role environment the
@@ -1012,50 +1289,124 @@ func noopJobHandler(ctx context.Context, job jobs.Job, progress jobs.ProgressFn)
 	return json.RawMessage(`{"ok":true,"kind":"` + job.Kind + `"}`), nil
 }
 
-// storeReadiness reports database readiness for GET /api/v1/health/ready. The
-// schema-version query is the ping (it needs a live connection and a readable
-// file) and PRAGMA integrity_check is the corruption probe. M0 databases are
-// small enough to check on every poll; if that stops being true the probe moves
-// behind a cached interval, which is an ADR, not a silent downgrade.
-//
-// Only fixed strings go into the payload: store errors name the database file
-// path, and the API surface deliberately carries no host paths.
-func storeReadiness(st *store.Store, log *slog.Logger) api.ReadinessFunc {
+// captureSelectionStore adapts the store's capture row to the stack's
+// selection seam (ADR-0078): the ADR-0074 app_settings JSON row as the
+// stack's GetSelection/SetSelection, keeping the row's spelling (device
+// stable id, pinned mode) in exactly one place. The stack never imports the
+// store; this adapter is the one seam between the two.
+type captureSelectionStore struct{ st *store.Store }
+
+func (s captureSelectionStore) GetSelection(ctx context.Context) (stack.Selection, bool, error) {
+	cs, ok, err := s.st.GetCaptureSettings(ctx)
+	if err != nil || !ok {
+		return stack.Selection{}, ok, err
+	}
+	sel := stack.Selection{DeviceID: cs.DeviceID}
+	if cs.Mode != nil {
+		m := mode.Mode{W: cs.Mode.W, H: cs.Mode.H, FPS: cs.Mode.FPS, PixFmt: cs.Mode.PixFmt}
+		sel.Mode = &m
+	}
+	return sel, true, nil
+}
+
+func (s captureSelectionStore) SetSelection(ctx context.Context, sel stack.Selection) error {
+	cs := store.CaptureSettings{DeviceID: sel.DeviceID}
+	if sel.Mode != nil {
+		cs.Mode = &store.CaptureMode{W: sel.Mode.W, H: sel.Mode.H, FPS: sel.Mode.FPS, PixFmt: sel.Mode.PixFmt}
+	}
+	return s.st.SetCaptureSettings(ctx, cs)
+}
+
+// btAutoReconnect is the ADR-0091 auto-reconnect: the persisted selection's
+// BlueZ A2DP sink (the environment override wins over the stored row, the
+// one rule the audio selection's Resolve also follows) is held connected
+// with a bounded budget — three attempts, five seconds apart — after which
+// the state is logged and the walk ends. A missing adapter or a device that
+// will not connect is a logged degraded state, never a retry storm: the
+// narration pipeline degrades to whatever sink the selection resolves to,
+// and the settings page's repair hint is the operator's way in.
+func btAutoReconnect(ctx context.Context, c bt.Controller, lookupEnv func(string) (string, bool), storedDevice string, log *slog.Logger) {
+	mac, source := btSelectedSinkMAC(lookupEnv, storedDevice)
+	if mac == "" {
+		return
+	}
+	log.Info("bluetooth auto-reconnect: the audio selection is a BlueZ A2DP sink", "address", mac, "source", source)
+	for attempt := 1; attempt <= 3; attempt++ {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+		}
+		if err := c.Connect(ctx, mac); err != nil {
+			log.Warn("bluetooth auto-reconnect attempt failed", "address", mac, "attempt", attempt, "error", err)
+			continue
+		}
+		log.Info("bluetooth auto-reconnect: the A2DP sink is connected", "address", mac, "attempt", attempt)
+		return
+	}
+	log.Warn("bluetooth auto-reconnect gave up: the device is not connected, the selection degrades to the platform default until it is", "address", mac)
+}
+
+// btSelectedSinkMAC finds the MAC behind the selection's sink ID, the same
+// precedence as audio.Resolve (the operator's environment override first,
+// then the stored row). It answers ("", "") when the selection is not a
+// BlueZ A2DP sink — auto-reconnect then has nothing to do.
+func btSelectedSinkMAC(lookupEnv func(string) (string, bool), storedDevice string) (mac, source string) {
+	if v, ok := lookupEnv(audio.EnvDevice); ok {
+		if m, parsed := bt.ParseSinkID(strings.TrimSpace(v)); parsed {
+			return m, "environment override " + audio.EnvDevice
+		}
+	}
+	if m, parsed := bt.ParseSinkID(strings.TrimSpace(storedDevice)); parsed {
+		return m, "the stored audio selection"
+	}
+	return "", ""
+}
+
+// storeReadiness reports database readiness for GET /api/v1/health/ready.
+// The per-request half is the schema-version ping (it needs a live connection
+// and a readable file); the integrity verdict comes from the ADR-0097 cache —
+// the full check runs at startup and on a schedule, never per request, where
+// on the A53 it exceeds the probe's 2 s budget (issue #9). The payload
+// carries the verdict's age so a stale "ok" is visible. The cache's verdicts
+// are fixed strings: store errors name the database file path, and the API
+// surface deliberately carries no host paths.
+func storeReadiness(st *store.Store, readiness *store.Readiness, log *slog.Logger) api.ReadinessFunc {
 	return func(ctx context.Context) (map[string]any, bool) {
 		version, err := st.SchemaVersion(ctx)
 		if err != nil {
 			log.Warn("readiness: database ping failed", "error", err)
-			return map[string]any{"database": map[string]any{"status": "fail", "error": "database ping failed"}}, false
+			return map[string]any{"database": map[string]any{"status": "fail", "error": store.PingFailedDetail}}, false
 		}
-		if err := st.IntegrityCheck(ctx); err != nil {
-			// The one self-repairing damage class: the messages_fts index is
-			// derived entirely from messages (migration 0002's triggers), so
-			// damage confined to it can be rebuilt from the content without
-			// touching a user row. Damage that reaches the content is refused
-			// and stays down: the operator path there is backup/restore.
-			repaired, repairErr := st.RecoverDerivedFTS(ctx)
-			if !repaired {
-				log.Warn("readiness: database integrity check failed", "error", err)
-				if repairErr != nil {
-					log.Error("readiness: integrity damage is not confined to the derived messages_fts index (or the rebuild did not verify); no self-repair applied; restore from the last good backup", "error", repairErr)
-				}
-				return map[string]any{"database": map[string]any{
-					"status":         "fail",
-					"schema_version": version,
-					"error":          "integrity check failed",
-				}}, false
-			}
-			log.Error("readiness: database failed integrity check with damage confined to the derived messages_fts index; the index was rebuilt from messages and re-verified clean — no user rows were touched", "repaired", "messages_fts")
-			return map[string]any{"database": map[string]any{
-				"status":         "ok",
-				"schema_version": version,
-			}}, true
+		_, ok, detail, age := readiness.Snapshot()
+		db := map[string]any{
+			"status":                "ok",
+			"schema_version":        version,
+			"integrity_age_seconds": int(age.Seconds()),
 		}
-		return map[string]any{"database": map[string]any{
-			"status":         "ok",
-			"schema_version": version,
-		}}, true
+		if !ok {
+			db["status"] = "fail"
+			db["error"] = detail
+			return map[string]any{"database": db}, false
+		}
+		return map[string]any{"database": db}, true
 	}
+}
+
+// readinessInterval resolves the integrity-check schedule: the environment
+// wins when it parses as a positive duration; anything else (unset, empty,
+// malformed, non-positive) falls back to the default rather than refusing to
+// boot — a readiness schedule is a tuning knob, not a prerequisite.
+func readinessInterval(lookupEnv func(string) (string, bool)) time.Duration {
+	v, ok := lookupEnv(EnvReadinessInterval)
+	if !ok {
+		return store.DefaultReadinessInterval
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(v))
+	if err != nil || d <= 0 {
+		return store.DefaultReadinessInterval
+	}
+	return d
 }
 
 // runMigrate opens the store and applies embedded migrations on request. It is
@@ -1441,7 +1792,14 @@ func runDoctor(args []string, log *slog.Logger) (int, error) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	report := doctor.Run(ctx, doctor.Options{DataDir: cfg.DataDir, Dev: *dev})
+	report := doctor.Run(ctx, doctor.Options{DataDir: cfg.DataDir, Dev: *dev,
+		// The update row shares the serve process's offline cache, so the CLI
+		// and the appliance agree on the last good answer (ADR-0088).
+		Updates: doctor.ProbeFromEnv(os.LookupEnv, filepath.Join(cfg.DataDir, "updates", "latest.json")),
+		// The Bluetooth row (ADR 0091): the same labelled-synthetic seam as
+		// the serve process (GAME_NARRATOR_BT_FAKE), so doctor and the UI
+		// document the same surface.
+		Bluetooth: doctor.BluetoothProbeFromEnv(os.LookupEnv)})
 
 	if *asJSON {
 		err = doctor.FormatJSON(stdout, report)

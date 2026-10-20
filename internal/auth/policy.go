@@ -59,6 +59,12 @@ func DefaultPolicy() *Policy {
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/health/ready", Access: Public()},
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/health/{rest...}", Access: Public()},
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/system/info", Access: Public()},
+		// The host vitals of the diagnostics page (ADR-0087): CPU, RAM,
+		// storage and thermal state — the system-info class of read (host
+		// capacity, no game content, no paths, no secrets), public for the same
+		// reason /diagnostics is a public page: a stalled appliance must be
+		// inspectable before an account exists.
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/diagnostics/host", Access: Public()},
 
 		// The auth endpoints are public by necessity — but only the three that
 		// cannot be guarded by the thing they produce. setup is additionally
@@ -97,7 +103,23 @@ func DefaultPolicy() *Policy {
 		// (docs/spec/09 "/settings"; docs/spec/14 "Authorization").
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/settings", Access: Require(RoleAdmin)},
 		Grant{Method: http.MethodPut, Pattern: "/api/v1/settings", Access: Require(RoleAdmin)},
+		// The one runtime-mutable setting (ADR-0074): the audio output
+		// selection and master volume persist in the store, and the env
+		// variables keep their override precedence. It is admin, like the
+		// settings page it feeds: choosing where speech plays is choosing a
+		// physical output on the appliance.
+		Grant{Method: http.MethodPut, Pattern: "/api/v1/settings/audio", Access: Require(RoleAdmin)},
 		Grant{Method: http.MethodPost, Pattern: "/api/v1/admin/backup", Access: Require(RoleAdmin)},
+		// The restore half of the backup/restore pair (ADR-0090): the upload
+		// replaces the appliance's whole catalogue and the request restarts the
+		// process, so it is admin, exactly like the backup download it consumes.
+		// GET is the post-restart status read of the same action.
+		Grant{Method: http.MethodPost, Pattern: "/api/v1/admin/restore", Access: Require(RoleAdmin)},
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/admin/restore", Access: Require(RoleAdmin)},
+		// The update check's manual re-check (ADR-0088): admin, like the
+		// settings page whose section it feeds (it also triggers a network
+		// request on the appliance's behalf, which a kiosk viewer must not do).
+		Grant{Method: http.MethodPost, Pattern: "/api/v1/settings/updates/refresh", Access: Require(RoleAdmin)},
 		Grant{Method: "", Pattern: "/api/v1/config", Access: Require(RoleAdmin)},
 		Grant{Method: "", Pattern: "/api/v1/config/{rest...}", Access: Require(RoleAdmin)},
 		Grant{Method: "", Pattern: "/api/v1/secrets/{rest...}", Access: Require(RoleAdmin)},
@@ -122,6 +144,13 @@ func DefaultPolicy() *Policy {
 		Grant{Method: "", Pattern: "/api/v1/capture/{rest...}", Access: Require(RoleOperator)},
 		Grant{Method: "", Pattern: "/api/v1/audio/{rest...}", Access: Require(RoleOperator)},
 		Grant{Method: "", Pattern: "/api/v1/frame-sources/{rest...}", Access: Require(RoleOperator)},
+		// The context-aware assistant (ADR-0099): the dock is an operator
+		// surface. A curator can read the catalogue but may not drive the
+		// agent (every dock action is a mutation or a developer-tier evidence
+		// read); a developer or admin inherits operator and up. The whole
+		// prefix is operator — the per-tool tiers (get_trace at developer)
+		// are the tools' own MinRole's business, enforced in the loop.
+		Grant{Method: "", Pattern: "/api/v1/assistant/{rest...}", Access: Require(RoleOperator)},
 		Grant{Method: http.MethodPost, Pattern: "/api/v1/jobs/{id}/cancel", Access: Require(RoleOperator)},
 		Grant{Method: http.MethodPost, Pattern: "/api/v1/jobs/{id}/retry", Access: Require(RoleOperator)},
 		Grant{Method: http.MethodPost, Pattern: "/api/v1/diagnostics/run", Access: Require(RoleOperator)},
@@ -188,8 +217,31 @@ func DefaultPolicy() *Policy {
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/profiles/{id}/messages/{mid}", Access: Require(RoleViewer)},
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/jobs", Access: Require(RoleViewer)},
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/jobs/{id}", Access: Require(RoleViewer)},
+		// The redacted log tail (ADR-0087): system logs can carry provider
+		// request detail, so they sit at the same tier as the dev-trace
+		// evidence route (docs/spec/14); the concrete path must grant before
+		// the /diagnostics/{id} template below, which would answer viewer.
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/diagnostics/logs", Access: Require(RoleDeveloper)},
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/diagnostics/{id}", Access: Require(RoleViewer)},
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/events", Access: Require(RoleViewer)},
+		// The global status bar's read (docs/design/plum-peach "Global
+		// chrome"): the bar is on every screen, kiosk included, so the
+		// snapshot and its push stream are viewer reads like the session
+		// state they summarise. The push stream carries no gameplay text —
+		// a status string, counters and health levels — which is what keeps
+		// it viewer-tier rather than the developer-tier event stream it is
+		// carried on.
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/status", Access: Require(RoleViewer)},
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/status/stream", Access: Require(RoleViewer)},
+		// The ⌘K command-palette search (ADR-0098, docs/design/plum-peach
+		// UX-02): the palette sits on every screen, kiosk included, so the
+		// route itself is a viewer read like the status bar. The narrowing
+		// happens per result inside the handler, not in this table: trace rows
+		// are produced only for developer and above (the developer-evidence
+		// tier, docs/spec/08), a settings section only for the role that may
+		// open the page it links to, and each action verb only for the role it
+		// names.
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/search", Access: Require(RoleViewer)},
 		// The contract is how a client learns to authenticate, so it cannot sit
 		// behind the credential it describes. It carries no game content, no
 		// paths and no secrets, and docs/spec/09's generated TypeScript client

@@ -17,7 +17,9 @@ const (
 	// LetterboxDetect scans the frame for black bars first, so a rect authored
 	// against the game's own picture lands on the picture even when the capture
 	// device padded it to 16:9 (docs/spec/04: "Coordinates must adapt to 4:3 vs
-	// 16:9 stretch, letterboxing, overscan").
+	// 16:9 stretch, letterboxing, overscan"). With a Tracker set, the window
+	// comes from that tracker's hysteresised state instead of a fresh scan per
+	// crop — see CropOptions.Tracker.
 	LetterboxDetect
 )
 
@@ -27,6 +29,15 @@ const (
 // options are a struct and not a bool.
 type CropOptions struct {
 	Letterbox LetterboxMode
+	// Tracker, when non-nil and Letterbox is LetterboxDetect, supplies the
+	// active window from hysteresised, stateful detection (Tracker.Update /
+	// Tracker.Box) instead of a fresh stateless ActiveArea scan per crop. The
+	// caller owns the update cadence: call Update once per frame on the frame
+	// loop; CropNormalized only reads Box, so every region's crop for a frame
+	// maps the same window, and a fade or black frame cannot move the crop.
+	// With a nil Tracker the historic stateless behaviour applies, and tests
+	// that call CropNormalized directly are unaffected.
+	Tracker *Tracker
 }
 
 // BarLuma is the luma below which a pixel counts as part of a black bar. 16 is
@@ -78,7 +89,16 @@ func CropNormalized(img image.Image, r Rect, opts CropOptions) image.Image {
 	}
 	active := bounds
 	if opts.Letterbox == LetterboxDetect {
-		if a, ok := ActiveArea(img); ok {
+		if opts.Tracker != nil {
+			// The tracker's window is the hysteresised answer; before the first
+			// window has settled it degrades to a fresh scan, then to the whole
+			// frame, so a black start reads no text rather than a wrong window.
+			if a, ok := opts.Tracker.Box(); ok {
+				active = a
+			} else if a, ok := ActiveArea(img); ok {
+				active = a
+			}
+		} else if a, ok := ActiveArea(img); ok {
 			active = a
 		}
 	}

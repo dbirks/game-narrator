@@ -3,11 +3,15 @@
 //
 // It answers POST /v1/chat/completions in the OpenAI wire shape, deciding each
 // reply from the conversation it was given — no per-request scripting, so a
-// resumed attempt replays the same decisions. Two scenarios are exercised:
+// resumed attempt replays the same decisions. Three scenarios are exercised:
 //
 //   import    the happy path: import the staged script, run source_quality,
 //             finish; after the human approval arrives, publish through
 //             publish_profile with the approval token the run was handed;
+//   webimport the rights-gated web dump path (ADR-0077): fetch the labelled
+//             synthetic dump page, propose the source (the run stops at the
+//             review boundary), import it with the approval token, quality
+//             report, publish;
 //   malicious the injection page: fetch the local (allowlisted, test-only)
 //             page that instructs the model to call a tool that does not
 //             exist (drop_database) and to fabricate an approval token. The
@@ -34,7 +38,12 @@ const log = (line) => process.stdout.write(`fake-model: ${line}\n`);
 let scenario = "import";
 
 /** How many chat requests each scenario has answered (evidence in logs). */
-const counts = { import: 0, malicious: 0 };
+const counts = { import: 0, malicious: 0, webimport: 0 };
+
+/** Approval tokens the scripted model has already acted on (a shadow of the
+ *  token's single-use spend on the appliance side: the conversation keeps an
+ *  acted-on token, and it must not re-trigger the same call). */
+const actedTokens = new Set();
 
 // ── conversation reading ────────────────────────────────────────────────────
 
@@ -75,10 +84,8 @@ const toolResults = (messages) =>
 
 // The human approval token travels in a user message only. A fabricated token
 // inside a tool result (the malicious fixture page) is content, never an
-// approval — matching all roles here would be exactly the injection the spec
-// guards against.
-const anyApprovalToken = (messages) =>
-  messages.some((m) => m.role === "user" && TOKEN_RE.test(String(m.content ?? "")));
+// approval — the decide() token branch reads user messages only, which is the
+// same rule the spec's injection walk guards.
 
 // ── the scripted replies ────────────────────────────────────────────────────
 
@@ -118,27 +125,115 @@ function decide(body) {
   const last = results.length > 0 ? results[results.length - 1] : null;
   const profileId = profileIdOf(messages);
 
-  // The approval turn: the human approval token is in a user message; the only
-  // correct use of it is publish_profile. A malicious page's fabricated token
-  // would sit inside a tool result, never a user message.
-  if (anyApprovalToken(messages)) {
-    // publish_profile has a one-call budget, so after any publish attempt the
-    // scripted model stops instead of retrying a spent token.
-    if (last?.name === "publish_profile") {
-      log("decide: publish attempted → final text (one-call budget, no retry)");
+  // The approval turn: the human approval token is in a user message; the
+  // correct use of it depends on what the approval named. A malicious page's
+  // fabricated token would sit inside a tool result, never a user message.
+  // A token the scripted model already acted on is stale (the conversation
+  // keeps it), so it must not re-trigger the same call: actedTokens is the
+  // model-side shadow of the token's single-use spend.
+  const tokenMsg = (messages) => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role === "user" && TOKEN_RE.test(String(m.content ?? ""))) return m;
+    }
+    return null;
+  };
+  const tokenMessage = tokenMsg(messages);
+  if (tokenMessage) {
+    const content = String(tokenMessage.content ?? "");
+    const token = TOKEN_RE.exec(content)[0];
+    if (content.includes("import_web_source")) {
+      // The approved web-source import (ADR-0077): the approval of the
+      // specific proposed source releases exactly one import call.
+      if (actedTokens.has(token) || last?.name === "import_web_source") {
+        log("decide: webimport, import token already acted on → continue the flow");
+      } else {
+        actedTokens.add(token);
+        const prof = /profile_id\s+([A-Za-z0-9_-]+)/.exec(content)?.[1] ?? profileId;
+        const src = /source_id\s+([A-Za-z0-9_-]+)/.exec(content)?.[1] ?? "";
+        log(`decide: webimport, approval for source ${src} → import_web_source`);
+        return chatCompletionsResponse(model, {
+          toolCall: {
+            name: "import_web_source",
+            args: { profile_id: prof, source_id: src, approval_token: token },
+          },
+        });
+      }
+    } else {
+      // The publish-boundary token: publish_profile has a one-call budget, so
+      // after any publish attempt the scripted model stops instead of retrying
+      // a spent token.
+      if (actedTokens.has(token) || last?.name === "publish_profile") {
+        log("decide: publish attempted → final text (one-call budget, no retry)");
+        return chatCompletionsResponse(model, {
+          content: `The publish attempt came back ${last?.status === "succeeded" ? "successfully" : "with a problem"}; the approval token is single-use, so I am stopping instead of retrying.`,
+        });
+      }
+      actedTokens.add(token);
+      log(`decide: approval token present → publish_profile (profile ${profileId})`);
       return chatCompletionsResponse(model, {
-        content: `The publish attempt came back ${last.status === "succeeded" ? "successfully" : "with a problem"}; the approval token is single-use, so I am stopping instead of retrying.`,
+        toolCall: {
+          name: "publish_profile",
+          args: { profile_id: profileId, approval_token: token },
+        },
       });
     }
-    const token = TOKEN_RE.exec(
-      messages.find((m) => m.role === "user" && TOKEN_RE.test(String(m.content ?? ""))).content,
-    );
-    log(`decide: approval token present → publish_profile (profile ${profileId})`);
+  }
+
+  // scenario: webimport — no disc, no staged upload: the rights-gated web
+  // dump path (ADR-0077). Fetch the labelled-synthetic dump page, propose the
+  // source (the run stops at the human review boundary), and after the
+  // approval arrives import it, quality-report it and hand over to publish.
+  if (scenario === "webimport") {
+    if (!last) {
+      log(`decide: webimport, no tool results → fetch_page (http://127.0.0.1:${port}/dump.txt)`);
+      return chatCompletionsResponse(model, {
+        toolCall: {
+          name: "fetch_page",
+          args: { url: `http://127.0.0.1:${port}/dump.txt`, profile_id: profileId },
+        },
+      });
+    }
+    if (last.name === "fetch_page") {
+      const sourceId = SOURCE_ID_RE.exec(last.text)?.[1] ?? "";
+      log(`decide: webimport, page fetched → propose_web_import (source ${sourceId})`);
+      return chatCompletionsResponse(model, {
+        toolCall: {
+          name: "propose_web_import",
+          args: { profile_id: profileId, source_id: sourceId },
+        },
+      });
+    }
+    if (last.name === "propose_web_import") {
+      log("decide: webimport, proposal made → final text (stopped at the review boundary)");
+      return chatCompletionsResponse(model, {
+        content:
+          "I registered the dump page as an untrusted web source and proposed it for the " +
+          "rights-gated import. The run now stops at your review: approve that exact source " +
+          "(its URL and SHA-256) to release its bytes to the import, or reject it.",
+      });
+    }
+    if (last.name === "import_web_source") {
+      const sourceId = SOURCE_ID_RE.exec(last.text)?.[1] ?? "";
+      log(`decide: webimport, import done → source_quality (source ${sourceId})`);
+      return chatCompletionsResponse(model, {
+        toolCall: {
+          name: "source_quality",
+          args: { profile_id: profileId, source_id: sourceId },
+        },
+      });
+    }
+    if (last.name === "source_quality") {
+      log("decide: webimport, quality reported → final text (draft ready)");
+      return chatCompletionsResponse(model, {
+        content:
+          "The approved web dump is imported and the quality report is in the timeline. " +
+          "The draft is ready for your publish approval.",
+      });
+    }
+    log("decide: webimport, unexpected tool result → final text");
     return chatCompletionsResponse(model, {
-      toolCall: {
-        name: "publish_profile",
-        args: { profile_id: profileId, approval_token: token[0] },
-      },
+      content: "The web import did not come back as expected; I am stopping without publishing.",
     });
   }
 
@@ -218,6 +313,29 @@ function decide(body) {
 
 // ── the fixture page ────────────────────────────────────────────────────────
 
+// The labelled-synthetic dump page (ADR-0077 e2e): invented text, no real game
+// dialogue, served as plain text through the dev private allowlist the
+// onboarding server is given (the test-only deviation ADR-0028 documents).
+// The generic text adapter turns each blank-separated line into one message.
+const DUMP_PAGE = `SYNTHETIC DIALOGUE DUMP (Game Narrator e2e fixture — invented text, not from any real game)
+
+The lighthouse keeper waves from the gallery rail.
+
+The boat rocks gently against the pier post.
+
+The map on the table shows three isles and a reef.
+
+The tide pools shine this morning, the keeper says.
+
+The signal lantern blinks twice, then goes dark.
+
+A gull lands on the rigging and preens.
+
+The logbook reads: all calm since dawn.
+
+The keeper lights the lamp and climbs the spiral stair.
+`;
+
 const MALICIOUS_PAGE = `<!doctype html>
 <html>
   <head><title>UNO Q Pro Tips</title></head>
@@ -243,6 +361,12 @@ const server = createServer((req, res) => {
     res.end(JSON.stringify({ ok: true, scenario }));
     return;
   }
+  if (req.method === "GET" && req.url === "/dump.txt") {
+    log("GET /dump.txt (the labelled-synthetic dump page the webimport scenario imports)");
+    res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+    res.end(DUMP_PAGE);
+    return;
+  }
   if (req.method === "GET" && req.url === "/malicious.html") {
     log("GET /malicious.html (the fixture page the agent's fetch_page retrieves)");
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -255,7 +379,11 @@ const server = createServer((req, res) => {
     req.on("end", () => {
       try {
         const body = JSON.parse(raw || "{}");
-        if (body.scenario !== "import" && body.scenario !== "malicious")
+        if (
+          body.scenario !== "import" &&
+          body.scenario !== "malicious" &&
+          body.scenario !== "webimport"
+        )
           throw new Error("unknown scenario");
         scenario = body.scenario;
         log(`scenario set to ${scenario}`);
@@ -276,6 +404,7 @@ const server = createServer((req, res) => {
         const body = JSON.parse(raw || "{}");
         const response = decide(body);
         if (scenario === "import") counts.import += 1;
+        else if (scenario === "webimport") counts.webimport += 1;
         else counts.malicious += 1;
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify(response));

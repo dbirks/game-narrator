@@ -3,3 +3,7 @@ dist/
 test-results/
 playwright-report/
 *.tsbuildinfo
+# local e2e inputs (not part of the tree): the embedded binary build and the
+# repo testdata the walks read (the config resolves web/bin + web/testdata).
+bin/
+testdata

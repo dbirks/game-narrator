@@ -40,7 +40,15 @@ import (
 // (`.gnprofile.json` carries it as schema_version) and the only one it reads.
 // A reader that meets a higher value refuses rather than ignoring fields it
 // does not know (the rule adapter.Manifest documents for ParseResult).
-const SchemaVersion = "1.0"
+//
+// 1.1 (ADR-0101) adds the required `voices` section — the approved voice
+// revisions a revision speaks with, ids unmodified — and
+// `publication.narrator_fallback`. A 1.0 document is refused by this reader
+// (the const check) and a 1.1 document by a 1.0 reader (the top-level
+// additionalProperties:false): skew is a diagnosable refusal in both
+// directions, and the fix for an already-exported 1.0 file is to re-export it
+// from the PC with the new build; the manifest is a derived artifact, not state.
+const SchemaVersion = "1.1"
 
 // MaxManifestBytes bounds a manifest document accepted by ImportManifest. It is
 // a hard ceiling, not a guess at a real profile's size: a 10 000-message export

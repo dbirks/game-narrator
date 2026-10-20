@@ -12,13 +12,16 @@ import (
 	"github.com/dbirks/game-narrator/internal/capture"
 	"github.com/dbirks/game-narrator/internal/capture/ffmpegpipe"
 	"github.com/dbirks/game-narrator/internal/capture/replay"
+	"github.com/dbirks/game-narrator/internal/capture/stack"
 	"github.com/dbirks/game-narrator/internal/games"
 )
 
 // Frame source kinds (docs/spec/08 "Example session workflow": the session
-// names its frame source). v4l2 and dolphin are the live hardware paths that
-// later milestones implement; this build answers them 501 rather than faking
-// them (AGENTS.md "No simulation theater").
+// names its frame source). v4l2 (the UVC HDMI capture dongle) and dolphin are
+// the live hardware paths: v4l2 is wired (ADR-0078) — the device is resolved
+// against the live enumeration by stable id and the mode comes from the
+// operator's pin or the ADR-0076 policy; dolphin stays the dev-only bridge
+// (ADR-0007), answered 501 rather than faked when its gate is not met.
 const (
 	SourceKindReplay      = "replay"
 	SourceKindTestPattern = "test_pattern"
@@ -160,11 +163,40 @@ func isUnder(root, p string) bool {
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
+// builtSource is buildFrameSource's answer: the source the session runs,
+// and, for kind v4l2, the capture device and mode the resolution settled on
+// (ADR-0078) — the session snapshot and the session.started event carry both,
+// so a fallback to the persisted selection or the first usable device is
+// visible in the run's own evidence, not guessed from the request.
+type builtSource struct {
+	src capture.Source
+	// device is the v4l2 device's stable id actually used; "" for every
+	// other kind.
+	device string
+	// mode is the v4l2 mode asked of the device (mode.Mode.String(), e.g.
+	// "640x480 MJPEG @ 10 fps"); "" for every other kind.
+	mode string
+	// modeFPS is the structured rate of that mode (the target half of the
+	// status bar's capture line); 0 when the source kind has no named rate.
+	modeFPS float64
+	// modeSource names the v4l2 mode's provenance (the operator's pin or the
+	// policy); "" for every other kind.
+	modeSource string
+}
+
 // buildFrameSource constructs the capture source for a session. replay is the
 // fixture-replay source behind docs/spec/12's "Frame replay" gate;
 // test_pattern is FFmpeg's testsrc2 through the same supervised subprocess
 // the live capture uses (ADR-0012 part 1), so a dev host without a capture
 // card still gets real frames through the production consumer.
+//
+// v4l2 is the UVC HDMI capture dongle (ADR-0078): the device is resolved by
+// stable id against the live enumeration (the enumeration is the allowlist —
+// a client-named path is refused) and the source is the ffmpegpipe V4L2
+// constructor at the resolved mode. The resolution and the construction are
+// the CaptureOptions wiring's closures (nil wiring answers
+// ErrCaptureUnavailable: an unwired process refuses rather than fakes a
+// device).
 //
 // dolphin is the dev-only live emulator source (docs/spec/11, ADR-0007): it
 // is admitted only when the operator opted in via EnvDevDolphin AND a bridge
@@ -177,7 +209,7 @@ func isUnder(root, p string) bool {
 // process has no manual source to hand out, so the kind is refused rather
 // than faked — the same no-simulation-theater rule the dolphin gate applies
 // to the emulator.
-func buildFrameSource(kind, dir string, roots []string, speed float64, devDolphin func() (capture.Source, error), manual func() (capture.Source, error), lookupEnv func(string) (string, bool)) (capture.Source, error) {
+func buildFrameSource(ctx context.Context, kind, dir string, roots []string, speed float64, devDolphin func() (capture.Source, error), manual func() (capture.Source, error), capOpts *CaptureOptions, lookupEnv func(string) (string, bool)) (builtSource, error) {
 	if lookupEnv == nil {
 		lookupEnv = os.LookupEnv
 	}
@@ -185,30 +217,64 @@ func buildFrameSource(kind, dir string, roots []string, speed float64, devDolphi
 	case SourceKindReplay:
 		dir, err := resolveReplayDir(dir, roots)
 		if err != nil {
-			return nil, err
+			return builtSource{}, err
 		}
-		return &replay.Source{Dir: dir, Speed: speed}, nil
+		return builtSource{src: &replay.Source{Dir: dir, Speed: speed}}, nil
 	case SourceKindTestPattern:
 		// 640x480 at the clip's 10 Hz cadence: the tracker's documented knobs
 		// are sized to a 10 Hz recording, and the pattern needs no device.
-		return ffmpegpipe.TestSource(640, 480, 10), nil
+		return builtSource{src: ffmpegpipe.TestSource(640, 480, 10), modeFPS: 10}, nil
 	case SourceKindDolphin:
 		if v, _ := lookupEnv(EnvDevDolphin); v != "1" && v != "true" {
-			return nil, fmt.Errorf("runtime: frame source kind %q is not enabled in this build (set %s=1 on a dev host with the bridge wired): %w", kind, EnvDevDolphin, ErrSourceUnsupported)
+			return builtSource{}, fmt.Errorf("runtime: frame source kind %q is not enabled in this build (set %s=1 on a dev host with the bridge wired): %w", kind, EnvDevDolphin, ErrSourceUnsupported)
 		}
 		if devDolphin == nil {
-			return nil, fmt.Errorf("runtime: frame source kind %q is enabled (%s=1) but no Dolphin bridge closure is wired into this process: %w", kind, EnvDevDolphin, ErrSourceUnsupported)
+			return builtSource{}, fmt.Errorf("runtime: frame source kind %q is enabled (%s=1) but no Dolphin bridge closure is wired into this process: %w", kind, EnvDevDolphin, ErrSourceUnsupported)
 		}
-		return devDolphin()
+		src, err := devDolphin()
+		if err != nil {
+			return builtSource{}, err
+		}
+		return builtSource{src: src}, nil
 	case SourceKindManual:
 		if manual == nil {
-			return nil, fmt.Errorf("runtime: frame source kind %q is a test seam: no manual source closure is wired into this process: %w", kind, ErrSourceUnsupported)
+			return builtSource{}, fmt.Errorf("runtime: frame source kind %q is a test seam: no manual source closure is wired into this process: %w", kind, ErrSourceUnsupported)
 		}
-		return manual()
+		src, err := manual()
+		if err != nil {
+			return builtSource{}, err
+		}
+		return builtSource{src: src}, nil
 	case SourceKindV4L2:
-		return nil, fmt.Errorf("runtime: frame source kind %q is not implemented in this build: %w", kind, ErrSourceUnsupported)
+		// The UVC HDMI capture dongle (ADR-0078). The resolution is the
+		// capture/stack layer: the stable-id allowlist, the persisted
+		// selection (an empty dir), the operator's pinned mode or the
+		// ADR-0076 policy. The source is the ffmpegpipe V4L2 constructor at
+		// the resolved mode — ADR-0076's low-latency defaults — with the
+		// "v4l2:<node>" ID the no-signal wrapper keys on, so a dongle session
+		// holds across a console power-off with no new wiring.
+		if capOpts == nil || capOpts.Resolve == nil || capOpts.Source == nil {
+			return builtSource{}, fmt.Errorf("runtime: frame source kind %q is not wired in this process: %w", kind, ErrCaptureUnavailable)
+		}
+		res, err := capOpts.Resolve(ctx, dir)
+		if err != nil {
+			switch {
+			case errors.Is(err, stack.ErrDeviceAbsent):
+				return builtSource{}, fmt.Errorf("runtime: %w: %v", ErrCaptureDeviceAbsent, err)
+			case errors.Is(err, stack.ErrDeviceUnknown):
+				return builtSource{}, fmt.Errorf("runtime: %w: %v", ErrCaptureDeviceUnknown, err)
+			case errors.Is(err, stack.ErrModeUnavailable):
+				return builtSource{}, fmt.Errorf("runtime: %w: %v", ErrCaptureModeUnavailable, err)
+			}
+			return builtSource{}, fmt.Errorf("runtime: resolving the capture device: %w", err)
+		}
+		src, err := capOpts.Source(ctx, res)
+		if err != nil {
+			return builtSource{}, fmt.Errorf("runtime: opening the capture device %s: %w", res.ID(), err)
+		}
+		return builtSource{src: src, device: res.ID(), mode: res.Mode.String(), modeFPS: res.Mode.FPS, modeSource: res.ModeSource}, nil
 	default:
-		return nil, fmt.Errorf("runtime: unknown frame source kind %q: %w", kind, ErrUnknownSourceKind)
+		return builtSource{}, fmt.Errorf("runtime: unknown frame source kind %q: %w", kind, ErrUnknownSourceKind)
 	}
 }
 

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/dbirks/game-narrator/internal/store"
 )
 
 func TestHealthLive(t *testing.T) {
@@ -175,6 +177,94 @@ func TestHealthReadyBoundsTheCheckerWithADeadline(t *testing.T) {
 	case <-seen:
 	default:
 		t.Fatal("the readiness checker was never called")
+	}
+}
+
+// TestHealthReadyReportsTheCachedVerdictWhileTheCheckIsSlow is the
+// handler-side half of ADR-0097: the full integrity check (the ~2.8 s A53
+// measurement of issue #9) runs out of band and is slow; the per-request path
+// is the ping plus the cached verdict with its age, so /health/ready answers
+// inside its 2 s budget and says how stale the answer is. The wiring mirrors
+// cmd/game-narrator's storeReadiness: the same per-request closure over the
+// same cache.
+func TestHealthReadyReportsTheCachedVerdictWhileTheCheckIsSlow(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, store.DBPath(t.TempDir()))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	if _, err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	// The injected slow checker: one full check that takes 1.5 s — the shape
+	// of the A53 check that exceeds the probe's 2 s budget in the field.
+	slow := store.NewReadinessWithChecker(time.Second, nil, func(r *store.Readiness, ctx context.Context) {
+		time.Sleep(1500 * time.Millisecond)
+		r.Record(99, true, "", time.Now())
+	})
+	// A previous startup check already recorded a verdict; the slow one
+	// running below refreshes it.
+	slow.Record(4, true, "", time.Now())
+	go slow.Check(ctx)
+
+	h := newHandler(t, WithReadiness(func(ctx context.Context) (map[string]any, bool) {
+		version, err := st.SchemaVersion(ctx)
+		if err != nil {
+			return map[string]any{"database": map[string]any{"status": "fail", "error": store.PingFailedDetail}}, false
+		}
+		_, ok, detail, age := slow.Snapshot()
+		db := map[string]any{
+			"status":                "ok",
+			"schema_version":        version,
+			"integrity_age_seconds": int(age.Seconds()),
+		}
+		if !ok {
+			db["status"] = "fail"
+			db["error"] = detail
+			return map[string]any{"database": db}, false
+		}
+		return map[string]any{"database": db}, true
+	}))
+
+	start := time.Now()
+	rec := do(t, h, http.MethodGet, "/api/v1/health/ready")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ready = %d, want 200 from the cached verdict (body %s)", rec.Code, rec.Body.String())
+	}
+	if elapsed := time.Since(start); elapsed >= 500*time.Millisecond {
+		t.Fatalf("/health/ready took %v while the full check was in flight: the per-request path must not run the check", elapsed)
+	}
+	body := decodeJSON(t, rec)
+	db, _ := body["checks"].(map[string]any)["database"].(map[string]any)
+	if db["status"] != "ok" {
+		t.Fatalf("database check = %v, want ok from the previous verdict", db)
+	}
+	if db["integrity_age_seconds"] == nil {
+		t.Fatalf("the answer carries no verdict age: %v (a stale ok must be visible)", db)
+	}
+
+	// The slow check finishes out of band and refreshes the verdict the next
+	// answer reports.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if v, _, _, _ := slow.Snapshot(); v == 99 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the slow check never finished")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	rec = do(t, h, http.MethodGet, "/api/v1/health/ready")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ready after the check finished = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	body = decodeJSON(t, rec)
+	db, _ = body["checks"].(map[string]any)["database"].(map[string]any)
+	if age, ok := db["integrity_age_seconds"].(float64); !ok || age < 0 || age > 5 {
+		t.Fatalf("verdict age = %v after the fresh check, want a fresh (small) age", db["integrity_age_seconds"])
 	}
 }
 

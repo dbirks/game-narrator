@@ -221,6 +221,150 @@ game-narrator doctor
 # is the doctor's own finding — read it before blaming the dongle.
 ```
 
+### What does the device read right now? (one-shot OCR)
+
+The preflight proves the hardware delivers frames; the one-shot OCR command
+proves the product's pipeline reads them — the same capture format
+negotiation, crop, preprocessing, Tesseract and matcher a live session runs,
+over one live frame (issue #1, ADR-0085):
+
+```sh
+# the node from the list above (never assume /dev/video0 — on this board
+# those are the Qualcomm Venus codec nodes). The service must be stopped:
+# the UVC bus is single-consumer, and if game-narrator.service holds the
+# node the command says so instead of guessing.
+sudo systemctl stop game-narrator
+game-narrator ocr --device /dev/videoN
+# exit 0 with a report: the device line, the frame size, and per-region
+# text + confidence (no game profile: the whole active picture is read).
+sudo systemctl start game-narrator
+
+# machine-readable, with the matcher's ranking against a published profile:
+game-narrator ocr --device /dev/videoN --game <profile-id> --json
+
+# the same pipeline over a saved frame (no device, no service needed) —
+# e.g. a frame the doctor or a session grabbed, to re-read it at leisure:
+game-narrator ocr --image /path/to/frame.png --json
+
+# and the images the pipeline actually saw — source, raw crop, preprocessed:
+game-narrator ocr --image /path/to/frame.png --save-debug /tmp/ocr-debug
+```
+
+Read the report like a session read: the per-region `text`/`mean_conf` is
+what the pipeline would have spoken about, and `--save-debug` shows the
+exact crop and preprocess steps when a read looks wrong. A `device busy`
+line means the service (or another capture process) holds the node — the
+operator action is in the message. `--save-debug` images contain game
+frames: keep them local (they are never collected into a support bundle).
+
+## On-device OCR latency (measured, 2026-10-21 — issue #8, ADR-0096)
+
+The live session must settle one OCR read inside the frame budget. The
+board's numbers, measured on the UNO Q (A53, 4 cores) with tesseract 5.5.0 /
+leptonica 1.84.1, the 4.1 MB "fast" `eng` tessdata, the profile's 1024×182
+dialogue crop and the pipeline's `DefaultSteps()` preprocessing (2× nearest
+scale, Otsu, median 3×3, pad 8 → 2064×376 engine input):
+
+| invocation | wall time |
+|---|---|
+| engine call, tuned recipe (psm 6, scale 2) | **1.12–1.14 s** |
+| — fixed startup (process + model load, 16×16 input) | 0.58–0.60 s |
+| — inference at scale 2 | ~0.54 s |
+| psm 6, scale 1 / 3 | 1.00 s / 1.27 s |
+| psm 7 / 13, scale 1 | 0.61 s / 0.67 s — **and they destroy the 3-line crop** (empty / garbled) |
+| OEM 1 / 3 / unset (5.x default: LSTM only) | 1.14 s — no effect |
+| `OMP_NUM_THREADS=1` / `OMP_THREAD_LIMIT=1` | no effect |
+| stdin pipe vs file operand (same pre-encoded PNG) | 1.11–1.13 s either way — no difference |
+| **two concurrent reads, unpinned cores** | **19.0 s each (17×)** |
+| two concurrent reads, pinned to disjoint core pairs | 2.14 s each |
+| in-product `ocr --image <crop> --json` (3 runs) | `duration_ms` 1123 / 1136 / 1164, text correct (26 words, conf 0.852) |
+
+Reading the table: the engine call is ~1.13 s — inside the 4 s hard deadline
+(docs/spec/05) with 3.5× headroom. The failure that made a read cost ~40 s
+and cancel 3363/3363 was not the engine but the **scheduling**: the live
+path supersede-cancelled the in-flight read on every changed-hash frame (the
+box sits over an animated scene, so every frame), and **two concurrent reads
+cost 19 s each** on unpinned A53 cores. Live mode on a ≤ 4-core machine now
+runs one read at a time (`pipeline.Config.MaxConcurrentOCR`), a newer frame
+coalesces onto the in-flight read instead of killing it, and a cancelled or
+timed-out read is eligible for the VLM fallback on the fallback's own bound
+instead of inheriting the dead job context (ADR-0096).
+
+The honest deviation: issue #8's p95 < 700 ms target is **not reachable on
+the A53 with a per-call engine process** — 0.59 s of the 1.13 s is fixed
+startup (process + 4.1 MB model load), and the only settings under 0.7 s
+(psm 7/13) destroy multi-line crops. The sub-700 ms path is a persistent
+engine (amortising the startup) — a new component, recorded as the ADR's
+follow-up. What the fixed scheduling delivers: a healthy read settles in
+1.13 s at the engine's ~0.9 Hz pace (the crop spans ~1.6 source frames at
+the 1.46 fps board source, and riders resolve with its text instead of the
+read dying every frame).
+
+Re-measure any time with the product's own path (no service needed, the
+engine's wall time is the report's `duration_ms` per region):
+
+```sh
+game-narrator ocr --image /path/to/crop.png --json | sed -n 's/.*"duration_ms": \([0-9]*\).*/\1/p'
+```
+
+A `duration_ms` over ~1100 on the board was the per-process regression the
+hardware gate used to fail on. With the persistent engine (below) the gate
+`TestHWOCRLatencyDevice` (make test-hardware) instead runs the one-shot
+command nine times and fails on a p95 engine call over **700 ms** — issue
+#13's target, now reachable because the command's warm pool overlaps the
+fixed startup with the decode/crop/pre-process work.
+
+## Persistent OCR engine (measured, 2026-10-20/21 — issue #13, ADR-0100)
+
+The 0.59 s fixed startup above is paid at spawn, before the first image is
+read — so a process spawned early and blocked on its stdin pipe serves an
+image for the inference only. Stock tesseract 5.5 has no batch/list mode
+(measured: two concatenated PNGs on one stdin produce one page in the same
+wall time; `--help` lists no such flag), so the persistent unit is one warm
+process per read. `ocr.Pooled` (issue #13) keeps two of them warm and
+serialises the reads; the per-process path is its automatic fallback.
+
+| probe | wall time (A53, the pipeline's preprocessed 2064×376 crop) |
+|---|---|
+| fresh process per read (the per-process path above) | 1102–1164 ms |
+| prewarmed process (spawned, stdin held open, image fed after 1.5 s) | **567–584 ms — the inference only** |
+| RSS of one warm (blocked) process | 29 MB (1 thread, sleeping) |
+| a model load overlapping an in-flight read | the warm read degrades to 1301 ms (vs 890 ms) — a load must never overlap a read |
+| **2-slot warm pool, reads at the live A53 pace (1.1 s cadence, 14 reads)** | **p50 576 ms, p95 593 ms — inside the 700 ms target** |
+| 2-slot pool, back-to-back reads (faster than the engine) | p95 1084 ms — the live pipeline does not run this shape |
+| 1-slot pool at the live pace | p95 986 ms and degrading — the 0.59 s load does not fit the read-free gap; two slots is the minimum |
+| SIGKILL of a warm process mid-read | detected in 8 ms; the per-process fallback serves the next read |
+
+The in-product confirmation (the honest end-to-end): the one-shot command
+now constructs the pool before the image decode, so its `duration_ms` is the
+inference only — re-run the command above and expect `duration_ms` near the
+inference floor (~0.57 s on this crop), not the 1.13 s per-process floor.
+`make test-hardware` asserts it against the 700 ms p95 budget.
+
+Re-measure the pool's shape any time on the board, writing only under
+`~/ocr-perf/` (never the installed binary, never the running narrator —
+the probe spawns its own tesseract processes and reads one crop file):
+
+1. Capture the pipeline's own preprocessed crop (the 2064×376 engine
+   input, not the raw region): `game-narrator ocr --image <frame.png> \
+   --save-debug ~/ocr-perf/dbg` — then use `~/ocr-perf/dbg/frame-preprocess.png`
+   (the whole-active-picture region; a stored-region run writes one
+   `region-<id>-preprocess.png` per region).
+2. Spawn `tesseract stdin stdout --psm 6 -l eng tsv`, hold its stdin open
+   (the warm process), feed the crop bytes after the 1.5 s idle, and time
+   the feed→read→exit wall: the prewarmed read must be the inference
+   (~0.57 s on this crop), not 1.1 s. Then run the 2-slot pool emulation:
+   two warm slots, alternate reads at the 1.1 s live cadence, spawn the
+   replacement only after the consumed slot's read settles (the read-free
+   gap), 14 reads — p95 must be ≤ 700 ms. The ADR-0100 probe script
+   (Python, stdlib only) ran exactly this; keep re-measurement scripts
+   under `~/ocr-perf/` and out of the repository (AGENTS.md rule 5: no
+   game frames or crops in the tree).
+
+A prewarmed read back over ~1.0 s on the board is the regression to
+investigate: the tessdata changed, the crop recipe changed, or the slots
+are loading inside a read (the overlap penalty above).
+
 ## Choosing the capture mode
 
 Target: **YUYV (yuyv422) at the highest mode the chain sustains** —
@@ -254,6 +398,98 @@ Rules:
   published for these parts — measure it once with a real source (count
   a fast on-screen change) and record it in the run notes; it affects
   how promptly narration follows gameplay, not correctness.
+
+## Real feed measurements (RYBOZEN V316B, 2026-10-19)
+
+Recorded on the UNO Q, real GameCube (Wind Waker, title/attract) over the
+GC→HDMI path into the V316B (`345f:2131`, USB3 SuperSpeed link, `/dev/video0`).
+Two 60 s sessions at 3.33 fps (native 10 fps, every 3rd frame): **720p YUYV**
+and **1080p MJPG-mode**. Frames live outside the repo in the `hdmi-v316b`
+fixture set (local games fixture dir; `manifest.json` carries per-frame
+sha256, resolution, format and timestamps). Analysis tool:
+`go run ./scripts/hw/hdmi-characterize` (per-frame box, Laplacian-variance
+sharpness, luma range/levels, combing, dim frames; also run over the
+`artifacts/fixtures/windwaker-*` Dolphin frames for comparison).
+
+**Geometry (stable across all 200 frames of each session — zero drift):**
+
+| canvas | active picture (1-based, inclusive) | size | aspect | frac of canvas |
+| --- | --- | --- | --- | --- |
+| 1920×1080 | x 72..1835, y 136..989 | 1764×854 | 2.07:1 | 0.919 × 0.791 |
+| 1280×720 | x 48..1223, y 92..660 | 1176×569 | 2.07:1 | 0.919 × 0.790 |
+
+(An earlier still captured *during a cutscene* showed the same window with a
+letterbox at the bottom — x 73..1830, y 133..933 at 1080p: the bottom edge
+moves ~56 px when the cutscene letterbox appears and back again. That is a
+real window change, not noise, and it is the case the tracker's settle count
+is designed for.)
+
+The window is **2.07:1, not 4:3**: this converter *stretches* the GameCube's
+4:3 output ~1.55× horizontally into the canvas. It does not pillarbox — the
+band outside a hypothetical 4:3 box is real picture (mean luma ~110, texture
+in the same band as the picture); only the outer border is true black
+(luma < 1). A region calibrated on a 4:3 capture is horizontally misplaced
+on this feed, and the glyphs are stretched — calibrate regions on *this*
+captured frame, and expect the textbox crop to be wider than on Dolphin.
+With a full-frame (LetterboxNone) mapping the Wind Waker textbox region
+(x 0.05..0.85, y 0.62..0.87) lands up to ~65 px off horizontally and ~70 px
+low at 1080p; ADR-0082 adds the hysteresised active-window tracker
+(`vision.Tracker`) that maps regions onto the measured window and holds it
+through fades/black frames.
+
+**Signal quality (per-frame means; full data in the fixture CSV run):**
+
+| metric | 1080p session | 720p session | Dolphin 640×480 bench fixtures |
+| --- | --- | --- | --- |
+| luma range | 0..255, full range (200/200 frames) | 0..255, full range (200/200) | 0..255, full range |
+| mean luma (median frame) | 76 | 78 | 54–77 |
+| sharpness (Laplacian var p10/p50/p90) | 14 / 17 / 18 | 27 / 29 / 33 | ~250–420 / 418–422 / 720–1860 |
+| combing score (max / mean) | 0.072 / 0.067 | 0.061 / 0.058 | ≤ 0.180 / ~0.02–0.06 |
+| dim (fade) frames in the window | 0 | 0 | — |
+
+Readings: the picture is a **soft upscaled 480i/p** source (sharpness an
+order of magnitude below a crisp 480p framebuffer, with the faint
+scanline/ringing expected on this path); luma is **full range end-to-end in
+both modes** (no studio-range 16–235 crush or wash — the card delivers raw
+YUY2, see below, so no yuvj remap is in play); combing is low in this
+window (title/attract is mostly static — re-check with a moving scene, and
+prefer a progressive source when the adapter offers one); one dim frame was
+seen in earlier stills (a fade) — the window contained no fade, but the
+tracker's hold behaviour exists precisely for those.
+
+**Capture-path quirks of this unit + host (cost of finding: several hours —
+don't rediscover them):**
+
+- **Sustained capture only at ≤ 10 fps per session.** 1080p at 30/20 fps and
+  720p at 30 fps die after a few buffers with `uvcvideo: Non-zero status
+  (-71) in video completion handler` + `Failed to resubmit video URB (-1)`
+  (USB EPROTO) and 0-byte v4l2 buffers; 10 fps is stable for minutes in
+  both modes. The practical ceiling is ≈ 250–280 MB/s of uncompressed
+  video on this host's USB3 isochronous path.
+- **"MJPEG" is declared but raw YUY2 is delivered.** v4l2 reports the format
+  as `MJPG`, yet ffmpeg's stream is `rawvideo (YUY2), yuyv422` at ~4.1 MB
+  per 1080p frame — the driver/card falls back to uncompressed, so "1080p
+  MJPEG" here is effectively 1080p YUYV. Do not assume the decode quality
+  or bandwidth of real Motion-JPEG.
+- **ffmpeg `-vf fps=N` or `-t N` on the v4l2 input yields 0 frames** on this
+  card; capture with plain `-frames:v N` and downsample offline (that is
+  what `scripts/hw/hdmi-characterize` and the fixture recording do).
+- **A fresh `v4l2-ctl --set-fmt-video` can leave the device in a state where
+  the next grab returns only empty buffers**; wait a few seconds and retry.
+  A recording loop with retries (set fmt → sleep 4 s → grab → verify count)
+  is the reliable shape; the first attempt of the 600-frame sessions above
+  succeeded after earlier failures.
+
+To re-run the characterization after any re-plug or converter change
+(re-plug persists the last UVC mode — set it deliberately first):
+
+```sh
+go run ./scripts/hw/hdmi-characterize \
+  -dir hdmi-1080=<fixture dir>/1080-mjpeg/3fps \
+  -dir hdmi-720=<fixture dir>/720-yuyv/3fps \
+  -dir dolphin=artifacts/fixtures/windwaker-newgame/frames \
+  -o /tmp/hdmi-char.csv
+```
 
 ## Region and colour calibration with a real picture
 

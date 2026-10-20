@@ -1,0 +1,24 @@
+{
+ "id": "item-obtained-001",
+ "origin": "generated_synthetic",
+ "description": "Synthetic item-notification profile for the generated 18-frame item-obtained clip testdata/synthetic/replay/item-obtained-001 (docs/spec/11 'Fixture origins', gap audit G8; ADR-0037). One invented item banner with one invented notification; the four distractors are invented dialogue lines that never appear on screen, so ranking the item's reading against them is a real decision rather than a lookup. No real game text (AGENTS.md rule 5). The item line's class is the profile's: the pipeline's item-region hint ranks its reads against this message, and the session's narrated-class veto reads the class off it when narrated_kinds admits items.",
+ "text_kind": "item",
+ "regions": [
+  {
+   "id": "item-banner",
+   "type": "item",
+   "x": 0.260937,
+   "y": 0.452083,
+   "w": 0.478125,
+   "h": 0.116667
+  }
+ ],
+ "messages": [
+  {"id": "itm-a", "original_text": "Obtained the Luminous Charm", "text_kind": "item"},
+  {"id": "itm-x1", "original_text": "The tide turns at the second bell.", "text_kind": "dialogue"},
+  {"id": "itm-x2", "original_text": "Someone left a lantern by the gate.", "text_kind": "dialogue"},
+  {"id": "itm-x3", "original_text": "The ferryman does not cross after dark.", "text_kind": "dialogue"},
+  {"id": "itm-x4", "original_text": "Ask the keeper about the old bridge.", "text_kind": "dialogue"}
+ ],
+ "edges": []
+}

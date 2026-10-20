@@ -63,17 +63,43 @@ func TestHandWrittenManifestImports(t *testing.T) {
 	if m.SchemaVersion != SchemaVersion {
 		t.Errorf("schema_version = %q", m.SchemaVersion)
 	}
-	if len(m.Messages) != 4 || len(m.Characters) != 1 || len(m.Scenes) != 1 || len(m.MessageEdges) != 2 {
-		t.Errorf("counts = %d messages, %d characters, %d scenes, %d edges", len(m.Messages), len(m.Characters), len(m.Scenes), len(m.MessageEdges))
+	if len(m.Messages) != 4 || len(m.Characters) != 1 || len(m.Scenes) != 1 || len(m.MessageEdges) != 2 || len(m.Voices) != 2 {
+		t.Errorf("counts = %d messages, %d characters, %d scenes, %d edges, %d voices", len(m.Messages), len(m.Characters), len(m.Scenes), len(m.MessageEdges), len(m.Voices))
 	}
 
 	e := newIn(t)
+	// Seed the fixture's two voice reference blobs in the importing appliance
+	// before the import: the voices' reference bytes travel the way a pack
+	// carries them, so the import writes the rows and the re-export
+	// round-trips them with their ids intact (ADR-0101). A pointer whose bytes
+	// are absent is covered by the pointer-only path in voices_test.go.
+	seedVoiceRef := func(ref, payload string) {
+		t.Helper()
+		id, _, err := e.assets.PutStaged(e.ctx, strings.NewReader(payload), ref)
+		if err != nil {
+			t.Fatalf("seed voice ref %s: %v", ref, err)
+		}
+		if _, err := e.assets.Commit(e.ctx, id); err != nil {
+			t.Fatalf("commit voice ref %s: %v", ref, err)
+		}
+	}
+	seedVoiceRef(sha256Bytes([]byte("handwritten keeper reference wav")), "handwritten keeper reference wav")
+	seedVoiceRef(sha256Bytes([]byte("handwritten narrator reference wav")), "handwritten narrator reference wav")
 	report, err := ImportManifest(e.ctx, e.deps, bytes.NewReader(raw), ImportManifestOptions{})
 	if err != nil {
 		t.Fatalf("ImportManifest: %v", err)
 	}
 	if report.MessagesWritten != 4 || report.MessagesWithheld != 0 {
 		t.Errorf("imported %d messages and withheld %d, want 4 and 0", report.MessagesWritten, report.MessagesWithheld)
+	}
+	// The fixture's two voices carry reference blobs this store now holds:
+	// the import writes both rows and the re-export below round-trips them.
+	// (A manifest that named a blob the store never held would report it in
+	// voice_refs_missing and write no row — the pointer-only path.
+	// Covered in voices_test.go.)
+	if report.VoicesWritten != 2 || len(report.VoiceRefsMissing) != 0 || len(report.VoicesConflicts) != 0 {
+		t.Errorf("voices written=%d refs_missing=%v conflicts=%v; want 2 written, none missing, no conflicts",
+			report.VoicesWritten, report.VoiceRefsMissing, report.VoicesConflicts)
 	}
 	// The fixture names no uri, mime type, trust or retrieval time: provenance
 	// that arrives incomplete is filled with what can be *verified* (the content
@@ -181,15 +207,11 @@ func writeHandWrittenFixture(t *testing.T, path string) {
 			Slug: "handwritten-quay", Title: "Handwritten Quay", Platform: "gamecube-like",
 			Region: "US", Language: "en", Revision: "demo",
 		},
-		Publication: PublicationInfo{Status: games.StatusDraft, Revision: 1},
+		Publication: PublicationInfo{Status: games.StatusDraft, Revision: 1, NarratorFallback: &[]bool{true}[0]},
 		Sources: []SourceInfo{{
 			SourceID: games.NewID(), Type: games.SourceUserFile,
 			SHA256: sha256Bytes([]byte("handwritten fixture payload")),
 			Rights: games.RightsUserSupplied, Parser: "generic@1.0.0",
-		}},
-		Characters: []CharacterInfo{{
-			ID: games.NewID(), Name: "The Lighthouse Keeper", Status: games.CharacterConfirmed,
-			Aliases: json.RawMessage(`["Keeper"]`), Role: "keeper",
 		}},
 		Scenes: []SceneInfo{{ID: games.NewID(), Name: "The Quay", Aliases: json.RawMessage(`[]`)}},
 		Regions: []RegionInfo{{
@@ -197,6 +219,59 @@ func writeHandWrittenFixture(t *testing.T, path string) {
 			Rect: Rect{X: 0.06, Y: 0.7, W: 0.88, H: 0.25},
 			OCR:  json.RawMessage(`{"engine":"tesseract","psm":6,"language":"eng"}`),
 		}},
+	}
+	// Stamp the normalized document. A hand-built manifest carries nil JSON
+	// columns where an exported one carries `[]`, and a reader normalizes them on
+	// the way in — stamping before normalization would sign bytes nobody reads.
+	characters := []CharacterInfo{{
+		ID: games.NewID(), Name: "The Lighthouse Keeper", Status: games.CharacterConfirmed,
+		Aliases: json.RawMessage(`["Keeper"]`), Role: "keeper",
+	}}
+	// The 1.1 voices section (ADR-0101), hand-built like the rest: one voice for
+	// the character, one for the narrator. Their reference bytes are not in the
+	// asset store of the importing store — the import must report them as
+	// missing and write no voice row, not fail.
+	keeperRef := sha256Bytes([]byte("handwritten keeper reference wav"))
+	narratorRef := sha256Bytes([]byte("handwritten narrator reference wav"))
+	keeperVoice := games.NewID()
+	narratorVoice := games.NewID()
+	characters[0].VoiceProfileID = &keeperVoice
+	m.Characters = characters
+	m.Voices = []VoiceInfo{
+		{
+			ID:                keeperVoice,
+			Character:         characters[0].ID,
+			Revision:          1,
+			State:             "approved",
+			DesignInstruction: "Dry and level, the keeper's own voice.",
+			ReferenceSHA256:   keeperRef,
+			RefTranscript:     "Keep the log dry and the wick trimmed.",
+			ModelID:           "fixture-model@1",
+			EmbeddingMode:     "registered",
+			Language:          "en",
+			Fingerprint:       sha256Bytes([]byte("keeper fingerprint")),
+			Gain:              1,
+			ConsentProvenance: "user-supplied recording; consent recorded at approval",
+			ApprovedBy:        "handwritten-fixture",
+			ApprovedAt:        strPtr("2025-06-01T00:00:00Z"),
+		},
+		{
+			ID:                narratorVoice,
+			Character:         narratorKey,
+			Revision:          1,
+			State:             "approved",
+			DesignInstruction: "Warm, unhurried, the reader's voice.",
+			ReferenceSHA256:   narratorRef,
+			RefTranscript:     "Press A to leave the quay.",
+			ModelID:           "fixture-model@1",
+			EmbeddingMode:     "registered",
+			Language:          "en",
+			Fingerprint:       sha256Bytes([]byte("narrator fingerprint")),
+			Gain:              1,
+			ConsentProvenance: "user-supplied recording; consent recorded at approval",
+			ApprovedBy:        "handwritten-fixture",
+			ApprovedAt:        strPtr("2025-06-01T00:00:00Z"),
+		},
 	}
 	// Four messages, built out of order on purpose: the reader must not depend on
 	// references already having been seen.
@@ -252,9 +327,6 @@ func writeHandWrittenFixture(t *testing.T, path string) {
 		{From: silent.ID, To: spoken.ID, Type: games.EdgeNext, Confidence: 1},
 		{From: spoken.ID, To: narration.ID, Type: games.EdgeBranch, Condition: `flags.lamp_lit == true`, Confidence: 0.8},
 	}
-	// Stamp the normalized document. A hand-built manifest carries nil JSON
-	// columns where an exported one carries `[]`, and a reader normalizes them on
-	// the way in — stamping before normalization would sign bytes nobody reads.
 	m = m.normalized()
 	Stamp(&m)
 
@@ -264,6 +336,27 @@ func writeHandWrittenFixture(t *testing.T, path string) {
 	raw, err := Encode(m)
 	if err != nil {
 		t.Fatalf("encode fixture: %v", err)
+	}
+	// The writer encodes the source's empty retrieved_at as ""; the schema's
+	// nullableRfc3339 refuses an empty string, and the hand-written document
+	// trims the field the way its other optional fields are absent. The trim
+	// keeps the stamp valid: a source's uri and retrieved_at are dropped from
+	// the digest projection (canonical.go), so the bytes nobody reads never
+	// sign the document.
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("unmarshal fixture: %v", err)
+	}
+	for _, si := range doc["sources"].([]any) {
+		if sm, ok := si.(map[string]any); ok {
+			if v, ok := sm["retrieved_at"]; ok && v == "" {
+				delete(sm, "retrieved_at")
+			}
+		}
+	}
+	raw, err = json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("trim fixture: %v", err)
 	}
 	var pretty bytes.Buffer
 	if err := json.Indent(&pretty, raw, "", "  "); err != nil {

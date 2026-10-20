@@ -64,7 +64,21 @@ func notRunReason(sc *Scenario, fxDir string, cause error) string {
 // is absent, altered or re-recorded: the gate reports NOT RUN with setup
 // instructions. Harness defects (a slice out of range, a bad profile) are
 // errors.
+//
+// The materialized replay dir is caller-owned and removed when the scenario
+// finishes — success, failure, or panic (a crashed worker must not leave a
+// 200+ MB gn-scenario-dolphin-* dir under /tmp): runDolphinScenario defers
+// the cleanup func materializeDolphinReplay returns.
 func RunDolphinScenario(ctx context.Context, repoRoot string, sc *Scenario) (RunResult, error) {
+	return runDolphinScenario(ctx, repoRoot, sc, "")
+}
+
+// runDolphinScenario is the core of RunDolphinScenario. baseDir is where the
+// materialized replay dir is created ("" = the system temp dir, the
+// os.MkdirTemp contract); tests pass a t.TempDir()-rooted base so the
+// materialized dir lands where they can assert on it — and assert it is gone
+// when the scenario finishes.
+func runDolphinScenario(ctx context.Context, repoRoot string, sc *Scenario, baseDir string) (RunResult, error) {
 	if sc.Origin != OriginDolphin {
 		return RunResult{}, fmt.Errorf("scenario %s: RunDolphinScenario requires origin %q (got %q)", sc.ID, OriginDolphin, sc.Origin)
 	}
@@ -95,12 +109,16 @@ func RunDolphinScenario(ctx context.Context, repoRoot string, sc *Scenario) (Run
 	}
 
 	// The scenario's frame slice (0-based, inclusive; absent = the whole
-	// fixture) as a replay dir the harness machinery consumes unchanged.
-	replayDir, first, last, man, err := materializeDolphinReplay(fxDir, sc.Input)
+	// fixture) as a replay dir the harness machinery consumes unchanged. The
+	// dir is caller-owned: materializeDolphinReplay hands back a cleanup func
+	// and deferring it here removes the dir when the scenario finishes —
+	// success, failure, or panic.
+	replayDir, first, last, man, cleanup, err := materializeDolphinReplay(fxDir, sc.Input, baseDir)
 	if err != nil {
+		cleanup()
 		return RunResult{}, fmt.Errorf("scenario %s: %w", sc.ID, err)
 	}
-	defer os.RemoveAll(replayDir)
+	defer cleanup()
 
 	profilePath := filepath.Join(fxDir, "profile.json")
 	res, err := runScenarioCore(ctx, repoRoot, sc, replayDir, profilePath)
@@ -137,24 +155,36 @@ type DolphinFixtureInfo struct {
 // sliced truth.json (rows for the slice, in manifest order). The copy is the
 // honest boundary: the harness reads the slice exactly as recorded, and the
 // fixture itself is never mutated.
-func materializeDolphinReplay(fxDir string, in Input) (dir string, first, last int, man dolphin.FixtureManifest, err error) {
+//
+// The dir is created under baseDir ("" = os.TempDir(), the os.MkdirTemp
+// contract: the production path materializes under the system temp dir) and
+// is caller-owned. The returned cleanup removes the dir and must be called
+// exactly once by the caller — deferred at the call site so the dir is gone
+// when the scenario finishes, success, failure, or panic. cleanup is
+// idempotent (a second call is a no-op) and a no-op when the dir was never
+// created; the error paths remove a partially written dir before returning,
+// so the caller's call only ever meets a dir that is already gone.
+func materializeDolphinReplay(fxDir string, in Input, baseDir string) (dir string, first, last int, man dolphin.FixtureManifest, cleanup func(), err error) {
 	man, err = dolphin.VerifyFixture(fxDir)
 	if err != nil {
-		return "", 0, 0, man, err
+		cleanup = func() {}
+		return "", 0, 0, man, cleanup, err
 	}
 	first, last = in.First, len(man.Frames)-1
 	if in.Last != 0 {
 		last = in.Last
 	}
 	if first < 0 || first > last || last >= len(man.Frames) {
-		return "", 0, 0, man, fmt.Errorf("fixture %s: frame slice [%d..%d] is out of range (the fixture has %d frames)", man.ID, first, last, len(man.Frames))
+		cleanup = func() {}
+		return "", 0, 0, man, cleanup, fmt.Errorf("fixture %s: frame slice [%d..%d] is out of range (the fixture has %d frames)", man.ID, first, last, len(man.Frames))
 	}
 
-	dir, err = os.MkdirTemp("", "gn-scenario-dolphin-")
+	dir, err = os.MkdirTemp(baseDir, "gn-scenario-dolphin-")
 	if err != nil {
-		return "", 0, 0, man, err
+		cleanup = func() {}
+		return "", 0, 0, man, cleanup, err
 	}
-	cleanup := func() { os.RemoveAll(dir) }
+	cleanup = func() { os.RemoveAll(dir) }
 
 	rows := man.Frames[first : last+1]
 	type tsEntry struct {
@@ -166,32 +196,32 @@ func materializeDolphinReplay(fxDir string, in Input) (dir string, first, last i
 		ts = append(ts, tsEntry{File: fr.File, TsNS: fr.TsNS})
 		if err := copyFile(filepath.Join(fxDir, "frames", fr.File), filepath.Join(dir, fr.File)); err != nil {
 			cleanup()
-			return "", 0, 0, man, err
+			return "", 0, 0, man, cleanup, err
 		}
 	}
 	if err := writeJSONFile(filepath.Join(dir, "timestamps.json"), ts); err != nil {
 		cleanup()
-		return "", 0, 0, man, err
+		return "", 0, 0, man, cleanup, err
 	}
 	truthRaw, err := os.ReadFile(filepath.Join(fxDir, "truth.json"))
 	if err != nil {
 		cleanup()
-		return "", 0, 0, man, fmt.Errorf("fixture truth: %w", err)
+		return "", 0, 0, man, cleanup, fmt.Errorf("fixture truth: %w", err)
 	}
 	var truthRows []map[string]any
 	if err := json.Unmarshal(truthRaw, &truthRows); err != nil {
 		cleanup()
-		return "", 0, 0, man, fmt.Errorf("fixture truth: parse: %w", err)
+		return "", 0, 0, man, cleanup, fmt.Errorf("fixture truth: parse: %w", err)
 	}
 	if len(truthRows) != len(man.Frames) {
 		cleanup()
-		return "", 0, 0, man, fmt.Errorf("fixture %s: truth.json has %d rows, the manifest names %d frames", man.ID, len(truthRows), len(man.Frames))
+		return "", 0, 0, man, cleanup, fmt.Errorf("fixture %s: truth.json has %d rows, the manifest names %d frames", man.ID, len(truthRows), len(man.Frames))
 	}
 	if err := writeJSONFile(filepath.Join(dir, "truth.json"), truthRows[first:last+1]); err != nil {
 		cleanup()
-		return "", 0, 0, man, err
+		return "", 0, 0, man, cleanup, err
 	}
-	return dir, first, last, man, nil
+	return dir, first, last, man, cleanup, nil
 }
 
 func copyFile(src, dst string) error {

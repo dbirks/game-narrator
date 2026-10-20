@@ -34,6 +34,12 @@ type PlayResult struct {
 	// sink API (not necessarily the speaker; device latency is excluded and
 	// reported separately — docs/spec/12 stop-latency wording).
 	Started time.Time
+	// FirstSampleAt is when the sink first handed samples to the device
+	// buffer (the pipewire sink stamps its first successful write to the
+	// player process; zero when the sink does not report it). The interval
+	// Started → FirstSampleAt is the output latency docs/spec/13 asks to
+	// count: how long the device side took before audio could come out.
+	FirstSampleAt time.Time
 	// Ended is when the sink finished (natural end, stop, or failure).
 	Ended time.Time
 	// Interrupted is true when Stop() ended the playback early.

@@ -5,12 +5,14 @@ import { Link, useSearchParams } from "react-router";
 import {
   api,
   catalogApi,
+  type Schemas,
   type Edition,
   type Game,
   type Profile,
   type Character,
 } from "../api/client";
 import { fetchReadiness } from "../api/system";
+import { fetchCaptureDevices } from "../api/capture";
 import { fetchAllMessages } from "../api/profiles";
 import { clipsApi } from "../api/clips";
 import {
@@ -18,6 +20,7 @@ import {
   sessionsApi,
   type Session,
   type SessionAudioSettings,
+  type SessionSettings,
   type UtteranceState,
 } from "../api/sessions";
 import { useAuth } from "../auth/auth-context";
@@ -44,7 +47,7 @@ import {
 const DEFAULT_REPLAY_DIR = "testdata/synthetic/replay/dialogue-advance-001";
 
 type SessionMode = "conservative" | "predictive";
-type SourceKind = "replay" | "test_pattern" | "dolphin";
+type SourceKind = "replay" | "test_pattern" | "dolphin" | "v4l2";
 
 export function PlayPage() {
   const [params] = useSearchParams();
@@ -113,6 +116,11 @@ function SetupForm() {
   // replay root by default, so an uploaded clip needs no allowlist entry. The
   // list is developer-scoped, so the picker only exists for developer and up.
   const [replayClip, setReplayClip] = useState("");
+  // The capture device a kind v4l2 session runs on (ADR-0078): the stable id
+  // from the device list — never a path; empty means the persisted selection
+  // (then the first usable device), which the server answers in the session
+  // snapshot's capture_device.
+  const [captureDevice, setCaptureDevice] = useState("");
   const [mode, setMode] = useState<SessionMode>("conservative");
   const [startError, setStartError] = useState<unknown>(null);
 
@@ -140,6 +148,30 @@ function SetupForm() {
     enabled: sourceKind === "replay" && developer,
   });
 
+  // The capture device list (ADR-0078), listed for the source picker while a
+  // capture session is being set up: the picker offers the ready devices by
+  // stable id, and the answer's selected_id preselects the persisted choice.
+  const captureList = useQuery({
+    queryKey: ["play", "capture-devices"],
+    queryFn: ({ signal }) => fetchCaptureDevices(signal),
+    enabled: sourceKind === "v4l2" && operator,
+    retry: false,
+  });
+  useEffect(() => {
+    if (!captureList.data || captureDevice) return;
+    const ready = captureList.data.devices.filter((device) => device.state === "ready");
+    setCaptureDevice(captureList.data.selected_id ?? ready[0]?.id ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [captureList.data]);
+  const captureReady = (captureList.data?.devices ?? []).filter(
+    (device) => device.state === "ready",
+  );
+  // A v4l2 session without a ready device cannot start: say so instead of
+  // letting the server's 503 be the only answer.
+  const captureBlocked =
+    sourceKind === "v4l2" &&
+    (captureList.isLoading || captureList.isError || captureReady.length === 0);
+
   const start = useMutation({
     mutationFn: () =>
       sessionsApi.start({
@@ -151,7 +183,9 @@ function SetupForm() {
               : { kind: "replay", dir: replayDir }
             : sourceKind === "dolphin"
               ? { kind: "dolphin" }
-              : { kind: "test_pattern" },
+              : sourceKind === "v4l2"
+                ? { kind: "v4l2", ...(captureDevice !== "" ? { dir: captureDevice } : {}) }
+                : { kind: "test_pattern" },
         mode,
         dev_trace: devTrace,
       }),
@@ -215,8 +249,48 @@ function SetupForm() {
               <option value="replay">replay clip</option>
               <option value="test_pattern">test pattern</option>
               <option value="dolphin">dolphin emulator (dev host)</option>
+              <option value="v4l2">capture device (HDMI dongle)</option>
             </select>
           </label>
+          {sourceKind === "v4l2" ? (
+            <div data-testid="play-capture-picker">
+              {captureList.isError ? (
+                <p className="error" role="alert" data-testid="play-capture-error">
+                  The capture device list could not be read:
+                  {captureList.error instanceof Error ? captureList.error.message : ""} — the device
+                  is configured on the Settings page (Capture section).
+                </p>
+              ) : captureReady.length === 0 ? (
+                <p className="muted" data-testid="play-capture-none">
+                  No ready capture device is attached: connect the UVC HDMI dongle (the Settings
+                  page's Capture section shows its state and runs the capture test).
+                </p>
+              ) : (
+                <label>
+                  Capture device
+                  <select
+                    value={captureDevice}
+                    onChange={(event) => setCaptureDevice(event.target.value)}
+                    data-testid="play-capture-device"
+                  >
+                    {captureReady.map((device) => (
+                      <option key={device.id} value={device.id}>
+                        {device.name} ({device.id})
+                        {captureList.data?.selected_id === device.id ? " — selected" : ""}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="muted" data-testid="play-capture-note">
+                    {captureList.data?.synthetic
+                      ? "Synthetic device list (test seam): this is not the hardware of this machine. "
+                      : ""}
+                    Empty selection runs the persisted selection, then the first ready device; the
+                    session snapshot names the device actually used.
+                  </span>
+                </label>
+              )}
+            </div>
+          ) : null}
           {sourceKind === "replay" ? (
             <>
               {developer ? (
@@ -287,7 +361,7 @@ function SetupForm() {
           <p>
             <button
               type="submit"
-              disabled={!operator || start.isPending || !profileId}
+              disabled={!operator || start.isPending || !profileId || captureBlocked}
               data-testid="play-start"
             >
               {start.isPending ? "Starting…" : "Start session"}
@@ -481,6 +555,15 @@ function LiveSession({ sessionId }: { sessionId: string }) {
           <dt>Frame source</dt>
           <dd data-testid="play-source">
             {session.frame_source}
+            {session.capture_device ? (
+              <span data-testid="play-capture-device-info">
+                {" "}
+                · device {session.capture_device}
+                {session.capture_mode
+                  ? ` (${session.capture_mode} — ${session.capture_mode_source})`
+                  : ""}
+              </span>
+            ) : null}
             {session.source ? (
               <span data-testid="play-source-state"> · {session.source.state}</span>
             ) : null}
@@ -518,6 +601,14 @@ function LiveSession({ sessionId }: { sessionId: string }) {
           </dd>
         </div>
       </dl>
+
+      <SessionControls
+        sessionId={sessionId}
+        session={session}
+        operator={operator}
+        terminal={terminal}
+        onApplied={(next) => setSessionSnapshot(sessionId, next)}
+      />
       {streamFailed ? (
         <p className="error" data-testid="play-stream-failed" role="alert">
           The live event stream is down; the counters above keep polling and the committed lines
@@ -526,7 +617,7 @@ function LiveSession({ sessionId }: { sessionId: string }) {
       ) : null}
       {stop.isError ? <ErrorState error={stop.error} action="Cannot stop the session" /> : null}
 
-      <section className="play-line" aria-label="Current committed line">
+      <section className="play-line" aria-label="Current committed line" aria-live="polite">
         <h2>Current line</h2>
         {line ? (
           <div data-testid="current-line">
@@ -548,7 +639,12 @@ function LiveSession({ sessionId }: { sessionId: string }) {
         {events.lines.length === 0 ? (
           <p className="muted">No commits yet.</p>
         ) : (
-          <ol data-testid="recent-lines" className="recent-lines">
+          <ol
+            data-testid="recent-lines"
+            className="recent-lines"
+            aria-live="polite"
+            aria-relevant="additions"
+          >
             {events.lines.map((committed, index) => (
               <LineRow
                 key={committed.occurrenceId}
@@ -777,6 +873,184 @@ function AudioPanel({
           </div>
         </dl>
       ) : null}
+    </section>
+  );
+}
+
+/**
+ * The operator's live controls (docs/spec/08 "…/pause, …/resume, …/settings",
+ * docs/spec/09 "/play": pause/mute, narrated classes, the
+ * conservative/predictive toggle). Every control lands on the session's
+ * single writer, and the 200 body is the fresh session snapshot — installed
+ * the same way the audio controls install theirs: the snapshot is the source
+ * of truth, so the button shows what the server holds, not the click the
+ * operator made.
+ *
+ * Keyboard access (docs/spec/09: "Keyboard accessible"): `p` pause/resume,
+ * `s` signs, `i` items, `m` mode — only while the operator is not typing in a
+ * form control, so a shortcut never swallows input.
+ */
+export function SessionControls({
+  sessionId,
+  session,
+  operator,
+  terminal,
+  onApplied,
+}: {
+  sessionId: string;
+  session: Session;
+  operator: boolean;
+  terminal: boolean;
+  onApplied: (next: Session) => void;
+}) {
+  const paused = session.paused ?? false;
+  const classes = session.narrated_classes ?? [];
+  const signsOn = classes.includes("sign");
+  const itemsOn = classes.includes("item");
+
+  // Apply sequencing, the audio controls' rule: each apply is tagged with the
+  // sequence it was issued under, and only the most recently issued one may
+  // install its snapshot — a late acknowledgement of an earlier apply is by
+  // definition older than the state the operator set in the meantime.
+  const applySeq = useRef(0);
+
+  const pauseResume = useMutation({
+    mutationFn: () => (paused ? sessionsApi.resume(sessionId) : sessionsApi.pause(sessionId)),
+    onSuccess: (next) => onApplied(next),
+  });
+
+  const settings = useMutation({
+    mutationFn: (body: SessionSettings) => {
+      applySeq.current += 1;
+      const seq = applySeq.current;
+      return sessionsApi.settings(sessionId, body).then((next) => ({ seq, next }));
+    },
+    onSuccess: ({ seq, next }) => {
+      if (seq === applySeq.current) onApplied(next);
+    },
+  });
+
+  // The narrated-class set a toggle posts: the complete set, dialogue first —
+  // the server force-includes dialogue (the product), so "signs only" applies
+  // as "dialogue and signs", and the page says so (the locked checkbox).
+  const classSet = (signs: boolean, items: boolean): Schemas["TextKind"][] => {
+    const set: Schemas["TextKind"][] = ["dialogue"];
+    if (signs) set.push("sign");
+    if (items) set.push("item");
+    return set;
+  };
+
+  // The keyboard shortcuts read the latest closure through a ref, so the
+  // listener subscribes once and never acts on a stale snapshot.
+  const keyAction = useRef<(event: KeyboardEvent) => void>(() => {});
+  keyAction.current = (event: KeyboardEvent) => {
+    if (!operator || terminal || event.ctrlKey || event.metaKey || event.altKey) return;
+    const target = event.target as HTMLElement | null;
+    const tag = target?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable) {
+      return; // typing belongs to the operator, not to the shortcuts
+    }
+    switch (event.key.toLowerCase()) {
+      case "p":
+        event.preventDefault();
+        pauseResume.mutate();
+        break;
+      case "s":
+        event.preventDefault();
+        settings.mutate({ narrated_classes: classSet(!signsOn, itemsOn) });
+        break;
+      case "i":
+        event.preventDefault();
+        settings.mutate({ narrated_classes: classSet(signsOn, !itemsOn) });
+        break;
+      case "m":
+        event.preventDefault();
+        settings.mutate({
+          mode: session.mode === "predictive" ? "conservative" : "predictive",
+        });
+        break;
+      default:
+        break;
+    }
+  };
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => keyAction.current(event);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const disabled = !operator || terminal;
+  const error = pauseResume.error ?? settings.error;
+
+  return (
+    <section className="play-controls" aria-label="Session controls">
+      <h2>Session controls</h2>
+      <p className="muted" data-testid="play-controls-note">
+        Pause stops new speech and fences the line still playing; resume continues from the next
+        commit — the paused window&apos;s lines are not replayed. Shortcuts: <kbd>p</kbd>{" "}
+        pause/resume
+        {" · "}
+        <kbd>s</kbd> signs · <kbd>i</kbd> items · <kbd>m</kbd> mode.
+      </p>
+      <div className="audio-controls" data-testid="play-session-controls">
+        <button
+          type="button"
+          aria-pressed={paused}
+          disabled={disabled || pauseResume.isPending}
+          onClick={() => pauseResume.mutate()}
+          data-testid="play-pause"
+        >
+          {pauseResume.isPending ? "Applying…" : paused ? "Resume" : "Pause"}
+        </button>
+        <label className="row">
+          <input type="checkbox" checked disabled data-testid="play-class-dialogue" /> Dialogue
+          <span className="muted">(always on)</span>
+        </label>
+        <label className="row">
+          <input
+            type="checkbox"
+            checked={signsOn}
+            disabled={disabled}
+            onChange={() => settings.mutate({ narrated_classes: classSet(!signsOn, itemsOn) })}
+            data-testid="play-class-signs"
+          />{" "}
+          Signs
+        </label>
+        <label className="row">
+          <input
+            type="checkbox"
+            checked={itemsOn}
+            disabled={disabled}
+            onChange={() => settings.mutate({ narrated_classes: classSet(signsOn, !itemsOn) })}
+            data-testid="play-class-items"
+          />{" "}
+          Items
+        </label>
+        <label className="row">
+          Mode
+          <select
+            value={session.mode}
+            disabled={disabled}
+            onChange={(event) =>
+              settings.mutate({ mode: event.target.value as SessionSettings["mode"] })
+            }
+            data-testid="play-mode-select"
+          >
+            <option value="conservative">conservative</option>
+            <option value="predictive">predictive</option>
+          </select>
+        </label>
+      </div>
+      {pauseResume.isPending || settings.isPending ? (
+        <p className="muted" aria-live="polite" data-testid="play-controls-pending">
+          Applying the session controls…
+        </p>
+      ) : null}
+      <p className="muted">
+        Narrating: <span data-testid="play-narrated">{classes.join(", ") || "dialogue"}</span> in{" "}
+        {session.mode} mode
+      </p>
+      {error ? <ErrorState error={error} action="Cannot apply the session controls" /> : null}
     </section>
   );
 }

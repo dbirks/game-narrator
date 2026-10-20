@@ -612,6 +612,17 @@ table.events td:first-child {
   pointer-events: none;
 }
 
+/* The tracked active-picture window the crop was cut through (ADR-0082
+   amendment 1): a dashed outline in a different colour, under the solid ROI
+   box, so the crop basis reads at a glance. */
+.roi-window {
+  position: absolute;
+  border: 2px dashed color-mix(in srgb, var(--accent) 55%, var(--line));
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
+  pointer-events: none;
+}
+
 .frame-crop img[alt*="crop"] {
   border: 1px solid var(--line);
   border-radius: var(--radius);

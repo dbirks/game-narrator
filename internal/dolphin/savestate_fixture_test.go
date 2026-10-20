@@ -697,14 +697,23 @@ func TestRealReOCRFixture(t *testing.T) {
 			Adaptive: &FixtureOCRAdaptive{InkFloor: boxInkFloor, Margin: boxCropMargin, ScanY0: boxInkScanY0, ScanY1: boxInkScanY1},
 		}
 	}
-	man := rec.buildManifest(old.Frames, old.Inputs, st, drv, old.GameImageSHA256, old.Resolution, recipe, old.Capture, ocrBox, old.States)
+	man := rec.buildManifest(old.Frames, old.Inputs, st, drv, old.GameImageSHA256, old.Resolution, recipe, old.Capture, ocrBox, old.States, oldContentKind(old), oldContentFrame(old))
 	if err := writeJSON(filepath.Join(dir, "manifest.json"), man); err != nil {
 		t.Fatalf("re-OCR: manifest: %v", err)
 	}
 	if err := rec.writeTruth(old.Frames, texts, sub, box); err != nil {
 		t.Fatalf("re-OCR: truth: %v", err)
 	}
-	lines, err := rec.writeProfile(sub, box, subN, boxN, old.Resolution, prefix)
+	contentLine := -1
+	if old.Content != nil {
+		if contentLine, err = contentLineOfSnapped(old.Content.Frame, box); err != nil {
+			t.Fatalf("re-OCR: the content mark does not resolve against the re-canonicalised box runs: %v", err)
+		}
+		// The absolute order (the narration lines first), as writeProfile
+		// addresses it.
+		contentLine += len(sub.Canonical)
+	}
+	lines, err := rec.writeProfile(sub, box, subN, boxN, old.Resolution, prefix, contentLine, oldContentKind(old))
 	if err != nil {
 		t.Fatalf("re-OCR: profile: %v", err)
 	}
@@ -729,6 +738,23 @@ func TestRealReOCRFixture(t *testing.T) {
 		t.Fatalf("re-OCR: manifest sha: %v", err)
 	}
 	t.Logf("re-OCR %s: %d lines (sub=%d box=%d), manifest_sha256=%s — update the dolphin scenarios' input.manifest_sha256 to this value", id, lines, subN, boxN, sha)
+}
+
+// oldContentKind / oldContentFrame read the fixture's recorded content mark
+// (absent on legacy fixtures = empty kind, frame -1) so the re-finalise keeps
+// the per-message text_kind and the box region's role exactly as recorded.
+func oldContentKind(m FixtureManifest) string {
+	if m.Content == nil {
+		return ""
+	}
+	return m.Content.Kind
+}
+
+func oldContentFrame(m FixtureManifest) int {
+	if m.Content == nil {
+		return -1
+	}
+	return m.Content.Frame
 }
 
 // profileIDPrefix reads the fixture's profile.json and recovers the line-id

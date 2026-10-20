@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 import { defineConfig, devices } from "@playwright/test";
 
@@ -17,6 +17,7 @@ import { ports } from "./e2e/support/ports";
 // data directory moved at all.
 const apiUrl = `http://127.0.0.1:${ports.api}`;
 const webUrl = `http://127.0.0.1:${ports.web}`;
+const wizardUrl = `http://127.0.0.1:${ports.wizard}`;
 
 // The `embedded` and `catalog` projects (docs/spec/09 "Embedded binary test")
 // exercise the single binary produced by `make build`: the UI comes from the
@@ -37,7 +38,13 @@ const discUrl = `http://127.0.0.1:${ports.disc}`;
 const clipsUrl = `http://127.0.0.1:${ports.clips}`;
 const routesUrl = `http://127.0.0.1:${ports.routes}`;
 const a11yUrl = `http://127.0.0.1:${ports.a11y}`;
+const playControlsUrl = `http://127.0.0.1:${ports.playControls}`;
+const audioUrl = `http://127.0.0.1:${ports.audio}`;
+const captureUrl = `http://127.0.0.1:${ports.capture}`;
 const developerDecisionUrl = `http://127.0.0.1:${ports.developerDecision}`;
+const developerActionsUrl = `http://127.0.0.1:${ports.developerActions}`;
+const restoreUrl = `http://127.0.0.1:${ports.restore}`;
+const fakeReleasesUrl = `http://127.0.0.1:${ports.fakeReleases}`;
 const embeddedBinary = resolve(import.meta.dirname, "..", "bin", "game-narrator");
 // The replay allowlist for the inspector's server: the repo's testdata, named
 // explicitly (ADR-0024 "replay allowlist") rather than relying on the
@@ -55,10 +62,13 @@ if (!existsSync(embeddedBinary)) {
 }
 
 // One root per run, shared by every server this config starts (the spawned shells
-// inherit it), so one teardown removes all of it. This is set before webServer is
-// read, and e2e/serve.mjs creates the directories inside it itself: Playwright
-// starts the servers before it runs globalSetup, so a setup hook could not hand
-// them a path in time.
+// inherit it), so one teardown removes all of it: the servers' data directories
+// AND their manifests/logs (the run's e2e-runs dir, ADR-0094 — e2e/serve.mjs
+// writes them here and e2e/support/servers.ts reads them from here, so two
+// concurrent runs in the same checkout never read each other's records). This is
+// set before webServer is read, and e2e/serve.mjs creates the directories inside
+// it itself: Playwright starts the servers before it runs globalSetup, so a setup
+// hook could not hand them a path in time.
 process.env.GN_E2E_RUN_ROOT ??= `game-narrator-e2e-${process.pid}`;
 
 export default defineConfig({
@@ -73,7 +83,10 @@ export default defineConfig({
   // the CPU-bound tests get the whole box; the light specs cost little.
   workers: 1,
   retries: process.env.CI ? 1 : 0,
-  outputDir: "test-results",
+  // Per-run, so the "clear output" wipe at run start touches only this run's
+  // artifacts — a second Playwright run in the same checkout must not wipe the
+  // first run's traces, screenshots or evidence mid-flight (ADR-0094).
+  outputDir: join("test-results", `run-${process.pid}`),
   reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : [["list"]],
   globalSetup: "./e2e/global-setup.ts",
   globalTeardown: "./e2e/global-teardown.ts",
@@ -90,7 +103,21 @@ export default defineConfig({
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
       testIgnore:
-        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|voices-qa\.spec\.ts|m5-part1\.spec\.ts|m5-graph-regions\.spec\.ts|corrections-fixtures\.spec\.ts|live-play\.spec\.ts/,
+        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|voices-qa\.spec\.ts|m5-part1\.spec\.ts|m5-graph-regions\.spec\.ts|corrections-fixtures\.spec\.ts|live-play\.spec\.ts|play-controls\.spec\.ts|audio-output\.spec\.ts|bluetooth-output\.spec\.ts|capture-device\.spec\.ts|restore-walk\.spec\.ts|a11y\.spec\.ts|setup-wizard\.spec\.ts/,
+    },
+    {
+      // The first-run wizard (G9, ADR-0087) on its own packaged-binary
+      // appliance (the wizard server below): the claim is once per appliance
+      // (ADR-0016 §7), so the wizard cannot share the chromium dev-server
+      // appliance m5-settings-tests claims — its "sign in to an already
+      // claimed appliance" branch would sign in with an admin that never
+      // exists there. No seams are wired: the walk asserts the honest
+      // unconfigured states (the capture read 503s into its unavailable note,
+      // the role probes answer NOT CONFIGURED), the labelled-honesty the
+      // ADR's evidence demands.
+      name: "setup-wizard",
+      testMatch: /setup-wizard\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: wizardUrl },
     },
     {
       name: "embedded",
@@ -171,6 +198,18 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"], baseURL: sseUrl },
     },
     {
+      // The player-controls walk (docs/spec/08 "/pause, /resume, /settings",
+      // docs/spec/09 "/play"): the packaged binary with the repo's testdata on
+      // the replay allowlist and the scripted TTS roles, exactly as the sse
+      // walk runs, so /play can drive the synthetic clip with real (synthetic,
+      // scripted-stub) audio while the pause/resume, narrated-class and
+      // decision-mode controls are asserted against the server's own
+      // snapshots (ADR-0039, ADR-0075).
+      name: "play-controls",
+      testMatch: /play-controls\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: playControlsUrl },
+    },
+    {
       // The full curation walk (docs/spec/16 M5: "curate a full synthetic
       // game with no CLI"), UI only end to end: create, import, edit,
       // characters, voice, regions, publish, export, then re-import the
@@ -239,6 +278,56 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"], baseURL: developerDecisionUrl },
     },
     {
+      // The developer inspector's per-event actions (ADR-0083, docs/spec/09):
+      // the full wiring of the developer-decision server — the scripted Clef
+      // instance resolves the seed's ambiguous rankings (a fully wired run
+      // with a decision trace to re-run) and the scripted TTS instance makes
+      // the utterance's audio real (synthetic-stub) bytes the waveform, the
+      // fixture and the evidence bundle carry.
+      name: "developer-actions",
+      testMatch: /developer-actions\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: developerActionsUrl },
+    },
+    {
+      // The backup → mutate → restore walk (ADR-0090) and the update
+      // notification's surface (ADR-0088): its own server (the restore
+      // restarts the process — a shared server would die under every other
+      // project) with the update checker pointed at the scripted releases
+      // endpoint. The spec restarts the replacement itself from the server
+      // manifest; see the header of restore-walk.spec.ts.
+      name: "settings-restore",
+      testMatch: /restore-walk\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: restoreUrl },
+    },
+    {
+      // The capture-dongle walk (ADR-0078, docs/spec/08/10): the packaged
+      // binary with the test seam standing in for the UVC HDMI dongle
+      // (GAME_NARRATOR_CAPTURE_FAKE) — a labelled-synthetic device fed by a
+      // real FFmpeg testsrc2 pipe (loopback-free, real frames through the
+      // production consumer) — so the Settings capture section (device list,
+      // selection, the throttled preview, the capture test) and a full kind
+      // v4l2 session run without hardware, labelled synthetic throughout.
+      name: "capture-device",
+      testMatch: /capture-device\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: captureUrl },
+    },
+    {
+      // The audio-output walk (ADR-0074, docs/spec/10): the packaged binary
+      // with the test seam standing in for the enumeration backend — a
+      // labelled-synthetic device list (the page must say so) — and the
+      // filesink recording the test tone, so the walk proves the product
+      // surface (device selection, the consent-gated tone, the master
+      // volume) without hardware and with the tone's WAV as the evidence.
+      // GAME_NARRATOR_BT_FAKE (ADR-0091) wires the labelled-synthetic
+      // Bluetooth controller so the Bluetooth output section walks the same
+      // way; the fake device list carries one bluez_output.<MAC>.1 sink so
+      // the selection walk can pick the Bluetooth sink. The addresses are
+      // the bt package's obviously-fake fixtures (the public-repo rule).
+      name: "audio",
+      testMatch: /audio-output\.spec\.ts|bluetooth-output\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: audioUrl },
+    },
+    {
       // The live play path (task browser-live-play, AGENTS.md rule 3 class
       // (d)+(e)): a real Dolphin emulator and the real gateway driven through
       // the packaged /play and /developer pages. No webServer here on
@@ -265,7 +354,7 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: "node web/e2e/serve.mjs api 127.0.0.1:18090 go run ./cmd/game-narrator serve",
+      command: `node web/e2e/serve.mjs api 127.0.0.1:${ports.api} go run ./cmd/game-narrator serve`,
       cwd: "..",
       url: `${apiUrl}/api/v1/health/live`,
       // Never reuse: a server from an earlier run points at an earlier (already
@@ -277,7 +366,10 @@ export default defineConfig({
       stderr: "pipe",
     },
     {
-      command: "pnpm dev",
+      // The dev-server port is passed explicitly (vite.config.ts pins 5173
+      // with strictPort): on a default-base run this is exactly 5173 — today's
+      // behaviour — and on a moved base each run owns its own Vite (ADR-0094).
+      command: `pnpm dev --port ${ports.web}`,
       url: webUrl,
       env: { GAME_NARRATOR_API: apiUrl },
       reuseExistingServer: !process.env.CI,
@@ -286,7 +378,7 @@ export default defineConfig({
       stderr: "pipe",
     },
     {
-      command: `node web/e2e/serve.mjs embedded 127.0.0.1:18095 ${embeddedBinary} serve`,
+      command: `node web/e2e/serve.mjs embedded 127.0.0.1:${ports.embedded} ${embeddedBinary} serve`,
       cwd: "..",
       url: `${embeddedUrl}/api/v1/health/live`,
       reuseExistingServer: false,
@@ -295,7 +387,7 @@ export default defineConfig({
       stderr: "pipe",
     },
     {
-      command: `node web/e2e/serve.mjs catalog 127.0.0.1:18096 ${embeddedBinary} serve`,
+      command: `node web/e2e/serve.mjs catalog 127.0.0.1:${ports.catalog} ${embeddedBinary} serve`,
       cwd: "..",
       url: `${catalogUrl}/api/v1/health/live`,
       reuseExistingServer: false,
@@ -475,6 +567,27 @@ export default defineConfig({
       stderr: "pipe",
     },
     {
+      // The player-controls walk server: the same wiring as the sse server
+      // (testdata replay + scripted TTS roles) — /play needs a running
+      // session with real audio for the pause/resume and narrated-class
+      // assertions to have something to fence (ADR-0039, ADR-0075).
+      command: `node web/e2e/serve.mjs play-controls 127.0.0.1:${ports.playControls} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${playControlsUrl}/api/v1/health/live`,
+      env: {
+        GAME_NARRATOR_REPLAY_ROOTS: replayRoots,
+        GAME_NARRATOR_GATEWAY_URL: `http://127.0.0.1:${ports.fakeTTS}/v1`,
+        GAME_NARRATOR_GATEWAY_TOKEN: "fake-e2e-token",
+        GAME_NARRATOR_ROLE_VOICE_DESIGN_MODEL: "fake-voicedesign",
+        GAME_NARRATOR_ROLE_VOICE_CLONE_MODEL: "fake-base",
+        GAME_NARRATOR_TTS_BASE_DIRECT_URL: `http://127.0.0.1:${ports.fakeTTS}/v1`,
+      },
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
       // The curation + voice-preview walks on one packaged binary: the
       // scripted TTS roles and registry (the voice half) plus the testdata
       // replay allowlist (the region preview's fixture). Two specs, one data
@@ -577,6 +690,121 @@ export default defineConfig({
         GAME_NARRATOR_ROLE_VOICE_CLONE_MODEL: "fake-base",
         GAME_NARRATOR_TTS_BASE_DIRECT_URL: `http://127.0.0.1:${ports.fakeTTS}/v1`,
       },
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The developer inspector's actions walk on the packaged binary
+      // (ADR-0083): the replay allowlist admits the synthetic clip, the
+      // speech roles at the scripted TTS instance (fake-tts.mjs), so the
+      // committed lines speak and the utterance's WAV is what the fixture,
+      // the waveform and the evidence bundle carry. The seed commits locally
+      // (the clip's OCR reading is an exact corpus match — the actions need a
+      // fully committed, fully spoken trace, not a provider call; the
+      // decision chain's walk is the developer-decision project's), and the
+      // decision role still points at the scripted Clef instance so the walk
+      // runs against a fully wired appliance.
+      command: `node web/e2e/serve.mjs developer-actions 127.0.0.1:${ports.developerActions} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${developerActionsUrl}/api/v1/health/live`,
+      env: {
+        GAME_NARRATOR_REPLAY_ROOTS: replayRoots,
+        GAME_NARRATOR_ROLE_DECISION_URL: `http://127.0.0.1:${ports.fakeClef}`,
+        GAME_NARRATOR_ROLE_DECISION_MODEL: "fake-clef",
+        GAME_NARRATOR_GATEWAY_URL: `http://127.0.0.1:${ports.fakeTTS}/v1`,
+        GAME_NARRATOR_GATEWAY_TOKEN: "fake-e2e-token",
+        GAME_NARRATOR_ROLE_VOICE_DESIGN_MODEL: "fake-voicedesign",
+        GAME_NARRATOR_ROLE_VOICE_CLONE_MODEL: "fake-base",
+        GAME_NARRATOR_TTS_BASE_DIRECT_URL: `http://127.0.0.1:${ports.fakeTTS}/v1`,
+      },
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The audio-output walk server (ADR-0074): the test seam stands in for
+      // the enumeration backend and the filesink is the recorded sink — the
+      // test tone leaves its WAV under the server's data directory instead of
+      // needing a speaker, which is exactly the documented degraded path on
+      // a machine with no audible output.
+      command: `node web/e2e/serve.mjs audio 127.0.0.1:${ports.audio} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${audioUrl}/api/v1/health/live`,
+      env: {
+        GAME_NARRATOR_AUDIO_FAKE_DEVICES:
+          "auto_null:null:48000,JBL-USB-DAC:usb:48000,bluez_output.AA:BB:CC:DD:EE:FF.1:bluetooth:48000",
+        GAME_NARRATOR_AUDIO_SINK: "filesink",
+        GAME_NARRATOR_BT_FAKE: "1",
+      },
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The capture-dongle walk server (ADR-0078): the test seam stands in
+      // for the dongle — one labelled-synthetic device whose frames are a
+      // real FFmpeg testsrc2 pipe — so the preview, the probe and a full
+      // v4l2 session run the production consumer without the hardware
+      // (which is NOT RUN until the card is attached).
+      command: `node web/e2e/serve.mjs capture 127.0.0.1:${ports.capture} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${captureUrl}/api/v1/health/live`,
+      env: { GAME_NARRATOR_CAPTURE_FAKE: "1" },
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The scripted GitHub-releases endpoint (ADR-0088), started before the
+      // restore server so its boot-time update check finds it listening. The
+      // walk's binary is a dev build (no version stamp), so the assertion is
+      // on the section's honesty — it names the endpoint's latest release
+      // and links its notes — while the comparison's logic is the Go
+      // tests' business (internal/updates, the fake release server there).
+      command: `node web/e2e/fake-releases.mjs ${ports.fakeReleases}`,
+      cwd: "..",
+      url: `${fakeReleasesUrl}/healthz`,
+      reuseExistingServer: false,
+      timeout: 30_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The restore walk's server: the packaged binary on its own data
+      // directory, with the update checker pointed at the scripted endpoint.
+      // GAME_NARRATOR_UPDATE_BASE_URL is declared here so the scrub keeps it
+      // (web/e2e/serve.mjs re-reads this entry for the declared names).
+      // GN_E2E_KEEP_DATA_DIR: the walk's spec restarts the appliance itself
+      // against this data directory, so the launcher must not delete it when
+      // the first process exits (the per-run teardown is the backstop).
+      command: `node web/e2e/serve.mjs restore 127.0.0.1:${ports.restore} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${restoreUrl}/api/v1/health/live`,
+      env: {
+        GAME_NARRATOR_UPDATE_BASE_URL: fakeReleasesUrl,
+        GN_E2E_KEEP_DATA_DIR: "1",
+      },
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The setup wizard's own appliance (ADR-0087 G9): a fresh packaged
+      // binary the spec claims. No seams and no model env: the walk asserts
+      // the honest unconfigured states (the capture read 503s into its
+      // "unavailable" note, the role probes answer NOT CONFIGURED), which is
+      // exactly the labelled-honesty the ADR demands. Its own server because
+      // the claim is once per appliance (ADR-0016 §7) and the chromium
+      // dev-server appliance is claimed by m5-settings-tests' admin.
+      command: `node web/e2e/serve.mjs setup-wizard 127.0.0.1:${ports.wizard} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${wizardUrl}/api/v1/health/live`,
       reuseExistingServer: false,
       timeout: 60_000,
       stdout: "ignore",

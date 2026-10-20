@@ -23,4 +23,8 @@ if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
     systemctl disable game-narrator.service >/dev/null 2>&1 || true
     systemctl daemon-reload >/dev/null 2>&1 || true
 fi
+# The lingering user session (ADR 0091) goes with the package.
+if command -v loginctl >/dev/null 2>&1; then
+    loginctl disable-linger game-narrator >/dev/null 2>&1 || true
+fi
 exit 0

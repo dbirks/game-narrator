@@ -75,7 +75,7 @@ var aliasSections = []struct {
 
 // sectionNames lists every array section of the document. The emitted order is
 // content-derived; this list only says which sections exist and must be ordered.
-var sectionNames = []string{"characters", "message_edges", "messages", "regions", "scenes", "speaker_assertions", "sources"}
+var sectionNames = []string{"characters", "message_edges", "messages", "regions", "scenes", "speaker_assertions", "sources", "voices"}
 
 // digestExcluded names the top-level fields the digest projection drops.
 var digestExcluded = map[string]bool{"manifest_digest": true, "profile_id": true, "publication": true}
@@ -87,6 +87,15 @@ var digestExcluded = map[string]bool{"manifest_digest": true, "profile_id": true
 // publication section out of the fingerprint — so a hand-authored manifest that
 // states neither, and the export of the profile it imported, agree.
 var volatileSourceFields = []string{"uri", "retrieved_at"}
+
+// volatileVoiceFields are voice columns a re-import legitimately does not
+// re-stamp: the approval's audit trail (who, when). The voice's *content* —
+// reference, transcript, model, fingerprint, consent — is frozen at approval
+// (ADR-0005) and travels byte-for-byte, and the approval moment belongs to the
+// approving appliance the way `retrieved_at` belongs to the reading one. The
+// same rule that keeps the whole `publication` section out of the fingerprint
+// applies to these two fields inside a content section.
+var volatileVoiceFields = []string{"approved_at", "approved_by"}
 
 // ContentDigest is the hex SHA-256 of the canonical projection: the manifest's
 // content fingerprint, independent of the ids of the database that exported it.
@@ -182,6 +191,7 @@ func canonicalize(m Manifest) (doc map[string]any, projection []byte) {
 	// projection alone — the exported document keeps stating where it read them.
 	projected, _ := substitute(proj, known, aliases).(map[string]any)
 	dropFromRows(projected["sources"], volatileSourceFields)
+	dropFromRows(projected["voices"], volatileVoiceFields)
 	projection = canonical(projected)
 	return doc, projection
 }

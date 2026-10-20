@@ -42,6 +42,16 @@ type FallbackPolicy struct {
 	DifficultFont bool
 	// MaxCache entries retained; the oldest is evicted on overflow. Default 64.
 	MaxCache int
+	// SecondaryTimeout bounds a secondary call that the caller's context can no
+	// longer bound — the primary timed out or was superseded, so the context
+	// the pipeline handed the engine is already done, and handed through as is
+	// it fails before the secondary's first byte leaves the appliance (the
+	// board symptom issue #8 reports: the VLM fallback never fires on a
+	// cancelled or timed-out read). The secondary then runs on a fresh context
+	// with this bound; zero takes DefaultSecondaryTimeout (15 s). The
+	// production VLM role client carries its own transport timeout (ADR-0040),
+	// so the effective bound is the smaller of the two.
+	SecondaryTimeout time.Duration
 	// Now is the clock the rate limiter refills against. nil uses time.Now;
 	// tests inject one so a limiter is deterministic.
 	Now func() time.Time
@@ -103,6 +113,13 @@ const (
 	defaultRatePerSecond = 1.0
 	defaultRateBurst     = 3
 	defaultMaxCache      = 64
+
+	// defaultSecondaryTimeout bounds the fresh context a secondary gets when
+	// the caller's context is already done (see FallbackPolicy.SecondaryTimeout).
+	// It is generous because the call is bounded elsewhere — the VLM role
+	// client's own transport timeout (ADR-0040) and the session's rate limit —
+	// and short because the frame is by definition not the newest one.
+	defaultSecondaryTimeout = 15 * time.Second
 
 	// corroborationConf is the confidence a primary read earns when the VLM
 	// reads the same text: two independent readers agreeing is the strongest
@@ -182,7 +199,24 @@ func (f *FallbackEngine) recognize(ctx context.Context, pre, raw image.Image) (R
 		return applyOutcome(primary, nil, Result{}, out)
 	}
 
-	sec, serr := f.callSecondary(ctx, raw, png)
+	// The secondary needs a context that can still finish. When the primary
+	// spent the whole budget and failed — a timeout (the live deadline expired
+	// and killed the engine) or a supersession (the pipeline cancelled the
+	// read) — the context the caller handed us is done, and a secondary run
+	// under it fails before it sends. That is how the fallback "never fires on
+	// cancellation": the policy says an errored primary is unresolved and the
+	// secondary should look (ADR-0040 §2), but the dead context made the call
+	// a no-op. A fresh context with the policy's own bound runs the documented
+	// rescue; the caller's fences still decide whether the answer is still
+	// wanted, and the rate limit and the crop cache bound what it costs.
+	secCtx := ctx
+	var secCancel context.CancelFunc
+	if perr != nil && ctx != nil && ctx.Err() != nil {
+		secCtx, secCancel = context.WithTimeout(context.Background(), f.secondaryDeadline(p))
+		defer secCancel()
+	}
+
+	sec, serr := f.callSecondary(secCtx, raw, png)
 	out := f.decide(primary, perr, sec, serr, p.ConfidenceThreshold)
 	if serr == nil {
 		// Only successful reads are cached: a gateway blip must not poison a
@@ -274,6 +308,14 @@ func isResolved(r Result, threshold float64) bool {
 		return false
 	}
 	return r.MeanConf >= threshold
+}
+
+// secondaryDeadline resolves the bound for a fresh secondary context.
+func (f *FallbackEngine) secondaryDeadline(p FallbackPolicy) time.Duration {
+	if p.SecondaryTimeout > 0 {
+		return p.SecondaryTimeout
+	}
+	return defaultSecondaryTimeout
 }
 
 // normalizedPolicy fills defaults and clamps: zero fields mean the documented

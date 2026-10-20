@@ -464,6 +464,153 @@ func TestFallbackPrimaryErrorRescuedByVLM(t *testing.T) {
 	}
 }
 
+// ctxProbeClient is a VLMClient seam that records the state of the context it
+// was called with: the assertion target of the fresh-context rescue below
+// (issue #8: the fallback never fired because the secondary was handed the
+// dead job context and failed before its first byte).
+type ctxProbeClient struct {
+	answer   string
+	err      error
+	calls    atomic.Int32
+	ctxLive  atomic.Bool
+	ctxDone  atomic.Bool
+	deadline atomic.Bool
+}
+
+func (c *ctxProbeClient) Chat(ctx context.Context, _ VLMRequest) (string, error) {
+	c.calls.Add(1)
+	if ctx.Err() == nil {
+		c.ctxLive.Store(true)
+	} else {
+		c.ctxDone.Store(true)
+	}
+	if _, ok := ctx.Deadline(); ok {
+		c.deadline.Store(true)
+	}
+	return c.answer, c.err
+}
+
+func TestFallbackTimedOutPrimaryGetsFreshSecondaryContext(t *testing.T) {
+	// The board's failure shape: the live deadline expired mid-read (the primary
+	// timed out), so the context the pipeline handed the engine is DONE. The
+	// policy says an errored primary is unresolved and the secondary should look
+	// (ADR-0040 §2); handing the dead context through would make the secondary
+	// fail before it sends, and the fallback row never exists.
+	img := solidImage(300, 80)
+	primary := &scriptedPrimary{results: map[image.Image]resultOrErr{img: {
+		err: &Failure{Kind: ErrTimeout, Engine: "scripted", Err: context.DeadlineExceeded},
+	}}}
+	probe := &ctxProbeClient{answer: "The harbour bell rang twice."}
+	sec := NewVLMEngine(probe, WithMaxSide(512))
+	f := newFallback(t, primary, sec, FallbackPolicy{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && ctx.Err() == nil {
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	if ctx.Err() == nil {
+		t.Fatal("test setup: the caller context is not done")
+	}
+
+	res, err := f.Recognize(ctx, img)
+	if err != nil {
+		t.Fatalf("the VLM must rescue a timed-out read on its own bound, not inherit the dead context: %v", err)
+	}
+	if res.Text != "The harbour bell rang twice." || res.Fallback == nil || res.Fallback.Chosen != "secondary" {
+		t.Fatalf("rescue failed: %+v", res)
+	}
+	if probe.calls.Load() != 1 {
+		t.Fatalf("VLM calls = %d, want 1 (the errored primary is unresolved)", probe.calls.Load())
+	}
+	if !probe.ctxLive.Load() {
+		t.Error("the secondary ran on a done context; the fresh-context rescue did not apply")
+	}
+	if !probe.deadline.Load() {
+		t.Error("the secondary's fresh context has no deadline; the rescue must be bounded (SecondaryTimeout)")
+	}
+}
+
+func TestFallbackCancelledPrimaryGetsFreshSecondaryContext(t *testing.T) {
+	// The same rescue for a pipeline-issued cancellation (supersession): the
+	// read was killed, its context is done, and the crop is the one the policy
+	// says the secondary may look at. The caller's fences decide whether the
+	// answer is still wanted; the fallback's job is not to skip the look.
+	img := solidImage(250, 60)
+	primary := &scriptedPrimary{results: map[image.Image]resultOrErr{img: {
+		err: &Failure{Kind: ErrCancelled, Engine: "scripted", Err: context.Canceled},
+	}}}
+	probe := &ctxProbeClient{answer: "Aryll's lookout."}
+	sec := NewVLMEngine(probe, WithMaxSide(512))
+	f := newFallback(t, primary, sec, FallbackPolicy{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	res, err := f.Recognize(ctx, img)
+	if err != nil {
+		t.Fatalf("a cancelled read is unresolved and the secondary gets the look: %v", err)
+	}
+	if res.Fallback == nil || res.Fallback.Chosen != "secondary" || res.Text != "Aryll's lookout." {
+		t.Fatalf("rescue failed: %+v", res)
+	}
+	if !probe.ctxLive.Load() {
+		t.Error("the secondary ran on the cancelled context; the fresh-context rescue did not apply")
+	}
+}
+
+func TestFallbackResolvedPrimaryOnDoneContextDoesNotRescue(t *testing.T) {
+	// The rescue is for an UNRESOLVED read: a primary that answered with a
+	// confident read before the deadline fired is resolved, and a done caller
+	// context (the pipeline moved on) must not spend a rate-limit token on a
+	// VLM call for a frame nobody wants.
+	img := solidImage(300, 80)
+	primary := &scriptedPrimary{results: map[image.Image]resultOrErr{img: {
+		res: Result{Text: "The harbour bell rang twice.", MeanConf: 0.93, Engine: "scripted"},
+	}}}
+	probe := &ctxProbeClient{answer: "something else"}
+	sec := NewVLMEngine(probe, WithMaxSide(512))
+	f := newFallback(t, primary, sec, FallbackPolicy{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	res, err := f.Recognize(ctx, img)
+	if err != nil {
+		t.Fatalf("Recognize: %v", err)
+	}
+	if res.Text != "The harbour bell rang twice." || res.Fallback != nil {
+		t.Fatalf("a resolved read on a done context must pass through untouched: %+v", res)
+	}
+	if probe.calls.Load() != 0 {
+		t.Fatalf("VLM calls = %d, want 0 (the primary resolved before the deadline)", probe.calls.Load())
+	}
+}
+
+func TestFallbackSecondaryTimeoutBindsTheFreshContext(t *testing.T) {
+	// The policy's SecondaryTimeout is the bound the fresh context carries.
+	img := solidImage(200, 40)
+	primary := &scriptedPrimary{results: map[image.Image]resultOrErr{img: {
+		err: &Failure{Kind: ErrTimeout, Engine: "scripted"},
+	}}}
+	probe := &ctxProbeClient{answer: "line"}
+	sec := NewVLMEngine(probe, WithMaxSide(512))
+	f := newFallback(t, primary, sec, FallbackPolicy{SecondaryTimeout: 7 * time.Second})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := f.Recognize(ctx, img); err != nil {
+		t.Fatalf("Recognize: %v", err)
+	}
+	// The probe cannot observe the deadline's exact value, only that one was
+	// set; the exact bound is the policy field's contract (documented default
+	// 15 s when unset).
+	if !probe.deadline.Load() {
+		t.Error("fresh secondary context carries no deadline; SecondaryTimeout must bound it")
+	}
+}
+
 func TestFallbackPrimaryErrorAndVLMFailureSurfacesError(t *testing.T) {
 	img := solidImage(300, 80)
 	primary := &scriptedPrimary{results: map[image.Image]resultOrErr{img: {

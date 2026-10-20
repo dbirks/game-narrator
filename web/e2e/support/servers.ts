@@ -1,17 +1,19 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, type APIRequestContext } from "@playwright/test";
 
 /**
  * The handle on the server a spec is talking to.
  *
  * `e2e/serve.mjs` starts every webServer in playwright.config.ts with a data
- * directory it created under os.tmpdir() and records it in
- * test-results/e2e-runs/<name>.json. Specs read that record for two jobs: finding
- * the asset store the server actually wrote to, and proving — as an assertion, not
- * as a configuration value — that the appliance under test is not the developer's
- * own ~/.local/share/game-narrator.
+ * directory it created under os.tmpdir() and records it in the per-run
+ * manifest directory, `<os.tmpdir()>/<GN_E2E_RUN_ROOT>/e2e-runs/<name>.json`
+ * (ADR-0094: one manifest set per Playwright run, so concurrent runs in the
+ * same checkout never read each other's records). Specs read that record for
+ * two jobs: finding the asset store the server actually wrote to, and proving
+ * — as an assertion, not as a configuration value — that the appliance under
+ * test is not the developer's own ~/.local/share/game-narrator.
  */
 export interface ServerRun {
   name: string;
@@ -43,27 +45,34 @@ export interface ProviderEnv {
   scrubbed: string[];
 }
 
-const webRoot = resolve(import.meta.dirname, "..", "..");
-const runsDir = join(webRoot, "test-results", "e2e-runs");
+// The run root playwright.config.ts exports (one per Playwright process):
+// the manifests and their server logs live under it, next to the data dirs,
+// so two concurrent runs in the same checkout never share or wipe each
+// other's records. The fallback mirrors e2e/serve.mjs's exactly (the config
+// always sets the variable; the mirror keeps a direct spec import honest).
+const runRootName = process.env.GN_E2E_RUN_ROOT ?? `game-narrator-e2e-${process.pid}`;
+const runsDir = join(tmpdir(), runRootName, "e2e-runs");
 
 export function serverRun(name: string): ServerRun {
   const file = join(runsDir, `${name}.json`);
   if (!existsSync(file)) {
     throw new Error(
-      `no e2e run manifest at ${file}: the server was not started by web/e2e/serve.mjs, ` +
-        "so nothing here knows which data directory it owns. That is the configuration bug " +
-        "that let UI tests write into the developer's own ~/.local/share/game-narrator.",
+      `no e2e run manifest at ${file}: the server was not started by web/e2e/serve.mjs ` +
+        `for this run (GN_E2E_RUN_ROOT=${runRootName}), so nothing here knows which data ` +
+        "directory it owns. That is the configuration bug that let UI tests write into " +
+        "the developer's own ~/.local/share/game-narrator.",
     );
   }
   return JSON.parse(readFileSync(file, "utf8")) as ServerRun;
 }
 
-/** The appliance files must exist under the temporary directory. */
+/** The appliance files must exist under THIS run's temporary root. */
 export async function expectIsolatedDataDir(name: string): Promise<ServerRun> {
   const run = serverRun(name);
   expect(
-    run.dataDir.startsWith(resolve(process.env.TMPDIR ?? "/tmp")),
-    `${run.dataDir} is inside the OS temp root, not the user's data directory`,
+    run.dataDir.startsWith(join(tmpdir(), runRootName)),
+    `${run.dataDir} is inside this run's root under the OS temp root, not another run's ` +
+      `or the user's data directory`,
   ).toBe(true);
   await expect
     .poll(() => existsSync(join(run.dataDir, "game-narrator.sqlite")), {
@@ -217,10 +226,18 @@ export function serverNameForProject(project: string): string {
       return "a11y";
     case "developer-decision":
       return "developer-decision";
+    case "developer-actions":
+      return "developer-actions";
+    case "settings-restore":
+      return "restore";
     case "disc":
       return "disc";
     case "clips":
       return "clips";
+    case "play-controls":
+      return "play-controls";
+    case "audio":
+      return "audio";
     default:
       throw new Error(`playwright project "${project}" has no webServer in playwright.config.ts`);
   }

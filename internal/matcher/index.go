@@ -337,6 +337,20 @@ func (x *Index) Lookup(text string) []string {
 // MessageCount reports indexed messages.
 func (x *Index) MessageCount() int { return len(x.ids) }
 
+// KindFor reports the stored text class (dialogue, sign, item, …) of one
+// indexed message, so a caller — the session's commitment policy — can decide
+// what the operator elected to hear without re-reading the profile. A message
+// the index never saw (never indexed, an empty id, the session's "unknown"
+// sentinel) reports the zero kind, which the caller reads as "no class
+// known": the class filter must never veto a line it cannot name.
+func (x *Index) KindFor(messageID string) (k games.TextKind, ok bool) {
+	o, found := x.ords[messageID]
+	if !found {
+		return "", false
+	}
+	return games.TextKind(x.kinds[o]), true
+}
+
 // edgeKindIndex maps an edge type onto a small dense code so the adjacency array
 // stores one byte per edge instead of a string.
 func edgeKindIndex(t games.EdgeType) int {
@@ -379,6 +393,58 @@ func baseEdgePrior(t games.EdgeType) float64 {
 		return 0
 	}
 	return edgePriors[i]
+}
+
+// Successor is one outgoing graph edge from a message, weighted exactly the
+// way the ranker's graph expansion (expandGraph) weights it at recency
+// position 0: baseEdgePrior(kind) * confidence. That is the predictive
+// tracker's own "likely next" arithmetic, so prewarming (docs/spec/07
+// "Prewarm top weighted successor messages") and the tracker agree on which
+// lines deserve to be prepared.
+type Successor struct {
+	// MessageID is the successor message.
+	MessageID string
+	// Weight is in (0,1]: the edge prior the ranker applies to the edge.
+	Weight float64
+}
+
+// Successors reports messageID's successors, best weighted first (weight
+// descending, message id ascending on ties, so the order is deterministic).
+// Several edge types from one message to the same target keep the highest
+// weight — the ranker's own edge-prior rule (its recency decay does not
+// apply: the caller asks about the just-confirmed line, position 0).
+// Edges whose kind the index does not know carry no prior and are skipped:
+// absence of knowledge is not evidence. An unknown message, or one whose
+// outgoing edges all carry no prior, returns nil. limit <= 0 means no cap.
+func (x *Index) Successors(messageID string, limit int) []Successor {
+	o, ok := x.ords[messageID]
+	if !ok || limit == 0 {
+		return nil
+	}
+	best := make(map[int32]float64)
+	for p := x.outOff[o]; p < x.outOff[o+1]; p++ {
+		prior := baseEdgePrior(edgeKindAt(x.outKind[p])) * float64(x.outConf[p])
+		if prior <= 0 {
+			continue
+		}
+		if to := x.outTo[p]; prior > best[to] {
+			best[to] = prior
+		}
+	}
+	out := make([]Successor, 0, len(best))
+	for to, w := range best {
+		out = append(out, Successor{MessageID: x.ids[to], Weight: w})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Weight != out[j].Weight {
+			return out[i].Weight > out[j].Weight
+		}
+		return out[i].MessageID < out[j].MessageID
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
 }
 
 // prefixRange returns the index span of sortedKeys whose key starts with prefix.

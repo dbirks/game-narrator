@@ -30,6 +30,9 @@ type regionState struct {
 	// inflight is the one recognition this region has outstanding. One, not a
 	// list: two concurrent reads of one box return two answers about a screen the
 	// player has already changed, and the reducer can only use the newest.
+	// In live mode the frames also RIDE it: while a read is outstanding a
+	// changed-hash frame attaches to it instead of superseding it, so a read
+	// slower than the frame interval still settles (see accept).
 	inflight *ocrJob
 
 	pending []*pending
@@ -89,6 +92,16 @@ func (r *Runner) roiLoop(ctx context.Context, frames <-chan capture.Frame, in ch
 				return nil
 			}
 			r.cnt.framesProcessed()
+			// The active-picture tracker (ADR-0082) is fed once per frame, on this
+			// frame-ordered stage, before any region crops the frame: every region
+			// then maps through the same hysteresised window (CropOptions.Tracker
+			// reads Box, it never mutates it), and K regions cannot advance the
+			// hysteresis count faster than the frame rate. A nil tracker keeps the
+			// historic stateless crop behaviour, and a borderless source (Dolphin)
+			// never settles, so its crops map the whole frame as before.
+			if tr := r.cfg.Crop.Tracker; tr != nil && f.Image != nil {
+				tr.Update(f.Image)
+			}
 			for _, rs := range regions {
 				if r.cfg.Mode == ModeReplay {
 					// Replay determinism (docs/spec/12): this region's outstanding
@@ -332,6 +345,14 @@ func (r *Runner) abort(regions []*regionState) {
 }
 
 // ageOut drops observations whose recognition has outrun its deadline.
+//
+// It drops the observation, and kills the job only when that job is not the
+// region's shared in-flight read: in live mode the newer pendings ride on that
+// read (accept), so killing it here would cancel a read that is still the
+// newest evidence the region has — the "cancel every in-progress read" failure
+// issue #8 reports. A dropped head does not strand the riders: they keep their
+// job, and when the read settles fillPending resolves them; a read that settles
+// with no riders left still books lastOK, so the dedupe remembers the pixels.
 func (r *Runner) ageOut(regions []*regionState) {
 	limit := r.cfg.OCRTimeout + 250*time.Millisecond
 	if r.cfg.Mode == ModeReplay {
@@ -348,7 +369,8 @@ func (r *Runner) ageOut(regions []*regionState) {
 				break
 			}
 			rs.pending = rs.pending[1:]
-			if p.job != nil {
+			if p.job != nil && p.job != rs.inflight {
+				// A job nobody is riding on any more: cancel it and count it.
 				p.job.kill()
 				r.cnt.ocrCancelled()
 			}
@@ -380,18 +402,42 @@ func (rs *regionState) accept(r *Runner, ctx context.Context, f capture.Frame, i
 		p.job = rs.inflight
 		r.cnt.ocrSkipped()
 	case a.hash != "":
-		rs.discardInflight(r)
-		p.job = rs.startJob(r, ctx, f.Seq, a, jobs)
+		if rs.inflight != nil {
+			// A read of a slightly older box is already in flight. Killing it on
+			// every changed-hash frame is how a live region livelocks: when the
+			// engine's latency exceeds the frame interval — a box over an animated
+			// scene changes its crop every frame, so this branch runs every frame —
+			// no read ever settles and the region never perceives a character. The
+			// shape measured on the real host: a 12-minute Dolphin session, a
+			// perfectly readable box on screen, 3861 OCR calls, 3862 cancellations,
+			// zero rankings, zero commits.
+			//
+			// Ride the in-flight read instead: the frame's observation resolves
+			// with that read's result and the read settles at the engine's own
+			// pace, the docs/spec/05 2–5 Hz OCR cadence the engine actually
+			// sustains. A box that advanced while the read ran is refused by the
+			// reducer's generation fence, and the frame after the read settles
+			// starts the next one. Replay never gets here: waitInflight
+			// serializes, so inflight is nil at accept time and a changed hash
+			// starts a fresh read, exactly as before.
+			p.job = rs.inflight
+			r.cnt.ocrDeferred()
+		} else {
+			p.job = rs.startJob(r, ctx, f.Seq, a, jobs)
+		}
 	}
 
 	rs.pending = append(rs.pending, p)
 	// Bounded queue with explicit backpressure: the *oldest* unresolved read is what
-	// goes, because it is the least current answer in the system.
+	// goes, because it is the least current answer in the system. The shared
+	// in-flight read is never killed here: in live mode the newer pendings ride
+	// on it, so killing it on overflow would punish the frames it was serving and
+	// restart the supersede-to-death loop through the eviction door.
 	for len(rs.pending) > r.cfg.MaxPendingOCR {
 		head := rs.pending[0]
 		rs.pending = rs.pending[1:]
 		if !head.resolved() {
-			if head.job != nil {
+			if head.job != nil && head.job != rs.inflight {
 				head.job.kill()
 				r.cnt.ocrCancelled()
 			}

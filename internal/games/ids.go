@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -24,12 +25,24 @@ import (
 // base32 is order-preserving for digits before letters (0-9 then A-Z in
 // alphabetical value order), plain string comparison of two ids orders them by
 // creation time across millisecond boundaries. Within one millisecond the
-// random suffix decides, so ids minted in the same millisecond are *not*
-// monotonic — which is fine here and stated rather than hidden: every table
-// that needs a total order carries its own sequence or timestamp column (events
-// has seq, jobs has created_at plus priority). Monotonic-within-a-millisecond
-// would require a shared counter and a clock-monotonicity guard, which is a
-// larger contract than these tables need.
+// generator is *monotonic*: a process-wide counter advances the previous id's
+// entropy instead of drawing fresh randomness, so ids minted in the same
+// millisecond — the usual case for an import batch, a burst of events or a
+// burst of job rows — come back strictly in call order, and `ORDER BY id` is
+// the same as creation order for every process that minted them. ADR-0080
+// recorded the consumer audit this contract carries (messages, the speaker
+// link UI, exports and keyset cursors all page by id).
+//
+// What the counter does *not* buy: two separate processes minting in the same
+// millisecond still interleave arbitrarily, exactly as any ULID would — the
+// counter is per-process by construction. Tables that need an order that
+// survives that case carry their own sequence column (events has seq, message
+// pages have ordinal, profiles have revision_num); the audit in ADR-0080
+// lists every `ORDER BY id` site and why id alone is enough there.
+//
+// The clock guard: if the wall clock steps backwards, the generator keeps
+// minting at the highest time it has used (its high-water mark) rather than
+// emitting a prefix that sorts before ids already handed out.
 const (
 	// IDLength is the fixed character count of an identifier.
 	IDLength = 26
@@ -74,25 +87,92 @@ var crockfordValue = func() [256]int8 {
 	return table
 }()
 
-// NewID mints a fresh identifier for the current instant.
+// monoMu serialises NewID so the monotonic counter (below) is safe for
+// concurrent use: every caller gets the id assigned to its call, and two
+// goroutines can never mint the same id or hand each other out of order.
+var (
+	monoMu sync.Mutex
+	// monoLastMS is the high-water mark: the greatest clamped millisecond the
+	// generator has minted. The wall clock stepping backwards must not move a
+	// prefix backwards, so minting at or below this mark continues the
+	// sequence at the mark instead.
+	monoLastMS uint64
+	// monoEntropy is the entropy of the last id minted at monoLastMS; the next
+	// id in the same millisecond is this value plus one, big-endian.
+	monoEntropy [idRandomBytes]byte
+)
+
+// NewID mints a fresh identifier for the current instant. Within this process
+// every id is strictly greater than every id minted before it, even inside a
+// single millisecond: the first mint of a millisecond draws fresh 80-bit
+// randomness, and every subsequent mint of the same millisecond advances the
+// previous entropy by one (ADR-0080).
 func NewID() string {
-	var entropy [idRandomBytes]byte
-	// crypto/rand.Read is documented to never return an error on the platforms
-	// this project supports (see internal/api's request ids for the same
-	// assumption). There is still no honest value to return if it ever did — a
-	// predictable id would collide silently inside a profile — so the failure
-	// is raised rather than papered over.
-	if _, err := rand.Read(entropy[:]); err != nil {
-		panic("games: NewID: no system randomness: " + err.Error())
+	monoMu.Lock()
+	defer monoMu.Unlock()
+	ms := uint64(time.Now().UTC().UnixMilli())
+	if ms == 0 {
+		// The same floor newIDMS applies; compare on the clamped value so the
+		// year-1970 guard cannot read as "the clock stepped back" on the very
+		// first mint.
+		ms = 1
 	}
-	return newID(time.Now().UTC(), entropy)
+	var entropy [idRandomBytes]byte
+	if ms > monoLastMS {
+		monoLastMS = ms
+		// crypto/rand.Read is documented to never return an error on the
+		// platforms this project supports (see internal/api's request ids for
+		// the same assumption). There is still no honest value to return if it
+		// ever did — a predictable id would collide silently inside a profile —
+		// so the failure is raised rather than papered over.
+		if _, err := rand.Read(entropy[:]); err != nil {
+			panic("games: NewID: no system randomness: " + err.Error())
+		}
+		// The counter must hold what was just minted: the next mint of this
+		// millisecond advances *this* entropy, not whatever the previous
+		// millisecond left behind.
+		monoEntropy = entropy
+	} else {
+		// Same millisecond as the previous mint, or the wall clock stepped
+		// backwards: advance the running entropy and keep minting at the
+		// high-water mark so the prefix never regresses either.
+		if !incEntropy(&monoEntropy) {
+			// 2^80 ids inside one millisecond is 1.2e21 mints per millisecond;
+			// no caller can reach it. Panicking is the honest failure: wrapping
+			// would hand out an id that sorts before one already issued.
+			panic("games: NewID: monotonic entropy exhausted within one millisecond")
+		}
+		entropy = monoEntropy
+		ms = monoLastMS
+	}
+	return newIDMS(ms, entropy)
+}
+
+// incEntropy adds one to a big-endian byte array. It reports false when the
+// value wrapped past all ones, which is the monotonic entropy's only
+// out-of-order state.
+func incEntropy(e *[idRandomBytes]byte) bool {
+	for i := idRandomBytes - 1; i >= 0; i-- {
+		if e[i] != 0xff {
+			e[i]++
+			return true
+		}
+		e[i] = 0
+	}
+	return false
 }
 
 // newID renders the two ULID fields. Splitting the clock and the entropy out
 // makes the ordering property testable without waiting for milliseconds to
 // pass.
 func newID(at time.Time, entropy [idRandomBytes]byte) string {
-	ms := uint64(at.UnixMilli())
+	return newIDMS(uint64(at.UnixMilli()), entropy)
+}
+
+// newIDMS renders the ULID for an explicit clamped millisecond, the one place
+// the two fields are assembled so NewID's monotonic state and the pure
+// function used by the tests share it.
+func newIDMS(ms uint64, entropy [idRandomBytes]byte) string {
 	if ms == 0 {
 		// A zero timestamp would sort before every real id and read as
 		// "the epoch"; there is no such thing as an id for year 1970 in a

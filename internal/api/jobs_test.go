@@ -17,19 +17,12 @@ import (
 // jobsFixture wires an API server onto a real migrated SQLite queue — not a
 // fake: docs/spec/12 requires that state assertions be backed by the storage
 // the appliance actually uses, and the 409s here only mean something if the
-// state machine refusing them is the same one the workers drive.
+// state machine refusing them is the same one the workers drive. The store is
+// a private copy of the package's shared migrated template (fixture_test.go,
+// issue #15) rather than a per-test re-migration.
 func jobsFixture(t *testing.T) (http.Handler, *store.JobsStore) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	t.Cleanup(cancel)
-	st, err := store.Open(ctx, store.DBPath(t.TempDir()))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	if _, err := st.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
+	st := openTemplateStore(t)
 	js := store.NewJobsStore(st)
 	return newHandler(t, WithJobs(js)), js
 }

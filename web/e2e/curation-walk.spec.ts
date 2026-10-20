@@ -271,7 +271,9 @@ test("curate a full synthetic game through the UI only, then re-import the expor
     publication: { status: string };
     messages: unknown[];
   };
-  expect(exported.schema_version).toBe("1.0");
+  // 1.1 since ADR-0101 (portable voice mappings: the manifest gained the
+  // voices section and the narrator fallback; the bump is the ADR's contract).
+  expect(exported.schema_version).toBe("1.1");
   expect(exported.publication.status).toBe("published");
   expect(exported.messages, "the export carries the full script").toHaveLength(40);
   await shot("07-exported");

@@ -33,6 +33,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/providers/systemone"
 	"github.com/dbirks/game-narrator/internal/providers/tts"
 	"github.com/dbirks/game-narrator/internal/store"
+	"github.com/dbirks/game-narrator/internal/updates"
 )
 
 // protocolAdapters answers "does this build ship an adapter for protocol p"
@@ -325,6 +326,11 @@ func mutableSettingEnv() []string {
 		"GAME_NARRATOR_AUDIO_DEVICE",
 		"GAME_NARRATOR_WEB_ALLOW_PRIVATE",
 		"GAME_NARRATOR_WEB_PRIVATE_ALLOW",
+		// The update check (ADR-0088): disabled by GAME_NARRATOR_UPDATE_CHECK=0,
+		// pointed at a mirror by the repo/base-URL pair.
+		updates.EnvCheck,
+		updates.EnvRepo,
+		updates.EnvBaseURL,
 	}
 	for _, role := range providers.AllRoles {
 		envModel, envURL, envProto, envTimeout := providers.RoleEnvVars(role)

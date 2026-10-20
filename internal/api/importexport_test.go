@@ -438,6 +438,24 @@ func TestImportManifestOntoAFreshAppliance(t *testing.T) {
 	if rep, _ := report["report"].(map[string]any); rep["digest"] == "" {
 		t.Error("the import report names no digest, so the two machines cannot be shown agreeing")
 	}
+	// The voice half of the report rides on every import (ADR-0101): this
+	// fixture profile carries no approved voices, so every count is zero and
+	// every list empty — but the fields are present, and a manifest whose
+	// voices section names references the board does not hold is the shape
+	// voice_refs_missing exists to name.
+	rep, _ := report["report"].(map[string]any)
+	if rep == nil {
+		t.Fatal("the import response carries no report object")
+	}
+	if rep["voices_written"] != float64(0) {
+		t.Errorf("voices_written = %v, want 0 (the fixture profile has no approved voices)", rep["voices_written"])
+	}
+	if list, ok := rep["voice_refs_missing"].([]any); !ok || len(list) != 0 {
+		t.Errorf("voice_refs_missing = %v, want an empty list", rep["voice_refs_missing"])
+	}
+	if list, ok := rep["voices_conflicts"].([]any); !ok || len(list) != 0 {
+		t.Errorf("voices_conflicts = %v, want an empty list", rep["voices_conflicts"])
+	}
 }
 
 // TestImportManifestRefusals: a body that is not a manifest, and one whose own

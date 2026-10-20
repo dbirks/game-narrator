@@ -2,6 +2,7 @@ package games
 
 import (
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -170,6 +171,147 @@ func TestIDTimeRoundTrips(t *testing.T) {
 	if _, err := IDTime("not-a-ulid"); err == nil {
 		t.Error("IDTime accepted a malformed id")
 	}
+}
+
+// TestNewIDsStrictlyAscendingInTightLoop is the contract ADR-0080 puts on the
+// generator: an import batch, a burst of events or a burst of job rows mints
+// many ids inside a single millisecond, and every consumer that pages or lists
+// by id (the message editor, exports, the speaker link UI, keyset cursors)
+// relies on id order being call order. A regression that draws fresh random
+// entropy on every mint shuffles a same-millisecond batch into one of N! bad
+// orders, so ten thousand mints are an order of magnitude beyond the accident.
+func TestNewIDsStrictlyAscendingInTightLoop(t *testing.T) {
+	var prev string
+	for range 10_000 {
+		id := NewID()
+		if !(id > prev) {
+			t.Fatalf("NewID() = %q did not sort after the previous id %q", id, prev)
+		}
+		prev = id
+	}
+}
+
+// TestNewIDsStrictlyAscendingConcurrent proves the same contract under
+// contention: the counter is mutex-serialised, so each goroutine's own
+// sequence is strictly ascending and no id is minted twice. A global cross-
+// goroutine order is not asserted because the scheduler, not the generator,
+// decides which goroutine wins the lock next.
+func TestNewIDsStrictlyAscendingConcurrent(t *testing.T) {
+	const (
+		nGoroutines   = 16
+		nPerGoroutine = 512
+	)
+	seqs := make([][]string, nGoroutines)
+	var wg sync.WaitGroup
+	for g := range nGoroutines {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			seqs[g] = make([]string, nPerGoroutine)
+			for i := range nPerGoroutine {
+				seqs[g][i] = NewID()
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	seen := make(map[string]bool, nGoroutines*nPerGoroutine)
+	for g := range nGoroutines {
+		seq := seqs[g]
+		for i, id := range seq {
+			if i > 0 && !(id > seq[i-1]) {
+				t.Fatalf("goroutine %d: id %d %q did not sort after %q", g, i, id, seq[i-1])
+			}
+			if seen[id] {
+				t.Fatalf("id %q minted twice across goroutines", id)
+			}
+			seen[id] = true
+		}
+	}
+}
+
+// withMonotonicState pins the generator's high-water mark and running entropy
+// (tests in this package run sequentially, so a plain lock is a store, not a
+// guard against a live minter) and restores them afterwards, so the package's
+// other tests still mint from the real clock.
+func withMonotonicState(t *testing.T, ms uint64, entropy [idRandomBytes]byte) {
+	t.Helper()
+	monoMu.Lock()
+	savedMS, savedEntropy := monoLastMS, monoEntropy
+	monoLastMS = ms
+	monoEntropy = entropy
+	monoMu.Unlock()
+	t.Cleanup(func() {
+		monoMu.Lock()
+		monoLastMS, monoEntropy = savedMS, savedEntropy
+		monoMu.Unlock()
+	})
+}
+
+// TestNewIDAdvancesEntropyWithinAMillisecond is the deterministic form of the
+// tight-loop test: with the high-water mark pinned to the future (so the wall
+// clock cannot overtake it), two mints must land in the same millisecond and
+// the second must be the first's entropy plus one, big-endian.
+func TestNewIDAdvancesEntropyWithinAMillisecond(t *testing.T) {
+	mark := uint64(time.Now().UTC().UnixMilli()) + 1000
+	e := [idRandomBytes]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0x41}
+	withMonotonicState(t, mark, e)
+
+	first := NewID()
+	second := NewID()
+
+	ePlus1 := [idRandomBytes]byte(e)
+	ePlus1[9]++
+	ePlus2 := [idRandomBytes]byte(ePlus1)
+	ePlus2[9]++
+	if first != newIDMS(mark, ePlus1) {
+		t.Fatalf("first mint = %q, want the pinned entropy advanced by one (%q)", first, newIDMS(mark, ePlus1))
+	}
+	if second != newIDMS(mark, ePlus2) {
+		t.Fatalf("second mint = %q, want the entropy advanced again (%q)", second, newIDMS(mark, ePlus2))
+	}
+	if !(second > first) {
+		t.Fatalf("same-millisecond mints out of order: %q !< %q", first, second)
+	}
+	if at, err := IDTime(second); err != nil || at.UnixMilli() != int64(mark) {
+		t.Fatalf("IDTime(second) = %v, %v; want the pinned millisecond %d", at, err, mark)
+	}
+}
+
+// TestNewIDHoldsTheHighWaterMark is the clock-guard half of ADR-0080: when the
+// wall clock steps backwards (NTP slew, VM resume) the prefix must not move
+// backwards, or an id minted after the step would sort before ids already
+// handed out and re-open the very flake this fix closes.
+func TestNewIDHoldsTheHighWaterMark(t *testing.T) {
+	before := NewID()
+	mark := uint64(time.Now().UTC().UnixMilli()) + 5_000 // simulate the mark being ahead of the clock
+	e := [idRandomBytes]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0x10}
+	withMonotonicState(t, mark, e)
+
+	after := NewID()
+	if !(after > before) {
+		t.Fatalf("id minted after a backwards clock step sorts before an earlier one: %q !< %q", after, before)
+	}
+	if at, err := IDTime(after); err != nil || at.UnixMilli() != int64(mark) {
+		t.Fatalf("IDTime(after) = %v, %v; want the high-water mark %d, not the stepped-back clock", at, err, mark)
+	}
+}
+
+// TestNewIDRefusesExhaustedEntropy covers the one state in which monotonicity
+// would have to be broken: all 2^80 entropies of one millisecond already
+// minted. The generator must panic rather than wrap to a suffix that sorts
+// before ids it has already handed out.
+func TestNewIDRefusesExhaustedEntropy(t *testing.T) {
+	mark := uint64(time.Now().UTC().UnixMilli()) + 1000
+	withMonotonicState(t, mark, [idRandomBytes]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
+
+	t.Helper()
+	defer func() {
+		if recover() == nil {
+			t.Fatalf("NewID() with exhausted monotonic entropy did not panic")
+		}
+	}()
+	NewID()
 }
 
 // idPair ties an id to the instant it was minted for the ordering assertions.

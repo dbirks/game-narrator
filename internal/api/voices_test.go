@@ -21,6 +21,7 @@ import (
 
 	"github.com/dbirks/game-narrator/internal/assets"
 	"github.com/dbirks/game-narrator/internal/auth"
+	"github.com/dbirks/game-narrator/internal/jobs"
 	"github.com/dbirks/game-narrator/internal/providers/tts"
 	"github.com/dbirks/game-narrator/internal/speech"
 	"github.com/dbirks/game-narrator/internal/store"
@@ -238,7 +239,7 @@ func TestVoiceWorkflowOverHTTP(t *testing.T) {
 
 	// The job runs (simulated here by calling the handler's fill directly:
 	// the queue is what schedules it in production).
-	if _, err := world.svc.CreateAuditionsOnDraft(context.Background(), created.VoiceID); err != nil {
+	if _, err := world.svc.CreateAuditionsOnDraft(context.Background(), created.VoiceID, 3); err != nil {
 		t.Fatalf("fill draft: %v", err)
 	}
 
@@ -403,6 +404,58 @@ func TestVoiceUnwiredAnswers503(t *testing.T) {
 		map[string]any{"character": "x", "brief": "y"})
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("unwired audition create: %d, want 503", rec.Code)
+	}
+}
+
+// TestVoiceAuditionsJobRespectsRequestedCount: the OpenAPI contract for
+// POST /api/v1/voices/auditions says `count` is "How many synthetic lines to
+// audition" (1..3, default 3). The generation runs in a durable job, so the
+// requested count must survive to the job and the job must fill the draft
+// with exactly that many clips. Regression: the job once ignored the request
+// and always filled all three synthetic lines (found by the per-character
+// live e2e, which asked for one clip and got three).
+func TestVoiceAuditionsJobRespectsRequestedCount(t *testing.T) {
+	a := newTestAuth(t)
+	world := newVoiceTestWorld(t, a.st)
+	h := a.handler(WithVoices(world.svc, world.queue))
+	curator := a.bearer(auth.RoleCurator)
+
+	rec := doAuthedJSON(t, h, http.MethodPost, "/api/v1/voices/auditions", curator,
+		map[string]any{"character": "hero", "brief": "a warm, unhurried narrator", "count": 1})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("create auditions: %d %s", rec.Code, rec.Body.String())
+	}
+	var created voiceAuditionsCreateResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("create response: %v", err)
+	}
+	var payload voices.JobPayload
+	if err := json.Unmarshal(world.queue.params[0].Payload, &payload); err != nil || payload.ProfileID != created.VoiceID {
+		t.Fatalf("job payload %s: %v", world.queue.params[0].Payload, err)
+	}
+	if payload.Count != 1 {
+		t.Fatalf("job payload count = %d, want 1 (the requested count must ride on the durable payload)", payload.Count)
+	}
+
+	// Run the job exactly as the runner would: the registered handler on the
+	// enqueued payload (a crash-restarted job would replay this same call).
+	if _, err := voices.JobHandler(world.svc)(context.Background(),
+		jobs.Job{ID: "job-count-1", Kind: voices.JobKind, Payload: world.queue.params[0].Payload},
+		func(pct float64, msg string) {}); err != nil {
+		t.Fatalf("job handler: %v", err)
+	}
+
+	rec = doAuthedJSON(t, h, http.MethodGet, "/api/v1/voices/"+created.VoiceID, curator, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("detail: %d %s", rec.Code, rec.Body.String())
+	}
+	var detail voiceDetailDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("detail body: %v", err)
+	}
+	if len(detail.Auditions) != 1 {
+		t.Fatalf("detail = %d auditions, want 1 (the job must fill the draft with the requested count, not all %d synthetic lines)",
+			len(detail.Auditions), len(voices.SyntheticAuditionLines))
 	}
 }
 

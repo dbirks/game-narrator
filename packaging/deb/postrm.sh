@@ -15,5 +15,11 @@ if [ "${1:-}" = "3" ]; then
         systemctl disable game-narrator.service >/dev/null 2>&1 || true
         systemctl daemon-reload >/dev/null 2>&1 || true
     fi
+    # The lingering user session (ADR 0091) goes with the package: with the
+    # unit gone there is nothing for the headless user manager to serve.
+    # Idempotent; `|| true` on hosts without logind.
+    if command -v loginctl >/dev/null 2>&1; then
+        loginctl disable-linger game-narrator >/dev/null 2>&1 || true
+    fi
 fi
 exit 0

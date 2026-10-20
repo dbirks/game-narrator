@@ -68,6 +68,13 @@ type Options struct {
 	Budget BudgetConfig
 	// Prompt carries the dynamic system-prompt fields.
 	Prompt PromptContext
+	// SystemPrompt, when non-empty, is the run's system message verbatim:
+	// a caller that renders its own versioned template (the assistant agent,
+	// internal/assistant, ADR-0099) passes it here instead of the
+	// onboarding render RenderWithTools performs below. Fresh runs only —
+	// a resume replays the system message from the durable log, never
+	// re-rendering it.
+	SystemPrompt string
 	// Deadline bounds the whole run; zero uses Budget.DeadlineSeconds.
 	Deadline time.Duration
 	// ModelLabel is the model id stored on the run row for the evidence
@@ -214,8 +221,12 @@ func (l *loop) run(ctx context.Context) (Outcome, error) {
 		if l.opts.UserRequest == "" {
 			return out, fmt.Errorf("agent: Run: user_request is required for a fresh run")
 		}
+		sys := RenderWithTools(l.opts.Prompt, l.reg)
+		if l.opts.SystemPrompt != "" {
+			sys = l.opts.SystemPrompt
+		}
 		conv = append(conv,
-			openai.Message{Role: RoleSystem, Text: RenderWithTools(l.opts.Prompt, l.reg)},
+			openai.Message{Role: RoleSystem, Text: sys},
 			openai.Message{Role: RoleUser, Text: l.opts.UserRequest},
 		)
 		if err := l.persistFresh(conv); err != nil {

@@ -72,8 +72,13 @@ type handle struct {
 	done    chan speech.PlayResult
 	stop    chan time.Duration
 	started time.Time
-	once    sync.Once
-	stopped atomic.Bool
+	// firstWrite is the unixNano stamp of the first successful write to the
+	// player's stdin (0 = never): the moment the device buffer accepted
+	// samples. The scheduler reports it as the playback's output latency
+	// (ADR-0074, docs/spec/13 "output latency").
+	firstWrite atomic.Int64
+	once       sync.Once
+	stopped    atomic.Bool
 }
 
 func (h *handle) Stop(fade time.Duration) {
@@ -126,6 +131,17 @@ func (s *Sink) Play(ctx context.Context, req speech.PlayRequest) (speech.PlayHan
 		path = s.RunPath
 	}
 	cmd := exec.CommandContext(ctx, path, args...)
+	// The user-instance seam (ADR-0091): the A2DP sink node (and any
+	// PipeWire target the selection names) lives in the service user's
+	// *user* PipeWire instance, which the appliance's lingering user
+	// session keeps running headless. The system service carries no
+	// XDG_RUNTIME_DIR (the uid is sysusers-assigned, not static), so the
+	// child resolves the documented fallback itself; an explicitly set
+	// variable (env file, tests) always wins.
+	if os.Getenv("XDG_RUNTIME_DIR") == "" {
+		uid := os.Getuid()
+		cmd.Env = append(os.Environ(), fmt.Sprintf("XDG_RUNTIME_DIR=/run/user/%d", uid))
+	}
 	var stdinW io.WriteCloser
 	stdinW, err = cmd.StdinPipe()
 	if err != nil {
@@ -168,6 +184,10 @@ func (s *Sink) Play(ctx context.Context, req speech.PlayRequest) (speech.PlayHan
 			if _, err := stdinW.Write(req.WAV[off:end]); err != nil {
 				break // EPIPE on stop is expected
 			}
+			// The first write that lands is the first samples the device
+			// buffer accepted: stamp it for the output-latency measurement.
+			// Later writes leave the stamp untouched.
+			h.firstWrite.CompareAndSwap(0, time.Now().UnixNano())
 			off = end
 			select {
 			case <-ctx.Done():
@@ -186,6 +206,9 @@ func (s *Sink) Play(ctx context.Context, req speech.PlayRequest) (speech.PlayHan
 func (s *Sink) reap(h *handle) {
 	var res speech.PlayResult
 	res.Started = h.started
+	if ns := h.firstWrite.Load(); ns != 0 {
+		res.FirstSampleAt = time.Unix(0, ns)
+	}
 	waitErr := h.cmd.Wait()
 	res.Ended = time.Now()
 	h.once.Do(func() {

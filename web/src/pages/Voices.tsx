@@ -4,6 +4,7 @@ import { Link, useParams } from "react-router";
 import { useSearchParams } from "react-router";
 
 import { api, catalogApi, type Edition, type Profile } from "../api/client";
+import { setVoiceGain } from "../api/audio";
 import {
   voicesApi,
   type VoiceAudition,
@@ -294,6 +295,13 @@ function VoicePanel(p: PanelProps) {
             <span className="muted">consent</span> {voice.consent_provenance}
           </div>
         ) : null}
+        {p.canCurate ? (
+          <VoiceGainControl voiceId={voice.id} gain={voice.gain} />
+        ) : (
+          <div data-testid="voice-gain">
+            <span className="muted">gain</span> {voice.gain}×
+          </div>
+        )}
       </div>
 
       {p.detailLoading ? <Loading label="Loading audition clips…" /> : null}
@@ -418,6 +426,51 @@ function VoicePanel(p: PanelProps) {
         </div>
       ) : null}
     </section>
+  );
+}
+
+/**
+ * The per-voice output gain (docs/spec/07, ADR-0074): one linear factor, 0..10
+ * (0 silences the voice, 1 unity, 10 the clipping bound). It is an output
+ * property, not a design step — saving it never re-synthesises: the runtime
+ * applies it to the samples at playback, after the cache key is computed — so
+ * the control lives on the revision's facts row, beside the state, and the
+ * note says what it does not do.
+ */
+function VoiceGainControl({ voiceId, gain }: { voiceId: string; gain: number }) {
+  const [value, setValue] = useState(gain);
+  const [note, setNote] = useState<string | null>(null);
+  const save = useMutation({
+    mutationFn: (g: number) => setVoiceGain(voiceId, g),
+    onSuccess: (res) => setNote(`gain ${res.gain}× saved`),
+    onError: (error) => setNote(`not saved: ${error instanceof Error ? error.message : ""}`),
+  });
+
+  return (
+    <div data-testid="voice-gain">
+      <label className="muted" htmlFor={`voice-gain-${voiceId}`}>
+        gain
+      </label>{" "}
+      <input
+        id={`voice-gain-${voiceId}`}
+        data-testid="voice-gain-slider"
+        type="range"
+        min={0}
+        max={10}
+        step={0.1}
+        value={value}
+        onChange={(event) => {
+          setValue(Number(event.target.value));
+          setNote(null);
+        }}
+        onMouseUp={() => save.mutate(value)}
+        onKeyUp={() => save.mutate(value)}
+        onBlur={() => save.mutate(value)}
+      />{" "}
+      <span data-testid="voice-gain-value">{value.toFixed(1)}×</span>
+      {save.data ? ` ${note}` : note ? note : ""}
+      <span className="muted"> — applied at playback; no re-synthesis</span>
+    </div>
   );
 }
 

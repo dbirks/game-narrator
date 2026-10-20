@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/dbirks/game-narrator/internal/events"
+	"github.com/dbirks/game-narrator/internal/games"
 	"github.com/dbirks/game-narrator/internal/matcher"
 	"github.com/dbirks/game-narrator/internal/recognition"
 )
@@ -476,8 +477,66 @@ func (r *Reducer) applyControl(ctx context.Context, m ControlMsg, res *Result) e
 		if err := r.cancelAllLocked(ctx, CancelPaused, res); err != nil {
 			return err
 		}
+		// The session-level half of the pause is done; the event is the
+		// operator's state transition (docs/spec/08: a change the UI and the
+		// event log must both see) and it rides the single writer's chain,
+		// after the cancellations it caused, so the order is the truth.
+		// The runtime's speech wiring watches this name on the same chain
+		// to stop the audio that is still queued or playing.
+		if _, err := r.emitFor(ctx, res, nil, events.SessionPaused, map[string]any{
+			"generation": r.st.Generation, "reason": reasonOr(m.Reason, "operator"),
+		}); err != nil {
+			return err
+		}
 	case ControlResume:
+		if !r.st.Paused {
+			res.Reason = "duplicate_control"
+			return nil
+		}
 		r.st.Paused = false
+		// The resume changes no belief: the text machines kept advancing
+		// through the pause (the observations were real), and the commit
+		// policy picks up where the evidence stands — the next box that is
+		// READY with a valid ranking commits exactly once, which is why a
+		// resume can never burst a backlog of the paused window's lines.
+		if _, err := r.emitFor(ctx, res, nil, events.SessionResumed, map[string]any{
+			"generation": r.st.Generation, "reason": reasonOr(m.Reason, "operator"),
+		}); err != nil {
+			return err
+		}
+	case ControlSettings:
+		// The mid-session operator policy (docs/spec/09 "/play": the
+		// conservative/predictive toggle and the narrated classes). The
+		// payload is the complete target state — the runtime merged the
+		// request with the session's current policy before sending — so a
+		// message that names the state the session already has is a
+		// duplicate, not a change.
+		kinds := normalizeNarratedKinds(m.Settings.NarratedKinds)
+		if m.Settings.Predictive == r.cfg.PredictiveMode && kindsEqual(kinds, r.cfg.NarratedKinds) {
+			res.Reason = "duplicate_control"
+			return nil
+		}
+		r.cfg.PredictiveMode = m.Settings.Predictive
+		r.cfg.NarratedKinds = kinds
+		for _, reg := range r.regions {
+			// The text machine's half of the mode switch: a tracker left on
+			// the old side would hold a box REVEALING (or keep revealing a
+			// prefix the commitment policy now refuses), so both halves of
+			// the policy move in one step under the one lock.
+			reg.tr.SetPredictiveMode(m.Settings.Predictive)
+		}
+		mode := "conservative"
+		if m.Settings.Predictive {
+			mode = "predictive"
+		}
+		if _, err := r.emitFor(ctx, res, nil, events.SessionSettings, map[string]any{
+			"generation":       r.st.Generation,
+			"mode":             mode,
+			"narrated_classes": kinds,
+			"reason":           reasonOr(m.Reason, "operator"),
+		}); err != nil {
+			return err
+		}
 	case ControlStop:
 		if r.st.Stopped {
 			res.Reason = "duplicate_control"
@@ -532,6 +591,25 @@ func reasonOr(reason, fallback string) string {
 		return fallback
 	}
 	return reason
+}
+
+// kindsEqual compares two normalized narrated-class lists. Both sides are the
+// output of normalizeNarratedKinds (dialogue first, deduped, in input order),
+// so value equality is the right test: the order is part of the shape, and a
+// list that holds the same classes in a different order is the same policy
+// either way — the comparison is element-wise over the normalized form, which
+// is why a settings message re-sending the current state in another order is
+// still a duplicate, not a change.
+func kindsEqual(a, b []games.TextKind) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // cancelAllLocked cancels every region's live utterance. A pause or a stop is not
@@ -755,35 +833,85 @@ func (r *Reducer) decide(reg *region, rk rankedObservation) (messageID string, e
 		// → silence. Never invent dialogue to fill uncertainty." The occurrence
 		// still commits, with message_id unknown and speech_eligible false, so the
 		// developer UI can show the box that was not narratable.
-		return UnknownMessage, false, ReasonCommittedAbstain
-	}
-	messageID = rk.rank.Candidates[0].MessageID
-	if messageID == "" {
-		return UnknownMessage, false, ReasonCommittedAbstain
-	}
-	eligible = true
-	reason = rk.rank.Reason
-	if reason == "" {
-		reason = ReasonCommittedKnown
-	}
-	if ans, ok := reg.decisionFor(rk.obsSeq); ok {
-		// A decision may *narrow* the answer, never widen it: the model's choice is
-		// honoured only if retrieval offered it, because the alternative lets a
-		// hallucinated option outrank the local evidence (docs/spec/12 "hallucinated
-		// VLM speaker", "high score on wrong option").
-		if ans.accepted && ans.msgID != "" && ans.msgID != UnknownMessage && candidateHas(rk.rank, ans.msgID) {
+		//
+		// The exception is the call the design exists for: at the production
+		// decision margin (zero), NeedsAdjudication sends *exactly* these local
+		// abstains to Clef — the shortlist is the question (the Ranking's
+		// abstain shortlist is documented as the decision layer's input), and an
+		// answer that narrows to a retrieved candidate is a narrowing, not an
+		// invention (candidateHas). The model's safe-to-speak is the eligibility
+		// evidence for the line it resolved — there is no local "speakable" verdict
+		// to narrow, because the local policy's verdict was the abstention itself
+		// (docs/spec/05 "speech eligibility … required before speaking"). A
+		// rejected, fenced or absent answer leaves the abstain as silence.
+		if ans, ok := reg.decisionFor(rk.obsSeq); ok &&
+			ans.accepted && ans.msgID != "" && ans.msgID != UnknownMessage &&
+			candidateHas(rk.rank, ans.msgID) {
 			messageID = ans.msgID
+			eligible = ans.eligible
 			reason = ReasonClefDisambiguated
+			if !eligible {
+				reason = ReasonCommittedAbstain
+			}
+		} else {
+			return UnknownMessage, false, ReasonCommittedAbstain
 		}
-		if ans.accepted && !ans.eligible {
-			// safe_to_speak = no vetoes the utterance. The reverse is not a
-			// licence: eligibility comes from the local policy, and one high
-			// probability is not why audio starts.
+	} else {
+		messageID = rk.rank.Candidates[0].MessageID
+		if messageID == "" {
+			return UnknownMessage, false, ReasonCommittedAbstain
+		}
+		eligible = true
+		reason = rk.rank.Reason
+		if reason == "" {
+			reason = ReasonCommittedKnown
+		}
+		if ans, ok := reg.decisionFor(rk.obsSeq); ok {
+			// A decision may *narrow* the answer, never widen it: the model's choice is
+			// honoured only if retrieval offered it, because the alternative lets a
+			// hallucinated option outrank the local evidence (docs/spec/12 "hallucinated
+			// VLM speaker", "high score on wrong option").
+			if ans.accepted && ans.msgID != "" && ans.msgID != UnknownMessage && candidateHas(rk.rank, ans.msgID) {
+				messageID = ans.msgID
+				reason = ReasonClefDisambiguated
+			}
+			if ans.accepted && !ans.eligible {
+				// safe_to_speak = no vetoes the utterance. The reverse is not a
+				// licence: eligibility comes from the local policy, and one high
+				// probability is not why audio starts.
+				eligible = false
+				reason = ReasonCommittedAbstain
+			}
+		}
+	}
+	if eligible && messageID != UnknownMessage && r.kindOf != nil {
+		if k, ok := r.kindOf(messageID); ok && !kindIn(r.cfg.NarratedKinds, k) {
+			// The narrated-class veto (docs/spec/09 "/play": the operator hears
+			// dialogue, +signs, +items — whatever the setting names). The line
+			// is a *known* message that simply is not one the session elected
+			// to hear: it commits — the box advances and the text machine
+			// knows — and it is marked not eligible, which is the speech
+			// layer's "no audio" answer. A class the corpus cannot name (the
+			// lookup's not-found) is not a veto: a filter that cannot say what
+			// a line is must not say that it is silent.
 			eligible = false
-			reason = ReasonCommittedAbstain
+			reason = ReasonCommittedNotNarrated
 		}
 	}
 	return messageID, eligible, reason
+}
+
+// kindIn reports whether a normalized narrated-class list holds a class.
+// The list is short (the vocabulary has seven classes and dialogue is the
+// default), so a linear scan is the whole implementation — a map for this
+// would be ceremony.
+func kindIn(kinds []games.TextKind, k games.TextKind) bool {
+	for _, have := range kinds {
+		if have == k {
+			return true
+		}
+	}
+	return false
 }
 
 func candidateHas(rank matcher.Ranking, id string) bool {
@@ -968,7 +1096,24 @@ func (r *Reducer) committedData(reg *region, rk rankedObservation, messageID str
 		"scene_id":               rk.scene,
 		"transitions":            trs,
 		"confidence":             reg.tr.Confidence(),
+		"text_kind":              r.commitKind(messageID),
 	}
+}
+
+// commitKind is the committed message's text class for the event payload, so
+// the developer UI (and the narrated-class veto's own record) can show what
+// kind of line just committed. It is "" when the corpus cannot name the
+// message — the honest answer, not a guess: an abstained line (the "unknown"
+// sentinel) and a class the index never saw both read as "not named", and a
+// payload that invented a class would be a lie about the veto's own input.
+func (r *Reducer) commitKind(messageID string) string {
+	if messageID == UnknownMessage || r.kindOf == nil {
+		return ""
+	}
+	if k, ok := r.kindOf(messageID); ok {
+		return string(k)
+	}
+	return ""
 }
 
 func (r *Reducer) speechData(reg *region, m SpeechMsg) map[string]any {

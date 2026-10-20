@@ -16,6 +16,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -61,6 +62,20 @@ type onbReviewItemView struct {
 	ProfileID   string `json:"profile_id,omitempty"`
 	Description string `json:"description"`
 	State       string `json:"state"` // pending | resolved
+	// Provenance is set for a propose_web_import item (ADR-0077): the exact
+	// web source the curator is approving — its URL, the SHA-256 of the raw
+	// body the approval pins, when it was retrieved and its rights position.
+	Provenance *onbProvenanceView `json:"provenance,omitempty"`
+}
+
+// onbProvenanceView is the approved-import provenance block the review item
+// renders above its Approve button: approving is the rights assertion, so
+// the curator sees the bytes' identity before asserting rights over them.
+type onbProvenanceView struct {
+	URL         string `json:"url"`
+	SHA256      string `json:"sha256"`
+	RetrievedAt string `json:"retrieved_at,omitempty"`
+	Rights      string `json:"rights"`
 }
 
 type onbDraftView struct {
@@ -214,6 +229,39 @@ func (s *Server) onbAssembleState(ctx context.Context, runID string) (onbStateRe
 			Description: c.Name + " asked the run to stop for human review; approve it or reply with a message to steer the run.",
 			State:       state,
 		})
+	}
+
+	// The approved web-source import names its provenance on the item itself
+	// (ADR-0077): the proposal's structured result carries the URL and the
+	// raw-body SHA-256 the approval pins, and the description says what
+	// approving commits the curator to.
+	for i := range out.ReviewItems {
+		item := &out.ReviewItems[i]
+		if item.Kind != "tool" || item.Tool != "propose_web_import" {
+			continue
+		}
+		var res agent.Result
+		for _, c := range calls {
+			if c.ID != item.ID || json.Unmarshal(c.ResultJSON, &res) != nil {
+				continue
+			}
+			var payload struct {
+				Provenance *onbProvenanceView `json:"provenance"`
+			}
+			if json.Unmarshal(res.Results, &payload) == nil && payload.Provenance != nil && payload.Provenance.URL != "" {
+				item.Provenance = payload.Provenance
+				if len(item.Provenance.SHA256) > 16 {
+					item.Description = fmt.Sprintf(
+						"Import the web source %s (raw-body sha256 %s\u2026, retrieved %s, rights currently %s) as your approved text source. Approving asserts your rights to this text and releases its bytes to the import exactly once; rejecting leaves the run to choose another path.",
+						item.Provenance.URL, item.Provenance.SHA256[:16], item.Provenance.RetrievedAt, item.Provenance.Rights)
+				} else {
+					item.Description = fmt.Sprintf(
+						"Import the web source %s (rights currently %s) as your approved text source. Approving asserts your rights to this text and releases its bytes to the import exactly once; rejecting leaves the run to choose another path.",
+						item.Provenance.URL, item.Provenance.Rights)
+				}
+				break
+			}
+		}
 	}
 
 	// The draft preview and the publish-boundary review item: the item

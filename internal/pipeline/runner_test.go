@@ -20,9 +20,14 @@ import (
 
 // TestLateOCRStillCommitsTwice is the out-of-order / late-result case of
 // docs/spec/12's failure-injection list, run through the whole chain with the
-// replay source: recognitions answer after the screen they described has moved on,
-// and the dialogue still commits exactly twice — page one, then page two — with the
-// discarded work visible in the counters rather than silently absorbed.
+// replay source in LIVE mode: recognitions answer about pixels that are no
+// longer on screen, and the dialogue still commits exactly twice — page one,
+// then page two — with the late evidence handled visibly rather than silently
+// absorbed. The live mechanism that makes late reads survivable is the RIDE:
+// a changed-hash frame that lands while a read is in flight attaches to that
+// read instead of superseding it (OCRDeferred), so a read slower than the
+// frame interval settles at the engine's own pace, and its slightly stale
+// result is the newest evidence the reducer has when it lands.
 func TestLateOCRStillCommitsTwice(t *testing.T) {
 	eng := &fakeOCR{script: ocrScript(t), delay: lateScript, respectCtx: false}
 	h := newHarness(t, eng, nil)
@@ -38,9 +43,13 @@ func TestLateOCRStillCommitsTwice(t *testing.T) {
 	if got := committed(t, evs); len(got) != 2 || got[0] != msgIDLineA || got[1] != msgIDLineB {
 		t.Errorf("committed = %v, want [%s %s] — exactly one commit per page", got, msgIDLineA, msgIDLineB)
 	}
-	if st.OCRStale+st.OCRCancelled == 0 {
-		t.Errorf("no superseded recognitions (cancelled=%d stale=%d): with a 150ms read against a 100ms frame the pipeline should have dropped some, and a run that drops nothing here is not testing the drop path",
-			st.OCRCancelled, st.OCRStale)
+	if st.OCRDeferred == 0 {
+		t.Errorf("ocr_deferred = 0 (calls=%d cancelled=%d stale=%d): with a 150ms read against a 100ms frame the changed-hash frames that land mid-read must ride the outstanding read — zero means the supersede-to-death path is still live and a slow engine never settles a read",
+			st.OCRCalls, st.OCRCancelled, st.OCRStale)
+	}
+	if st.OCRCalls > 12 {
+		t.Errorf("ocr_calls = %d (of %d frames): a settling live region calls the engine once per settled read, not once per frame",
+			st.OCRCalls, st.FramesProcessed)
 	}
 	if st.StaleApplied != 0 {
 		t.Errorf("stale_generation_applied = %d: docs/spec/01 invariant 2 makes the generation fence absolute", st.StaleApplied)

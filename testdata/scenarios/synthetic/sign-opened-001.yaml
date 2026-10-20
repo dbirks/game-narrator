@@ -1,0 +1,75 @@
+# GN-T010 (modes S,R,D,L) — sign opened by the player.
+# Catalog: docs/test-plan/scenario-catalog.md GN-T010 "Sign opened by player
+# — narrator once; no ambient sign spam".
+#
+# The sign/item runtime path proven end to end (docs/status/gap-audit G8,
+# docs/spec/04 "Visual profiles", docs/spec/12 release gate "at least 5
+# scenarios with actual live model requests including one sign/item"):
+# the profile's region is a SIGN region, so the pipeline ranks its reads with
+# the sign text-kind hint; the corpus stores the sign's line as kind sign;
+# the commit carries that class; and narrated_kinds admits sign, so the
+# narrator voice speaks it — exactly once.
+#
+# Every frame and sentence here is generated, not captured from a game
+# (docs/spec/11 "Fixture origins": scripts/fixtures/gen-synthetic-signitem.sh):
+# the origin field carries that claim so a report can never present this as
+# real-game coverage. The Dolphin half of GN-T010 (a savestate-driven real
+# sign) is BLOCKED — no savestate path to a sign exists in internal/dolphin
+# yet — and is registered as such (testdata/scenarios/dolphin/
+# sign-opened.yaml, docs/status/blocked.md), per ADR-0037 "blocked ≠ pass".
+schema_version: 1
+catalog: GN-T010
+id: synthetic/sign-opened-001
+origin: generated_synthetic
+profile: sign-opened-001
+mode: frame_replay
+# The operator's narrated-class setting for this run: dialogue (the default)
+# plus sign. Without sign in this list the session's narrated-class veto
+# (ADR-0075) commits the line silently — the commit still lands and carries
+# its class, but the narrator stays quiet.
+narrated_kinds:
+  - dialogue
+  - sign
+input:
+  frames_dir: testdata/synthetic/replay/sign-opened-001
+  timestamps: timestamps.json
+inference:
+  # The local chain (OCR, matcher, session) needs no model endpoints: the
+  # invented sign line ranks exactly against the corpus, and the sign/item
+  # distinction this scenario exists to prove is the region's hint + the
+  # corpus's class + the veto, none of which is a provider. The TTS leg is
+  # real: the narrator voice speaks the sign line through the recorded
+  # gateway, and the implicit audio_evidence_clean check asserts exactly one
+  # evidence WAV for the one started utterance.
+  decision: none
+  tts: recorded
+  voice: narrator
+assertions:
+  # The sign's line commits within 1500 ms (capture clock, not wall clock)
+  # of the first frame that shows it in full (frame 5, the fade-in).
+  - type: message_detected
+    message_id: sgn-a
+    max_delay_ms: 1500
+  # Exactly one commitment: the sign stays on screen through 13 stable
+  # frames (the clip ends with it on screen — the narrator's reading must
+  # run to its terminal outcome, and the dismiss-then-silence property is
+  # the dialogue clip's job); repeated observations of one sign occurrence
+  # must not re-commit (docs/spec/16 M2 "repeat observation doesn't create
+  # duplicate speech", the catalog's "no ambient sign spam").
+  - type: message_committed_count
+    message_id: sgn-a
+    count: 1
+  # The commit carries the corpus's class — sign, not dialogue. This is the
+  # gap-audit G8 property in one field: a pipeline that still ranked every
+  # region as dialogue would commit the same line as dialogue.
+  - type: committed_kind
+    message_id: sgn-a
+    kind: sign
+  # The narrator speaks it with the configured voice — never a
+  # substitution. The terminal outcome exists because the clip ends with
+  # the sign on screen: the harness closes the still-live utterance with
+  # speech.ended at stream end, and no region dismissal cancelled it first.
+  - type: no_voice_substitution
+    voice: narrator
+  - type: no_duplicate_commit
+  - type: no_stale_generation_applied

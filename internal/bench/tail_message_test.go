@@ -87,7 +87,7 @@ func TestTop1GradingWindowTrailingMessage(t *testing.T) {
 	regions := prof.BuildRegions()
 
 	work := t.TempDir()
-	dirs, err := RenderSamples(ts, work)
+	dirs, err := RenderSamples(ts, prof.Layout, work)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}

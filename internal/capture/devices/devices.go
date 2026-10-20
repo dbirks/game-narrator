@@ -59,6 +59,14 @@ type Size struct {
 	W   int       `json:"w"`
 	H   int       `json:"h"`
 	FPS []float64 `json:"fps,omitempty"`
+	// Stepwise marks a driver that accepts any rate in [Min, Max] rather than
+	// the discrete list alone: v4l2's "Interval: Stepwise" means the hardware
+	// delivers any requested rate inside the bounds, so a policy that asks for
+	// 10 fps inside a 2–30 range is asking for something the card offers.
+	// Zero values mean "not recorded" (discrete-only size).
+	Stepwise bool    `json:"stepwise,omitempty"`
+	Min      float64 `json:"fps_min,omitempty"`
+	Max      float64 `json:"fps_max,omitempty"`
 }
 
 // Format is one pixel format and the sizes available under it.
@@ -177,6 +185,23 @@ func ListWith(ctx context.Context, o Options) ([]Device, error) {
 
 	byID := stableNames(o.stableDir(o.ByIDDir, ByIDDir))
 	byPath := stableNames(o.stableDir(o.ByPathDir, ByPathDir))
+	// v4l-utils 1.30.1 (the UNO Q's release target) prints --list-devices
+	// without the category labels the modern layout carries: the nodes sit
+	// directly under the card header, and ParseListDevices leaves Kind empty
+	// for them. Classify those nodes from --info's capability words — capture
+	// vs memory-to-memory — so Usable filters the UVC node out of a list that
+	// also names the SoC's encoder/decoder nodes (the qcom-venus m2m pair on
+	// the UNO Q). Labelled nodes are untouched: the tool's own label wins.
+	for i := range devs {
+		if devs[i].Kind != "" {
+			continue
+		}
+		infoOut, ierr := run(listCtx, "-d", devs[i].Path, "--info")
+		if ierr != nil && len(bytes.TrimSpace(infoOut)) == 0 {
+			continue // an unreadable node stays unclassified, not invented
+		}
+		devs[i].Kind = kindFromCaps(ParseInfoCaps(string(infoOut)))
+	}
 	for i := range devs {
 		if !strings.Contains(devs[i].Kind, "Capture") {
 			// Media-controller and metadata nodes are recorded but not queried
@@ -215,6 +240,95 @@ func (o Options) stableDir(set, def string) string {
 
 // DefaultDirs reports the stable-name roots actually used, for doctor's output.
 func DefaultDirs() (byID, byPath string) { return ByIDDir, ByPathDir }
+
+// The kind labels this package stamps when v4l2-ctl's --list-devices output
+// carries no category labels (v4l-utils 1.30.1, the UNO Q's release target,
+// prints the nodes directly under the card header). The capture label is the
+// recorded 1.32 spelling ("Capture devices") so a labelled and an unlabelled
+// enumeration produce the same Kind; the other labels stay outside the
+// Contains("Capture") filter that picks capture sources (Usable, the stack's
+// not-capture state) — a metadata or m2m node is recorded, not capture.
+const (
+	kindCapture   = "Capture devices"
+	kindMetadata  = "Metadata devices"
+	kindOutput    = "Output devices"
+	kindMemoryM2M = "Memory-to-Memory devices"
+)
+
+// capLineRe matches one --info section header that carries a capability hex
+// value: the node's "Capabilities     : 0x..." and, when udev/driver expose
+// it, the "Device Caps      : 0x..." that names only what this node offers.
+var capLineRe = regexp.MustCompile(`^(\s*)(Device Caps|Capabilities)\s*:\s*0x[0-9a-fA-F]+`)
+
+// ParseInfoCaps extracts the effective capability words from
+// `v4l2-ctl -d DEV --info` output: the "Device Caps" block when the driver
+// reports one (the node-specific view: a UVC metadata node's Capabilities
+// repeat the card's Video Capture while its Device Caps say Metadata Capture
+// only — trusting the broader block would misclassify the node), falling back
+// to the "Capabilities" block. It returns "" when neither block is present.
+//
+//	Capabilities     : 0x84a00001
+//		Video Capture
+//		Metadata Capture
+//		Streaming
+//	Device Caps      : 0x04a00000
+//		Metadata Capture
+func ParseInfoCaps(out string) string {
+	var deviceCaps, caps string
+	lines := strings.Split(out, "\n")
+	for i, line := range lines {
+		line = strings.TrimRight(line, "\r")
+		m := capLineRe.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		indent := len(m[1])
+		var words []string
+		for _, next := range lines[i+1:] {
+			next = strings.TrimRight(next, "\r")
+			if strings.TrimSpace(next) == "" {
+				break
+			}
+			nextIndent := len(next) - len(strings.TrimLeft(next, " \t"))
+			if nextIndent <= indent {
+				break
+			}
+			words = append(words, strings.TrimSpace(next))
+		}
+		switch m[2] {
+		case "Device Caps":
+			deviceCaps = strings.Join(words, ", ")
+		case "Capabilities":
+			caps = strings.Join(words, ", ")
+		}
+	}
+	if deviceCaps != "" {
+		return deviceCaps
+	}
+	return caps
+}
+
+// kindFromCaps classifies one node from its effective capability words: the
+// capture vs m2m split docs/spec/10's "never assume /dev/video0" needs when
+// the enumeration carries no labels. Memory-to-Memory is tested first — a
+// venus encoder's block names only the m2m class, and "Video Capture" is the
+// word that picks the UVC node. Unrecognised blocks stay unclassified ("")
+// rather than guessed: an unclassified node is not capture, which is the safe
+// answer (the operator sees not-capture, not a mis-opened node).
+func kindFromCaps(caps string) string {
+	switch {
+	case strings.Contains(caps, "Video Memory-to-Memory"):
+		return kindMemoryM2M
+	case strings.Contains(caps, "Video Capture"):
+		return kindCapture
+	case strings.Contains(caps, "Metadata Capture"):
+		return kindMetadata
+	case strings.Contains(caps, "Video Output"):
+		return kindOutput
+	default:
+		return ""
+	}
+}
 
 // --- parsing ---------------------------------------------------------------
 
@@ -384,6 +498,13 @@ func ParseFormatsExt(out string) []Format {
 					if lo > 0 && lo != hi {
 						sz.FPS = appendFPS(sz.FPS, lo)
 					}
+					// The range itself, not just its bounds: a policy asking 10 fps
+					// inside a 2–30 stepwise interval is asking for an offered rate.
+					sz.Stepwise = true
+					if lo > 0 {
+						sz.Min = lo
+					}
+					sz.Max = hi
 				}
 			}
 		}

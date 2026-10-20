@@ -22,6 +22,14 @@ import type { Page } from "@playwright/test";
 export function trackConsoleErrors(
   page: Page,
   ignoredStatuses: readonly number[] = [401],
+  /**
+   * Whole-text exemptions beyond the ERR_ABORTED one, for faults the spec
+   * itself causes at the transport level — the restore walk, which stops
+   * the appliance on purpose (ADR-0090), passes the connection-refused
+   * pattern its shutdown produces in the page's in-flight reads. Default:
+   * none; a spec that does not name its churn still fails on it.
+   */
+  ignoredTextPatterns: readonly RegExp[] = [],
 ): string[] {
   const errors: string[] = [];
   const ignored = new Set(ignoredStatuses);
@@ -33,6 +41,7 @@ export function trackConsoleErrors(
     if (message.type() !== "error") return;
     if (ignored.has(statusOf(message.text()))) return;
     if (/ERR_ABORTED/i.test(message.text())) return; // the page ended the request
+    if (ignoredTextPatterns.some((pattern) => pattern.test(message.text()))) return;
     errors.push(message.text());
   });
   page.on("pageerror", (error) => errors.push(String(error)));

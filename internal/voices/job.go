@@ -18,11 +18,15 @@ import (
 // JobKind is the durable queue kind one audition-generation run executes as.
 const JobKind = "voice.auditions"
 
-// JobPayload names the draft revision to fill. The draft row exists before
-// the job is enqueued (the API created it synchronously), so a queued job is
-// always addressable and cancellable by profile id.
+// JobPayload names the draft revision to fill and the requested audition
+// count. The draft row exists before the job is enqueued (the API created it
+// synchronously), so a queued job is always addressable and cancellable by
+// profile id. Count is the API's `count` (1..len(SyntheticAuditionLines);
+// the OpenAPI contract: "How many synthetic lines to audition"): a
+// crash-restarted job replays the payload and must reproduce the same fill.
 type JobPayload struct {
 	ProfileID string `json:"profile_id"`
+	Count     int    `json:"count"`
 }
 
 // JobResult is the durable result the /jobs API and the UI poll for.
@@ -45,7 +49,11 @@ func JobHandler(svc *Service) jobs.Handler {
 		}
 		progress(0.1, "generating audition clips")
 		start := time.Now()
-		auditions, err := svc.CreateAuditionsOnDraft(ctx, p.ProfileID)
+		n := p.Count
+		if n < 1 || n > len(SyntheticAuditionLines) {
+			n = len(SyntheticAuditionLines) // a malformed or legacy payload fills the default set
+		}
+		auditions, err := svc.CreateAuditionsOnDraft(ctx, p.ProfileID, n)
 		if err != nil {
 			return nil, fmt.Errorf("voice.auditions: %w", err)
 		}

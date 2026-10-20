@@ -465,7 +465,23 @@ func (s ScreenSig) ClassOf() (ScreenClass, CursorSide) {
 	// inked frame carries bright 0.133) and from every system screen (the
 	// letterbox clause: the prompts and notices measure 0.156-0.212, the
 	// scene 0.000).
-	if s.Letterbox < classBoxDarkLbMax && l3.bright < promptLowerBrightMax && bb.mean < classBoxDarkMaxMean && bb.edges >= classBoxDarkInkMin && bb.bright <= classBoxDarkBrightMax && tx.edges <= classBoxDarkTextMax {
+	// The box band's own clauses are the box's identity (the dark flat band
+	// with glyph ink, the sparse centre text, the quiet lower third); the
+	// letterbox ceiling below is the scene-side guard.
+	boxBandDark := l3.bright < promptLowerBrightMax && bb.mean < classBoxDarkMaxMean && bb.edges >= classBoxDarkInkMin && bb.bright <= classBoxDarkBrightMax && tx.edges <= classBoxDarkTextMax
+	// Amendment 2 (2026-10-20, the G8 telescope): the letterbox ceiling keeps
+	// the system screens out on dark scenes (measured lb 0.156-0.212), but a
+	// BRIGHT outdoor scene (the lookout deck, measured lb 0.255 — the bright
+	// sky top band over the mid-luma deck bottom band) also carries the box,
+	// and the ceiling alone would reject it. Admit the bright-scene box when
+	// the centre panel is NOT a system dialog's bright panel (mid.mean <
+	// classDarkDialogMinMid, the dark-family dialog floor; the deck's scene
+	// centre measures 90, the dialogs 115+). The box-band clauses above stay
+	// the box's identity: a plain bright scene without the dark box band
+	// fails bb.mean < classBoxDarkMaxMean and never enters (measured deck
+	// boxband mean 71), and a bright-centred system screen with the band
+	// inked still fails the mid clause.
+	if boxBandDark && (s.Letterbox < classBoxDarkLbMax || s.Regions["mid"].mean < classDarkDialogMinMid) {
 		return ClassBox, CursorNone
 	}
 

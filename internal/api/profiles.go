@@ -42,16 +42,21 @@ import (
 // ── DTOs ───────────────────────────────────────────────────────────────────
 
 type profileDTO struct {
-	ID                string   `json:"id"`
-	EditionID         string   `json:"edition_id"`
-	RevisionNum       int      `json:"revision_num"`
-	ParentRevision    *int     `json:"parent_revision"`
-	Status            string   `json:"status"`
-	ManifestDigest    string   `json:"manifest_digest"`
-	PublishedAt       string   `json:"published_at,omitempty"`
-	PreferredVoiceID  string   `json:"preferred_voice_id,omitempty"`
-	PublicationAuthor string   `json:"publication_author,omitempty"`
-	NextStates        []string `json:"next_states"`
+	ID                string `json:"id"`
+	EditionID         string `json:"edition_id"`
+	RevisionNum       int    `json:"revision_num"`
+	ParentRevision    *int   `json:"parent_revision"`
+	Status            string `json:"status"`
+	ManifestDigest    string `json:"manifest_digest"`
+	PublishedAt       string `json:"published_at,omitempty"`
+	PreferredVoiceID  string `json:"preferred_voice_id,omitempty"`
+	PublicationAuthor string `json:"publication_author,omitempty"`
+	// NarratorFallback is the per-profile narrator fallback (ADR-0101). Always
+	// present — the flag is on by default and "absent" would mean two things
+	// (never set, off) that the store cannot tell apart — so the field never
+	// omits.
+	NarratorFallback bool     `json:"narrator_fallback"`
+	NextStates       []string `json:"next_states"`
 }
 
 func toProfileDTO(p games.Profile) profileDTO {
@@ -66,6 +71,7 @@ func toProfileDTO(p games.Profile) profileDTO {
 		PublishedAt:       p.PublishedAt,
 		PreferredVoiceID:  p.PreferredVoiceID,
 		PublicationAuthor: p.PublicationAuthor,
+		NarratorFallback:  p.NarratorFallback,
 		NextStates:        make([]string, 0, len(next)),
 	}
 	if out.NextStates == nil {
@@ -491,6 +497,60 @@ func (s *Server) handleProfileStatus(w http.ResponseWriter, r *http.Request) {
 	setETag(w, fresh)
 	s.auditCatalogWrite(r, "catalog.profile.status", map[string]any{
 		"profile_id": p.ID, "to": string(to),
+	})
+	writeJSON(w, http.StatusOK, toProfileDTO(p))
+}
+
+type narratorFallbackRequest struct {
+	Enabled *bool `json:"enabled"`
+}
+
+// handleNarratorFallback serves POST /api/v1/profiles/{id}/narrator-fallback
+// with If-Match (ADR-0101): the per-profile switch that decides whether a line
+// whose speaker has no approved voice is spoken by the narrator voice.
+//
+// The token contract is the profile-write one (428 absent, 412 stale), even
+// though the store write does not bump the row version: the If-Match still
+// answers "was this dial set against the revision you last read", which is
+// the guard a settings endpoint exists to give, and it costs the caller
+// nothing the content writes do not already pay.
+func (s *Server) handleNarratorFallback(w http.ResponseWriter, r *http.Request) {
+	if !s.catalogRequired(w, r) {
+		return
+	}
+	prof, version, ok := s.resolveProfile(w, r, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	id := prof.ID
+	var req narratorFallbackRequest
+	if !s.decodeJSONBody(w, r, &req, maxJSONBodyBytes) {
+		return
+	}
+	// The body carries exactly one boolean, and its presence is asserted:
+	// a missing enabled would decode to the zero value the caller never typed
+	// — silently setting the dial off — so the 400 names the field, the same
+	// missing-field answer the neighbouring profile writes give.
+	if req.Enabled == nil {
+		s.writeCodeProblem(w, r, http.StatusBadRequest, "missing-field", codeInvalidParameter,
+			"Bad Request", "enabled is required: the dial is set to a value, not to an absence")
+		return
+	}
+	if _, ok := s.ifMatchRowVersion(w, r, version); !ok {
+		return
+	}
+	if err := s.store.SetProfileNarratorFallback(r.Context(), id, *req.Enabled); err != nil {
+		s.profileWriteProblem(w, r, err, "set profile narrator fallback")
+		return
+	}
+	p, fresh, err := s.store.GetProfile(r.Context(), id)
+	if err != nil {
+		s.storeProblem(w, r, err, "get profile", "profile")
+		return
+	}
+	setETag(w, fresh)
+	s.auditCatalogWrite(r, "catalog.profile.narrator_fallback", map[string]any{
+		"profile_id": p.ID, "enabled": p.NarratorFallback,
 	})
 	writeJSON(w, http.StatusOK, toProfileDTO(p))
 }

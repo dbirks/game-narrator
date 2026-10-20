@@ -16,7 +16,10 @@ import (
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/assets"
+	"github.com/dbirks/game-narrator/internal/audio"
 	"github.com/dbirks/game-narrator/internal/events"
+	"github.com/dbirks/game-narrator/internal/matcher"
+	"github.com/dbirks/game-narrator/internal/pipeline"
 	"github.com/dbirks/game-narrator/internal/providers/tts"
 	ses "github.com/dbirks/game-narrator/internal/session"
 	"github.com/dbirks/game-narrator/internal/speech"
@@ -29,17 +32,19 @@ import (
 
 // Audio sink kinds for a session's speech pipeline (docs/spec/07 "Audio
 // scheduler": "audio sink abstraction also includes dummy/file/capture for
-// CI and tests").
+// CI and tests"). The values are the audio package's constants (ADR-0074
+// keeps one spelling: the selection logic and the runtime validate the same
+// set).
 const (
 	// SinkDummy plays nothing but paces and records: the test default.
-	SinkDummy = "dummy"
+	SinkDummy = audio.SinkDummy
 	// SinkFile records, in real time, exactly the samples that would have
 	// played, one WAV per utterance (docs/spec/11 evidence).
-	SinkFile = "filesink"
+	SinkFile = audio.SinkFile
 	// SinkPipeWire streams to the PipeWire/PulseAudio device of the
 	// configured stable identity (docs/spec/07: "Use USB ALSA/PipeWire sink
 	// by stable device identity").
-	SinkPipeWire = "pipewire"
+	SinkPipeWire = audio.SinkPipeWire
 )
 
 // narratorCharacter is the conventional character id of the fallback voice
@@ -71,6 +76,30 @@ const speechDelayMaxMS = 2000
 // cancel events (which carry no utterance id) are correlated through.
 const byGenerationCap = 64
 
+// Successor-prewarming defaults (FR-11, docs/spec/07 "Prewarm top weighted
+// successor messages but cap by scenes/byte quota, graph entropy and
+// resource budget").
+const (
+	// DefaultPrewarmTopK is how many of the committed line's weighted
+	// successors are prewarmed per commit.
+	DefaultPrewarmTopK = 3
+	// DefaultPrewarmMaxEntropyBits is the Shannon entropy (bits) of the
+	// successor weight distribution above which the batch is skipped: with
+	// two near-equal successors the entropy is ~1.0 bit, so the default
+	// prewarms a confident next line and a two-way fork, but not a flat
+	// three-way choice (1.58 bits).
+	DefaultPrewarmMaxEntropyBits = 1.5
+	// DefaultPrewarmByteQuota bounds the bytes of prewarmed audio one
+	// session may commit. 4 MiB is ~2 minutes of 16 kHz/16-bit mono speech:
+	// the prewarm stays ahead of the player for the rest of the scene
+	// without filling the box's storage budget.
+	DefaultPrewarmByteQuota = 4 << 20
+	// DefaultPrewarmJobDeadline bounds one prewarm's synthesis: a prewarm
+	// that cannot finish while the player likely still has the committed
+	// line on screen has lost the race, and the commit pays the round trip.
+	DefaultPrewarmJobDeadline = 10 * time.Second
+)
+
 // SpeechOptions wires the per-session speech pipeline into the Manager
 // (docs/spec/07). A nil *SpeechOptions on Options.Speech means the voice
 // workflow is not configured in this process: sessions run silent and the
@@ -94,10 +123,96 @@ type SpeechOptions struct {
 	// PipeWireTarget is the stable device identity the pipewire sink
 	// streams to; "default" when empty.
 	PipeWireTarget string
+	// MasterVolume is the device-level master volume, 0..1 (1.0 = unity,
+	// the default): the appliance's one output level, shared by every
+	// session and set from the Settings page (ADR-0074). It multiplies the
+	// session's own live volume at the sink, and the API updates it live
+	// through Manager.SetMasterVolume.
+	MasterVolume float64
 	// SinkFactory is the test seam: when non-nil it supplies the sink
 	// instead of Sink (tests need the programmable dummy sink's records).
 	// Production wiring (cmd/game-narrator) leaves it nil.
 	SinkFactory func() (speech.AudioSink, error)
+
+	// Prewarm tunes the session's successor prewarming (FR-11, docs/spec/07
+	// "Prewarm top weighted successor messages but cap by scenes/byte
+	// quota, graph entropy and resource budget"); nil takes the documented
+	// defaults. The feature is inert for a session whose dialogue graph has
+	// no usable outgoing edge from a committed line — no graph evidence, no
+	// prewarming (the "cap by scenes" in practice).
+	Prewarm *PrewarmOptions
+}
+
+// PrewarmOptions tunes one session's successor prewarming. Zero fields take
+// the documented defaults (DefaultPrewarm* above).
+type PrewarmOptions struct {
+	// TopK is how many of the committed line's weighted successors are
+	// prewarmed per commit (0 selects DefaultPrewarmTopK).
+	TopK int
+	// MaxEntropyBits is the Shannon entropy (bits) of the successor weight
+	// distribution above which the batch is skipped: flat successors are too
+	// uncertain to spend the TTS budget on (0 selects
+	// DefaultPrewarmMaxEntropyBits).
+	MaxEntropyBits float64
+	// ByteQuota bounds the bytes of prewarmed audio the session may commit
+	// (0 selects DefaultPrewarmByteQuota).
+	ByteQuota int64
+	// JobDeadline bounds one prewarm's synthesis (0 selects
+	// DefaultPrewarmJobDeadline).
+	JobDeadline time.Duration
+}
+
+// prewarmConfig is the session's resolved prewarming policy.
+type prewarmConfig struct {
+	topK           int
+	maxEntropyBits float64
+	byteQuota      int64
+	jobDeadline    time.Duration
+}
+
+func defaultPrewarmConfig(opts *PrewarmOptions) prewarmConfig {
+	c := prewarmConfig{
+		topK:           DefaultPrewarmTopK,
+		maxEntropyBits: DefaultPrewarmMaxEntropyBits,
+		byteQuota:      DefaultPrewarmByteQuota,
+		jobDeadline:    DefaultPrewarmJobDeadline,
+	}
+	if opts == nil {
+		return c
+	}
+	if opts.TopK > 0 {
+		c.topK = opts.TopK
+	}
+	if opts.MaxEntropyBits > 0 {
+		c.maxEntropyBits = opts.MaxEntropyBits
+	}
+	if opts.ByteQuota > 0 {
+		c.byteQuota = opts.ByteQuota
+	}
+	if opts.JobDeadline > 0 {
+		c.jobDeadline = opts.JobDeadline
+	}
+	return c
+}
+
+// PrewarmStats are one session's successor-prewarm decision counters
+// (docs/spec/07, docs/spec/13 "counters a report can act on"): how much
+// prewarming the session requested, how much a later commit actually
+// consumed from the cache, how much finished (or was cut short) without
+// ever being consumed, and the bytes the session spent on it.
+type PrewarmStats struct {
+	// Requested: prewarm jobs the session enqueued.
+	Requested int64 `json:"requested"`
+	// Hit: prewarmed keys a later committed line resolved from the cache.
+	Hit int64 `json:"hit"`
+	// Wasted: prewarmed keys that reached no hit before the session ended
+	// (counted at the end), plus jobs cut short by the fence, a scene
+	// change or the session's own end.
+	Wasted int64 `json:"wasted"`
+	// Bytes: the committed bytes of every prewarmed utterance.
+	Bytes int64 `json:"bytes"`
+	// Skipped: batches the entropy or byte-quota gate refused to prewarm.
+	Skipped int64 `json:"skipped"`
 }
 
 // AudioSettings is the operator's live audio control set
@@ -157,10 +272,23 @@ type UtteranceState struct {
 type AudioInfo struct {
 	Sink string `json:"sink"`
 	// Muted, Volume and SpeechDelayMS are the live control values.
-	Muted         bool           `json:"muted"`
-	Volume        float64        `json:"volume"`
-	SpeechDelayMS int            `json:"speech_delay_ms"`
-	Speech        SpeechCounters `json:"speech"`
+	Muted         bool    `json:"muted"`
+	Volume        float64 `json:"volume"`
+	SpeechDelayMS int     `json:"speech_delay_ms"`
+	// MasterVolume is the appliance's device-level master volume (ADR-0074),
+	// shared by every session of this process.
+	MasterVolume float64        `json:"master_volume"`
+	Speech       SpeechCounters `json:"speech"`
+	// Underruns counts this run's started playbacks that ended in a sink
+	// failure — the docs/spec/13 "playback underruns" counter for this
+	// session.
+	Underruns int64 `json:"underruns"`
+	// Prewarm is this session's successor-prewarm decision counters (FR-11).
+	Prewarm PrewarmStats `json:"prewarm"`
+	// OutputLatency is this run's output-latency table (sink accepted the
+	// playback → the device buffer accepted the first samples); count 0 when
+	// the sink does not report first-sample timestamps.
+	OutputLatency pipeline.LatencySummary `json:"output_latency"`
 	// Current is nil until the first speech event.
 	Current *UtteranceState `json:"current_utterance,omitempty"`
 }
@@ -188,19 +316,60 @@ type speechWiring struct {
 	sink     *gainSink
 	fence    *generationFence
 	sched    *speech.Scheduler
+	// runner is the session's pipeline run: the audio counters the wiring
+	// observes (underruns, output latency) land in the run's own stats, so
+	// the terminal event's payload and the bottleneck summary carry them
+	// (ADR-0074, docs/spec/13).
+	runner *pipeline.Runner
 
 	// speakerByMessage maps a committed message row id to its assigned
 	// speaker character id (the curator's roster from the published
 	// profile); empty means the line is the narrator's.
 	speakerByMessage map[string]string
 
+	// narratorFallback is the profile's narrator fallback (ADR-0101): a line
+	// whose speaker has no approved voice is spoken by the narrator voice
+	// when one is configured and only when this flag is on. The profile row
+	// defaults it on, the runtime's historical behaviour, and a session reads
+	// it once at start. A skip's reason says when the setting — not just the
+	// absence of voices — is what kept the line silent.
+	narratorFallback bool
+
 	// sem bounds the concurrent TTS workers (explicit backpressure).
 	sem chan struct{}
+
+	// Successor prewarming (FR-11, docs/spec/07): after each speakable
+	// commit the committed line's top weighted successors are synthesised,
+	// at background priority, into the SAME versioned cache key a later
+	// commit would use, so the later commit resolves from the cache
+	// (from_cache:true) instead of paying a TTS round trip. The batch is
+	// capped by the byte quota and the graph's entropy, runs at
+	// PriorityBackground (committed speech admits ahead of it), and is
+	// cancelled when the fence moves or the scene changes.
+	idx          *matcher.Index    // nil = no dialogue graph, no prewarming
+	prewarmTexts map[string]string // message id → canonical TTS text
+	prewarmCfg   prewarmConfig
+	// prewarmCancel cancels the in-flight batch; the next batch replaces it
+	// (and cancels it) on a new speakable commit or a scene change. w.mu.
+	prewarmCancel context.CancelFunc
+	// prewarmKeys tracks the prewarmed keys not yet consumed by a commit:
+	// a hit removes its key, and the remainder at session end is the
+	// wasted count. w.mu.
+	prewarmKeys map[string]struct{}
+	// The prewarm counters of docs/spec/13 (FR-11): w.mu.
+	prewarmRequested, prewarmHit, prewarmWasted, prewarmBytes, prewarmSkipped int64
 
 	// endCtx is the workers' deadline scope: it is cancelled when the run
 	// ends so a slow TTS call cannot outlive the session's finalisation.
 	endCtx    context.Context
 	endCancel context.CancelFunc
+
+	// voiceLat is the session's commit→voice sampler (status.go). It owns
+	// its own lock: the commit path books on the pipeline's writer and the
+	// scheduler's publisher completes from the sink's goroutine, so it must
+	// not ride w.mu (the scheduler events above take w.mu, and a path that
+	// took both in the opposite order from another would deadlock).
+	voiceLat *frameVoiceSampler
 
 	mu sync.Mutex
 	// utterances is the occurrence→correlation table (the whole session:
@@ -214,6 +383,17 @@ type speechWiring struct {
 	// synthesised cancels the read at the source (ADR-0057) and the client
 	// discards whatever partial the stream had delivered.
 	genCancel map[int64]*synthSlot
+	// settled marks the generations that reached a terminal — ended, cancelled,
+	// skipped, muted or failed — so the fence never cancels them (and re-emits a
+	// terminal for them) a second time. Terminal results are idempotent
+	// (issue #6; ADR-0092): "settled" and "a terminal was emitted for this
+	// generation" are the same fact, and the fence's cancel list is built only
+	// from generations that have not settled yet.
+	settled map[int64]bool
+	// masterLoad reads the manager's device-level master volume (ADR-0074);
+	// the wrapper sink and the snapshot both read through it, so a
+	// Settings-page change is visible without rebuilding the wiring.
+	masterLoad func() float64
 	// local counts the events this wiring emitted itself: the terminal
 	// events (skips, mutes, worker failures) and the cache hits. The
 	// scheduler counts its own starts/cancels/ends.
@@ -241,7 +421,11 @@ type utteranceInfo struct {
 	generation int64
 	text       string
 	traceID    string
-	voiceID    string // the voice profile spoken ("" until resolved)
+	// character is the speaker the line resolves to: the assigned character,
+	// or the narrator when unattributed. It rides on every speech event so a
+	// skip (no approved voice) names whose voice was missing (issue #6).
+	character string
+	voiceID   string // the voice profile spoken ("" until resolved)
 }
 
 // synthSlot is one in-flight synthesis's cancellable scope, registered
@@ -256,7 +440,7 @@ type synthSlot struct {
 // (with a warning already logged) when the sink cannot be built — the
 // documented degradation: the session runs silent rather than failing the
 // run because audio output is misconfigured.
-func (m *Manager) newSpeechWiring(id string, speakerByMessage map[string]string, runCtx context.Context) *speechWiring {
+func (m *Manager) newSpeechWiring(id string, speakerByMessage map[string]string, narratorFallback bool, runCtx context.Context, runner *pipeline.Runner, idx *matcher.Index, prewarmTexts map[string]string, voiceLat *frameVoiceSampler) *speechWiring {
 	opts := m.opts.Speech
 	w := &speechWiring{
 		id:               id,
@@ -264,13 +448,18 @@ func (m *Manager) newSpeechWiring(id string, speakerByMessage map[string]string,
 		hub:              m.opts.Hub,
 		voices:           opts.Voices,
 		assets:           opts.Assets,
+		runner:           runner,
+		voiceLat:         voiceLat,
 		speakerByMessage: speakerByMessage,
+		narratorFallback: narratorFallback,
 		sem:              make(chan struct{}, speechWorkerSlots),
 		utterances:       map[string]*utteranceInfo{},
 		byGeneration:     map[int64]string{},
 		genCancel:        map[int64]*synthSlot{},
+		settled:          map[int64]bool{},
 		volume:           1.0,
 	}
+	w.initPrewarm(idx, prewarmTexts, opts.Prewarm)
 	endCtx, endCancel := context.WithCancel(runCtx)
 	w.endCtx, w.endCancel = endCtx, endCancel
 
@@ -323,13 +512,29 @@ func (m *Manager) newSpeechWiring(id string, speakerByMessage map[string]string,
 		return nil
 	}
 	w.sinkKind = kind
-	w.sink = newGainSink(sink)
+	// The master volume (the appliance's one output level, ADR-0074) wraps
+	// the device sink; the session's own live volume wraps it again. The two
+	// multiply — both scale the samples exactly once, before the device —
+	// and the master wrapper reads the live value at every playback, so a
+	// Settings-page change applies from the next utterance.
+	w.masterLoad = m.loadMasterVolume
+	w.sink = newGainSink(newMasterSink(sink, m.loadMasterVolume))
 	w.fence = &generationFence{}
 	w.sched = speech.NewScheduler(w.sink, w.fence, &speechEventPublisher{hub: m.opts.Hub, w: w}, speech.Options{
 		FencePeriod: speech.DefaultFencePeriod,
 	})
 	w.sched.Start(endCtx)
 	return w
+}
+
+// initPrewarm resolves the session's prewarming policy and state. It is
+// called by newSpeechWiring and by the white-box test harness, which builds
+// the wiring without going through the manager.
+func (w *speechWiring) initPrewarm(idx *matcher.Index, texts map[string]string, opts *PrewarmOptions) {
+	w.idx = idx
+	w.prewarmTexts = texts
+	w.prewarmCfg = defaultPrewarmConfig(opts)
+	w.prewarmKeys = map[string]struct{}{}
 }
 
 // filesinkFor builds this session's file sink under <root>/<session id>.
@@ -376,23 +581,38 @@ func (w *speechWiring) stop() {
 	}
 	_ = w.sched.Stop()
 	_ = w.sink.Close()
+	// Prewarmed but not consumed by any commit before the session ended is
+	// wasted budget (FR-11 stats): the count lands where the session's audio
+	// work ends. Jobs still in flight count themselves when the end
+	// cancellation reaches them, so nothing is double-booked.
 	w.mu.Lock()
+	w.prewarmWasted += int64(len(w.prewarmKeys))
+	w.prewarmKeys = map[string]struct{}{}
 	w.closed = true
 	w.mu.Unlock()
 }
 
 // fenceAndCancel advances the audio fence to the committing generation and
-// cancels every older one still queued or playing. A newer committed
-// generation (or the textbox advance that produced it) is exactly when
-// stale audio must stop (docs/spec/01 invariant 2; docs/spec/12 "zero
+// cancels every older one still queued or playing. It is called only on a
+// SPEAKABLE commit (onCommit): a commit with no audio of its own must not
+// fence, so a noise commit can never cancel the line the player is listening
+// to (issue #6; ADR-0092). A newer committed speakable generation is exactly
+// when stale audio must stop (docs/spec/01 invariant 2; docs/spec/12 "zero
 // stale audio starts").
+//
+// The cancel list is built only from generations that have not settled yet:
+// a generation that already ended or was cancelled is terminal, and cancelling
+// it again would emit a second terminal for the same generation (issue #6).
 func (w *speechWiring) fenceAndCancel(generation int64) {
 	w.mu.Lock()
 	stale := make([]int64, 0, 4)
 	var staleSynth []*synthSlot
 	for g := range w.byGeneration {
-		if g < generation {
+		if g < generation && !w.settled[g] {
 			stale = append(stale, g)
+			// The fence is asking this one to die: settle it now so a later
+			// commit cannot cancel it (and re-emit its terminal) again.
+			w.settled[g] = true
 			if s, ok := w.genCancel[g]; ok {
 				staleSynth = append(staleSynth, s)
 				delete(w.genCancel, g)
@@ -412,6 +632,69 @@ func (w *speechWiring) fenceAndCancel(generation int64) {
 	}
 }
 
+// settle marks a generation terminal so the fence will never cancel — and
+// re-emit a terminal for — it again. Every path that terminates a generation
+// funnels through here: the fence (fenceAndCancel), the scheduler's own
+// terminal events (noteSchedulerEvent) and the wiring's own terminals
+// (finishEnded). It prunes the generation from the fence's cancel table
+// (byGeneration); the correlation tables are kept, because the terminal's own
+// event still needs the occurrence's ids when it is correlated.
+func (w *speechWiring) settle(g int64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.settled[g] = true
+	delete(w.byGeneration, g)
+}
+
+// pause fences every utterance the session has queued or playing
+// (docs/spec/08 "…/pause": "pause stops new speech and fences pending
+// utterances"). It is the speech half of the pause control: the reducer
+// half (the same control message, the same single writer) stopped the
+// commits and cancelled the in-flight recognitions, and here the audio
+// stops. Every generation is cancelled — the *current* one included, which
+// is the difference from fenceAndCancel: a pause pressed mid-line ends that
+// line, and the scheduler's cancellation table keeps a late Submit of any of
+// these generations from starting after the pause.
+//
+// The fence is deliberately *not* advanced: a pause is not a textbox
+// advance, and the commit path's fence is what the resume's next commit
+// fences against. Advancing it here would look like a box advance the player
+// never made.
+//
+// Settle is still honoured (issue #6): a generation that already ended is not
+// re-cancelled, so a pause cannot emit a second terminal for it. The
+// generations the pause does cancel are settled here, so a later commit
+// cannot cancel them again.
+func (w *speechWiring) pause() {
+	w.mu.Lock()
+	gens := make([]int64, 0, len(w.byGeneration))
+	for g := range w.byGeneration {
+		if w.settled[g] {
+			continue // terminal: a second cancel would be a second result
+		}
+		gens = append(gens, g)
+		w.settled[g] = true
+	}
+	var synths []*synthSlot
+	for g, s := range w.genCancel {
+		if w.settled[g] {
+			continue
+		}
+		synths = append(synths, s)
+		delete(w.genCancel, g)
+	}
+	w.mu.Unlock()
+	for _, s := range synths {
+		// The in-flight synthesis of a paused generation stops at the source:
+		// the stream's partial is discarded, the utterance ends failed, and
+		// the scheduler's table keeps it from starting later.
+		s.cancel()
+	}
+	for _, g := range gens {
+		w.sched.Cancel(g, "paused")
+	}
+}
+
 // onCommit is the commit watcher's handoff: it runs on the pipeline's
 // reducer goroutine and must stay fast — the fence, the cancel and the event
 // are the synchronous half; the TTS work is the worker's.
@@ -427,28 +710,41 @@ func (w *speechWiring) onCommit(e events.Envelope) {
 	if err := json.Unmarshal(e.Data, &d); err != nil || d.Occurrence == "" || d.Generation <= 0 {
 		return
 	}
+	text := strings.TrimSpace(d.Text)
 
-	// The fence advances on EVERY commit — an ineligible box (UI text, an
-	// abstained line) still means the player moved on, and the previous
-	// line's audio stops with it.
-	w.fenceAndCancel(d.Generation)
+	// The commit payload is the eligibility answer: an abstained box
+	// (message_id "unknown"), a non-narratable line, or a decision that
+	// refused speech is not a line the narrator speaks. It gets no speech
+	// events at all — and it must NOT fence: a commit with no audio of its
+	// own must not cancel the line the player is listening to (issue #6;
+	// ADR-0092). Only a speakable commit advances the fence, because only a
+	// speakable commit is a line whose audio supersedes the previous one.
+	if !d.Eligible || d.MessageID == "" || d.MessageID == "unknown" || text == "" {
+		return
+	}
 
 	u := &utteranceInfo{
 		occurrence: d.Occurrence,
 		messageID:  d.MessageID,
 		regionID:   d.RegionID,
 		generation: d.Generation,
-		text:       strings.TrimSpace(d.Text),
+		text:       text,
 		traceID:    e.TraceID,
+		character:  w.speakerFor(d.MessageID),
 	}
+	// A speakable commit is the advance that makes the previous line's audio
+	// stale: the fence moves to this generation and the superseded
+	// generation(s) stop (docs/spec/01 invariant 2).
+	w.fenceAndCancel(d.Generation)
 	w.register(u)
-
-	// The commit payload is the eligibility answer: an abstained box
-	// (message_id "unknown") or a decision that refused speech is not a
-	// line the narrator speaks, and it gets no speech events at all.
-	if !d.Eligible || d.MessageID == "" || d.MessageID == "unknown" || u.text == "" {
-		return
+	// The status bar's commit half (status.go): this wall clock is the
+	// sample's start, and the occurrence id is what speech.started carries
+	// back to complete it. Booked before the worker is admitted so a
+	// backpressure skip still measures what it skipped from.
+	if w.voiceLat != nil {
+		w.voiceLat.noteCommit(u.occurrence, time.Now().UTC())
 	}
+
 	select {
 	case w.sem <- struct{}{}:
 	default:
@@ -467,10 +763,19 @@ func (w *speechWiring) onCommit(e events.Envelope) {
 		"generation":             u.generation,
 		"region_id":              u.regionID,
 		"text":                   u.text,
+		"character_id":           u.character,
 		"trace_id":               u.traceID,
 	})
 	w.wg.Add(1)
 	go w.speak(u)
+	// Successor prewarming (FR-11): the just-committed line's weighted
+	// successors are synthesised in the background into the same cache, so
+	// the later commit of one of them resolves from the cache. The fence
+	// just moved, so this batch's "likely next" supersedes the previous
+	// batch's — the previous batch is cancelled inside the call. (The
+	// backpressure skip above returns earlier: the session's TTS slots are
+	// all busy, and a prewarm would only queue behind them.)
+	w.prewarm(u.messageID)
 }
 
 // register keeps the correlation tables bounded.
@@ -512,7 +817,12 @@ func (w *speechWiring) speak(u *utteranceInfo) {
 	if rv.profile.ID == "" {
 		// Silence with the reason: no approved voice for the speaker and no
 		// configured narrator voice — or the approved reference is missing.
-		// Never a substitute (docs/spec/07).
+		// Never a substitute (docs/spec/07). The reason names the speaker
+		// whose voice is missing, in the event (character_id + reason) and the
+		// log, so an all-skip session is diagnosable (issue #6).
+		w.log("speech: voice skip — no approved voice",
+			"session_id", w.id, "character_id", u.character, "message_id", u.messageID,
+			"generation", u.generation, "reason", why)
 		w.finishEnded(u, "skipped", why)
 		return
 	}
@@ -558,6 +868,37 @@ func (w *speechWiring) speak(u *utteranceInfo) {
 	res, err := w.voices.Speech.GetOrGenerate(synthCtx, key, speech.PriorityCurrent, func(ctx context.Context) (tts.Audio, error) {
 		return rv.generate(ctx, u.text)
 	})
+	if err != nil && ctx.Err() == nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+		// The shared result may be a CANCELLED background prewarm of this very
+		// key: the fence moved while its synthesis ran, and the cache finished
+		// the shared call with the prewarm's context error for every caller
+		// waiting on it. The committed line is still current, so it retries ONCE
+		// as the fresh leader under its own context (bounded: one retry, and
+		// singleflight keeps at most one new generation for the key). Any other
+		// provider failure keeps its own error and does not retry.
+		pctx2, cancel2 := context.WithTimeout(ctx, speechTTSTimeout)
+		defer cancel2()
+		synthCtx2, synthCancel2 := context.WithCancel(pctx2)
+		defer synthCancel2()
+		slot := &synthSlot{cancel: synthCancel2}
+		w.mu.Lock()
+		w.genCancel[u.generation] = slot
+		w.mu.Unlock()
+		defer func() {
+			w.mu.Lock()
+			if w.genCancel[u.generation] == slot {
+				delete(w.genCancel, u.generation)
+			}
+			w.mu.Unlock()
+			slot.cancel()
+		}()
+		r, err2 := w.voices.Speech.GetOrGenerate(synthCtx2, key, speech.PriorityCurrent, func(ctx context.Context) (tts.Audio, error) {
+			return rv.generate(ctx, u.text)
+		})
+		if err2 == nil {
+			res, err = r, nil
+		}
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			// The session ended while this line was still synthesising: it
@@ -582,6 +923,11 @@ func (w *speechWiring) speak(u *utteranceInfo) {
 		w.mu.Lock()
 		w.cacheHits++
 		w.mu.Unlock()
+		// FR-11's prewarm hit: the line this commit resolved from the cache
+		// was one THIS session prewarmed, so the commit paid no TTS round
+		// trip. (A cache hit on a key this session never prewarmed — filled
+		// by an earlier session — is a plain cache hit, not a prewarm hit.)
+		w.prewarmKeyConsumed(key)
 	}
 
 	w.mu.Lock()
@@ -597,6 +943,7 @@ func (w *speechWiring) speak(u *utteranceInfo) {
 		"voice_id":               rv.profile.ID,
 		"voice_revision":         rv.profile.Revision,
 		"from_cache":             res.FromCache,
+		"character_id":           u.character,
 		"trace_id":               u.traceID,
 	})
 
@@ -619,14 +966,265 @@ func (w *speechWiring) speak(u *utteranceInfo) {
 		w.finishEnded(u, "muted", "muted")
 		return
 	}
+	// The per-voice gain (docs/spec/07 "per-voice gain", ADR-0074): applied to
+	// the samples at playback, after the cache key is computed — a gain change
+	// re-renders nothing, it scales what the cache already holds, and a line
+	// served from the cache plays at the voice's current gain.
+	wav := res.WAV
+	if g := rv.profile.Gain; g != 0 && g != 1 {
+		pcm, derr := speech.DecodeWAV(res.WAV)
+		if derr != nil {
+			w.finishEnded(u, "failed", "voice_gain:undecodable_wav")
+			return
+		}
+		if g < 0 {
+			g = 0
+		}
+		if g > audio.GainMax {
+			g = audio.GainMax
+		}
+		wav = speech.EncodeWAV(scalePCM(pcm.Data, g, pcm.BitsPerSample),
+			pcm.SampleRate, pcm.Channels, pcm.BitsPerSample)
+	}
 	w.sched.Submit(speech.UtteranceReady{
 		SessionID:        w.id,
 		Generation:       u.generation,
 		UtteranceID:      u.occurrence,
 		Priority:         speech.PriorityCurrent,
-		WAV:              res.WAV,
+		WAV:              wav,
 		ExpectedDuration: res.Duration,
 	})
+}
+
+// ── successor prewarming (FR-11) -----------------------------------------
+
+// prewarm enqueues TTS for the committed line's top weighted successors
+// (FR-11, docs/spec/07 "Prewarm top weighted successor messages but cap by
+// scenes/byte quota, graph entropy and resource budget"). It runs on the
+// session event loop's commit path, so it does exactly one bounded graph
+// lookup, the entropy and byte-quota gates, and a bounded number of worker
+// spawns — the synthesis itself is the workers' job, at background
+// priority.
+//
+// Cancellation: a new speakable commit moves the fence and redefines
+// "likely next", so the previous batch is cancelled at the source (its
+// partial stream is discarded and no late audio plays); a scene change does
+// the same through the commit watcher. A batch whose successors are too
+// uncertain — the weight distribution's entropy above the cap — is skipped:
+// prewarming a coin flip would spend the TTS budget on lines that probably
+// will not be committed.
+func (w *speechWiring) prewarm(messageID string) {
+	w.mu.Lock()
+	if w.idx == nil || w.closed {
+		w.mu.Unlock()
+		return
+	}
+	// The fence just moved to this commit's generation: the previous batch's
+	// successors are no longer the likely next, so their in-flight synthesis
+	// stops at the source. A scene change does the same through the commit
+	// watcher (cancelPrewarmBatch).
+	w.cancelPrewarmLocked()
+
+	succs := w.idx.Successors(messageID, w.prewarmCfg.topK)
+	if len(succs) == 0 {
+		w.mu.Unlock()
+		return
+	}
+	// The entropy gate (docs/spec/07 "graph entropy"): the Shannon entropy of
+	// the successor weight distribution, in bits. A confident single
+	// successor reads 0; a flat two-way fork ~1; the cap refuses the rest —
+	// prewarming a coin flip would spend the TTS budget on lines that
+	// probably will not be committed.
+	if prewarmEntropy(succs) > w.prewarmCfg.maxEntropyBits {
+		w.prewarmSkipped++
+		w.mu.Unlock()
+		return
+	}
+	// The byte-quota gate (docs/spec/07 "byte quota"): a commit whose batch
+	// would exceed the session's prewarm budget prewarms nothing — the lines
+	// then pay the round trip on commit, which is the documented degradation,
+	// not a failure.
+	if w.prewarmBytes >= w.prewarmCfg.byteQuota {
+		w.prewarmSkipped++
+		w.mu.Unlock()
+		return
+	}
+	batch, cancel := context.WithCancel(w.endCtx)
+	w.prewarmCancel = cancel
+	w.mu.Unlock()
+	for _, s := range succs {
+		go w.prewarmWorker(batch, s.MessageID)
+	}
+}
+
+// cancelPrewarmBatch cancels the in-flight prewarm batch (fence move, scene
+// change). Jobs in flight stop at the source through the batch context; jobs
+// that have already committed their audio stay in the cache — a hit later is
+// still a hit, and only a key that reaches no commit counts as wasted.
+func (w *speechWiring) cancelPrewarmBatch() {
+	w.mu.Lock()
+	w.cancelPrewarmLocked()
+	w.mu.Unlock()
+}
+
+// cancelPrewarmLocked cancels and forgets the in-flight batch. Caller holds
+// w.mu.
+func (w *speechWiring) cancelPrewarmLocked() {
+	if w.prewarmCancel != nil {
+		w.prewarmCancel()
+		w.prewarmCancel = nil
+	}
+}
+
+// prewarmWorker synthesises one successor's line into the session's shared
+// TTS cache, at background priority, under the same key identity a later
+// commit of the line would use (same speaker resolution, same canonical
+// text, same voice and backend identity). No playback, no speech events, no
+// QA: prewarming fills the cache, the commit speaks.
+//
+// Accounting: the key is booked when the worker starts its generation, and
+// prewarmRequested counts that moment — a job the batch cancelled before the
+// generation ran booked no budget and counts nothing. On completion the
+// committed bytes are booked against the quota and the key stays
+// not-yet-consumed until a commit of the line resolves it (a hit) or the
+// session ends (wasted). A cancellation that lands after the generation
+// finished still commits the audio (it is valid, versioned cache content) —
+// a commit that never comes is what makes it wasted.
+func (w *speechWiring) prewarmWorker(batch context.Context, messageID string) {
+	text := w.prewarmTexts[messageID]
+	if text == "" {
+		return // no canonical text in the profile: nothing to synthesise
+	}
+	rv, _ := w.resolveVoice(batch, messageID)
+	if rv.profile.ID == "" {
+		return // no approved voice for the speaker (and no narrator voice):
+		// the same silence-with-reason the commit path takes; the line's own
+		// commit reports it when it comes.
+	}
+	key, err := speech.CacheKeyOf(speech.KeyInput{
+		UtteranceText:            text,
+		OriginalMessageID:        messageID,
+		SpeechRulesRevision:      1,
+		Language:                 rv.profile.Language,
+		VoiceRevisionFingerprint: rv.profile.Fingerprint,
+		TTSModelID:               rv.profile.ModelID,
+		BackendConfigDigest:      w.voices.BackendDigest,
+		Format:                   "wav/pcm16",
+	})
+	if err != nil {
+		return
+	}
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return
+	}
+	if _, booked := w.prewarmKeys[string(key)]; booked {
+		// A still-running or finished prewarm owns this key (an earlier batch
+		// of this session, or a converging graph reached it first): one
+		// synthesis per key, so this worker yields without double-spending.
+		w.mu.Unlock()
+		return
+	}
+	w.prewarmKeys[string(key)] = struct{}{}
+	w.prewarmRequested++
+	w.mu.Unlock()
+
+	if batch.Err() != nil {
+		w.prewarmKeyWasted(key)
+		return
+	}
+	pctx, cancel := context.WithTimeout(batch, w.prewarmCfg.jobDeadline)
+	defer cancel()
+	res, err := w.voices.Speech.GetOrGenerate(pctx, key, speech.PriorityBackground, func(ctx context.Context) (tts.Audio, error) {
+		return rv.generate(ctx, text)
+	})
+	if err != nil {
+		if batch.Err() == nil && !w.closedLoad() {
+			// A provider failure the batch did not cause (or the job deadline
+			// expired while the batch lived): no bytes were committed, so the key
+			// goes back to "unbooked" and a later batch may request it again.
+			w.prewarmKeyDrop(key)
+			w.log("speech: prewarm generation failed",
+				"session_id", w.id, "message_id", messageID, "reason", providerErrorKind(err))
+			return
+		}
+		// Cancelled (fence move, scene change, session end): the job is cut
+		// short and its budget is gone.
+		w.prewarmKeyWasted(key)
+		return
+	}
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return // the session ended after the generation: the bytes are cached,
+		// but this session's stats do not book them
+	}
+	w.prewarmBytes += int64(len(res.WAV))
+	w.mu.Unlock()
+}
+
+// prewarmKeyConsumed records that a committed line resolved one of this
+// session's prewarmed keys from the cache (FR-11's "hit"). Returns true when
+// the key was this session's prewarm.
+func (w *speechWiring) prewarmKeyConsumed(key speech.CacheKey) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, ok := w.prewarmKeys[string(key)]; !ok {
+		return false
+	}
+	delete(w.prewarmKeys, string(key))
+	w.prewarmHit++
+	return true
+}
+
+// prewarmKeyWasted records one prewarmed key that will not be consumed: the
+// job was cut short (fence, scene, session end). The key leaves the
+// not-yet-consumed set so the session end does not count it a second time.
+func (w *speechWiring) prewarmKeyWasted(key speech.CacheKey) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, ok := w.prewarmKeys[string(key)]; ok {
+		delete(w.prewarmKeys, string(key))
+		w.prewarmWasted++
+	}
+}
+
+// prewarmKeyDrop releases a booking whose generation failed for a provider
+// reason: no bytes were spent, so the session may still prewarm the key
+// later (a later batch re-requests it).
+func (w *speechWiring) prewarmKeyDrop(key speech.CacheKey) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	delete(w.prewarmKeys, string(key))
+}
+
+func (w *speechWiring) closedLoad() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.closed
+}
+
+// prewarmEntropy is the Shannon entropy, in bits, of the successor weight
+// distribution (weights normalised to sum 1). A confident single successor
+// reads 0; a flat two-way fork reads 1; the gate refuses anything above the
+// configured cap.
+func prewarmEntropy(succs []matcher.Successor) float64 {
+	total := 0.0
+	for _, s := range succs {
+		total += s.Weight
+	}
+	if total <= 0 {
+		return 0
+	}
+	h := 0.0
+	for _, s := range succs {
+		p := s.Weight / total
+		if p > 0 {
+			h -= p * math.Log2(p)
+		}
+	}
+	return h
 }
 
 // resolveVoice finds the speaker character's approved voice and its TTS
@@ -635,23 +1233,60 @@ func (w *speechWiring) speak(u *utteranceInfo) {
 //
 // The speaker is the line's assigned character; a line with no assignment
 // is the narrator's. A character without an approved voice falls back to
-// the narrator voice when one is configured — never to a different
-// character's voice, never to a builtin. A specific fault on the primary
-// voice (its approved reference is missing) is reported, not papered over
-// by the fallback: substituting a voice for a broken voice would hide the
-// fault.
+// the narrator voice when one is configured and the profile's narrator
+// fallback is on (ADR-0101) — never to a different character's voice, never
+// to a builtin. A specific fault on the primary voice (its approved
+// reference is missing) is reported, not papered over by the fallback:
+// substituting a voice for a broken voice would hide the fault. The skip
+// reasons split what kept the line silent: narrator_fallback_disabled is a
+// line the setting held back while a narrator voice could speak it, and
+// no_approved_voice is a line even the narrator could not speak.
 func (w *speechWiring) resolveVoice(ctx context.Context, messageID string) (resolvedVoice, string) {
-	character := w.speakerByMessage[messageID]
-	if character == "" {
-		character = narratorCharacter
-	}
+	character := w.speakerFor(messageID)
 	if rv, why := w.approvedVoice(ctx, character); rv.profile.ID != "" || why != "" {
 		return rv, why
 	}
-	if character != narratorCharacter {
-		return w.approvedVoice(ctx, narratorCharacter)
+	if character == narratorCharacter {
+		// The narrator's own line has no fallback question to ask: the
+		// speaker and the fallback are the same voice.
+		return resolvedVoice{}, "no_approved_voice"
 	}
-	return resolvedVoice{}, "no_approved_voice"
+	// The speaker has no approved voice. Under the profile's setting:
+	// on — the historical behaviour, the narrator speaks the line (or its
+	// own fault is reported, or nobody can and the roster says so);
+	// off — the setting is what keeps the line silent, and the reason
+	// names the setting, unless the narrator's fault or the narrator's
+	// absence is the honest cause.
+	if w.narratorFallback {
+		if rv, why := w.approvedVoice(ctx, narratorCharacter); rv.profile.ID != "" || why != "" {
+			return rv, why
+		}
+		return resolvedVoice{}, "no_approved_voice"
+	}
+	nr, nwhy := w.approvedVoice(ctx, narratorCharacter)
+	switch {
+	case nr.profile.ID != "":
+		// The narrator could have spoken; the profile opted out. The skip is
+		// the setting's, not the voice roster's.
+		return resolvedVoice{}, "narrator_fallback_disabled"
+	case nwhy != "":
+		// The narrator's approved reference is broken: a specific fault is
+		// reported on its own terms, not folded into the setting's reason.
+		return resolvedVoice{}, nwhy
+	default:
+		// Even the narrator has no approved voice: the roster is what kept
+		// the line silent, on or off the setting.
+		return resolvedVoice{}, "no_approved_voice"
+	}
+}
+
+// speakerFor is the line's speaker character: the curator's assigned
+// character for the message, or the narrator when the line is unattributed.
+func (w *speechWiring) speakerFor(messageID string) string {
+	if c := w.speakerByMessage[messageID]; c != "" {
+		return c
+	}
+	return narratorCharacter
 }
 
 // approvedVoice resolves one character's current approved voice: the
@@ -759,7 +1394,9 @@ func (rv *resolvedVoice) generate(ctx context.Context, text string) (tts.Audio, 
 }
 
 // finishEnded emits one terminal speech.ended the wiring owns (skip, mute,
-// worker failure) and records the session's audio position.
+// worker failure) and records the session's audio position. The generation is
+// settled: it is terminal, so the fence will not cancel — and re-emit a
+// terminal for — it again (issue #6).
 func (w *speechWiring) finishEnded(u *utteranceInfo, result, reason string) {
 	w.mu.Lock()
 	if w.closed {
@@ -769,12 +1406,14 @@ func (w *speechWiring) finishEnded(u *utteranceInfo, result, reason string) {
 	w.localEnded++
 	w.current = &UtteranceState{Phase: result, Result: result, Generation: u.generation, UtteranceID: u.occurrence, At: time.Now().UTC()}
 	w.mu.Unlock()
+	w.settle(u.generation)
 	data := map[string]any{
 		"dialogue_occurrence_id": u.occurrence,
 		"message_id":             u.messageID,
 		"generation":             u.generation,
 		"region_id":              u.regionID,
 		"result":                 result,
+		"character_id":           u.character,
 		"trace_id":               u.traceID,
 	}
 	if reason != "" {
@@ -814,11 +1453,19 @@ func (w *speechWiring) audioInfo() *AudioInfo {
 		Muted:         w.muted,
 		Volume:        w.volume,
 		SpeechDelayMS: w.delayMS,
+		MasterVolume:  w.masterVolume(),
 		Speech: SpeechCounters{
 			Requested: w.requested,
 			Ready:     w.ready,
 			Ended:     w.localEnded,
 			CacheHits: w.cacheHits,
+		},
+		Prewarm: PrewarmStats{
+			Requested: w.prewarmRequested,
+			Hit:       w.prewarmHit,
+			Wasted:    w.prewarmWasted,
+			Bytes:     w.prewarmBytes,
+			Skipped:   w.prewarmSkipped,
 		},
 		Current: w.current,
 	}
@@ -827,6 +1474,15 @@ func (w *speechWiring) audioInfo() *AudioInfo {
 	info.Speech.Started = st.Started
 	info.Speech.Cancelled = st.Cancelled
 	info.Speech.Ended += st.Ended + st.Failed
+	// The audio counters live on the run's own stats (the wiring books them
+	// as the scheduler's events arrive), so the snapshot and the terminal
+	// event read the same numbers (ADR-0074).
+	if w.runner != nil {
+		if rs := w.runner.Stats(); rs.AudioUnderruns > 0 || rs.AudioOutputLatency.Count > 0 {
+			info.Underruns = int64(rs.AudioUnderruns)
+			info.OutputLatency = rs.AudioOutputLatency
+		}
+	}
 	return info
 }
 
@@ -850,6 +1506,24 @@ func (w *speechWiring) isMuted() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.muted
+}
+
+// masterVolume reports the appliance's device-level master volume (ADR-0074)
+// as this session sees it: the manager's live value, clamped to 0..1 (a
+// loader that misbehaves is a wiring bug, and clamping keeps the samples in
+// range rather than amplifying them).
+func (w *speechWiring) masterVolume() float64 {
+	if w.masterLoad == nil {
+		return 1.0
+	}
+	v := w.masterLoad()
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
 }
 
 func (w *speechWiring) delay() time.Duration {
@@ -912,8 +1586,25 @@ type commitWatcher struct {
 
 // Publish implements ses.Publisher.
 func (p *commitWatcher) Publish(ctx context.Context, e events.Envelope) (events.Envelope, error) {
-	if e.Name == events.MessageCommitted {
+	switch e.Name {
+	case events.MessageCommitted:
 		p.w.onCommit(e)
+	case events.SessionSceneChanged:
+		// A scene change invalidates the in-flight prewarm batch (docs/spec/07
+		// "...capped by scenes"): the committed line's successors were computed
+		// for the scene the player just left, so their audio is now at best
+		// useless. The fence itself does not move — a scene change is not a
+		// textbox advance — so only the background prewarming dies here.
+		p.w.cancelPrewarmBatch()
+	case events.SessionPaused:
+		// The pause control's speech half (docs/spec/08 "…/pause"): the event
+		// arrives on the same chain, in the order the single writer applied
+		// it — after the reducer stopped committing and cancelled the
+		// in-flight recognitions — so by the time the audio fences, the text
+		// side is already fenced. The event is the handoff, not a second
+		// control: a pause that reached the writer is the pause the audio
+		// takes.
+		p.w.pause()
 	}
 	return p.inner.Publish(ctx, e)
 }
@@ -1011,6 +1702,13 @@ func (w *speechWiring) noteSchedulerEvent(e events.Envelope) {
 	}
 	occ, _ := data["utterance_id"].(string)
 	gen, _ := data["generation"].(float64)
+	// The status bar's voice half (status.go): the scheduler has accepted
+	// the playback on the sink, so the line's commit→voice sample completes
+	// now. Only a start measures — a cancel or an end is the line's
+	// outcome, not its arrival.
+	if e.Name == events.SpeechStarted && w.voiceLat != nil {
+		w.voiceLat.noteVoiceStart(occ, time.Now().UTC())
+	}
 	w.mu.Lock()
 	w.current = &UtteranceState{
 		Phase:       phase,
@@ -1020,6 +1718,44 @@ func (w *speechWiring) noteSchedulerEvent(e events.Envelope) {
 		At:          time.Now().UTC(),
 	}
 	w.mu.Unlock()
+	// A scheduler terminal (ended or cancelled) is the generation's final
+	// device-level result: settle it so the fence never cancels — and
+	// re-emits a terminal for — it again (issue #6; terminal results are
+	// idempotent). A start is not a terminal: a started generation is still
+	// cancellable by a newer speakable commit (the stale guarantee).
+	if gen > 0 && e.Name != events.SpeechStarted {
+		w.settle(int64(gen))
+	}
+	if e.Name != events.SpeechEnded {
+		return
+	}
+	// The audio counters of docs/spec/13 (ADR-0074): an ended event that
+	// names a started playback (started_at present) and a failed result is a
+	// playback underrun — samples lost mid-utterance. A failed start (no
+	// started_at) is not one. Output latency lands with the same event when
+	// the sink stamped its first sample.
+	if started, ok := data["started_at"].(string); ok && started != "" && result == "failed" {
+		w.noteAudioUnderrun()
+	}
+	if lat, ok := data["output_latency_ms"].(float64); ok && lat > 0 {
+		w.noteAudioOutputLatency(time.Duration(lat * float64(time.Millisecond)))
+	}
+}
+
+// noteAudioUnderrun books one underrun on the run's own stats (nil-safe: a
+// wiring built without a runner — no pipeline in the test — skips the
+// booking rather than panicking).
+func (w *speechWiring) noteAudioUnderrun() {
+	if w.runner != nil {
+		w.runner.ObserveAudioUnderrun()
+	}
+}
+
+// noteAudioOutputLatency books one output-latency sample (nil-safe).
+func (w *speechWiring) noteAudioOutputLatency(d time.Duration) {
+	if w.runner != nil {
+		w.runner.ObserveAudioOutputLatency(d)
+	}
 }
 
 // ── volume sink --------------------------------------------------------------
@@ -1069,6 +1805,49 @@ func (s *gainSink) Play(ctx context.Context, req speech.PlayRequest) (speech.Pla
 
 // Close implements speech.AudioSink.
 func (s *gainSink) Close() error { return s.inner.Close() }
+
+// masterSink is the device-level master-volume wrapper (ADR-0074): it scales
+// the utterance samples by the appliance's one output level, read live from
+// the loader at every playback, so a Settings-page change applies from the
+// next utterance without rebuilding the session's sink. It sits outside the
+// session's gainSink, and the two multiply — the session's live volume is
+// the operator's per-session control, the master volume is the appliance's
+// calibration of the physical output.
+type masterSink struct {
+	inner speech.AudioSink
+	// load returns the current master volume (0..1).
+	load func() float64
+}
+
+func newMasterSink(inner speech.AudioSink, load func() float64) *masterSink {
+	if load == nil {
+		load = func() float64 { return 1.0 }
+	}
+	return &masterSink{inner: inner, load: load}
+}
+
+// Play implements speech.AudioSink.
+func (s *masterSink) Play(ctx context.Context, req speech.PlayRequest) (speech.PlayHandle, error) {
+	g := s.load()
+	if g < 0 {
+		g = 0
+	}
+	if g > 1 {
+		g = 1
+	}
+	if g != 0 && g != 1 {
+		pcm, err := speech.DecodeWAV(req.WAV)
+		if err != nil {
+			return nil, fmt.Errorf("runtime: scaling master volume: %w", err)
+		}
+		req.WAV = speech.EncodeWAV(scalePCM(pcm.Data, g, pcm.BitsPerSample),
+			pcm.SampleRate, pcm.Channels, pcm.BitsPerSample)
+	}
+	return s.inner.Play(ctx, req)
+}
+
+// Close implements speech.AudioSink.
+func (s *masterSink) Close() error { return s.inner.Close() }
 
 // scalePCM multiplies interleaved little-endian PCM by g, clamping to the
 // sample range. Only 16- and 32-bit samples exist (the contract

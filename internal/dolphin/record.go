@@ -158,6 +158,13 @@ type FixtureManifest struct {
 	// crop, where OCR names the narration's bottom-bar crop). Zero = the
 	// legacy narration-only recording.
 	OCRBox *FixtureOCRRecipe `json:"ocr_box,omitempty"`
+	// Content is the content-kind mark (ADR-0089's per-message text_kind,
+	// the G8 unblock recipe in docs/status/blocked.md): the content class
+	// (item/sign) of the box line the run flagged as the content popup
+	// (the item-get box, the sign panel) and the index of the first frame
+	// that observed it. Absent (legacy fixtures) = every line is dialogue
+	// and the box region keeps its textbox role.
+	Content *FixtureContent `json:"content,omitempty"`
 	// States are the savestate checkpoints the recording saved along the way
 	// (ADR-0054 amendment 1): the drive's restart points, referenced by hash
 	// so a re-boot from a checkpoint verifies the file before it trusts it.
@@ -177,10 +184,23 @@ type FixtureCapture struct {
 	Bytes           int64   `json:"bytes"` // measured encoded frame bytes
 }
 
+// FixtureDolphin is the recording's emulator session (paths only; the state
+// files and the image are referenced by hash elsewhere).
 type FixtureDolphin struct {
 	Display string `json:"display"`
 	UserDir string `json:"user_dir"`
 	PID     int    `json:"dolphin_pid"`
+}
+
+// FixtureContent is the content-kind mark (see FixtureManifest.Content):
+// the class of the flagged box line and the first frame that observed the
+// content box (index into the manifest's frame order). The line is resolved
+// at Finalize from the frame's box reveal run (canonicalizeRuns), so the
+// mark never carries game text — the line's id and reading are the
+// recorder's own (AGENTS.md rule 5).
+type FixtureContent struct {
+	Kind  string `json:"kind"`
+	Frame int    `json:"frame"`
 }
 
 type FixtureSize struct {
@@ -306,6 +326,16 @@ type FixtureRecorder struct {
 	// (the first in-game dialogue) must not reuse the legend's id space, or
 	// the scenarios' message names would claim the wrong line.
 	lineIDPrefix string
+
+	// Content-kind mark (ADR-0089, the G8 unblock recipe): contentKind names
+	// the content class ("item", "sign") of the box line the run flagged
+	// (empty = unmarked); contentFrame is the index of the first frame that
+	// observed the content box (-1 = unmarked). Finalize resolves the frame
+	// to the box line its reveal run canonicalises and folds both into the
+	// manifest's Content block and the profile (per-message text_kind + the
+	// box region's on-screen role).
+	contentKind  string
+	contentFrame int
 }
 
 // capturePending is a reserved frame awaiting (or completing into) its
@@ -442,6 +472,64 @@ func (r *FixtureRecorder) AddState(label string, slot int, file, screen string) 
 	defer r.mu.Unlock()
 	r.states = append(r.states, FixtureState{Label: label, Slot: slot, File: filepath.ToSlash(rel), SHA256: sum, Screen: screen})
 	return nil
+}
+
+// SetContentKind names the content class of the box line the run will mark
+// (MarkContentFrame): "item" for the item-get popup, "sign" for a sign
+// panel (the ADR-0089 vocabulary, games.TextKind). Call before
+// MarkContentFrame/Finalize; the mark folds into the manifest's Content
+// block and the profile (the content line's per-message text_kind and the
+// box region's type, so the harness ranks the region's readings with the
+// content class — the G8 unblock recipe, docs/status/blocked.md). Without
+// a kind, MarkContentFrame reports an error (a frame mark with no class is
+// a dangling claim).
+func (r *FixtureRecorder) SetContentKind(kind string) error {
+	if _, err := games.ParseTextKind(kind); err != nil {
+		return fmt.Errorf("dolphin: fixture %s content kind %q: %w", r.id, kind, err)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.contentKind = kind
+	return nil
+}
+
+// MarkContentFrame flags the index of the first frame that observed the
+// content box (item-get, sign panel). The index is into the recorder's
+// published frame sequence (FramesPublished reports the count; the drive's
+// own Screenshot publishes inline, so a frame captured by a Screenshot call
+// is at index FramesPublished()-1 when the call returns — even with the
+// parallel capture running, because a frame publishes only when every lower
+// number has completed). The mark resolves at Finalize to the box line the
+// frame's reveal run canonicalises; a frame outside a text-bearing box run
+// is an error (the mark would name a line the recording never showed).
+// SetContentKind must have named the kind first.
+func (r *FixtureRecorder) MarkContentFrame(idx int) error {
+	r.mu.Lock()
+	kind := r.contentKind
+	r.mu.Unlock()
+	if kind == "" {
+		return fmt.Errorf("dolphin: fixture %s content frame %d: no content kind set (SetContentKind first)", r.id, idx)
+	}
+	if idx < 0 {
+		return fmt.Errorf("dolphin: fixture %s content frame %d: not a frame index", r.id, idx)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.contentFrame = idx
+	return nil
+}
+
+// FramesPublished reports the number of frames published so far (both
+// streams: the drive's synchronous Screenshot frames and the capture
+// loop's). The drive uses it to address the frame a Screenshot just
+// captured (the index is FramesPublished()-1 at the call's return — the
+// drive's path completes the frame before returning, and a frame publishes
+// only when every lower frame number has completed, so the index is the
+// frame's final position in the manifest's order).
+func (r *FixtureRecorder) FramesPublished() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.frames)
 }
 
 // SetCapturePlan arms the parallel adaptive capture (call before
@@ -1015,6 +1103,32 @@ func (r *FixtureRecorder) Finalize(ctx context.Context, drv DriveTrace) (Fixture
 	if err != nil {
 		return FixtureSummary{}, err
 	}
+	// The content-kind mark (ADR-0089): resolve the flagged frame to the box
+	// line its reveal run canonicalises. Absent = the unmarked recording
+	// (every line stays dialogue, the box region keeps its textbox role).
+	var (
+		contentLine  int
+		contentKind  string
+		contentFrame int
+	)
+	r.mu.Lock()
+	if r.contentKind != "" {
+		contentKind, contentFrame = r.contentKind, r.contentFrame
+	}
+	r.mu.Unlock()
+	if contentKind != "" {
+		if contentFrame < 0 || contentFrame >= len(frames) {
+			return FixtureSummary{}, fmt.Errorf("dolphin: fixture %s content mark: frame %d is outside the recording (%d frames)", r.id, contentFrame, len(frames))
+		}
+		contentLine, err = contentLineOfSnapped(contentFrame, boxRuns)
+		if err != nil {
+			return FixtureSummary{}, fmt.Errorf("dolphin: fixture %s content mark: %w", r.id, err)
+		}
+		// writeProfile addresses lines by the profile's absolute order (the
+		// narration lines first, the box lines past them): offset the
+		// box-family index past the narration family.
+		contentLine += len(subRuns.Canonical)
+	}
 	resolution := FixtureSize{W: st.Region.W, H: st.Region.H}
 	recipe := FixtureOCRRecipe{Engine: "tesseract", PSM: ocr.DefaultPSM, Scale: ocrSubtitleScale, Region: StorySubCrop}
 
@@ -1049,7 +1163,7 @@ func (r *FixtureRecorder) Finalize(ctx context.Context, drv DriveTrace) (Fixture
 	prefix := r.lineIDPrefix
 	r.mu.Unlock()
 
-	manifest := r.buildManifest(frames, inputs, st, drv, imageSHA, resolution, recipe, capture, ocrBox, states)
+	manifest := r.buildManifest(frames, inputs, st, drv, imageSHA, resolution, recipe, capture, ocrBox, states, contentKind, contentFrame)
 	summary := FixtureSummary{Dir: r.root, ID: r.id, Frames: len(frames), Capture: capture}
 
 	if err := writeJSON(filepath.Join(r.root, "manifest.json"), manifest); err != nil {
@@ -1058,7 +1172,7 @@ func (r *FixtureRecorder) Finalize(ctx context.Context, drv DriveTrace) (Fixture
 	if err := r.writeTruth(frames, texts, subRuns, boxRuns); err != nil {
 		return summary, err
 	}
-	lines, err := r.writeProfile(subRuns, boxRuns, subFrames, boxFrames, resolution, prefix)
+	lines, err := r.writeProfile(subRuns, boxRuns, subFrames, boxFrames, resolution, prefix, contentLine, contentKind)
 	if err != nil {
 		return summary, err
 	}
@@ -1341,11 +1455,21 @@ func (r *FixtureRecorder) writeTruth(frames []FixtureFrame, texts []string, sub,
 // consecutive lines linked by next edges within each family, and the
 // measured text regions (the box's region first when the fixture carries box
 // lines: the harness reads Regions[0] as the region it replays against).
-func (r *FixtureRecorder) writeProfile(sub, box lineRuns, subFrames, boxFrames int, resolution FixtureSize, prefix string) (int, error) {
+//
+// Per-message text_kind (ADR-0089, the G8 unblock recipe): the content line
+// (contentLine, resolved by Finalize from the content mark) carries
+// contentKind (item/sign) — the profile's content class for the popup the
+// recording captured — and every other line keeps "dialogue". With the mark
+// absent (legacy fixtures) the per-message kind is written for every line
+// as "dialogue": the profile-level default is unchanged, so a reader that
+// only sees the profile-level field (the pre-ADR-0089 loaders) reads exactly
+// what it read before.
+func (r *FixtureRecorder) writeProfile(sub, box lineRuns, subFrames, boxFrames int, resolution FixtureSize, prefix string, contentLine int, contentKind string) (int, error) {
 	type msg struct {
 		ID           string `json:"id"`
 		OriginalText string `json:"original_text"`
 		SceneID      string `json:"scene_id"`
+		TextKind     string `json:"text_kind"`
 	}
 	type edge struct {
 		From       string  `json:"from"`
@@ -1353,16 +1477,22 @@ func (r *FixtureRecorder) writeProfile(sub, box lineRuns, subFrames, boxFrames i
 		Type       string  `json:"type"`
 		Confidence float64 `json:"confidence"`
 	}
+	kindOf := func(i int) string {
+		if contentKind != "" && i == contentLine {
+			return contentKind
+		}
+		return "dialogue"
+	}
 	subCanonical, boxCanonical := sub.Canonical, box.Canonical
 	total := len(subCanonical) + len(boxCanonical)
 	messages := make([]msg, 0, total)
 	idOf := func(i int) string { return fmt.Sprintf("%s-%02d", prefix, i+1) }
 	for i, c := range subCanonical {
-		messages = append(messages, msg{ID: idOf(i), OriginalText: c})
+		messages = append(messages, msg{ID: idOf(i), OriginalText: c, TextKind: kindOf(i)})
 	}
 	offset := len(subCanonical)
 	for i, c := range boxCanonical {
-		messages = append(messages, msg{ID: idOf(offset + i), OriginalText: c})
+		messages = append(messages, msg{ID: idOf(offset + i), OriginalText: c, TextKind: kindOf(offset + i)})
 	}
 	edges := make([]edge, 0, max(total-1, 0))
 	addEdges := func(n, base int) {
@@ -1384,8 +1514,15 @@ func (r *FixtureRecorder) writeProfile(sub, box lineRuns, subFrames, boxFrames i
 	putBoxFirst := boxFrames > 0 && boxFrames >= subFrames
 	regions := []map[string]any{}
 	boxRegion := func() map[string]any {
+		// The box's on-screen role: the content kind when the recording
+		// flagged the content popup (the item-get box — its readings rank
+		// with the content class, ADR-0089), the plain textbox otherwise.
+		boxType := "textbox"
+		if contentKind != "" {
+			boxType = contentKind
+		}
 		return map[string]any{
-			"id": "box", "type": "textbox",
+			"id": "box", "type": boxType,
 			"x": boxTextCrop[0], "y": boxTextCrop[1],
 			"w": boxTextCrop[2] - boxTextCrop[0], "h": boxTextCrop[3] - boxTextCrop[1],
 		}
@@ -1436,10 +1573,57 @@ func (r *FixtureRecorder) writeProfile(sub, box lineRuns, subFrames, boxFrames i
 	return total, writeJSON(filepath.Join(r.root, "profile.json"), p)
 }
 
+// contentLineOf resolves one recorded frame to the box line its reveal run
+// canonicalises (the canonical index within the box family — the caller
+// offsets it past the narration lines). The frame must sit inside a box
+// run that settled on at least one reading: a mark on a box frame whose run
+// read no text would name a line the recording never showed.
+func contentLineOf(frame int, box lineRuns) (int, error) {
+	if frame >= len(box.lineOf) {
+		return 0, fmt.Errorf("frame %d is outside the recorded frame sequence (%d)", frame, len(box.lineOf))
+	}
+	line := box.lineOf[frame]
+	if line < 0 {
+		return 0, fmt.Errorf("frame %d is not inside a text-bearing box run (the content mark must name a frame the content box was on screen, in a run that settled on a reading)", frame)
+	}
+	return line, nil
+}
+
+// contentSnapMaxFrames bounds the forward snap of a mark that landed in the
+// capture gap: the parallel 1 Hz stream's cadence plus the drive's 2 s
+// sample cadence puts the content run's first recorded frame at most a few
+// seconds past the mark's sample — 30 frames of the 10 Hz dialogue rate is
+// that window with margin. A text-bearing box run farther ahead is not the
+// content box the run flagged (it would be a later line), so the snap stops
+// at the bound and the mark fails.
+const contentSnapMaxFrames = 30
+
+// contentLineOfSnapped resolves the mark the way contentLineOf does, or —
+// when the mark's own frame sits in the capture gap just before the
+// content run's first recorded frame (the 1 Hz stream's last non-box grab
+// and the drive's next sample straddle the box's appearance) — snaps forward
+// to the first text-bearing box frame within contentSnapMaxFrames. The snap
+// is bounded: a run farther away would name a line the mark did not flag.
+func contentLineOfSnapped(frame int, box lineRuns) (int, error) {
+	line, err := contentLineOf(frame, box)
+	if err == nil {
+		return line, nil
+	}
+	if frame < 0 || frame >= len(box.lineOf) {
+		return 0, err // out of the sequence: no frame to snap from
+	}
+	for i := frame + 1; i <= frame+contentSnapMaxFrames && i < len(box.lineOf); i++ {
+		if box.lineOf[i] >= 0 {
+			return box.lineOf[i], nil
+		}
+	}
+	return 0, fmt.Errorf("frame %d (or %d frames after it) is not inside a text-bearing box run — the content mark must land on (or just before) the content box's first recorded frame", frame, contentSnapMaxFrames)
+}
+
 // buildManifest assembles the manifest from the recorded frames, the input
 // log, the launch status and the drive's oracle (its transition log is the
 // record of which scene/state the drive believed it was in).
-func (r *FixtureRecorder) buildManifest(frames []FixtureFrame, inputs []FixtureInput, st Status, drv DriveTrace, imageSHA string, resolution FixtureSize, recipe FixtureOCRRecipe, capture *FixtureCapture, ocrBox *FixtureOCRRecipe, states []FixtureState) FixtureManifest {
+func (r *FixtureRecorder) buildManifest(frames []FixtureFrame, inputs []FixtureInput, st Status, drv DriveTrace, imageSHA string, resolution FixtureSize, recipe FixtureOCRRecipe, capture *FixtureCapture, ocrBox *FixtureOCRRecipe, states []FixtureState, contentKind string, contentFrame int) FixtureManifest {
 	oracle := FixtureOracle{OK: drv.OK, Reason: drv.Reason, SuccessText: drv.SuccessText}
 	for _, tr := range drv.Transitions {
 		oracle.Transitions = append(oracle.Transitions, FixtureTransition{
@@ -1474,7 +1658,17 @@ func (r *FixtureRecorder) buildManifest(frames []FixtureFrame, inputs []FixtureI
 		OCR:        recipe,
 		OCRBox:     ocrBox,
 		States:     states,
+		Content:    contentBlock(contentKind, contentFrame),
 	}
+}
+
+// contentBlock renders the manifest's content mark (nil when unmarked — the
+// legacy shape the older fixtures verify as).
+func contentBlock(kind string, frame int) *FixtureContent {
+	if kind == "" || frame < 0 {
+		return nil
+	}
+	return &FixtureContent{Kind: kind, Frame: frame}
 }
 
 // normalize fills the plan's zero fields with the defaults (10 Hz high /

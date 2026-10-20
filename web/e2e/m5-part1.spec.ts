@@ -218,13 +218,19 @@ test("m5 part 1: play, characters, publish review, diagnostics", async ({
   });
   await expect(page.getByTestId("play-source-error")).toHaveCount(0);
   const committedLines = page.locator('[data-testid="recent-lines"] li');
-  // Catch the first committed line the instant it renders and reload straight
-  // away: the clip is short and this machine fast, so the session may still be
-  // running a few frames in — and if it has already settled, the hub's
-  // replay-from-cursor still has to bring the whole state back, which the
-  // assertions after the reload demand either way.
+  // Anchor on the narratable demo line specifically, not on any committed
+  // line: an abstained box (unclear whether the text should be spoken)
+  // commits too — with message_id unknown and speech_eligible false
+  // (docs/spec/05) — and such a commit emits no speech events at all
+  // (ADR-0092). Counting any line and then demanding a speech request
+  // within a fixed window raced the clip's own timing under load (the
+  // 2026-10-20 full-suite run: the first commit was in, the narratable
+  // line still queued, the counter sat at zero for the whole window).
+  // The id in the row is the store's ULID, so the anchor holds regardless
+  // of how the OCR engine rendered the case of the line's text.
+  const narratableLine = committedLines.filter({ hasText: storeIds["demo-page-1"] });
   await expect
-    .poll(() => committedLines.count(), {
+    .poll(() => narratableLine.count(), {
       timeout: 120_000,
       intervals: [50],
     })
@@ -445,7 +451,11 @@ test("m5 part 1: play, characters, publish review, diagnostics", async ({
   }
   expect(readinessOk, "readiness reports ok (the transient probe 503s are retried)").toBe(true);
   await expect(page.getByTestId("readiness-check-database")).toContainText("ok");
-  await expect(page.getByTestId("model-health")).toBeVisible();
+  // ADR-0087 (G10) replaced the old "model health" slice with the model-roles
+  // section: the diagnostics run's per-role probe rows (or the sign-in state
+  // for the anonymous visitor). The signed-in admin sees the probe control.
+  await expect(page.getByTestId("model-roles")).toBeVisible();
+  await expect(page.getByTestId("model-roles-probe-all")).toBeVisible();
   await shot("07-diagnostics");
 
   expect(consoleErrors, `browser console: ${consoleErrors.join("\n")}`).toEqual([]);

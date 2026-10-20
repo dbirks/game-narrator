@@ -1,0 +1,24 @@
+{
+ "id": "sign-opened-001",
+ "origin": "generated_synthetic",
+ "description": "Synthetic sign profile for the generated 18-frame sign-opened clip testdata/synthetic/replay/sign-opened-001 (docs/spec/11 'Fixture origins', gap audit G8; ADR-0037). One invented signboard with one invented sentence; the four distractors are invented dialogue lines that never appear on screen, so ranking the sign's reading against them is a real decision rather than a lookup. No real game text (AGENTS.md rule 5). The sign line's class is the profile's: the pipeline's sign-region hint ranks its reads against this message, and the session's narrated-class veto reads the class off it when narrated_kinds admits signs.",
+ "text_kind": "sign",
+ "regions": [
+  {
+   "id": "sign-panel",
+   "type": "sign",
+   "x": 0.214062,
+   "y": 0.347917,
+   "w": 0.571875,
+   "h": 0.304167
+  }
+ ],
+ "messages": [
+  {"id": "sgn-a", "original_text": "No passage beyond this point.", "text_kind": "sign"},
+  {"id": "sgn-x1", "original_text": "The tide turns at the second bell.", "text_kind": "dialogue"},
+  {"id": "sgn-x2", "original_text": "Someone left a lantern by the gate.", "text_kind": "dialogue"},
+  {"id": "sgn-x3", "original_text": "The ferryman does not cross after dark.", "text_kind": "dialogue"},
+  {"id": "sgn-x4", "original_text": "Ask the keeper about the old bridge.", "text_kind": "dialogue"}
+ ],
+ "edges": []
+}

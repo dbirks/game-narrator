@@ -10,7 +10,11 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/dbirks/game-narrator/internal/audio"
 	"github.com/dbirks/game-narrator/internal/bootstrap"
+	devicex "github.com/dbirks/game-narrator/internal/capture/devices"
+	"github.com/dbirks/game-narrator/internal/capture/mode"
+	"github.com/dbirks/game-narrator/internal/capture/usb"
 	"github.com/dbirks/game-narrator/internal/store"
 )
 
@@ -339,21 +343,24 @@ func (r *runner) checkCaptureDevices(ctx context.Context) Check {
 	// a node that cannot be read is kept in the count — it cannot be proven
 	// non-capture — and the failure is recorded in the detail.
 	var (
-		capable []string
-		ignored []string
-		unread  []string
+		capable      []string
+		capablePaths []string
+		ignored      []string
+		unread       []string
 	)
 	for _, d := range devices {
 		base := filepath.Base(d)
 		res := r.opts.Exec(ctx, "v4l2-ctl", "-d", d, "--info")
 		if res.Err != nil {
 			capable = append(capable, base)
+			capablePaths = append(capablePaths, d)
 			unread = append(unread, base)
 			continue
 		}
 		capture, m2m, driver := parseV4L2Capabilities(res.Stdout)
 		if capture && !m2m {
 			capable = append(capable, base)
+			capablePaths = append(capablePaths, d)
 			continue
 		}
 		why := "memory-to-memory codec node"
@@ -372,6 +379,73 @@ func (r *runner) checkCaptureDevices(ctx context.Context) Check {
 		}
 	}
 
+	// Mode selection (docs/spec/10 preflight: "record fps, progressive/
+	// interlaced status, pixel format", "negotiate … e.g. 720p/1080p"): for
+	// each capable node, the formats the card offers, the USB link the card
+	// is actually running at, and the mode policy's pick (internal/capture/
+	// mode) with the reason — so the doctor answers "which mode will the
+	// runtime ask for, and why" before the first session, not after the
+	// first flapping one. A SuperSpeed-class card negotiating HighSpeed is
+	// the DEGRADED fault the link read exists to name: the card works, its
+	// best modes do not.
+	var (
+		modeNotes  []string
+		degraded   bool
+		modeFaults []string
+	)
+	policy := mode.DefaultPolicy()
+	for _, p := range capablePaths {
+		base := filepath.Base(p)
+		// A node whose capabilities were unreadable is kept in the count but
+		// cannot be asked for formats either: a mode claim for it would be
+		// invented, and the unread note below already says what to do.
+		skippable := false
+		for _, u := range unread {
+			if u == base {
+				skippable = true
+				break
+			}
+		}
+		if skippable {
+			continue
+		}
+		fmtRes := r.opts.Exec(ctx, "v4l2-ctl", "-d", p, "--list-formats-ext")
+		if fmtRes.Err != nil {
+			modeFaults = append(modeFaults, fmt.Sprintf("%s: formats unreadable (%s)", base, oneLine(fmtRes.Err.Error(), 120)))
+			continue
+		}
+		fmts := devicex.ParseFormatsExt(string(fmtRes.Stdout))
+		speed, linkErr := usb.LinkSpeedFor(p, r.opts.SysfsRoot)
+		link := mode.LinkUnknown
+		linkName := "link unreadable (assumed HighSpeed)"
+		if linkErr == nil {
+			link = mode.LinkFromSpeed(speed.SpeedMBps)
+			linkName = speed.Class()
+			if speed.Downgraded() {
+				degraded = true
+				modeNotes = append(modeNotes, fmt.Sprintf("WARNING %s: a USB 3 card is negotiating USB 2 (%s) — its raw modes will not fit; re-seat it in a USB 3 port or drop the USB 2 hub", base, linkName))
+			}
+		}
+		sel, selErr := mode.Select(fmts, mode.Policy{Link: link})
+		if selErr != nil {
+			modeFaults = append(modeFaults, fmt.Sprintf("%s: no mode fits the policy (%s)", base, oneLine(selErr.Error(), 160)))
+			continue
+		}
+		modeNotes = append(modeNotes, fmt.Sprintf("%s: mode %s; %s; link %s; %d offered mode(s) rejected", base, sel.Mode.String(), sel.Reason, linkName, sel.Rejected))
+	}
+
+	status := StatusOK
+	remedy := ""
+	if degraded || len(modeFaults) > 0 {
+		status = StatusDegraded
+	}
+	if degraded {
+		remedy = "re-seat the capture card in a USB 3 (SuperSpeed) port or remove the USB 2 hub between it and the box; docs/spec/10 physical connection"
+	}
+	if len(modeFaults) > 0 {
+		remedy = strings.Join(modeFaults, "; ")
+	}
+
 	summary := fmt.Sprintf("%d capture node(s): %s", len(capable), strings.Join(capable, ", "))
 	detail := "v4l2-ctl --info capabilities: " + strings.Join(capable, ", ") + " capture-capable"
 	if len(ignored) > 0 {
@@ -383,7 +457,10 @@ func (r *runner) checkCaptureDevices(ctx context.Context) Check {
 	if len(denied) > 0 {
 		detail = "not openable by this user: " + strings.Join(denied, ", ") + "; " + detail
 	}
-	return Check{Status: StatusOK, Summary: summary, Detail: oneLine(detail, 400)}
+	if len(modeNotes) > 0 {
+		detail += fmt.Sprintf("; mode selection (policy %dx%d @ %s Hz): %s", policy.GameW, policy.GameH, fmt.Sprintf("%.0f", policy.AnalysisFPS), strings.Join(modeNotes, " | "))
+	}
+	return Check{Status: status, Summary: summary, Detail: oneLine(detail, 700), Remedy: remedy}
 }
 
 // deniedNote appends the not-openable note to a detail line when present.
@@ -503,6 +580,151 @@ func allDigits(s string) bool {
 		}
 	}
 	return true
+}
+
+// checkAudioSelected verifies the appliance's audio output selection (ADR-0074,
+// gap audit G5): the device the effective selection names (env override >
+// persisted store value > the platform default) must exist in the current
+// enumeration, and it must not be the UAC (USB audio-class) interface of the
+// capture dongle. On the UNO Q the HDMI capture dongle can expose a USB audio
+// interface next to its video capture; that interface is not a speaker —
+// speech routed there plays into the wall, so a selection pointing at it is
+// reported, not played. The check never plays anything (docs/spec/13: playback
+// is a consented action): it reads the selection, enumerates, and reports.
+func (r *runner) checkAudioSelected(ctx context.Context) Check {
+	lookupEnv := r.opts.LookupEnv
+	if lookupEnv == nil {
+		lookupEnv = os.LookupEnv
+	}
+
+	// The stored selection (the Settings page's persisted choice). A store the
+	// check cannot read is reported in the detail, not treated as a selection
+	// error — the database check owns the store-failure verdict, and an env or
+	// default selection is still verifiable without the row.
+	var stored *audio.Stored
+	var storeNote string
+	if strings.TrimSpace(r.opts.DataDir) != "" {
+		st, err := store.Open(ctx, store.DBPath(r.opts.DataDir))
+		if err != nil {
+			storeNote = "stored selection not read (the database did not open; the database check owns that verdict)"
+		} else {
+			as, ok, gerr := st.GetAudioSettings(ctx)
+			_ = st.Close()
+			if gerr != nil {
+				storeNote = "stored selection not read (" + gerr.Error() + ")"
+			} else if ok {
+				stored = &audio.Stored{Device: as.Device, SinkKind: as.SinkKind, MasterVolume: as.MasterVolume, Set: true}
+			}
+		}
+	}
+
+	sel, err := audio.Resolve(lookupEnv, stored)
+	if err != nil {
+		return Check{
+			Status:  StatusFail,
+			Summary: "the audio output selection does not resolve",
+			Detail:  err.Error(),
+			Remedy:  "fix the stored selection or the " + audio.EnvSink + " override in Settings → Audio output, then re-run doctor",
+		}
+	}
+
+	enumerate := r.opts.audioDevices()
+	list, lerr := enumerate(ctx, lookupEnv)
+	if lerr != nil {
+		return Check{
+			Status:  StatusDegraded,
+			Summary: "the selected audio device cannot be verified",
+			Detail:  lerr.Error(),
+			Remedy:  "start the audio service or attach a USB DAC, then re-run doctor",
+		}
+	}
+
+	// The device the selection actually routes to: the named id, or the
+	// platform default when the selection is "default" (the OS's own routing).
+	target := sel.Device
+	if target == audio.DefaultDevice {
+		for _, d := range list.Devices {
+			if d.PlatformDefault {
+				target = d.ID
+				break
+			}
+		}
+		if target == audio.DefaultDevice {
+			// No enumeration (or none marked default): the platform routes it.
+			// The selection itself is sound — the OS decides — so OK.
+			return Check{Status: StatusOK, Summary: "audio output: the platform default route", Detail: selectionDetail(sel, storeNote)}
+		}
+	}
+
+	var found *audio.Device
+	for i := range list.Devices {
+		if list.Devices[i].ID == target {
+			found = &list.Devices[i]
+			break
+		}
+	}
+	if found == nil {
+		return Check{
+			Status:  StatusDegraded,
+			Summary: fmt.Sprintf("selected audio output %q is not among the enumerated devices", target),
+			Detail:  "enumerated: " + audioDeviceIDList(list) + selectionDetailNote(storeNote),
+			Remedy:  "pick a current device in Settings → Audio output, or use the platform default",
+		}
+	}
+
+	// The UAC guard (gap audit G5): the identity strings (the sink name and the
+	// description the backend saw) carrying the UAC marker name the USB
+	// audio-class interface — on the UNO Q the capture dongle's own audio
+	// interface, not a speaker.
+	identity := strings.ToLower(found.ID + " " + found.Name)
+	if strings.Contains(identity, "uac") {
+		detail := fmt.Sprintf("%q is classified %s and carries the UAC (USB audio-class) marker: on the UNO Q that is the capture dongle's own audio interface, not a speaker. Speech routed there plays into the wall.", found.ID, found.Kind)
+		if nodes, gerr := r.opts.Glob("/dev/video*"); gerr == nil && len(nodes) > 0 {
+			detail += " A UVC capture node is attached (" + strings.Join(nodeBasenames(nodes), ", ") + "), which is where the UAC interface usually comes from."
+		}
+		return Check{
+			Status:  StatusDegraded,
+			Summary: "the selected audio output appears to be the capture dongle's UAC interface",
+			Detail:  detail + selectionDetailNote(storeNote),
+			Remedy:  "select the USB DAC or speaker in Settings → Audio output instead",
+		}
+	}
+
+	summary := fmt.Sprintf("audio output: %q exists and is a %s device", found.ID, found.Kind)
+	return Check{Status: StatusOK, Summary: summary, Detail: selectionDetail(sel, storeNote)}
+}
+
+// selectionDetail renders the selection's provenance (where each part came
+// from) plus the store-read note when one exists, for the check's Detail.
+func selectionDetail(sel audio.Selection, storeNote string) string {
+	detail := fmt.Sprintf("device %q (%s), sink %q (%s)", sel.Device, sel.DeviceSource, sel.SinkKind, sel.SinkKindSource)
+	return detail + selectionDetailNote(storeNote)
+}
+
+func selectionDetailNote(storeNote string) string {
+	if storeNote == "" {
+		return ""
+	}
+	return "; " + storeNote
+}
+
+func audioDeviceIDList(list audio.List) string {
+	if len(list.Devices) == 0 {
+		return "(none)"
+	}
+	ids := make([]string, 0, len(list.Devices))
+	for _, d := range list.Devices {
+		ids = append(ids, d.ID)
+	}
+	return strings.Join(ids, ", ")
+}
+
+func nodeBasenames(nodes []string) []string {
+	out := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		out = append(out, filepath.Base(n))
+	}
+	return out
 }
 
 // --- developer host --------------------------------------------------------
