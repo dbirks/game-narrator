@@ -4,6 +4,14 @@ Documentation=https://github.com/dbirks/game-narrator
 After=network-online.target sound.target
 Wants=network-online.target
 
+# The appliance's whole product is this service (docs/spec/10 "UNO Q software
+# deployment": "Service managed by systemd"): it must come up at boot after
+# the hub/dongle are attached. First-install enablement is the package
+# postinst's job (enable on install only; a unit an admin disabled stays
+# disabled across upgrades — Debian convention, ADR 0081).
+[Install]
+WantedBy=multi-user.target
+
 [Service]
 Type=exec
 User=game-narrator

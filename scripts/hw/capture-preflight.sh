@@ -8,7 +8,7 @@
 # + doctor).
 #
 # Read-only guarantee: the remote probe only reads /sys, /proc and runs
-# lsusb, v4l2-ctl, udevadm, dmesg, systemctl is-active,
+# lsusb, v4l2-ctl, udevadm, dmesg, systemctl is-active / is-enabled,
 # `game-narrator doctor` (the app's own diagnostics; it probes configured
 # components and does not mutate service state). It writes no file on the
 # device, and never touches sshd, sshd_config, authorized_keys, the
@@ -71,23 +71,6 @@ fi
 [ -n "$bi" ] || bi=NONE
 echo "T:buildinfo:$bi"
 
-ur=unknown
-for d in /sys/class/usb_role/*/; do
-	[ -e "${d}host" ] && ur=host
-	[ -e "${d}device" ] && ur=device
-done
-echo "T:usb_role:$ur"
-
-tp=$(cat /sys/class/typec/port0/power_role 2>/dev/null)
-echo "T:typec_power:${tp:-unknown}"
-
-mk=absent
-if [ -e /sys/kernel/debug/usb/4e00000.usb/mode ]; then
-	mk=$(cat /sys/kernel/debug/usb/4e00000.usb/mode 2>/dev/null)
-	[ -n "$mk" ] || mk=unreadable
-fi
-echo "T:modeknob:$mk"
-
 lc=MISSING
 le=0
 ls=-
@@ -101,6 +84,34 @@ fi
 echo "T:lsusb_count:$lc"
 echo "T:lsusb_ext:$le"
 echo "T:lsusb:$ls"
+
+# USB role: prefer the usb_role class attributes when they exist as regular
+# files. On UNO Q images the /sys/class/usb_role/<dev>/ directory usually
+# carries only the standard sysfs `device` symlink (no role/host/device
+# attribute files), so test -f, not -e: -e matches that symlink and
+# misreports role=device on a board that is actually host (verified on the
+# V316B appliance: 4e00000.usb-role-switch has no role file). With no usable
+# knob, infer host role from external devices enumerated on the board's own
+# root hub: a device there means the port is acting as host (manual 18).
+ur=unknown
+for d in /sys/class/usb_role/*/; do
+	[ -f "${d}host" ] && ur=host
+	[ -f "${d}device" ] && ur=device
+done
+if [ "$ur" = unknown ] && [ "$le" -gt 0 ]; then
+	ur="host (inferred: $le external USB device(s) on the board's root hub; no /sys/class/usb_role knob on this image)"
+fi
+echo "T:usb_role:$ur"
+
+tp=$(cat /sys/class/typec/port0/power_role 2>/dev/null)
+echo "T:typec_power:${tp:-unknown}"
+
+mk=absent
+if [ -e /sys/kernel/debug/usb/4e00000.usb/mode ]; then
+	mk=$(cat /sys/kernel/debug/usb/4e00000.usb/mode 2>/dev/null)
+	[ -n "$mk" ] || mk=unreadable
+fi
+echo "T:modeknob:$mk"
 
 v4=MISSING
 dl=-
@@ -128,6 +139,7 @@ fi
 
 cname=-
 cf=-
+cs=-
 if [ "$cap" != "-" ]; then
 	cname=$(v4l2-ctl --list-devices 2>/dev/null | awk -v d="$cap" '
 		/:[[:space:]]*$/ { name = $0 }
@@ -136,21 +148,67 @@ if [ "$cap" != "-" ]; then
 			gsub(/[[:space:]]+/, "", t)
 			if (t == d) { print name; exit }
 		}')
-	cf=$(v4l2-ctl -d "$cap" --list-formats-ext 2>/dev/null \
-		| grep -E "Pixel Format|Size:|Interval:" | head -n 60 | tr '\n' '|')
+	# Per-format summary of --list-formats-ext. Handles both v4l-utils header
+	# styles: "Pixel Format:    YUYV" (older) and "[0]: 'YUYV' (YUYV 4:2:2)"
+	# (v4l-utils 1.30+). Line 1 = format names, line 2 = FMT=WxH per listed
+	# discrete size. (The old grep + 60-line window dropped the 1.30+ format
+	# headers entirely and truncated before the 1080p sizes, reporting a
+	# working card as "no usable capture formats".)
+	sum=$(v4l2-ctl -d "$cap" --list-formats-ext 2>/dev/null | awk '
+		{ sub(/^[ \t]+/, "") }
+		$1 == "Pixel Format:" {
+			if ($3 != "" && $3 != cur) { cur = $3; names = names (names == "" ? "" : ";") $3 }
+			next
+		}
+		/^\[[0-9]+\]:[ \t]/ {
+			s = $2
+			gsub(/'\''/, "", s)
+			sub(/\(.*$/, "", s)
+			if (s != "" && s != cur) { cur = s; names = names (names == "" ? "" : ";") s }
+			next
+		}
+		$1 == "Size:" && cur != "" {
+			sizes = sizes (sizes == "" ? "" : ",") cur "=" $3
+			next
+		}
+		END { print names; print sizes }
+	' 2>/dev/null)
+	cf=$(printf '%s\n' "$sum" | sed -n '1p')
+	cs=$(printf '%s\n' "$sum" | sed -n '2p')
 fi
 echo "T:cap:$cap"
 echo "T:capname:$cname"
 echo "T:capfmts:$cf"
+echo "T:capfmtsizes:$cs"
 
-# USB link speed of the capture node's device (sysfs, via udevadm path)
+# USB link speed of the capture node's device. Primary: walk up from the
+# video4linux sysfs parent (readlink -f /sys/class/video4linux/videoN/device)
+# to the enclosing USB device directory that exposes speed/. Fallback:
+# udevadm's path (its output is relative — e.g. /devices/... without the
+# /sys prefix on UNO Q images — so prefix it before the same walk).
 sp=UNKNOWN
-if [ "$cap" != "-" ] && command -v udevadm >/dev/null 2>&1; then
-	p=$(udevadm info -q path -n "$cap" 2>/dev/null)
-	if [ -n "$p" ]; then
-		# <...>/usbX/X-Y/X-Y:I.J/video4linuxN  ->  <...>/usbX/X-Y
-		ddir=$(printf '%s' "$p" | sed -E 's|/[^/]+:[0-9]+\.[0-9]+(/.*)?$||')
-		[ -r "$ddir/speed" ] && sp=$(cat "$ddir/speed" 2>/dev/null)
+if [ "$cap" != "-" ]; then
+	vn=${cap#/dev/video}
+	d=$(readlink -f "/sys/class/video4linux/video$vn/device" 2>/dev/null)
+	while [ -n "$d" ] && [ "$d" != "/sys" ] && [ "$d" != "/" ]; do
+		if [ -r "$d/speed" ]; then
+			sp=$(cat "$d/speed" 2>/dev/null)
+			break
+		fi
+		d=$(dirname "$d")
+	done
+	if [ "$sp" = UNKNOWN ] && command -v udevadm >/dev/null 2>&1; then
+		p=$(udevadm info -q path -n "$cap" 2>/dev/null)
+		case $p in
+		/sys/*) :;;
+		/*) p="/sys$p";;
+		*) p="";;
+		esac
+		if [ -n "$p" ]; then
+			# <...>/usbX/X-Y/X-Y:I.J/video4linuxN  ->  <...>/usbX/X-Y
+			ddir=$(printf '%s' "$p" | sed -E 's|/[^/]+:[0-9]+\.[0-9]+(/.*)?$||')
+			[ -r "$ddir/speed" ] && sp=$(cat "$ddir/speed" 2>/dev/null)
+		fi
 	fi
 fi
 echo "T:speed:$sp"
@@ -165,8 +223,12 @@ dm=$(dmesg 2>/dev/null | grep -iE \
 [ -n "$dm" ] || dm=none
 echo "T:dmesg:$dm"
 
-sv=$(systemctl is-active game-narrator 2>/dev/null) || sv=unknown
+sv=$(systemctl is-active game-narrator 2>/dev/null)
+[ -n "$sv" ] || sv=unknown
+sven=$(systemctl is-enabled game-narrator 2>/dev/null)
+[ -n "$sven" ] || sven=unknown
 echo "T:service:$sv"
+echo "T:service_enabled:$sven"
 
 dr=-
 dt=-
@@ -217,21 +279,28 @@ bi=$(field buildinfo)
 knob=$(field modeknob)
 kr=$(field kernel)
 if [ "$bi" = NONE ] || [ -z "$bi" ]; then
-	if [ "$ur" = host ]; then
+	case $ur in
+	host*)
 		add_row usb-role WARN "no /etc/buildinfo (pre-2025-11 image, normally stuck in device mode) but role=host — record kernel $kr in the run notes"
-	else
+		;;
+	*)
 		add_row usb-role FAIL "older image (no /etc/buildinfo) in $ur mode — affected by the dwc3-qcom device-mode quirk: update the image with arduino-flasher-cli or bridge JCTL VOL_DOWN-GND at boot (manual 18 §\"Is my board affected?\")"
-	fi
+		;;
+	esac
 else
 	case $ur in
-	host)
-		add_row usb-role PASS "role=host, image $bi (newer than the quirk; debugfs knob: $knob)"
+	host*)
+		detail="role=host, image $bi (newer than the quirk; debugfs knob: $knob)"
+		case $ur in
+		*"(inferred"*) detail="$detail — $ur";;
+		esac
+		add_row usb-role PASS "$detail"
 		;;
-	device)
+	device*)
 		add_row usb-role WARN "role=device (expected while cabled to the dev PC); image $bi (kernel $kr) is newer than the quirk and should take host role when the powered hub is attached; knob $knob — after wiring, re-run and expect role=host; if it stays device: boot the board before attaching the hub, then apply the manual 18 remediation steps (user approval required)"
 		;;
 	*)
-		add_row usb-role WARN "USB role unreadable ($ur) on image $bi — check /sys/class/usb_role/ by hand (manual 18 §\"Is my board affected?\")"
+		add_row usb-role WARN "USB role unreadable ($ur) on image $bi — no /sys/class/usb_role knob with role attributes and no external device on the board's root hub; check by hand (manual 18 §\"Is my board affected?\")"
 		;;
 	esac
 fi
@@ -250,12 +319,23 @@ if [ "$cap" = "-" ]; then
 	add_row usb-speed SKIP "n/a (no capture node)"
 else
 	add_row capture-node PASS "$cap — $(field capname)"
-	case $(field capfmts) in
-	*YUYV*1920x1080*) add_row formats PASS "YUYV incl. 1920x1080: $(field capfmts | head -c 160)";;
-	*YUYV*) add_row formats WARN "YUYV present but no 1920x1080 listed (v4l2-ctl may under-enumerate MS2130 modes — verify with yavta --enum-formats /dev/videoN; expect 1080p50/30/20/10 or 720p60)";;
-	*MJPG*) add_row formats WARN "MJPEG only (no YUYV) — this is a USB2-class MS2109 card or a degraded link; use 1080p30 MJPG";;
-	*) add_row formats FAIL "no usable capture formats: $(field capfmts | head -c 160)";;
-	esac
+	fmts=$(field capfmts)
+	fsz=$(field capfmtsizes)
+	has_yuyv=no
+	has_mjpg=no
+	yuyv1080=no
+	case $fmts in *YUYV*) has_yuyv=yes;; esac
+	case $fmts in *MJPG*) has_mjpg=yes;; esac
+	case $fsz in *"YUYV=1920x1080"*) yuyv1080=yes;; esac
+	if [ "$has_yuyv" = yes ] && [ "$yuyv1080" = yes ]; then
+		add_row formats PASS "YUYV incl. 1920x1080: $fmts — $(field capfmtsizes | head -c 140)"
+	elif [ "$has_yuyv" = yes ]; then
+		add_row formats WARN "YUYV present but no 1920x1080 listed (v4l2-ctl may under-enumerate MS2130 modes — verify with yavta --enum-formats $cap; expect 1080p50/30/20/10 or 720p60): $fmts"
+	elif [ "$has_mjpg" = yes ]; then
+		add_row formats WARN "MJPEG only (no YUYV) — this is a USB2-class MS2109 card or a degraded link; use 1080p30 MJPG"
+	else
+		add_row formats FAIL "no usable capture formats: $fmts — re-check v4l2-ctl -d $cap --list-formats-ext by hand"
+	fi
 
 	sp=$(field speed)
 	case $sp in
@@ -294,9 +374,25 @@ esac
 
 # service + doctor
 case $(field service) in
-active) add_row service PASS "game-narrator service is active";;
-inactive|failed|unknown) add_row service FAIL "game-narrator service not active ($(field service)): systemctl status game-narrator";;
-*) add_row service WARN "service state: $(field service)";;
+active)
+	add_row service PASS "game-narrator service is active"
+	;;
+*)
+	case $(field service_enabled) in
+	static)
+		add_row service WARN "game-narrator service not active ($(field service)) and the unit is static (no enablement): sudo systemctl enable --now game-narrator"
+		;;
+	enabled)
+		add_row service WARN "game-narrator service not active ($(field service)) although enabled — startup failed or the unit never finished: sudo systemctl status game-narrator"
+		;;
+	disabled)
+		add_row service WARN "game-narrator service not active ($(field service)) and disabled (admin state preserved): sudo systemctl start --now game-narrator"
+		;;
+	*)
+		add_row service WARN "game-narrator service not active ($(field service), enablement: $(field service_enabled)): sudo systemctl status game-narrator"
+		;;
+	esac
+	;;
 esac
 
 dr=$(field doctor_rc)

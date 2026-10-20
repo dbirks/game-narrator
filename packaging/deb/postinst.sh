@@ -42,6 +42,17 @@ if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
     systemctl daemon-reload || true
 fi
 
-echo "game-narrator: install complete. Enable with: systemctl enable --now game-narrator"
+# Boot start: the appliance's product is this service (docs/spec/10
+# "UNO Q software deployment": "Service managed by systemd" — it must come
+# up at boot once the capture path is wired). Enable on FIRST install only:
+# on upgrade/replace ($1 != install) a unit an admin disabled must stay
+# disabled (Debian convention; ADR 0081). Not started here — the admin
+# creates /etc/game-narrator/env first (manual 19, Step 5) and starts it.
+if [ "$1" = "install" ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    systemctl enable game-narrator.service >/dev/null 2>&1 || true
+fi
+
+echo "game-narrator: install complete. The service is enabled at boot (first install only; an admin-disabled unit stays disabled across upgrades)."
+echo "game-narrator: start it now with: sudo systemctl start game-narrator (or: sudo systemctl enable --now game-narrator if it is still disabled)"
 echo "game-narrator: check devices and tools with: sudo game-narrator doctor --dev"
 exit 0
