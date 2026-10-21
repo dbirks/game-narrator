@@ -37,8 +37,10 @@ import { trackConsoleErrors } from "./support/console";
  * (b) prefers-reduced-motion: the glide settles instantly (the design's
  *     accessibility rule) while the board still shows the run's state.
  * (c) the three design widths (1440 / 1024 / 390): screenshots into
- *     test-results and axe (WCAG 2.1 A/AA) — zero serious or critical, and
- *     no horizontal page scroll at 390.
+ *     test-results and axe (WCAG 2.1 A/AA) — zero serious or critical,
+ *     no horizontal page scroll at 390, and the two-by-two phone wrap's
+ *     header boxes never overlap (each mono count stays inside its own
+ *     column).
  *
  * The three tests share one run: (a) starts it and records its id, (b) and
  * (c) deep-link to it (?run=<id>) — the deep link is the snapshot-rebuild
@@ -646,6 +648,46 @@ test("setup board: screenshots and axe at the three design widths", async ({ pag
         widths.scrollWidth,
         `the setup board @390px scrolls horizontally: documentElement.scrollWidth ${widths.scrollWidth} > innerWidth ${widths.innerWidth}`,
       ).toBeLessThanOrEqual(widths.innerWidth);
+
+      // The two-by-two phone wrap keeps a real column gap between the
+      // headers: the P3 review caught "VOICING 0" running into "DONE"
+      // (the bottom row's absolute half-slices met at 50% with no gap), so
+      // the four head boxes never overlap and each mono count stays inside
+      // its own column's box.
+      const headBoxes = new Map<string, { x: number; y: number; width: number; height: number }>();
+      for (const stage of ["finding", "brief", "voicing", "done"]) {
+        const box = await page.getByTestId(`setup-column-${stage}`).boundingBox();
+        expect(box, `the ${stage} column head is laid out at 390`).not.toBeNull();
+        headBoxes.set(stage, box!);
+      }
+      const stages = [...headBoxes.keys()];
+      for (let i = 0; i < stages.length; i++) {
+        for (let j = i + 1; j < stages.length; j++) {
+          const a = headBoxes.get(stages[i])!;
+          const b = headBoxes.get(stages[j])!;
+          const overlap =
+            a.x < b.x + b.width &&
+            b.x < a.x + a.width &&
+            a.y < b.y + b.height &&
+            b.y < a.y + a.height;
+          expect(
+            overlap,
+            `the ${stages[i]} and ${stages[j]} column heads overlap at 390: ${JSON.stringify({
+              [stages[i]]: a,
+              [stages[j]]: b,
+            })}`,
+          ).toBe(false);
+        }
+      }
+      for (const stage of stages) {
+        const column = headBoxes.get(stage)!;
+        const count = await page.getByTestId(`setup-column-count-${stage}`).boundingBox();
+        expect(count, `the ${stage} count is laid out at 390`).not.toBeNull();
+        expect(
+          count!.x >= column.x && count!.x + count!.width <= column.x + column.width,
+          `the ${stage} count overruns its column at 390: ${JSON.stringify({ column, count: count! })}`,
+        ).toBe(true);
+      }
     }
     const shot = `setup-board-${width}.png`;
     const shotPath = `${testInfo.outputDir}/${shot}`;

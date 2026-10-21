@@ -1855,10 +1855,18 @@ textarea:focus-visible,
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.1em;
+  /* The head may ellipsize, never overflow: a wider-than-column title must
+     not push the mono count out of its own column's box (390 and 1024). */
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .setup-board-col-count {
   margin-left: auto;
+  flex: none;
+  white-space: nowrap;
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--muted);
@@ -2173,13 +2181,17 @@ textarea:focus-visible,
     top: calc(var(--setup-rows) * (var(--setup-card-h) + var(--setup-card-gap)));
   }
 
+  /* The bottom row keeps the grid's 8px column gap: each head's box is the
+     card column's own width (50% − gap/2, the .setup-card width at these
+     lefts), so the mono count sits inside its own column — "VOICING 0"
+     never runs into "DONE" with no gap. */
   .setup-board-cols .setup-board-col:nth-child(3) {
     left: 0;
-    right: 50%;
+    right: calc(50% + var(--setup-card-gap) / 2);
   }
 
   .setup-board-cols .setup-board-col:nth-child(4) {
-    left: 50%;
+    left: calc(50% + var(--setup-card-gap) / 2);
     right: 0;
   }
 
