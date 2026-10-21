@@ -1129,6 +1129,16 @@ textarea:focus-visible,
   color: var(--fg);
 }
 
+/* Lilac Night (issue #30 family): the focus row's fill is the light --peach
+   and its text is the light --paper — 1.7:1. Title, subtitle and id take
+   ink (8.4:1), the same rule every other --peach fill applies there; the
+   light themes are untouched (their --fg is already ink). */
+[data-theme="lilac-night"] .palette-row:focus-visible,
+[data-theme="lilac-night"] .palette-row:focus-visible .palette-row-subtitle,
+[data-theme="lilac-night"] .palette-row:focus-visible .palette-row-id {
+  color: var(--ink);
+}
+
 /* Phone width: the line id column (full ULIDs) squeezes the titles, so it
    drops out below ~640px and the titles take the whole row (the 2026-10-20
    review's ⌘K finding). The id is still on the row's data-id attribute
@@ -1962,6 +1972,15 @@ textarea:focus-visible,
 
 .setup-complete p {
   margin: 0;
+}
+
+/* Lilac Night (issue #30 family): the handoff is a --peach fill and the
+   dark theme's page text is the light --paper — 1.7:1 on the fill. The
+   container takes ink (8.4:1); the <strong> inherits it, and the coral pill
+   keeps its own ink-on-coral colour. Light themes are untouched: their page
+   text is already ink. */
+[data-theme="lilac-night"] .setup-complete {
+  color: var(--ink);
 }
 
 /* The right agent panel (the docked ⌘J form): context chip, NEEDS YOU,
