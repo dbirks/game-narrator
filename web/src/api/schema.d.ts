@@ -68,7 +68,7 @@ export interface paths {
     };
     /**
      * One snapshot of what the box is doing, with the canonical status string.
-     * @description The global status bar's read (docs/design/plum-peach Global chrome): the active session (game, mode, capture fps actual vs target, dropped frames, the frame-to-voice p50 the session samples per line, lines spoken), the active onboarding runs (state, stage, characters voiced vs total, elapsed), the health rollup from cached probes only (a component nobody has probed is unknown, never a fresh probe), and the device (version, uptime, bound listen address). status is the server-rendered short string every client shows (RenderStatus): a fresh assembly per request, so a polling viewer gets the same number the push side publishes.
+     * @description The global status bar's read (docs/design/plum-peach Global chrome): the active session (game, mode, capture fps actual vs target, dropped frames, the frame-to-voice p50 the session samples per line, lines spoken), the active onboarding runs (state, stage, characters voiced vs total, elapsed; the superseded ones excluded — a run whose profile revision the edition retired out from under it is not current work, ADR-0104 amendment), the health rollup from cached probes only (a component nobody has probed is unknown, never a fresh probe), and the device (version, uptime, bound listen address). status is the server-rendered short string every client shows (RenderStatus): a fresh assembly per request, so a polling viewer gets the same number the push side publishes.
      */
     get: operations["getStatus"];
     put?: never;
@@ -4889,13 +4889,13 @@ export interface components {
       /** Format: date-time */
       created_at: string;
     };
-    /** @description One active onboarding run's bar view: the state, the step the agent is on (stage), the characters voiced against the total, and the run's age. */
+    /** @description One active onboarding run's bar view: the state, the step the agent is on (stage), the characters voiced against the total, and the run's age. Runs are newest first and exclude the superseded: a run whose profile revision the edition retired out from under it (archived by a later publication, soft-deleted, or published while the run was still open) is not current work, so it and its counts never reach the bar (ADR-0104 amendment). The counts of a kept run come from the revision it names — the current published profile's counts once that run works it. */
     StatusSetupRun: {
       run_id: string;
       /** @description The run's game title: the profile's game once the run has a profile, the plan's title before that; absent when neither names one. */
       game?: string;
       /**
-       * @description The live run states (docs/spec/03); terminal runs are not status data.
+       * @description The live run states (docs/spec/03); terminal runs are not status data, and neither is a run whose profile revision the edition retired out from under it.
        * @enum {string}
        */
       state: "queued" | "running" | "blocked" | "review";
@@ -4905,6 +4905,7 @@ export interface components {
       voiced: number;
       /** @description The profile's character count. */
       characters: number;
+      /** @description The run's age in whole milliseconds. The bar's string renders it only for runs that are working: a blocked run is waiting on a human, not running, so its age is not a live clock (the structured field always carries the number; the bar drops it). */
       elapsed_ms: number;
     };
     /** @description The six-tile rollup (capture, ocr, decision, tts, agent, storage) in canonical order, with the counts the bar renders as '5 ok · 1 slow'. */

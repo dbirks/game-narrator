@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 )
 
 // activeAgentStates are the run states that mean "the setup run is happening
@@ -160,6 +161,95 @@ func (s *Store) ProfileCharacterVoiceCounts(ctx context.Context, profileID strin
 		return 0, 0, err
 	}
 	return characters, voiced, nil
+}
+
+// AgentRunProfileFacts is the staleness answer for one setup run's profile id
+// (the status bar's superseded-run filter, ADR-0104 amendment): whether the
+// revision the run points at has been retired out from under it, and when the
+// edition's publications happened, so the caller can compare them against the
+// run's own created_at. A run whose profile row was hard-deleted never reaches
+// this read: agent_runs.profile_id's ON DELETE SET NULL already answered the
+// question as "no profile".
+type AgentRunProfileFacts struct {
+	// Archived is the profile's own supersession mark: a revision that a
+	// later publication (or an explicit archive) retired.
+	Archived bool
+	// SoftDeleted is the profile's ADR-0107 retention mark: the row is
+	// still on disk, hidden from the surfaces the operator acts on.
+	SoftDeleted bool
+	// IsCurrentPublished is true when the edition's publication pointer
+	// names this revision: the run works on what the edition serves.
+	IsCurrentPublished bool
+	// PublishedAt is this revision's own publication stamp (the zero time
+	// while it is not published).
+	PublishedAt time.Time
+	// CurrentPublishedAt is the edition's current publication stamp (the
+	// zero time when the edition has nothing published, or the pointer
+	// names a row that is gone).
+	CurrentPublishedAt time.Time
+}
+
+// AgentRunProfileFacts reads the publication facts one setup run's profile
+// id needs: one point read on profiles, one hop through the edition's
+// publication pointer (the LEFT JOIN keeps an edition with nothing
+// published answering, not erroring — the same missing-row-is-an-empty-
+// answer rule this file follows). A revision nobody has published leaves
+// both stamps at the zero time; the caller's run created_at is the other
+// half of the comparison.
+func (s *Store) AgentRunProfileFacts(ctx context.Context, profileID string) (AgentRunProfileFacts, error) {
+	const op = "agent run profile facts"
+	var (
+		out       AgentRunProfileFacts
+		status    string
+		soft      bool
+		isCurrent bool
+		published string
+		current   string
+	)
+	err := s.inRead(ctx, func(ctx context.Context, q queryable) error {
+		if err := q.queryRow(ctx, op,
+			`SELECT p.status,
+				        p.deleted_at IS NOT NULL,
+				        COALESCE(p.published_at, ''),
+				        COALESCE(e.published_profile_id, '') = p.id,
+				        COALESCE(cp.published_at, '')
+				 FROM profiles p
+				 JOIN editions e ON e.id = p.edition_id
+				 LEFT JOIN profiles cp ON cp.id = e.published_profile_id
+				 WHERE p.id = ?`, profileID).Scan(&status, &soft, &published, &isCurrent, &current); err != nil {
+			return mapReadError(op, err)
+		}
+		out.SoftDeleted = soft
+		out.IsCurrentPublished = isCurrent
+		if status == "archived" {
+			out.Archived = true
+		}
+		if published != "" {
+			st, err := parseStamp(published)
+			if err != nil {
+				return mapReadError(op, err)
+			}
+			out.PublishedAt = st
+		}
+		if current != "" {
+			st, err := parseStamp(current)
+			if err != nil {
+				return mapReadError(op, err)
+			}
+			out.CurrentPublishedAt = st
+		}
+		return nil
+	})
+	if err != nil {
+		// mapReadError has already turned the scan's ErrNoRows into
+		// ErrNotFound (a revision the table never held): the missing-row
+		// rule answers the zero facts, so the bar keeps the run.
+		if errors.Is(err, ErrNotFound) {
+			return AgentRunProfileFacts{}, nil
+		}
+		return AgentRunProfileFacts{}, err
+	}
+	return out, nil
 }
 
 // AgentPlanTitle pulls the plan's title out of a run's plan_json, for the

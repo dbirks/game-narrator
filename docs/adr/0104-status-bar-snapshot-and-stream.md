@@ -188,3 +188,112 @@ age out of the ring.
 
 None. The bar's front half (the 28px chrome, the font, the dither rows)
 is the web redesign's; this ADR owns the backend it feeds.
+
+## Amendment (2026-10-21): the superseded-run filter and the blocked clock
+
+### Context
+
+On the real board, after profile revision 4 was published with all 29 of
+its characters voiced, `GET /api/v1/status` still answered
+`"● agent blocked · 10 of 45 voiced · 21h 28m"` with two `setup_runs` — a
+blocked run stalled on the superseded (archived) revision and an abandoned
+pre-profile run — whenever no live session was running. The snapshot's
+setup half lists every non-terminal agent run (`ListActiveAgentRuns`), so
+a run the edition moved past stayed on the operator's face, with the old
+revision's counts read as the profile's progress and a 21-hour age
+rendered as a live timer for a run that is waiting on a human, not working.
+
+### Decision
+
+- **The bar shows only runs the edition's current work needs.**
+  `assembleSetupRuns` drops a run whose profile revision was retired out
+  from under it. The decision is one new indexed point read per run
+  (`Store.AgentRunProfileFacts`: the run's revision status, its ADR-0107
+  retention mark, whether the edition's publication pointer names it, and
+  the edition's current publication stamp — one statement, the status
+  budget of bounded indexed reads unchanged) plus a pure predicate
+  (`setupRunStale`) the bar's tests pin clause by clause:
+  - the revision is **archived** (a later publication or an explicit
+    archive retired it) or **soft-deleted** → stale; its counts are the
+    old revision's, never the profile's;
+  - the revision the run works on was **published while the run was still
+    open** (run created before its own `published_at`) → stale: publication
+    froze the content, so the run is over or abandoned, not "happening
+    now";
+  - the edition's **current publication postdates the run** and the run
+    does not work on that revision (an older draft the edition outgrew)
+    → stale; a run started *after* the current publication may work an
+    older draft on purpose and stays.
+  - Pre-profile runs (no profile id yet) never stale on this — the bar
+    shows them by their plan's title instead — and a facts read that
+    fails keeps the run: a transient store error must not make a live run
+    vanish from the bar, the same missing-seam-degrades-honestly rule the
+    assembly follows.
+- **A blocked run carries the word, not a live clock.** `renderSetupHead`
+  renders the elapsed number only for runs that are working; a blocked
+  run is waiting on a human and a multi-day age read as a running timer is
+  the lie the filter fixes on the data side. The wire shape does not
+  change: `elapsed_ms` still carries the run's age (the Health tab's
+  column shows the true age), and `setup_runs` still lists the run — a
+  blocked run is a human-wait state the operator must see, so it is never
+  dropped for its age. The push side agrees: `statusCompareKey` zeroes a
+  blocked run's elapsed bucket, because the displayed shape of a blocked
+  run is constant and ticking the age through the key would publish frames
+  for text that never moves — the churn "push on change" exists to stop.
+
+### Options considered
+
+1. **Filter inside `ListActiveAgentRuns`.** The store already knows the
+   publication facts, so the join could live in the list statement.
+   Rejected: the list is the generic "runs that are not over" read of the
+   agent log (the docs/spec/03 vocabulary, pinned by the enum gate), and
+   the staleness rule is the *bar's* policy — the run log is not the
+   surface that decides what the bar says.
+2. **Drop blocked runs older than a threshold.** The 21-hour run would
+   leave the bar entirely. Rejected in favour of the clock rule: a blocked
+   run is work waiting on a human (docs/spec/03), and hiding it makes the
+   wait invisible; the age was the lie, not the run.
+3. **Zero the wire `elapsed_ms` for blocked runs.** The number would stop
+   reaching clients at all. Rejected: the structured field is the run's
+   age for every state, and the Health tab's Elapsed column wants the true
+   age; only the bar's string drops it.
+4. **Archived-status check only.** Supersession is usually visible as
+   `status = 'archived'`, but a run can be stale without it (published out
+   from under the run; a soft-deleted draft; an older draft the edition
+   outgrew). The stamp comparisons cover those; the archived check alone
+   would have left the evidence's second run on the bar.
+
+### Validation
+
+- `go test -count=1 ./internal/store/ -run TestAgentRunProfileFacts` —
+  the facts read against the real publication lifecycle (draft, published,
+  superseded by a second publication, hand-archived, soft-deleted draft,
+  missing id), rows the repositories themselves wrote.
+- `go test -count=1 ./internal/api/ -run 'TestStatus|TestSetupRunStale'`
+  — `TestSetupRunStale` pins every clause of the predicate; the string
+  contract pins the blocked-with-clock and the same-age-running cases;
+  `TestStatusExcludesSupersededSetupRuns` walks the regression end to end
+  over a real store: a blocked run on the draft (two days old, the
+  evidence shape) shows before publication with the word and no clock,
+  drops out the moment its revision publishes, stays out after the
+  successor supersedes it; a run on an older draft predating the current
+  publication drops; post-publication runs on the current published
+  revision (its counts, 9 of 12) and on the older draft stay; the
+  pre-profile blocked run stays throughout as the honest "blocked".
+- `pnpm --dir web test -- --run liveStatus Health` — the web bar and the
+  Health setup-runs tab render the same shape (the wire did not change),
+  so their tests pass unmodified.
+
+### Consequences and reversal
+
+- One extra indexed point read per setup run per snapshot (≤8 runs): the
+  status budget grows by a point lookup per run, still no scan and no
+  probe. A box whose every run is superseded reads its facts and then says
+  the health rollup, which is what is true of it.
+- The bar no longer renders the age of a run that stopped working; the
+  age remains queryable in the structured field and the Health tab.
+- Reversal: delete `isStaleSetupRun`/`setupRunStale` and the `continue`
+  in `assembleSetupRuns`, restore the unconditional elapsed branch in
+  `renderSetupHead` and the unbucketed zeroing in `statusCompareKey`, drop
+  `AgentRunProfileFacts` from `internal/store/status.go` and its test; the
+  OpenAPI descriptions revert. Nothing is persisted, so no migration.

@@ -106,7 +106,10 @@ type StatusSnapshot struct {
 	// not narrating.
 	Session *StatusSession `json:"session,omitempty"`
 	// Setup is the active onboarding runs (usually zero or one), newest
-	// first.
+	// first, minus the superseded ones: a run whose profile revision was
+	// retired out from under it (archived, deleted, or published while the
+	// run was still open) is not current work (ADR-0104 amendment), so its
+	// counts never reach the bar or the stream.
 	Setup []StatusSetupRun `json:"setup_runs,omitempty"`
 	// Jobs is the background queue's foreground pause (ADR-0119, issue
 	// #27): present only while the pause is active, so the bar carries it
@@ -157,7 +160,10 @@ type StatusSession struct {
 	CreatedAt string `json:"created_at"`
 }
 
-// StatusSetupRun is one active onboarding run's bar view.
+// StatusSetupRun is one active onboarding run's bar view. Elapsed is the
+// run's age for every state; the bar's string renders it only for runs
+// that are working (a blocked run's age is not a live clock, ADR-0104
+// amendment), while the structured field always carries the number.
 type StatusSetupRun struct {
 	RunID string `json:"run_id"`
 	// Game is the run's game title: the profile's game when the run has a
@@ -374,6 +380,16 @@ func frameToVoiceTotal(info rt.Info) (int64, int) {
 // assembleSetupRuns reads the live agent runs and their counts. A process
 // without the agent log wired (s.onb nil, or a test server) answers an
 // empty list: "no setup run" is true there.
+//
+// The superseded-run filter (ADR-0104 amendment): a run whose profile
+// revision was retired out from under it — archived by a later
+// publication, soft-deleted, or published while the run was still open —
+// is not work the box is doing, and its counts are the old revision's, not
+// the profile's (a board that published revision 4 does not read "10 of
+// 45" from the run that stalled on revision 3). A run without a profile yet
+// and a run on the edition's live work pass: the bar hides nothing it
+// cannot name as retired, and a facts read that fails keeps the run (a
+// transient store error must not make a live run vanish from the bar).
 func (s *Server) assembleSetupRuns(ctx context.Context, now time.Time) []StatusSetupRun {
 	if s.onb == nil || s.onb.AgentStore == nil {
 		return nil
@@ -385,6 +401,9 @@ func (s *Server) assembleSetupRuns(ctx context.Context, now time.Time) []StatusS
 	}
 	out := make([]StatusSetupRun, 0, len(runs))
 	for _, run := range runs {
+		if s.isStaleSetupRun(ctx, run) {
+			continue
+		}
 		view := StatusSetupRun{
 			RunID:   run.ID,
 			State:   run.State,
@@ -410,6 +429,43 @@ func (s *Server) assembleSetupRuns(ctx context.Context, now time.Time) []StatusS
 		out = append(out, view)
 	}
 	return out
+}
+
+// isStaleSetupRun answers the superseded-run filter for one non-terminal
+// run: true when the run's own profile revision is no longer the edition's
+// live work. Pre-profile runs (no profile id yet) never stale on this —
+// the bar shows them by their plan's title instead, and the blocked-clock
+// rule keeps them honest. The facts read runs on the status store seam
+// (s.store): without it the filter degrades to "keep", like every other
+// missing seam in the assembly.
+func (s *Server) isStaleSetupRun(ctx context.Context, run store.AgentRun) bool {
+	if run.ProfileID == "" || s.store == nil {
+		return false
+	}
+	facts, err := s.store.AgentRunProfileFacts(ctx, run.ProfileID)
+	if err != nil {
+		s.log.Warn("status: reading the run's profile facts", "run", run.ID, "error", err)
+		return false
+	}
+	return setupRunStale(run.CreatedAt, facts)
+}
+
+// setupRunStale is the filter's decision, pure so the bar's tests pin each
+// clause: the run's created_at against the publication facts of the profile
+// it names. A revision published after the run started froze the content
+// the run works on — the run is over or abandoned, not "happening now" —
+// and a run that predates the edition's current publication without working
+// on it is the predecessor's leftover. A run that started after the
+// edition's current publication may work an older draft on purpose and
+// stays.
+func setupRunStale(createdAt time.Time, f store.AgentRunProfileFacts) bool {
+	if f.Archived || f.SoftDeleted {
+		return true
+	}
+	if f.IsCurrentPublished {
+		return !f.PublishedAt.IsZero() && createdAt.Before(f.PublishedAt)
+	}
+	return !f.CurrentPublishedAt.IsZero() && createdAt.Before(f.CurrentPublishedAt)
 }
 
 // assembleHealth rolls the six tiles from their cached sources. Order is
@@ -681,7 +737,12 @@ func renderSetupHead(run StatusSetupRun) string {
 	if run.Total > 0 || run.Voiced > 0 {
 		parts = append(parts, fmt.Sprintf("%d of %d voiced", run.Voiced, run.Total))
 	}
-	if run.Elapsed > 0 {
+	// The elapsed clock is a running run's clock (ADR-0104 amendment):
+	// a blocked run is waiting on a human, not working, and a 21-hour age
+	// read as a live timer is the stale-clock lie the superseded-run filter
+	// fixes on the data side. The age stays on the wire (the run view's
+	// elapsed_ms, the Health tab's column); only the bar drops it.
+	if run.State != store.AgentStateBlocked && run.Elapsed > 0 {
 		parts = append(parts, formatElapsed(time.Duration(run.Elapsed)*time.Millisecond))
 	}
 	return strings.Join(parts, " · ")
@@ -940,13 +1001,21 @@ func statusCompareKey(snap StatusSnapshot) string {
 		}
 	}
 	for _, run := range snap.Setup {
+		// A blocked run's age never displays (the bar drops its clock), so
+		// it must not drive a publish either: the displayed shape of a
+		// blocked run is constant, and ticking the age through the key is
+		// the churn "push on change" exists to stop.
+		elapsed := run.Elapsed / 5000
+		if run.State == store.AgentStateBlocked {
+			elapsed = 0
+		}
 		cmp.Setup = append(cmp.Setup, struct {
 			State   string
 			Stage   string
 			Voiced  int
 			Total   int
 			Elapsed int64
-		}{State: run.State, Stage: run.Stage, Voiced: run.Voiced, Total: run.Total, Elapsed: run.Elapsed / 5000})
+		}{State: run.State, Stage: run.Stage, Voiced: run.Voiced, Total: run.Total, Elapsed: elapsed})
 	}
 	for _, c := range snap.Health.Components {
 		cmp.Health = append(cmp.Health, struct {

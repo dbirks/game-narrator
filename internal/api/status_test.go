@@ -10,6 +10,7 @@ package api
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -107,6 +108,37 @@ func TestStatusStringPerState(t *testing.T) {
 			want: "● agent needs review · 9 of 12 voiced · 42s",
 		},
 		{
+			// The stale-clock lie the superseded-run filter fixes on the
+			// data side (ADR-0104 amendment): a blocked run is waiting on a
+			// human, not working, so its age never renders as a live timer.
+			name: "a blocked run carries no live clock",
+			snap: StatusSnapshot{
+				Setup:  []StatusSetupRun{{RunID: "r1", State: "blocked", Voiced: 10, Total: 45, Elapsed: 77280000}},
+				Health: allOK,
+			},
+			want: "● agent blocked · 10 of 45 voiced",
+		},
+		{
+			// A pre-profile blocked run with no counts: the word alone, the
+			// 21-hour age nowhere in the string.
+			name: "a blocked pre-profile run is the word alone",
+			snap: StatusSnapshot{
+				Setup:  []StatusSetupRun{{RunID: "r1", State: "blocked", Elapsed: 77280000}},
+				Health: allOK,
+			},
+			want: "● agent blocked",
+		},
+		{
+			// The clock is a running run's: the same age renders while the
+			// run works.
+			name: "a running run keeps its clock at the same age",
+			snap: StatusSnapshot{
+				Setup:  []StatusSetupRun{{RunID: "r1", State: "running", Voiced: 10, Total: 45, Elapsed: 77280000}},
+				Health: allOK,
+			},
+			want: "● agent running · 10 of 45 voiced · 21h 28m",
+		},
+		{
 			name: "idle is the rollup",
 			snap: StatusSnapshot{Health: health(statusLevelOK, statusLevelSlow, statusLevelOK, statusLevelOK, statusLevelOK, statusLevelOK)},
 			want: "5 ok · 1 slow · ocr slow",
@@ -161,6 +193,83 @@ func TestFormatElapsed(t *testing.T) {
 		if got := formatElapsed(tc.d); got != tc.want {
 			t.Errorf("formatElapsed(%v) = %q, want %q", tc.d, got, tc.want)
 		}
+	}
+}
+
+// TestSetupRunStale pins each clause of the superseded-run filter (ADR-0104
+// amendment) against the publication facts the bar reads: a run whose
+// revision the edition retired must not drive the status line, and a run on
+// the edition's live work must stay, whatever its age.
+func TestSetupRunStale(t *testing.T) {
+	created := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	published := created.Add(2 * time.Hour)
+
+	cases := []struct {
+		name      string
+		createdAt time.Time
+		facts     store.AgentRunProfileFacts
+		wantStale bool
+	}{
+		{
+			name:      "an archived revision is the predecessor's leftover",
+			createdAt: created,
+			facts:     store.AgentRunProfileFacts{Archived: true, PublishedAt: created.Add(time.Hour), CurrentPublishedAt: published},
+			wantStale: true,
+		},
+		{
+			name:      "a soft-deleted revision is hidden work, not live work",
+			createdAt: created,
+			facts:     store.AgentRunProfileFacts{SoftDeleted: true},
+			wantStale: true,
+		},
+		{
+			// The revision the run works on was published while the run was
+			// still open: publication froze the content, so the run's work is
+			// done or abandoned, not happening now.
+			name:      "a run predating its own revision's publication is done",
+			createdAt: created,
+			facts:     store.AgentRunProfileFacts{IsCurrentPublished: true, PublishedAt: published, CurrentPublishedAt: published},
+			wantStale: true,
+		},
+		{
+			// A run started after the current publication works the live
+			// revision on purpose (a post-publication job): keep it.
+			name:      "a run on the current revision started after its publication",
+			createdAt: published.Add(time.Minute),
+			facts:     store.AgentRunProfileFacts{IsCurrentPublished: true, PublishedAt: published, CurrentPublishedAt: published},
+			wantStale: false,
+		},
+		{
+			// An older draft the edition outgrew: the run predates the
+			// edition's current publication and does not work on it.
+			name:      "a run on an older draft predating the current publication",
+			createdAt: created,
+			facts:     store.AgentRunProfileFacts{CurrentPublishedAt: published},
+			wantStale: true,
+		},
+		{
+			// The same older draft, started after the publication: a
+			// deliberate second draft chain is live work.
+			name:      "a run on an older draft started after the current publication",
+			createdAt: published.Add(time.Minute),
+			facts:     store.AgentRunProfileFacts{CurrentPublishedAt: published},
+			wantStale: false,
+		},
+		{
+			// Nothing published yet: the draft is the edition's only live
+			// work, whatever its age.
+			name:      "a draft run on an edition with nothing published",
+			createdAt: created,
+			facts:     store.AgentRunProfileFacts{},
+			wantStale: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := setupRunStale(tc.createdAt, tc.facts); got != tc.wantStale {
+				t.Fatalf("setupRunStale(%v, %+v) = %v, want %v", tc.createdAt, tc.facts, got, tc.wantStale)
+			}
+		})
 	}
 }
 
@@ -501,6 +610,24 @@ func seedStatusContent(t *testing.T, ctx context.Context, st *store.Store) (prof
 	return profileID
 }
 
+// backdateRun rewinds a run's stamps through a second connection on the same
+// file (the library tests' backdatePurgeAfter pattern): the staleness
+// comparison is the run's created_at against the publication stamps, and the
+// test needs a run that started long before a publication that happens
+// seconds later. The store owns the clock; the test plays the hours.
+func backdateRun(t *testing.T, path, runID, stamp string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", path+"?_busy_timeout=5000&_foreign_keys=1")
+	if err != nil {
+		t.Fatalf("open backdate connection: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec("UPDATE agent_runs SET created_at = ?, updated_at = ? WHERE id = ?",
+		stamp, stamp, runID); err != nil {
+		t.Fatalf("backdate run %s: %v", runID, err)
+	}
+}
+
 func TestStatusAggregatesSetupRuns(t *testing.T) {
 	env := newStatusEnv(t, func(e *statusTestEnv) {
 		e.s.onb = &onbDeps{AgentStore: store.NewAgentStore(e.st)}
@@ -595,6 +722,167 @@ func TestStatusAggregatesSetupRuns(t *testing.T) {
 	}
 	if early.Game != "Wind Waker" || early.Voiced != 0 || early.Total != 0 || early.Stage != "" {
 		t.Fatalf("pre-profile view = %+v, want the plan's title, no counts and no stage", early)
+	}
+}
+
+// TestStatusExcludesSupersededSetupRuns is the regression for the
+// 2026-10-21 evidence: after a new revision was published, old blocked runs
+// of the superseded revision still drove the bar ("blocked · 10 of 45 ·
+// 21h 28m") while the real profile was fully voiced. The rule under test:
+// a run is status data only while its profile revision is the edition's
+// live work — the moment the edition moves past it (the revision is
+// archived, or is published out from under the run), the run drops out of
+// the status line; a blocked run that stays carries the word, not a live
+// clock; and the counts of a kept run come from the revision it names.
+func TestStatusExcludesSupersededSetupRuns(t *testing.T) {
+	env := newStatusEnv(t, func(e *statusTestEnv) {
+		e.s.onb = &onbDeps{AgentStore: store.NewAgentStore(e.st)}
+	})
+	profileID := seedStatusContent(t, env.ctx, env.st)
+	agentStore := store.NewAgentStore(env.st)
+	planJSON := []byte(`{"title":"Skies of Arcadia"}`)
+
+	mustVersion := func(id string) int64 {
+		t.Helper()
+		_, rev, err := env.st.GetProfile(env.ctx, id)
+		if err != nil {
+			t.Fatalf("GetProfile(%s): %v", id, err)
+		}
+		return rev
+	}
+	fetch := func() StatusSnapshot {
+		t.Helper()
+		resp, body := env.getJSON(auth.RoleViewer, statusPath)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET = %d (%s)", resp.StatusCode, body)
+		}
+		var s StatusSnapshot
+		if err := json.Unmarshal(body, &s); err != nil {
+			t.Fatalf("body is not the snapshot: %v (%s)", err, body)
+		}
+		if s.Status != RenderStatus(s) {
+			t.Fatalf("status = %q is not the string rendered from this snapshot", s.Status)
+		}
+		return s
+	}
+	runByID := func(snap StatusSnapshot, id string) *StatusSetupRun {
+		t.Helper()
+		for i := range snap.Setup {
+			if snap.Setup[i].RunID == id {
+				return &snap.Setup[i]
+			}
+		}
+		return nil
+	}
+	makeRun := func(id, profileID, state string) {
+		t.Helper()
+		if err := agentStore.CreateAgentRun(env.ctx, store.AgentRun{
+			ID: id, ProfileID: profileID, State: state,
+			PlanJSON: planJSON, PromptVersion: "test-prompt",
+		}); err != nil {
+			t.Fatalf("CreateAgentRun(%s): %v", id, err)
+		}
+	}
+
+	// The evidence shape, before anything is published: a run stalled on
+	// the draft the owner is about to move past (started two days ago, the
+	// way the evidence's run was), and a pre-profile run abandoned in the
+	// same state. Both are the edition's live work now, so both show — and
+	// the blocked word carries no live clock.
+	makeRun("run-stale", profileID, store.AgentStateBlocked)
+	backdateRun(t, env.st.Path(), "run-stale", time.Now().UTC().Add(-48*time.Hour).Format(time.RFC3339))
+	makeRun("run-orphan", "", store.AgentStateBlocked)
+	backdateRun(t, env.st.Path(), "run-orphan", time.Now().UTC().Add(-time.Hour).Format(time.RFC3339))
+
+	snap := fetch()
+	stale := runByID(snap, "run-stale")
+	if stale == nil || stale.Voiced != 9 || stale.Total != 12 || stale.Game != "Skies of Arcadia" {
+		t.Fatalf("run-stale view = %+v, want the live draft's 9 of 12 with the game's title", stale)
+	}
+	orphan := runByID(snap, "run-orphan")
+	if orphan == nil || orphan.Game != "Skies of Arcadia" || orphan.Voiced != 0 || orphan.Total != 0 {
+		t.Fatalf("run-orphan view = %+v, want the plan's title with no counts", orphan)
+	}
+	if !strings.HasPrefix(snap.Status, "● agent blocked") || strings.Contains(snap.Status, "of 45") {
+		t.Fatalf("status = %q, want the blocked run's head with no clock and no stale count", snap.Status)
+	}
+
+	// Publish the revision the stale run works on. The gate needs a
+	// narration; seedStatusContent's twelve lines resolve inside the
+	// revision, so the publication ships.
+	if err := env.st.SetProfileStatus(env.ctx, profileID, games.StatusReview, mustVersion(profileID)); err != nil {
+		t.Fatalf("review: %v", err)
+	}
+	first, err := env.st.Publish(env.ctx, profileID, mustVersion(profileID), "curator@local")
+	if err != nil {
+		t.Fatalf("first Publish: %v", err)
+	}
+
+	// The run's own revision is now the one the edition serves — published
+	// out from under the run, which froze the content the run works on. The
+	// run is over or abandoned, not happening now: it drops out, and the
+	// pre-profile run (never superseded) stays as the honest "blocked".
+	snap = fetch()
+	if got := runByID(snap, "run-stale"); got != nil {
+		t.Fatalf("the run whose revision just published is still status data: %+v", got)
+	}
+	if runByID(snap, "run-orphan") == nil {
+		t.Fatalf("the pre-profile run dropped out: %+v", snap.Setup)
+	}
+	if !strings.HasPrefix(snap.Status, "● agent blocked") {
+		t.Fatalf("status = %q, want the pre-profile blocked run's head", snap.Status)
+	}
+
+	// Derive a successor and publish it: the predecessor is archived in the
+	// same commit the pointer moves — the superseded state the evidence had.
+	// A run on a fresh independent draft, started before that publication,
+	// is the "older than a newer published revision" clause.
+	second, err := env.st.NewRevision(env.ctx, first.ID)
+	if err != nil {
+		t.Fatalf("NewRevision: %v", err)
+	}
+	third, err := env.st.CreateDraftProfile(env.ctx, first.EditionID)
+	if err != nil {
+		t.Fatalf("CreateDraftProfile (independent chain): %v", err)
+	}
+	makeRun("run-early", third.ID, store.AgentStateBlocked)
+	// A day before the publication that follows: the run predates the
+	// edition's current publication without working on it.
+	backdateRun(t, env.st.Path(), "run-early", time.Now().UTC().Add(-24*time.Hour).Format(time.RFC3339))
+
+	if err := env.st.SetProfileStatus(env.ctx, second.ID, games.StatusReview, mustVersion(second.ID)); err != nil {
+		t.Fatalf("snapshot to review: %v", err)
+	}
+	current, err := env.st.Publish(env.ctx, second.ID, mustVersion(second.ID), "curator@local")
+	if err != nil {
+		t.Fatalf("second Publish: %v", err)
+	}
+
+	// Post-publication runs: one on the current published revision (the
+	// counts must come from this profile) and one on the older draft
+	// started after the publication (deliberate second-chain work). Both
+	// are newer than the backdated runs, so one of them owns the head.
+	makeRun("run-late", third.ID, store.AgentStateQueued)
+	makeRun("run-current", current.ID, store.AgentStateRunning)
+
+	snap = fetch()
+	for _, id := range []string{"run-stale", "run-early"} {
+		if got := runByID(snap, id); got != nil {
+			t.Fatalf("%s survived the supersession: %+v", id, got)
+		}
+	}
+	cur := runByID(snap, "run-current")
+	if cur == nil || cur.State != store.AgentStateRunning || cur.Voiced != 9 || cur.Total != 12 || cur.Game != "Skies of Arcadia" {
+		t.Fatalf("run-current view = %+v, want the current published profile's 9 of 12", cur)
+	}
+	if runByID(snap, "run-late") == nil || runByID(snap, "run-orphan") == nil {
+		t.Fatalf("the post-publication runs dropped out: %+v", snap.Setup)
+	}
+	if len(snap.Setup) != 3 {
+		t.Fatalf("setup_runs = %d rows, want exactly the three live ones", len(snap.Setup))
+	}
+	if !strings.HasPrefix(snap.Status, "● agent") || strings.Contains(snap.Status, "blocked") {
+		t.Fatalf("status = %q, want a live run's head with no blocked word", snap.Status)
 	}
 }
 
