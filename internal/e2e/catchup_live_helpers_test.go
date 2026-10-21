@@ -1441,7 +1441,7 @@ func cuMergeEvidenceGapNote(gap time.Duration) string {
 // The gates (all live-observable; the ADR-0122's live validation asserts
 // the three properties — every box commits, the catch-up speech covers
 // every committed message, nothing stale starts — the merge's controlled
-// shape at the window's own 600 ms admission is the controlled-timing
+// shape at the window's own 900 ms admission is the controlled-timing
 // suites' evidence, the batcher unit tests, the runtime's four-rapid-
 // boxes white-box walk and the synthetic/gn-t025-catch-up replay):
 //
@@ -1468,12 +1468,12 @@ func cuMergeEvidenceGapNote(gap time.Duration) string {
 //
 // A multi-line merged run (one TTS request covering two or more lines)
 // is the merge's budget win when the window admits it: two lines commit
-// within the 600 ms window while the speech is busy. The assertion
+// within the 900 ms window while the speech is busy. The assertion
 // RECORDS the live cadence against the window (the smallest successive
 // commit gap, the manifest's merge evidence) — when the scene's commits
 // outrun the window (the 2026-10-21 run-6 shape: the 0.9-1.7 s
 // partial→settled re-commits and the 5-10 s box-to-box spacing against
-// the 600 ms default, which the settings API does not expose per
+// the then-600 ms default, which the settings API does not expose per
 // session), every run is the single-line form and the batch's evidence
 // is gate 1's events. The gate-1 failure is the rapid drive not running
 // faster than the speech (nothing committed into a busy speech) — the
@@ -1534,7 +1534,7 @@ func cuAssertMerge(t *testing.T, m *cuSpeechModel) {
 //     behind a running playback is the back-to-back shape (decision 2:
 //     the playing line is left to run out), not a backlog.
 //  2. Window (ADR-0122 decision 3, the no-stale terminal): a line the
-//     player left more than the batch window (the core's documented 600
+//     player left more than the batch window (the core's documented 900
 //     ms) after a newer commit settles skipped/catch_up_stale and never
 //     starts — the stream's stale-dropped lines are asserted to carry no
 //     playback of their own (no started event, no WAV), and every line

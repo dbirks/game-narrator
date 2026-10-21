@@ -12,6 +12,9 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"strconv"
+	stdruntime "runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -475,4 +478,115 @@ var pngMagic = []byte{0x89, 'P', 'N', 'G'}
 func shaHex(b []byte) string {
 	d := sha256.Sum256(b)
 	return hex.EncodeToString(d[:])
+}
+
+// tesseractChildren counts this process's live tesseract children on Linux
+// (/proc/<pid>/stat): the warm-pool slots and the startup probe are direct
+// children of the owning process, and a reaped one is gone from /proc.
+// Off Linux it reports -1 (unknown).
+func tesseractChildren() int {
+	if stdruntime.GOOS != "linux" {
+		return -1
+	}
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return -1
+	}
+	me := os.Getpid()
+	n := 0
+	for _, ent := range entries {
+		name := ent.Name()
+		if len(name) == 0 || name[0] < '0' || name[0] > '9' {
+			continue
+		}
+		data, err := os.ReadFile("/proc/" + name + "/stat")
+		if err != nil {
+			continue // it exited between the listing and the read
+		}
+		body := string(data)
+		// "pid (comm) state ppid ..." — comm may carry spaces and
+		// parentheses, so the fixed fields begin after the last ')'.
+		i := strings.LastIndexByte(body, ')')
+		if i < 0 {
+			continue
+		}
+		head := strings.Fields(body[:i])
+		if len(head) < 2 {
+			continue
+		}
+		comm := strings.TrimPrefix(head[1], "(")
+		rest := strings.Fields(body[i+1:])
+		if len(rest) < 2 || comm != "tesseract" {
+			continue
+		}
+		ppid, _ := strconv.Atoi(rest[1])
+		if ppid != me {
+			continue // not this process's child
+		}
+		n++
+	}
+	return n
+}
+
+// TestManagerWarmOCRAndClose is the lifecycle of the process-shared OCR
+// pool (issue #13, ADR-0100): a manager with no configured OCR engine
+// creates the pool at WarmOCR (the server's startup call — the
+// cmd/game-narrator wiring — so the warm Tesseract slots and the startup
+// probe settle before any session's first frame), and its Close settles the
+// pool it created: the warm Tesseract processes never outlive the server.
+// The pool's spawns run in the background, so a Close immediately after
+// WarmOCR is the real race the cleanup must survive: in-flight spawns
+// settle, the slots are killed and reaped, and a second Close finds
+// nothing (the pool is cleared out of the manager before it is closed).
+//
+// On a Linux host with tesseract (the production engine) the test asserts
+// the process level too: WarmOCR leaves the pool's warm slots alive as
+// this process's tesseract children, and Close leaves none. Without the
+// binary (or off Linux) the pool's spawns fail typed — construction never
+// blocks or fails, the pool's contract (ADR-0012) — and the lifecycle
+// contract alone is asserted.
+func TestManagerWarmOCRAndClose(t *testing.T) {
+	e := newEnv(t)
+	// A second manager without the OCR seam: the env's manager always
+	// carries a configured engine, so its WarmOCR is the no-op branch and
+	// this is the one that exercises the pool path.
+	mgr, err := runtime.New(runtime.Options{
+		Store: e.st,
+		Hub:   e.hub,
+		Log:   slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatalf("runtime.New: %v", err)
+	}
+
+	mgr.WarmOCR()
+
+	if hasTesseract() && stdruntime.GOOS == "linux" {
+		// The pool's warm slots are up before the deadline: their spawns are
+		// background work (each ~0.6 s on ARM64), and a pool that never
+		// settles is the defect WarmOCR exists to take off the first
+		// session's critical path. The startup probe may still hold its
+		// throwaway process, so the bound is at least the slots.
+		deadline := time.Now().Add(30 * time.Second * patienceScale)
+		for time.Now().Before(deadline) && tesseractChildren() < 2 {
+			time.Sleep(50 * time.Millisecond)
+		}
+		if n := tesseractChildren(); n < 2 {
+			t.Fatalf("after WarmOCR the pool holds %d tesseract children, want at least 2 (its warm slots)", n)
+		}
+	}
+
+	// The server's shutdown settles the pool: in-flight spawns reaped, the
+	// warm slots killed. A second Close must be a no-op (the pool is already
+	// out of the manager) — both return, nothing hangs.
+	mgr.Close()
+	mgr.Close()
+
+	if stdruntime.GOOS == "linux" {
+		// Close reaps every spawn it owns (its spawn waitgroup includes the
+		// probe), so no tesseract child of this process may remain.
+		if n := tesseractChildren(); n != 0 {
+			t.Fatalf("after Close %d tesseract children remain, want 0 (the pool is reaped at shutdown)", n)
+		}
+	}
 }

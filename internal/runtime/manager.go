@@ -415,6 +415,19 @@ func (m *Manager) ocrEngine() ocr.Engine {
 	return m.ocrPool
 }
 
+// WarmOCR settles the process-shared OCR pool ahead of the first session
+// (issue #13, ADR-0100): it forces the lazy ocrEngine() creation so the
+// warm Tesseract slots and the startup capability probe are already spawned
+// — and loading their models — by the time a session's first frame reaches
+// the pipeline. The pool's construction never blocks and never fails (a
+// missing binary is a read's typed failure, ADR-0012), so the call has no
+// result of its own: it is the server's startup hook (cmd/game-narrator),
+// not a per-session cost. With a configured OCR engine it is the no-op
+// branch the same way every session start is.
+func (m *Manager) WarmOCR() {
+	_ = m.ocrEngine()
+}
+
 // loadMasterVolume reports the manager's device-level master volume (ADR-0074)
 // clamped to 0..1. It is the loader the sessions' master sinks and the API
 // snapshot read through.

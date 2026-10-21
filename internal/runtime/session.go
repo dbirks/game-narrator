@@ -1650,6 +1650,21 @@ func (m *Manager) Close() {
 			m.log.Warn("manager close did not wait out the run", "session_id", s.id)
 		}
 	}
+
+	// The process-shared OCR pool (issue #13, ADR-0100) lives for the
+	// process; the server's shutdown is its only exit. Clearing it under the
+	// lock (and out of the way before Close's kill-and-reap) makes a
+	// concurrent WarmOCR's pool — or a second Close — find nothing: the pool
+	// is closed exactly once, and a warm tesseract never outlives the
+	// server. Close is idempotent and reaps in-flight spawns, so it is safe
+	// to run against a pool whose warm slots are still settling.
+	m.mu.Lock()
+	pool := m.ocrPool
+	m.ocrPool = nil
+	m.mu.Unlock()
+	if pool != nil {
+		_ = pool.Close()
+	}
 }
 
 // speakerLinkResolver is the roster's speaker resolution (ADR-0070's link,

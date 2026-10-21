@@ -739,6 +739,13 @@ func runServe(args []string, log *slog.Logger, ring *logbuf.Ring) (int, error) {
 	if err != nil {
 		return 1, fmt.Errorf("creating the session runtime: %w", err)
 	}
+	// Settle the process-shared OCR pool at startup, before any session
+	// (issue #13, ADR-0100): its warm Tesseract slots and the startup probe
+	// spawn in the background, so a session's first frame no longer pays
+	// the ~0.6 s per-process engine startup on the critical path — the
+	// first read costs the inference only. A configured OCR fallback or a
+	// missing tesseract binary never blocks here (the pool's contract).
+	sessions.WarmOCR()
 	if ocrFallback != nil {
 		log.Info("VLM OCR fallback ready", "model", ocrFallbackModel)
 	} else {

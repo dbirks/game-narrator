@@ -3,7 +3,7 @@
 // Dolphin (real emulator, real disc image, the recorded first-dialogue
 // savestate) → live frame capture → OCR → commit against the script
 // imported from the same disc image → the session's catch-up speech policy
-// (the product default: catch_up, the 600 ms batch window, the 3 s
+// (the product default: catch_up, the 900 ms batch window, the 3 s
 // per-utterance max age) — driven by the test pressing A through the first
 // in-game conversation FASTER than the speech runs (a press lands as soon
 // as the box's line commits, while the previous line's TTS round trip and
@@ -27,7 +27,7 @@
 //     catch-up terminal), every catch-up run is one speaker (the merge's
 //     same-speaker rule), the playback count never exceeds the line count
 //     (a multi-line run is one playback for its lines), and the manifest
-//     records the live commit cadence against the 600 ms batch window —
+//     records the live commit cadence against the 900 ms batch window —
 //     the window's own multi-line admission (two lines committing inside
 //     the window) is the controlled-timing suites' evidence (the batcher
 //     unit tests, the four-rapid-boxes white-box walk, the

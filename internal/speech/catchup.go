@@ -51,8 +51,12 @@ const (
 	// window after it fences it (the issue's "Fencing (ADR 0092) still
 	// applies to anything older than the batch window"), and the window is
 	// also the flush timer (the batch flushes when it elapses since the
-	// batch's first line).
-	DefaultCatchUpBatchWindow = 600 * time.Millisecond
+	// batch's first line). 900 ms is the measured 600 ms default widened to
+	// admit the recorded Dolphin rapid-A commit cadence (~779 ms apart, the
+	// frame-capture + OCR cadence of the live catch-up runs): consecutive
+	// commits batch and merge per speaker instead of each flushing its own
+	// utterance, while anything older than 900 ms still fences.
+	DefaultCatchUpBatchWindow = 900 * time.Millisecond
 	// DefaultCatchUpMaxUtteranceAge is the per-utterance max age (issue #25
 	// item 1): an utterance whose audio is ready more than this long after
 	// the newest line it covers committed is dropped before it starts. It

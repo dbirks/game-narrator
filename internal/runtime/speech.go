@@ -181,7 +181,7 @@ type SpeechOptions struct {
 	// CatchUp tunes the session's catch-up narration and no-backlog speech
 	// policy (issue #25, ADR-0122): the catch_up/latest_only policy, the
 	// batch window and the per-utterance max age. nil takes the documented
-	// defaults (catch_up, 600 ms, 3 s).
+	// defaults (catch_up, 900 ms, 3 s).
 	CatchUp *CatchUpOptions
 }
 
