@@ -268,7 +268,7 @@ test("the audition clip and the preview line are real, playable WAV blobs", asyn
   expect(auditionBytes.wave, "the audition clip is a WAV").toBe("WAVE");
 
   // Approve candidate 0 behind the consent gate, then register it. The
-  // record is prefilled with the profile's consent default (ADR-0134), so
+  // record is prefilled with the profile's consent default (ADR-0135), so
   // the gate the page holds is a selected take, not an empty record.
   await expect(page.getByTestId("consent-input")).toHaveValue(CONSENT);
   await expect(page.getByTestId("consent-required-note")).toHaveCount(0);

@@ -11,7 +11,7 @@ import {
 } from "./support/servers";
 
 /**
- * The Cast redesign (ADR-0134), end to end against the packaged binary with
+ * The Cast redesign (ADR-0135), end to end against the packaged binary with
  * the scripted speech providers (web/e2e/fake-tts.mjs + fake-asr.mjs): the
  * real API process, the real job queue and the real store behind; only the
  * *models* are scripted (AGENTS.md rule 3, the boundary ADR-0022 draws).
@@ -132,7 +132,7 @@ function seed(): SeedProfile {
   return {
     id: "cast-redesign-profile",
     origin: "synthetic",
-    description: "The cast redesign's 67-row roster fixture (ADR-0134).",
+    description: "The cast redesign's 67-row roster fixture (ADR-0135).",
     text_kind: "dialogue",
     messages,
     edges: [],
@@ -308,6 +308,15 @@ test("the cast redesign: order, filters, the shared count, the picker, the bulk"
   await expect(page.getByTestId("character-voice-state-Ada")).toHaveText("voiced · v1", {
     timeout: 30_000,
   });
+
+  // The take work's other escape hatch (ADR-0101): the panel's narrator dial
+  // and the header's are the profile's one flag — the two stay in agreement.
+  await expect(page.getByTestId("cast-narrator-toggle")).toBeChecked();
+  await page.getByTestId("cast-narrator-toggle").click();
+  await expect(page.getByTestId("cast-narrator-toggle")).not.toBeChecked();
+  await expect(page.getByTestId("narrator-fallback-toggle")).not.toBeChecked();
+  await page.getByTestId("narrator-fallback-toggle").click();
+  await expect(page.getByTestId("cast-narrator-toggle")).toBeChecked();
 
   // The order moves with the state: Ada (named, voiced) now leads the
   // roster — the voiced group outranks the named needs-a-voice group

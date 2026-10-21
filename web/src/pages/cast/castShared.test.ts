@@ -1,5 +1,5 @@
 /**
- * `castShared.test.ts` — the Cast screen's count definition (ADR-0134),
+ * `castShared.test.ts` — the Cast screen's count definition (ADR-0135),
  * unit-tested against the SAME fixture shape the Go unit test pins
  * (internal/store/status_counts_test.go): named voiced, named needs-a-voice,
  * unnamed placeholder with lines, retired WITH lines and WITH an approved
@@ -85,7 +85,7 @@ const SOURCE_FIELD = [
   { method: "source_field", field: "speaker", key: "spk:1", source_id: "disc", posterior: 1.0 },
 ];
 
-describe("castCounts (the shared voiced-count definition, ADR-0134)", () => {
+describe("castCounts (the shared voiced-count definition, ADR-0135)", () => {
   it("counts the active speaking characters only: retired out, 0-line out, the name join", () => {
     // named & voiced: confirmed, lines, an approved take (the board's ten).
     const aryll = character("c-aryll", "Aryll");
@@ -149,7 +149,7 @@ describe("castCounts (the shared voiced-count definition, ADR-0134)", () => {
   });
 });
 
-describe("the roster's presentation and filters (ADR-0134)", () => {
+describe("the roster's presentation and filters (ADR-0135)", () => {
   const tessa = character("c-tessa", "Tessa");
   const oldBram = character("c-bram", "Old Bram");
   const spk1 = character("c-spk1", "spk:1", "proposed");

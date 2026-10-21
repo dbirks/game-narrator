@@ -4,7 +4,7 @@ import { trackConsoleErrors } from "./support/console";
 import { claimAppliance, expectDefaultDataDirUntouched, serverRun } from "./support/servers";
 
 /**
- * The curator's speaker-link walk (ADR-0070, the naming flow of ADR-0134),
+ * The curator's speaker-link walk (ADR-0070, the naming flow of ADR-0135),
  * on the packaged binary whose disc-import allowlist is the repo's synthetic
  * disc (testdata/disc — a synthetic BMG of four invented lines, each
  * carrying a different invented speaker attribute byte, so the import
@@ -109,7 +109,7 @@ test("name the import's speaker placeholders on the cast page", async ({ page },
   await shot("01-disc-imported");
 
   // ── 4. the cast page of the draft: the placeholders are roster rows ────
-  // Cast merged the characters page (ADR-0093), and the redesign (ADR-0134)
+  // Cast merged the characters page (ADR-0093), and the redesign (ADR-0135)
   // folded the speaker-placeholder section into the roster: the four import
   // placeholders are the roster's "Unnamed speaker" rows — proposed rows
   // whose lines carry the source's own source_field linkage — and the

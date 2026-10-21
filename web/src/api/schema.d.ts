@@ -782,7 +782,7 @@ export interface paths {
     put?: never;
     /**
      * Link an import's speaker placeholder to a character.
-     * @description The curator's identification of an opaque source speaker (ADR-0070): the placeholder {cid} — the row an import created for a speaker id the source names only as an attribute — is identified as the target character. One transaction re-points the placeholder's lines at the target (confirmed at 1.0, the source-field evidence kept and the acting curator added as a reviewer entry), records one manual speaker assertion per re-pointed line, folds the placeholder's name into the target's aliases so a re-import binds the key straight to the target, and retires the placeholder. The body names the target by target_character_id (an existing roster row) or by name (ADR-0134): with name, the roster's non-retired row of that exact name is linked when one exists, otherwise a new confirmed character is created in the same transaction (the response's created and target_name say which). When both are given they must name the same row; a mismatch is a 400. Draft revisions only, and If-Match carries the revision's row version like every profile write: 428 when absent, 412 when stale. A retired placeholder or a retired target answers 409, a self-link, a missing or malformed half, or a name that does not carry the named target answers 400, and a character the revision does not have answers 404.
+     * @description The curator's identification of an opaque source speaker (ADR-0070): the placeholder {cid} — the row an import created for a speaker id the source names only as an attribute — is identified as the target character. One transaction re-points the placeholder's lines at the target (confirmed at 1.0, the source-field evidence kept and the acting curator added as a reviewer entry), records one manual speaker assertion per re-pointed line, folds the placeholder's name into the target's aliases so a re-import binds the key straight to the target, and retires the placeholder. The body names the target by target_character_id (an existing roster row) or by name (ADR-0135): with name, the roster's non-retired row of that exact name is linked when one exists, otherwise a new confirmed character is created in the same transaction (the response's created and target_name say which). When both are given they must name the same row; a mismatch is a 400. Draft revisions only, and If-Match carries the revision's row version like every profile write: 428 when absent, 412 when stale. A retired placeholder or a retired target answers 409, a self-link, a missing or malformed half, or a name that does not carry the named target answers 400, and a character the revision does not have answers 404.
      */
     post: operations["linkSpeaker"];
     delete?: never;
@@ -3109,14 +3109,14 @@ export interface components {
     CharacterList: {
       characters: components["schemas"]["Character"][];
     };
-    /** @description The identification itself: which live character the placeholder is. Either target_character_id (an existing roster row) or name (the character the speaker is, ADR-0134) names the target; one of the two is required and a body without either is a 400. With name, the server links the roster's non-retired row of that exact name when one exists and otherwise creates a new confirmed character in the same transaction (the response's created says which happened). When both are given they must name the same row; a mismatch is a 400. A self-link is refused with 400. */
+    /** @description The identification itself: which live character the placeholder is. Either target_character_id (an existing roster row) or name (the character the speaker is, ADR-0135) names the target; one of the two is required and a body without either is a 400. With name, the server links the roster's non-retired row of that exact name when one exists and otherwise creates a new confirmed character in the same transaction (the response's created says which happened). When both are given they must name the same row; a mismatch is a 400. A self-link is refused with 400. */
     SpeakerLinkRequest: {
       /** @description The character the placeholder's speaker is identified as, by row identifier. */
       target_character_id?: string;
-      /** @description The character the placeholder's speaker is, by name (ADR-0134): the existing roster row of that exact name when one is not retired, a new confirmed character when it is not. */
+      /** @description The character the placeholder's speaker is, by name (ADR-0135): the existing roster row of that exact name when one is not retired, a new confirmed character when it is not. */
       name?: string;
     };
-    /** @description The link's outcome, counts only: which rows were joined and how many lines moved, plus the name half of the answer (ADR-0134). */
+    /** @description The link's outcome, counts only: which rows were joined and how many lines moved, plus the name half of the answer (ADR-0135). */
     SpeakerLinkResponse: {
       /** @description The revision the link was recorded on. */
       profile_id: string;
@@ -3126,9 +3126,9 @@ export interface components {
       target_character_id: string;
       /** @description The lines that now point at the target, each confirmed at 1.0 with a manual assertion. */
       repointed_messages: number;
-      /** @description The name the target character carries (ADR-0134): the row the link resolved to, whether the caller named it or its identifier did. */
+      /** @description The name the target character carries (ADR-0135): the row the link resolved to, whether the caller named it or its identifier did. */
       target_name?: string;
-      /** @description True when the link created the target character from the request's name (ADR-0134) rather than linking an existing row. */
+      /** @description True when the link created the target character from the request's name (ADR-0135) rather than linking an existing row. */
       created?: boolean;
     };
     /** @description One revision's region set — every rectangle text is read from, with the values that may be null because the source did not state them. */

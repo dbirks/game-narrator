@@ -2490,7 +2490,7 @@ pre.muted {
   padding-top: var(--sp-12);
 }
 
-/* ── the Cast redesign (ADR-0134) ────────────────────────────────────────────
+/* ── the Cast redesign (ADR-0135) ────────────────────────────────────────────
    The shared voiced count in the header, the bulk bar (voice everyone /
    name the speakers), the roster's filter chips and name search, the
    row's single primary action, and the voice picker's room: full-height
@@ -2504,7 +2504,7 @@ pre.muted {
   margin-left: auto;
 }
 
-/* The header's one number about the work (ADR-0134): the same definition
+/* The header's one number about the work (ADR-0135): the same definition
    the Library card and the status bar read from the server. */
 .cast-voiced-chip {
   font-family: var(--font-mono);
@@ -2518,7 +2518,7 @@ pre.muted {
   color: var(--ink);
 }
 
-/* The bulk work (ADR-0134): the screen's two one-go actions and their
+/* The bulk work (ADR-0135): the screen's two one-go actions and their
    progress. The progress note is a status line (role=status), so a screen
    reader announces the count as the jobs land. The agent-role note is the
    screen's own remedy text: it keeps the bar one line at the review width
@@ -2545,7 +2545,7 @@ pre.muted {
   color: var(--muted);
 }
 
-/* The roster's filter chips (ADR-0134): All hides the retired rows by
+/* The roster's filter chips (ADR-0135): All hides the retired rows by
    default (the Retired chip is where they live); each chip carries its own
    count. The name search sits at the row's end. */
 .cast-filters {
@@ -2609,7 +2609,7 @@ pre.muted {
   color: var(--muted);
 }
 
-/* The row's single primary action (ADR-0134): a quiet mono button in the
+/* The row's single primary action (ADR-0135): a quiet mono button in the
    row's last cell — Listen / Pick a voice / Name — the work the row
    offers, one per row. */
 .cast-row-action {
@@ -2620,7 +2620,7 @@ pre.muted {
   padding: 3px 10px;
   border: 1px solid var(--ink);
   border-radius: var(--radius-pill);
-  /* The chip's surface language (ADR-0134): a card background under the
+  /* The chip's surface language (ADR-0135): a card background under the
      text, not the ambient row — under Lilac Night the row's surface is the
      dark page/card, where a hard --ink would sit at 1.2:1 (the axe gate is
      zero serious), and the card keeps the button legible over a selected
@@ -2640,7 +2640,7 @@ pre.muted {
   font-size: 12px;
 }
 
-/* The picker's room (ADR-0134): at the review widths the panel is the
+/* The picker's room (ADR-0135): at the review widths the panel is the
    screen's right column — full column height, sticky while the roster
    scrolls, its own overflow when a long run fills it. */
 @media (min-width: 1101px) {
@@ -2657,7 +2657,7 @@ pre.muted {
   }
 }
 
-/* Below 600px the picker is a full-screen sheet (ADR-0134): the roster
+/* Below 600px the picker is a full-screen sheet (ADR-0135): the roster
    stays behind it, the sheet owns the viewport, and the way out is the ✕,
    the Escape key, or the browser back (the selection is the URL's
    character param, so back clears it). */
@@ -2696,7 +2696,7 @@ pre.muted {
   background: var(--peach);
 }
 
-/* "Name this speaker" (ADR-0134): the import's placeholder row — the
+/* "Name this speaker" (ADR-0135): the import's placeholder row — the
    lines the row holds, a name, and the speaker-link. */
 .cast-name-speaker {
   padding: var(--sp-12);

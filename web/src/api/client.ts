@@ -765,7 +765,7 @@ export const catalogApi = {
     }) as Promise<{ characters: Character[] }>;
   },
   /**
-   * The curator's speaker-link action (ADR-0070, extended by ADR-0134): the
+   * The curator's speaker-link action (ADR-0070, extended by ADR-0135): the
    * placeholder {characterId} is identified as an existing roster row
    * (`target_character_id`) or as a character by `name` — the existing
    * non-retired row of that exact name when one exists, a new confirmed

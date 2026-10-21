@@ -31,7 +31,7 @@ export const DEFAULT_BRIEF =
 export const CONSENT_DEFAULT = "original_synthetic_design";
 
 /**
- * The shared voiced-count definition (ADR-0134), mirrored on the client the
+ * The shared voiced-count definition (ADR-0135), mirrored on the client the
  * way the server derives it (Store.ProfileCharacterVoiceCounts, used by the
  * Library read and the status bar): the denominator is the profile's active
  * speaking characters — rows not retired that hold at least one assigned
@@ -84,7 +84,7 @@ export function hasSourceFieldEvidence(messages: Message[]): boolean {
 }
 
 /**
- * The roster's "unnamed speaker" predicate (ADR-0134, the old speaker-
+ * The roster's "unnamed speaker" predicate (ADR-0135, the old speaker-
  * placeholder section's own rule): a proposed row whose assigned lines carry
  * the source's own linkage — the import's placeholder for a speaker the
  * source names only as an identifier. Those rows are the screen's
@@ -102,7 +102,7 @@ export function lineCountOf(character: Character, messages: Message[]): number {
 }
 
 /**
- * The roster's presentation order (ADR-0134): named and voiced first
+ * The roster's presentation order (ADR-0135): named and voiced first
  * (line count descending, then name), then named needs-a-voice (line count
  * descending), then unnamed voiced, then unnamed needs-a-voice. Retired rows
  * sort last, under everything, so the default view ("All") ends with the
@@ -139,7 +139,7 @@ export function castOrder(
   });
 }
 
-/** The roster's filter chips (ADR-0134): the counts are the chip's own
+/** The roster's filter chips (ADR-0135): the counts are the chip's own
  *  figures, and `Retired` is the one chip that opens a hidden world —
  *  retired rows are out of every other chip and of the default view. */
 export const CAST_FILTERS = [
@@ -202,7 +202,7 @@ export type CastView = "list" | "cards";
 
 export const CAST_FILTER_STORAGE_KEY = "gn.cast.filter";
 
-/** The row's one primary action (ADR-0134): the label the row's button
+/** The row's one primary action (ADR-0135): the label the row's button
  *  carries — **Listen** for a row the box speaks, **Pick a voice** for a
  *  named row without a live take, **Name** for the import's placeholder
  *  rows, and nothing for a retired row (it has no work to do). */

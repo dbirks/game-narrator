@@ -24,7 +24,7 @@ import {
   type VoiceRevision,
 } from "../../api/voices";
 import { ErrorState, Loading } from "../../components/states";
-import { DitherCover, NameTab, PillButton, Waveform } from "../../components/kit";
+import { DitherCover, NameTab, PillButton, Switch, Waveform } from "../../components/kit";
 import { CastAuditionPanel, VoiceGainControl } from "./CastAuditions";
 import {
   attributionOf,
@@ -53,6 +53,13 @@ export interface CastDetailPanelProps {
   profileId: string;
   /** The profile's auto-cast dial, as the page last read it (ADR-0109). */
   autoCast: boolean;
+  /** The profile's narrator fallback dial, as the page last read it
+   *  (ADR-0101): the take work's other escape hatch, in the panel the way
+   *  the header's dial is at the screen's level. */
+  narratorFallback: boolean;
+  /** Toggle the profile's narrator fallback dial (the same write as the
+   *  header's switch — both read and set the profile's one flag). */
+  onNarratorChange: (enabled: boolean) => void;
   /** The voice workflow is unwired on this appliance (503, docs/spec/13):
    *  the voice work degrades to a note — the roster and the facts stay. */
   voicesUnavailable: boolean;
@@ -62,7 +69,7 @@ export interface CastDetailPanelProps {
    *  URL's `character` param, so closing is the parent clearing it. */
   onClose: () => void;
   /** The speaker-link resolved: the URL's selection follows the name the
-   *  row now carries (ADR-0134), so the panel re-mounts on the named row. */
+   *  row now carries (ADR-0135), so the panel re-mounts on the named row. */
   onNamed?: (name: string) => void;
 }
 
@@ -73,7 +80,7 @@ export function CastDetailPanel(p: CastDetailPanelProps) {
   const previewInput = useRef<HTMLInputElement>(null);
 
   // The picker is a selection: the ✕ and the Escape key both clear it
-  // (keyboard access to the sheet, ADR-0134). The listener is on the
+  // (keyboard access to the sheet, ADR-0135). The listener is on the
   // window while the panel is mounted — the selection's own frame.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -312,7 +319,7 @@ export function CastDetailPanel(p: CastDetailPanelProps) {
         </label>
       )}
 
-      {/* The import's placeholder rows (ADR-0134): the row the source names
+      {/* The import's placeholder rows (ADR-0135): the row the source names
           only as an identifier is named here — the lines the row holds, a
           name, and the speaker-link that resolves it (an existing row of
           that exact name when one exists, a new confirmed character when it
@@ -384,6 +391,18 @@ export function CastDetailPanel(p: CastDetailPanelProps) {
               {undo.isPending ? "Keeping old take…" : "Keep old take (undo)"}
             </PillButton>
           ) : null}
+          {/* The take work's other escape hatch (ADR-0101): with it on, this
+              character's lines whose take is not yet approved speak through
+              the narrator voice instead of going silent. It is the
+              profile's one dial — the header's switch is the same control at
+              the screen's level, so the two stay in agreement. */}
+          <Switch
+            className="narrator"
+            label="use narrator voice"
+            checked={p.narratorFallback}
+            onChange={(enabled) => p.onNarratorChange(enabled)}
+            testid="cast-narrator-toggle"
+          />
         </div>
       )}
 
@@ -446,7 +465,7 @@ function badgeClassOf(state: string): string {
   return "draft";
 }
 
-/** "Name this speaker" (ADR-0134): the import's placeholder row — the
+/** "Name this speaker" (ADR-0135): the import's placeholder row — the
  *  source named its speaker only as an identifier, and the import minted a
  *  proposed row for it. The block shows the lines the row holds, takes a
  *  name, and runs the speaker-link with that name: an existing non-retired

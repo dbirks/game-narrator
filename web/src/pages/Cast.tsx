@@ -1,13 +1,13 @@
 /**
  * `src/pages/Cast.tsx` — `/games/:id/cast`, the merged Cast screen
  * (docs/design/plum-peach 2d, ADR-0093; the voice-picking redesign per
- * ADR-0134): one cast, one place to review voices. It replaces the former
+ * ADR-0135): one cast, one place to review voices. It replaces the former
  * `/games/:id/characters` (roster, attribution, speaker placeholders) and
  * `/games/:id/voices` (voice brief, auditions, approval, registration,
  * preview) pages; the old paths redirect here (the router's seams in
  * src/App.tsx).
  *
- * The redesign (ADR-0134): the roster reads in the order the work needs —
+ * The redesign (ADR-0135): the roster reads in the order the work needs —
  * named and voiced first, named needs-a-voice next (line count descending),
  * then the import's "unnamed speaker" rows, and the retired rows hidden
  * behind their own chip (`All` hides them by default) — with filter chips
@@ -32,7 +32,7 @@
  * Selection lives in the URL (`?character=`), the same way the former
  * voices page did; the view toggle persists in localStorage under
  * `gn.cast.view`. A name is the character's identity on the voice side
- * (the voice surface is keyed by name, ADR-0134), so the URL carries the
+ * (the voice surface is keyed by name, ADR-0135), so the URL carries the
  * name the roster shows.
  */
 
@@ -94,7 +94,7 @@ const GAME_TABS = [
   { id: "publish", label: "publish" },
 ] as const;
 
-/** The bulk work's targets (ADR-0134): the named (not the import's
+/** The bulk work's targets (ADR-0135): the named (not the import's
  *  placeholder), not-retired, speaking characters that carry no live take,
  *  in the roster's own presentation order. */
 function bulkVoiceTargets(
@@ -224,7 +224,7 @@ export function CastPage() {
   // hatch — a line whose speaker has no approved take speaks through the
   // narrator instead of going silent. It lives with the auto-cast dial in
   // the header: both are profile-level, and the picker's fold at the review
-  // width keeps the take work above it (ADR-0134).
+  // width keeps the take work above it (ADR-0135).
   const setNarrator = useMutation({
     mutationFn: (enabled: boolean) => catalogApi.setNarratorFallback(profileId, enabled),
     onSuccess: (res) => {
@@ -232,7 +232,7 @@ export function CastPage() {
     },
   });
 
-  // The presentation order (ADR-0134) and the roster's filters: the chips
+  // The presentation order (ADR-0135) and the roster's filters: the chips
   // and the name search are the screen's read on the roster, and the
   // `Retired (n)` chip is where the dead rows live — `All` hides them by
   // default, so the work rows lead.
@@ -258,7 +258,7 @@ export function CastPage() {
     [roster, messages.data, voices, filter, search],
   );
 
-  // The shared voiced count (ADR-0134): the client mirror of the read the
+  // The shared voiced count (ADR-0135): the client mirror of the read the
   // Library card and the status bar take from the server, over the rows the
   // screen holds — the header chip and the filter chips derive from this
   // one pair, so the Cast screen cannot disagree with the Library about how
@@ -314,7 +314,7 @@ export function CastPage() {
     void queryClient.invalidateQueries({ queryKey: ["voice-detail"] });
   };
 
-  // ── the bulk work (ADR-0134) ──────────────────────────────────────────────
+  // ── the bulk work (ADR-0135) ──────────────────────────────────────────────
   // "Voice everyone with auto-cast": one audition run per named, unvoiced,
   // speaking character with the page's default brief, enqueued one at a
   // time (the job queue's lane is the screen's own backpressure) and
@@ -523,7 +523,7 @@ export function CastPage() {
             storageKey={CAST_VIEW_STORAGE_KEY}
             testid="cast-view-toggle"
           />
-          {/* The shared voiced count (ADR-0134): the header's one number
+          {/* The shared voiced count (ADR-0135): the header's one number
               about the work, the same definition the Library card and the
               status bar read from the server. It waits on the roster's
               lines and the voice read; the 503 says so rather than
@@ -578,7 +578,7 @@ export function CastPage() {
         </EmptyState>
       ) : null}
 
-      {/* The bulk work (ADR-0134): the screen's two one-go actions, on for a
+      {/* The bulk work (ADR-0135): the screen's two one-go actions, on for a
           draft the curator can move. */}
       {profile?.status === "draft" && canCurate && roster.length > 0 && messages.data ? (
         <div className="cast-bulk-bar" data-testid="cast-bulk-bar">
@@ -641,7 +641,7 @@ export function CastPage() {
       {roster.length > 0 ? (
         <div className="cast-layout">
           <section className="cast-roster" aria-label="Cast roster" data-testid="voice-characters">
-            {/* The filter chips (ADR-0134): All hides the retired rows by
+            {/* The filter chips (ADR-0135): All hides the retired rows by
                 default (the Retired chip is where they live), and each chip
                 carries its own count over the roster the screen holds. */}
             <div className="cast-filters" role="group" aria-label="Filter the roster">
@@ -713,6 +713,8 @@ export function CastPage() {
               currentDetailError={currentDetail.error}
               profileId={profileId}
               autoCast={autoCast}
+              narratorFallback={profile?.narrator_fallback ?? true}
+              onNarratorChange={(enabled) => setNarrator.mutate(enabled)}
               voicesUnavailable={voicesUnavailable}
               canCurate={canCurate}
               onRefresh={refresh}
@@ -750,7 +752,7 @@ function gameTabUrl(gameId: string, tab: string, profileId: string): string {
   return `/games/${gameId}/${tab}${profile}`;
 }
 
-/** List view (docs/design/plum-peach 2d, ADR-0134's compact row): avatar ·
+/** List view (docs/design/plum-peach 2d, ADR-0135's compact row): avatar ·
  *  name (or "Unnamed speaker") · lines · state pill · voice state and
  *  brief · the row's one primary action. The row testids carry the former
  *  characters page's contract (ADR-0093 merge): the table, the rows, the

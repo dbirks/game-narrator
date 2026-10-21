@@ -414,6 +414,13 @@ export default defineConfig({
       // in the test names.
       name: "health",
       testMatch: /health\.spec\.ts/,
+      // The three walks share the health server's one appliance, and the
+      // first (the signed-out states, then the one-shot claim's own 201) is
+      // only true while the appliance is unclaimed: the other two claim it
+      // (race-tolerant, ADR-0016 §7) the instant a parallel worker runs
+      // them, so the project serialises its walks — the claim order is the
+      // walk's contract, not the machine's fluke.
+      fullyParallel: false,
       use: { ...devices["Desktop Chrome"], baseURL: healthUrl },
     },
     {
@@ -584,7 +591,7 @@ export default defineConfig({
         // audition unreadable. The second entry is the cast spec's regeneration
         // brief (a genuinely edited brief, ADR-0093 UX-03d); the third is the
         // cast redesign's bulk brief (castShared's DEFAULT_BRIEF — the
-        // "voice everyone with auto-cast" work's brief, ADR-0134).
+        // "voice everyone with auto-cast" work's brief, ADR-0135).
         // FAKE_ASR_FAIL_LINE is the planted mishearing the QA badge spec asserts
         // (the flagged audition).
         FAKE_ASR_BRIEF:

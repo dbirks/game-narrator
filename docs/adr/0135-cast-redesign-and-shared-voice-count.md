@@ -1,4 +1,4 @@
-# ADR-0134: Cast redesign (ordering, filters, picker, bulk) and the shared voiced count
+# ADR-0135: Cast redesign (ordering, filters, picker, bulk) and the shared voiced count
 
 Date: 2026-11-21
 Status: accepted
@@ -74,15 +74,17 @@ placeholder, retired with lines, active 0-line, retired voice revision).
   attribution sentence leaves the cell and moves to a tooltip (the badge's
   `title`) and to the detail panel's facts.
 - **Picker.** Selecting a row opens the roomy detail panel (full-height on
-  wide layouts, full-screen sheet at ≤600px with a back action): the facts,
-  the editable brief, the character's own sample lines (runtime data, never
-  fixtures), the generated takes — each with its own player, duration and
+  wide layouts, full-screen sheet at ≤600px, closable by the ✕, the Escape
+  key or the browser back): the facts, the editable brief, the character's
+  own sample lines (runtime data, never fixtures), the generated takes —
+  each with its own player, the kit's waveform and duration and the
   transcript (the audition cards) — **Approve this take**, **Generate more**,
   and **Use narrator voice** (the per-profile narrator fallback, ADR 0101:
   with it on, this character's lines speak through the narrator voice until
-  a take is approved). Keyboard accessible: every control is a real
-  interactive element, the sheet traps the page behind it, and Escape closes
-  it.
+  a take is approved). The same dial sits in the page header beside the
+  auto-cast dial — both switches are the profile's one flag, so the panel
+  and the header stay in agreement. Keyboard accessible: every control is a
+  real interactive element, and Escape closes the sheet.
 - **Bulk.** A cast bar over the roster: **Voice everyone with auto-cast**
   enqueues the existing one-take `voice.auditions` jobs for every named,
   unvoiced, speaking character (the ADR 0109 jobs; the page polls each job

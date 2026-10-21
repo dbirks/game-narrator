@@ -185,7 +185,7 @@ test("voice setup: auditions, consent-gated approval, registration, preview cach
   await expect(page.getByTestId("audition-card-0")).toContainText("fake-voicedesign");
 
   // ── 6. approval: the record is the profile's consent default, taken with
-  // a selected take (ADR-0134) ────────────────────────────────────────────────
+  // a selected take (ADR-0135) ────────────────────────────────────────────────
   // The consent record is prefilled with the profile's consent default (the
   // record the auto-cast approval attributes, ADR-0109), so the required
   // note is gone and the button's one gate is a selected take; the server

@@ -182,7 +182,7 @@ test("curate a full synthetic game through the UI only, then re-import the expor
   }
 
   // The approval is consent-gated on the page the way it is on the server:
-  // the record is prefilled with the profile's consent default (ADR-0134), so
+  // the record is prefilled with the profile's consent default (ADR-0135), so
   // the page's gate is a selected take, not an empty record.
   await expect(page.getByTestId("consent-input")).toHaveValue(CONSENT);
   await expect(page.getByTestId("consent-required-note")).toHaveCount(0);
