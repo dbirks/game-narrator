@@ -487,10 +487,14 @@ textarea:focus-visible,
 }
 
 /* The page container every route renders inside: full width, the design's
-   page padding, a top offset that clears the sticky chrome. */
+   page padding, a top offset that clears the sticky chrome. The bottom
+   gutter (64px) clears the floating agent pill (Phase 2 global fix): the
+   pill is fixed to the viewport, so a short page's last row would otherwise
+   sit under it at the bottom-right (the theme token grid's HAIR column, the
+   cast panel's "3 more takes" — the review's overlaps). */
 .page-container {
   min-height: 100vh;
-  padding: var(--sp-22) var(--sp-24) var(--sp-32);
+  padding: var(--sp-22) var(--sp-24) 64px;
   box-sizing: border-box;
 }
 
@@ -591,6 +595,30 @@ textarea:focus-visible,
   border: 1px solid color-mix(in srgb, var(--paper) 40%, transparent);
   border-radius: var(--radius-tag);
   padding: 0 4px;
+}
+
+/* The floating pill's phone-width docking (the Phase 2 global fix): below
+   ~640px it is a full-width bottom bar and the page's bottom gutter clears
+   it, so it never sits over the page's last row (the Library's headings at
+   390, the theme token grid's HAIR column, the cast panel's "3 more
+   takes"). */
+@media (max-width: 640px) {
+  .agent-pill {
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: auto;
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+    border-bottom: none;
+    justify-content: center;
+    padding: var(--sp-10) var(--sp-16);
+  }
+
+  .page-container {
+    padding-bottom: calc(44px + var(--sp-16));
+  }
 }
 
 .agent-dock {
