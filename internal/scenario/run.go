@@ -421,6 +421,16 @@ type run struct {
 	// plays each one through the filesink, so the audio evidence check
 	// counts their WAVs the way it counts the immediate path's.
 	cuMergedOcc map[string]bool
+
+	// Per-character voices (issue #36, gap G3, ADR-0132): the scenario's
+	// approved roster (speaker label to voice name, copied at run start so
+	// a shared scenario struct is never mutated) and the voice each started
+	// occurrence was synthesised with. The latter lets the terminals
+	// (finishUtterances, applySpeech) name the occurrence's OWN voice rather
+	// than the scenario's default, so the timeline's voice_id agrees with
+	// the request every record of the utterance carries.
+	voices     map[string]string
+	voiceByOcc map[string]string // occurrence → the voice it was synthesised with (mu)
 }
 
 // scenarioNarratedKinds renders the scenario's narrated classes as the
@@ -453,6 +463,10 @@ func regionKindHint(profile *Profile) string {
 }
 
 func newRun(sc *Scenario, repoRoot, framesDir string, profile *Profile, truth []Truth, idx *matcher.Index) *run {
+	voices := make(map[string]string, len(sc.Voices))
+	for k, v := range sc.Voices {
+		voices[k] = v
+	}
 	return &run{
 		sc:            sc,
 		repoRoot:      repoRoot,
@@ -475,6 +489,8 @@ func newRun(sc *Scenario, repoRoot, framesDir string, profile *Profile, truth []
 		audio:         map[string][]byte{},
 		cuMergedOcc:   map[string]bool{},
 		cuActive:      map[int64]bool{},
+		voices:        voices,
+		voiceByOcc:    map[string]string{},
 	}
 }
 
@@ -855,7 +871,13 @@ func (r *run) schedulerStats() speech.Stats {
 // that reached the sink, a missing file for a started one is lost evidence
 // — and no temporary file may remain (the filesink stages each evidence
 // WAV as a .tmp file and renames it on finish; a leftover .tmp is an
-// unfinished or abandoned write).
+// unfinished or abandoned write). Per utterance (issue #36, ADR-0132): every
+// started occurrence — the immediate path's and the catch-up runs' — must
+// have its OWN evidence WAV, named after its own utterance id (the sink's
+// file is gen<generation>-<SafeName(utterance)>-<seq>.wav): the aggregate
+// count alone cannot see a run that wrote one utterance's audio under
+// another utterance's name, and "the evidence WAV exists per utterance" is
+// what the two-voice scenario asserts.
 func (r *run) audioEvidenceCheck() (Result, bool) {
 	if r.audioDir == "" {
 		return Result{}, false
@@ -868,6 +890,13 @@ func (r *run) audioEvidenceCheck() (Result, bool) {
 	r.mu.Unlock()
 	r.cuMu.Lock()
 	merged := len(r.cuMergedOcc)
+	wantParts := make(map[string]bool, len(started)+merged)
+	for occ := range started {
+		wantParts["-"+filesink.SafeName(occ)+"-"] = true
+	}
+	for occ := range r.cuMergedOcc {
+		wantParts["-"+filesink.SafeName(occ)+"-"] = true
+	}
 	r.cuMu.Unlock()
 
 	entries, err := os.ReadDir(r.audioDir)
@@ -876,6 +905,10 @@ func (r *run) audioEvidenceCheck() (Result, bool) {
 	}
 	var offenders []string
 	files := 0
+	havePart := make(map[string]bool, len(wantParts))
+	for part := range wantParts {
+		havePart[part] = false
+	}
 	for _, e := range entries {
 		name := e.Name()
 		if strings.HasSuffix(name, ".tmp") {
@@ -886,6 +919,11 @@ func (r *run) audioEvidenceCheck() (Result, bool) {
 			continue
 		}
 		files++
+		for part := range wantParts {
+			if strings.Contains(name, part) {
+				havePart[part] = true
+			}
+		}
 	}
 	// The expected count is the immediate path's started utterances plus the
 	// catch-up runs (issue #25, ADR-0122): each flush's run plays through
@@ -894,7 +932,12 @@ func (r *run) audioEvidenceCheck() (Result, bool) {
 	if len(offenders) == 0 && files != want {
 		offenders = append(offenders, fmt.Sprintf("%d evidence WAV(s) in the sink dir for %d started utterance(s) and %d catch-up run(s): every started utterance and every run must leave exactly one, and no other utterance may leave one", files, len(started), merged))
 	}
-	detail := fmt.Sprintf("sink dir %s: %d evidence WAV(s) for %d started utterance(s) and %d catch-up run(s), no temporary file", r.audioDir, files, len(started), merged)
+	for part, ok := range havePart {
+		if !ok {
+			offenders = append(offenders, fmt.Sprintf("no evidence WAV named after utterance %q in the sink dir", strings.Trim(part, "-")))
+		}
+	}
+	detail := fmt.Sprintf("sink dir %s: %d evidence WAV(s) for %d started utterance(s) and %d catch-up run(s), one per utterance, no temporary file", r.audioDir, files, len(started), merged)
 	if len(offenders) > 0 {
 		return Result{Type: "audio_evidence_clean", Passed: false, Detail: strings.Join(offenders, "; ")}, true
 	}
@@ -1214,10 +1257,23 @@ func (r *run) speak(ctx context.Context, c commitInfo) {
 	r.spoken[c.occurrence] = true
 	r.mu.Unlock()
 
+	// The per-character voice (issue #36, gap G3, ADR-0132): the line's
+	// speaker's approved voice when the scenario declares one, else the
+	// narrator's. It rides the TTS request, the session's lifecycle events
+	// and the cache key — every record of the utterance names the voice the
+	// request was made with.
+	speaker := r.speakerFor(c.messageID)
+	voice := r.voiceFor(speaker)
+	if voice != r.voice || speaker != "narrator" {
+		r.mu.Lock()
+		r.voiceByOcc[c.occurrence] = voice
+		r.mu.Unlock()
+	}
+
 	if r.sc.Inference.TTS == InferenceNone {
 		// No voice layer in this scenario: the M2 sidecar shape applies the
-		// lifecycle directly, with the scenario's voice named.
-		r.applySpeech(ctx, c, session.SpeechReady, "")
+		// lifecycle directly, with the resolved voice named.
+		r.applySpeech(ctx, c, session.SpeechReady, "", voice)
 		return
 	}
 
@@ -1241,20 +1297,20 @@ func (r *run) speak(ctx context.Context, c commitInfo) {
 	pctx, cancel := context.WithTimeout(ctx, providerTimeout)
 	defer cancel()
 	r.ttsWrap.stampMS = c.tsMS
-	audio, err := r.ttsWrap.GenerateStream(pctx, tts.GenerateRequest{Text: c.text, Voice: r.voice})
+	audio, err := r.ttsWrap.GenerateStream(pctx, tts.GenerateRequest{Text: c.text, Voice: voice})
 	if err != nil {
 		// Silence with a reason: the failure carries the voice that was
 		// requested, never a substitute. A mid-synthesis endpoint death is
 		// the same terminal step: the utterance ends failed, and the phase
 		// fence keeps it failed — a started is refused after a failed.
-		r.applySpeech(ctx, c, session.SpeechFailed, providerErrorKind(err))
+		r.applySpeech(ctx, c, session.SpeechFailed, providerErrorKind(err), voice)
 		return
 	}
 	// Report material: the actual synthesized bytes, per occurrence.
 	r.mu.Lock()
 	r.audio[c.occurrence] = audio.WAV
 	r.mu.Unlock()
-	key := fmt.Sprintf("text=%s|voice=%s", fold(c.text), r.voice)
+	key := fmt.Sprintf("text=%s|voice=%s", fold(c.text), voice)
 	latency := int64(audio.Latency / time.Millisecond)
 	// One fresh header per lifecycle step: the messages share the occurrence
 	// but not the sequence — reusing the Ready header on the Started would
@@ -1264,7 +1320,7 @@ func (r *run) speak(ctx context.Context, c commitInfo) {
 		RegionID:      c.region,
 		OccurrenceID:  c.occurrence,
 		Kind:          session.SpeechReady,
-		VoiceID:       r.voice,
+		VoiceID:       voice,
 		VoiceRevision: 1,
 		CacheKey:      key,
 		LatencyMS:     latency,
@@ -1324,16 +1380,19 @@ func (r *run) speak(ctx context.Context, c commitInfo) {
 }
 
 // applySpeech pushes one lifecycle step through the session's speech fence.
-func (r *run) applySpeech(ctx context.Context, c commitInfo, kind session.SpeechKind, failKind string) {
+// voice is the occurrence's resolved voice (the immediate path's, issue #36
+// ADR-0132): the event must name the voice the request was made with, not
+// the scenario's default.
+func (r *run) applySpeech(ctx context.Context, c commitInfo, kind session.SpeechKind, failKind, voice string) {
 	m := session.SpeechMsg{
 		Header:       r.msgHeader(c.generation),
 		RegionID:     c.region,
 		OccurrenceID: c.occurrence,
 		Kind:         kind,
-		VoiceID:      r.voice,
+		VoiceID:      voice,
 	}
 	if failKind != "" {
-		m.Error = failKind + ": " + r.voice
+		m.Error = failKind + ": " + voice
 	}
 	if _, err := r.session.Apply(ctx, m); err != nil {
 		// A refused speech step is the fence working (invalid phase, unknown
@@ -1349,21 +1408,30 @@ func (r *run) applySpeech(ctx context.Context, c commitInfo, kind session.Speech
 func (r *run) finishUtterances(ctx context.Context) {
 	r.mu.Lock()
 	live := make([]string, 0, len(r.started))
+	voiceOf := make(map[string]string, len(r.started))
 	for occ := range r.started {
 		live = append(live, occ)
+		voiceOf[occ] = r.voiceByOcc[occ]
 	}
 	r.mu.Unlock()
 	for _, occ := range live {
 		// A settling line's terminal is a new observation (playback ended now),
 		// so the header carries the current generation; the occurrence id, not
 		// the generation, ties the terminal to the line still being heard
-		// (issue #25, ADR-0122 decision 8).
+		// (issue #25, ADR-0122 decision 8). The terminal names the
+		// occurrence's own voice — the one its request was made with
+		// (issue #36, ADR-0132), the scenario's default when the occurrence
+		// recorded none.
+		voice := voiceOf[occ]
+		if voice == "" {
+			voice = r.voice
+		}
 		m := session.SpeechMsg{
 			Header:       r.msgHeader(r.session.Generation()),
 			RegionID:     r.region,
 			OccurrenceID: occ,
 			Kind:         session.SpeechEnded,
-			VoiceID:      r.voice,
+			VoiceID:      voice,
 		}
 		_, _ = r.session.Apply(ctx, m)
 	}
@@ -1388,6 +1456,22 @@ func (r *run) speakerFor(messageID string) string {
 		return sp
 	}
 	return "narrator"
+}
+
+// voiceFor is the harness's voice resolution for one speaker (issue #36,
+// gap G3, ADR-0132): the scenario's approved voice for that speaker when
+// one is declared, else the narrator's voice (r.voice, the scenario's
+// inference.voice) — the runtime's resolution at harness scale: the
+// character's voice, the narrator's when the line is unattributed or the
+// speaker has none (ADR-0101), never a different character's voice and
+// never a builtin. Under latest_only, or a scenario without a voices block,
+// every speaker resolves to the narrator's voice: the historical
+// single-voice behaviour, so no pre-existing scenario changes.
+func (r *run) voiceFor(speaker string) string {
+	if v, ok := r.voices[speaker]; ok && v != "" {
+		return v
+	}
+	return r.voice
 }
 
 // routeSpeech is the commit→speech hand-off under the session's catch-up
@@ -1606,7 +1690,14 @@ func (r *run) speakMerged(ctx context.Context, occ string, gen int64, run speech
 	}()
 	pctx, cancel := context.WithTimeout(ctx, providerTimeout)
 	defer cancel()
-	audio, err := r.ttsWrap.GenerateStream(pctx, tts.GenerateRequest{Text: run.Text, Voice: r.voice})
+	// The run's voice resolves from the run's speaker (issue #36, gap G3,
+	// ADR-0132): the merged id is not in the speaker table, so the speaker —
+	// the decision's input, not a lookup — carries the roster, the same rule
+	// the runtime's merged runs follow (resolveVoiceForCharacter on the run's
+	// speaker). An unattributed run's speaker is the narrator's, whose voice
+	// is the scenario's inference.voice.
+	voice := r.voiceFor(run.Speaker)
+	audio, err := r.ttsWrap.GenerateStream(pctx, tts.GenerateRequest{Text: run.Text, Voice: voice})
 	if err != nil {
 		// The run's one terminal: the lines it covered end failed with the
 		// provider's reason (docs/spec/13 "did it speak, and why not").
@@ -1625,6 +1716,7 @@ func (r *run) speakMerged(ctx context.Context, occ string, gen int64, run speech
 	}
 	r.mu.Lock()
 	r.audio[occ] = audio.WAV
+	r.voiceByOcc[occ] = voice
 	r.mu.Unlock()
 	// The merged run's started: the line's "spoken" evidence (the report's
 	// speech_spoken_count reads the started's covered ids), the run's ids
@@ -1637,7 +1729,7 @@ func (r *run) speakMerged(ctx context.Context, occ string, gen int64, run speech
 		"message_id":             speech.MergedOriginalID(run.MessageIDs()),
 		"message_ids":            run.MessageIDs(),
 		"generation":             gen,
-		"voice_id":               r.voice,
+		"voice_id":               voice,
 		"character_id":           run.Speaker,
 		"catch_up":               "merged",
 	})

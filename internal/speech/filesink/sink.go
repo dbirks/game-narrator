@@ -95,7 +95,7 @@ func (s *Sink) Play(ctx context.Context, req speech.PlayRequest) (speech.PlayHan
 	seq := s.seq
 	s.mu.Unlock()
 
-	name := fmt.Sprintf("gen%d-%s-%d.wav", req.Generation, safeName(req.UtteranceID), seq)
+	name := fmt.Sprintf("gen%d-%s-%d.wav", req.Generation, SafeName(req.UtteranceID), seq)
 	path := filepath.Join(s.Dir, name)
 	h := &handle{done: make(chan speech.PlayResult, 1), stop: make(chan time.Duration, 1)}
 	gain := req.Gain
@@ -230,8 +230,12 @@ func fadeTail16(buf []byte, pcm speech.WAVPCM, nMs int) {
 	}
 }
 
-// safeName keeps utterance IDs usable as a filename component.
-func safeName(s string) string {
+// SafeName keeps utterance IDs usable as a filename component: the file the
+// sink stages for one playback is gen<generation>-<SafeName(utteranceID)>
+// -<seq>.wav, so the occurrence's SafeName is the occurrence's part of the
+// evidence file name (the scenario harness's per-utterance evidence check
+// reads it back, issue #36 ADR-0132).
+func SafeName(s string) string {
 	if s == "" {
 		return "u"
 	}

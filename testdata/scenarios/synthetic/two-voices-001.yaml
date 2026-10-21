@@ -1,0 +1,150 @@
+# Two characters, two approved voices, speaking back to back (issue #36,
+# gap row G3 of the 2026-10-21 acceptance audit; ADR-0132; docs/spec/11
+# "Fixture origins").
+#
+# The clip (testdata/synthetic/replay/two-voices-001) shows three textboxes
+# at a 400 ms cadence. Box 1 and box 2 belong to two different characters,
+# box 3 is unattributed. The speaker attribution and the per-character
+# approved voices are declared HERE, in the scenario: the profile carries no
+# character or voice rows, so the synthetic scenario is where the
+# attribution and the roster live. With the session running the product's
+# catch_up policy and the tone outlasting the 400 ms commit cadence
+# (inference.tts_tone_ms), box 1 commits while speech is idle and speaks at
+# once in its character's voice; boxes 2 and 3 commit while the previous
+# utterance is still playing, so they speak back-to-back as two separate
+# speaker runs — box 2 in its character's voice, box 3 unattributed and
+# therefore the narrator's. The assertions grade the per-character
+# resolution end to end: the TTS request for each line names that line's
+# own voice (the speech.started record carries it), no character's line
+# falls back to the narrator or to the other character's voice, the
+# unattributed line lands on the narrator, and every utterance leaves its
+# evidence WAV in the sink's directory.
+#
+# The voice roster, all in the registry's automated-test scheme
+# gn_test_<hex8> (internal/providers/tts registry names; the loader
+# validates every voices: entry against that scheme):
+#
+#   mara        gn_test_5d41402a   (box 1's character)
+#   eldo        gn_test_9e107d2d   (box 2's character)
+#   narrator    gn_test_4b715186   (inference.voice, the unattributed line)
+#
+# Every frame and sentence is generated (docs/spec/11); the origin field
+# carries that claim.
+schema_version: 1
+id: synthetic/two-voices-001
+origin: generated_synthetic
+profile: two-voices-001
+mode: frame_replay
+input:
+  frames_dir: testdata/synthetic/replay/two-voices-001
+  timestamps: timestamps.json
+inference:
+  # The local chain (OCR, matcher, session) with no model endpoints, the
+  # way the catch-up scenario runs; the TTS endpoint is the fake gateway
+  # (recorded) because the assertions read the voice of the requests it
+  # answers. inference.voice is the NARRATOR's voice: the fallback a line
+  # takes when its speaker has no approved voice or the line is unattributed
+  # (ADR-0101's fallback, at harness scale).
+  decision: none
+  tts: recorded
+  voice: gn_test_4b715186
+  # The tone outlasts the 400 ms commit cadence: a line committed while the
+  # previous utterance is still playing is the back-to-back line the
+  # per-character resolution grades, never a cut one.
+  tts_tone_ms: 1000
+# The session's catch-up narration policy. The product's default is
+# catch_up; this scenario states it explicitly, the way the catch-up
+# scenario does, because the harness defaults a scenario's policy to
+# latest_only for the graded shape of every pre-existing scenario — and the
+# per-speaker voices below are read only under catch_up (ADR-0132).
+catch_up: catch_up
+# The synthetic speaker attribution: two characters, and box 3 deliberately
+# unattributed — the line the narrator handles (the same fallback the
+# runtime's speaker resolution applies to an unattributed line).
+speakers:
+  tv-01: mara
+  tv-02: eldo
+# The per-character approved voices: speaker label to voice name, keyed by
+# the speakers' labels. Every entry is validated against the registry's
+# name scheme at load (a voice the registry would refuse is a load error).
+# A speaker with no entry here — and every unattributed line — falls back
+# to inference.voice, the narrator.
+voices:
+  mara: gn_test_5d41402a
+  eldo: gn_test_9e107d2d
+assertions:
+  # All three lines commit, once each, on schedule (repeated observations of
+  # the held box must not re-commit).
+  - type: message_detected
+    message_id: tv-01
+    max_delay_ms: 1500
+  - type: message_detected
+    message_id: tv-02
+    max_delay_ms: 1500
+  - type: message_detected
+    message_id: tv-03
+    max_delay_ms: 1500
+  - type: message_committed_count
+    message_id: tv-01
+    count: 1
+  - type: message_committed_count
+    message_id: tv-02
+    count: 1
+  - type: message_committed_count
+    message_id: tv-03
+    count: 1
+  - type: no_duplicate_commit
+  # Each character's line is synthesised with its own character's registered
+  # voice: the TTS request names the voice, and the speech.started record
+  # that rides the timeline carries it. A line that resolved to the other
+  # character's voice — or fell back to the narrator when its character has
+  # an approved one — is the per-character regression this scenario exists
+  # to catch (issue #36, gap G3).
+  - type: speech_voice
+    message_id: tv-01
+    voice: gn_test_5d41402a
+  - type: speech_voice
+    message_id: tv-02
+    voice: gn_test_9e107d2d
+  # The unattributed line is the narrator's: it speaks in inference.voice
+  # (the narrator's registered voice), never in either character's voice.
+  - type: speech_voice
+    message_id: tv-03
+    voice: gn_test_4b715186
+  # Every line spoken exactly once: an immediate line by its own started
+  # utterance, a back-to-back line by the run that carries it. A line the
+  # fence skipped would count zero and fail this.
+  - type: speech_spoken_count
+    message_id: tv-01
+    count: 1
+  - type: speech_spoken_count
+    message_id: tv-02
+    count: 1
+  - type: speech_spoken_count
+    message_id: tv-03
+    count: 1
+  # No line speaks more than once, and no line completes stale: the fence
+  # still applies under catch_up (docs/spec/01 invariant 2).
+  - type: no_duplicate_speech
+    message_id: tv-01
+  - type: no_duplicate_speech
+    message_id: tv-02
+  - type: no_duplicate_speech
+    message_id: tv-03
+  - type: no_stale_speech
+    message_id: tv-01
+  - type: no_stale_speech
+    message_id: tv-02
+  - type: no_stale_speech
+    message_id: tv-03
+  - type: no_stale_generation_applied
+  # No invented line: every commit names one of the three real lines.
+  - type: committed_only
+    names:
+      - tv-01
+      - tv-02
+      - tv-03
+  # The evidence WAVs are graded by the implicit audio_evidence_clean check
+  # the harness appends to every TTS scenario: exactly one evidence WAV per
+  # started utterance, present under each utterance's own name, no temporary
+  # file left behind.

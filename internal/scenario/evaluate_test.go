@@ -278,3 +278,62 @@ func detailOf(r Report) string {
 	}
 	return r.Results[0].Detail
 }
+
+// --- per-character voices (issue #36, gap G3, ADR-0132) ----------------------
+
+func startedEvent(messageID string, voice string, extra ...map[string]any) events.Envelope {
+	data := map[string]any{
+		"message_id":             messageID,
+		"dialogue_occurrence_id": "occ-" + messageID,
+		"voice_id":               voice,
+	}
+	for _, m := range extra {
+		for k, v := range m {
+			data[k] = v
+		}
+	}
+	return ev(events.SpeechStarted, data)
+}
+
+// TestEvalSpeechVoice probes the per-character voice assertion in both of the
+// started records' shapes (the session's immediate form and the merged run's
+// covered-ids form) with passing and failing voices: the line's own voice
+// passes, another character's voice or the narrator's where the character has
+// one fails, and a line no utterance covers fails as never spoken.
+func TestEvalSpeechVoice(t *testing.T) {
+	a := Assertion{Type: "speech_voice", MessageID: "tv-01", Voice: "gn_test_5d41402a"}
+	// The immediate form: the session's started names the line and the voice.
+	if r := sc(a).Evaluate([]events.Envelope{startedEvent("tv-01", "gn_test_5d41402a")}, pipeline.Stats{}, clipTruth); !r.Passed {
+		t.Fatalf("the line's own voice must pass: %s", detailOf(r))
+	}
+	// The merged form: the run's started carries the covered ids.
+	merged := startedEvent("m2:tv-01,tv-02", "gn_test_5d41402a", map[string]any{"message_ids": []string{"tv-01", "tv-02"}, "catch_up": "merged"})
+	if r := sc(a).Evaluate([]events.Envelope{merged}, pipeline.Stats{}, clipTruth); !r.Passed {
+		t.Fatalf("a merged run covering the line must pass: %s", detailOf(r))
+	}
+	// Another character's voice is the substitution the assertion exists to
+	// catch: it fails with the foreign voice named.
+	foreign := sc(a).Evaluate([]events.Envelope{startedEvent("tv-01", "gn_test_9e107d2d")}, pipeline.Stats{}, clipTruth)
+	if foreign.Passed {
+		t.Fatalf("another character's voice must fail")
+	}
+	if !strings.Contains(detailOf(foreign), "gn_test_9e107d2d") {
+		t.Fatalf("detail %q does not name the foreign voice", detailOf(foreign))
+	}
+	// A line no utterance covered fails as never spoken.
+	if r := sc(a).Evaluate([]events.Envelope{startedEvent("tv-02", "gn_test_9e107d2d")}, pipeline.Stats{}, clipTruth); r.Passed {
+		t.Fatalf("a line no utterance covered must fail")
+	}
+	// A started without a voice (the scheduler's playback record) is not a
+	// voice record: it cannot satisfy the assertion.
+	noVoice := ev(events.SpeechStarted, map[string]any{"utterance_id": "occ-tv-01", "generation": 1})
+	if r := sc(a).Evaluate([]events.Envelope{noVoice}, pipeline.Stats{}, clipTruth); r.Passed {
+		t.Fatalf("a started without a voice_id must not count as the line's utterance")
+	}
+	// A mix: the line's own utterance plus a foreign one for the same line is
+	// a cross-substitution and fails.
+	mix := sc(a).Evaluate([]events.Envelope{startedEvent("tv-01", "gn_test_5d41402a"), startedEvent("tv-01", "gn_test_4b715186")}, pipeline.Stats{}, clipTruth)
+	if mix.Passed {
+		t.Fatalf("a line spoken in two voices must fail")
+	}
+}

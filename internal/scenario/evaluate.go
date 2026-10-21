@@ -170,6 +170,8 @@ func evaluateAssertion(a Assertion, evs []events.Envelope, stats pipeline.Stats,
 		return evalSpeechMerged(a, evs)
 	case "speech_skipped":
 		return evalSpeechSkipped(a, evs)
+	case "speech_voice":
+		return evalSpeechVoice(a, evs)
 	default:
 		return false, fmt.Sprintf("internal: assertion type %q has no evaluator", a.Type)
 	}
@@ -727,6 +729,57 @@ func evalSpeechSkipped(a Assertion, evs []events.Envelope) (bool, string) {
 		return false, fmt.Sprintf("message %q was skipped %d time(s), want %d", a.MessageID, skipped, a.Count)
 	}
 	return true, fmt.Sprintf("message %q was skipped exactly %d time(s)", a.MessageID, skipped)
+}
+
+// evalSpeechVoice: every utterance that speaks the named line names the
+// expected voice (issue #36, gap G3, ADR-0132) — the character's approved
+// voice when the line is attributed to a character, the narrator's when the
+// line is unattributed: the per-character resolution the single-voice
+// scenarios cannot see. The voice read is the started record's own (the
+// session's immediate started, or the merged run's started with its covered
+// ids — the same coversMessage rule speech_spoken_count uses): the timeline's
+// record of the voice the TTS request was made with. A line that resolved to
+// another character's voice, or fell back to the narrator's when its
+// character has an approved one, fails here with the foreign voice named;
+// a line no utterance covered fails as never spoken.
+func evalSpeechVoice(a Assertion, evs []events.Envelope) (bool, string) {
+	var seen []string
+	for _, e := range evs {
+		if e.Name != events.SpeechStarted {
+			continue
+		}
+		var p struct {
+			MessageID  string   `json:"message_id"`
+			MessageIDs []string `json:"message_ids"`
+			VoiceID    string   `json:"voice_id"`
+		}
+		if err := json.Unmarshal(e.Data, &p); err != nil || p.VoiceID == "" {
+			continue
+		}
+		if p.MessageID == a.MessageID {
+			seen = append(seen, p.VoiceID)
+			continue
+		}
+		for _, seg := range p.MessageIDs {
+			if seg == a.MessageID {
+				seen = append(seen, p.VoiceID)
+				break
+			}
+		}
+	}
+	if len(seen) == 0 {
+		return false, fmt.Sprintf("no speech.started covering message %q (want at least one utterance naming voice %q)", a.MessageID, a.Voice)
+	}
+	var foreign []string
+	for _, v := range seen {
+		if v != a.Voice {
+			foreign = append(foreign, v)
+		}
+	}
+	if len(foreign) > 0 {
+		return false, fmt.Sprintf("message %q was spoken with voice(s) %v, want %q: every utterance of the line must name its own voice — never another character's, never the narrator's when the character has an approved one", a.MessageID, foreign, a.Voice)
+	}
+	return true, fmt.Sprintf("message %q spoken by voice %q only (%d utterance(s))", a.MessageID, a.Voice, len(seen))
 }
 
 // staleReasons are the session fence reasons that mark a late provider result

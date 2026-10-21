@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/dbirks/game-narrator/internal/games"
+	"github.com/dbirks/game-narrator/internal/providers/tts"
 	"github.com/dbirks/game-narrator/internal/session"
 )
 
@@ -100,6 +101,20 @@ type Scenario struct {
 	// unattributed line. Read only when CatchUp is catch_up: under
 	// latest_only the merge (and with it the speaker split) never runs.
 	Speakers map[string]string
+	// Voices is the per-character approved voices (issue #36, gap row G3,
+	// ADR-0132): speaker label to voice name, keyed by the labels Speakers
+	// declares. It exists for the same reason Speakers does — the synthetic
+	// profiles carry no voice roster, so the scenario declares the roster
+	// the resolution-under-test needs. The voice a line's speaker resolves
+	// to, when one is declared; a speaker with no entry — and every
+	// unattributed line (the narrator) — takes Inference.Voice, the
+	// scenario's narrator voice (ADR-0101's fallback, at harness scale): a
+	// character's line never falls back to another character's voice. Every
+	// entry is validated at load against the registry's name scheme
+	// (tts.ValidateName): a voice the registry would refuse is a load error,
+	// the way a typo'd catalog row is. Like Speakers, read only when CatchUp
+	// is catch_up: under latest_only it would be dead config.
+	Voices map[string]string
 }
 
 // Input names where the frames and their recording manifest live, as paths
@@ -207,6 +222,7 @@ var knownAssertionTypes = map[string]bool{
 	"speech_spoken_count":         true,
 	"speech_merged":               true,
 	"speech_skipped":              true,
+	"speech_voice":                true,
 }
 
 // allowedFields is the exact field set each type accepts besides type. Extra
@@ -231,6 +247,7 @@ var allowedFields = map[string]map[string]bool{
 	"speech_spoken_count":         {"message_id": true, "count": true},
 	"speech_merged":               {"message_ids": true},
 	"speech_skipped":              {"message_id": true, "reason": true, "count": true},
+	"speech_voice":                {"message_id": true, "voice": true},
 }
 
 // Load reads the scenario YAML at path and validates it. Every error carries
@@ -457,6 +474,40 @@ func fromNode(root *ynode) (*Scenario, error) {
 		}
 	}
 
+	// voices: the per-character approved voices (issue #36, gap G3, ADR-0132);
+	// a mapping of speaker label to voice name. Allowed only with
+	// catch_up: the speaker attribution it keys on is read only under that
+	// policy, and a voices block under latest_only would be dead config. Every
+	// entry must pass the registry's name validation (the production gn_…
+	// scheme or the automated-test gn_test_<hex8> scheme): a voice the
+	// registry would refuse is a load error, the loader's usual "a promise
+	// nobody can keep is a typo".
+	if m, ok := root.child("voices"); ok {
+		if m.kind != ymap {
+			return nil, fmt.Errorf("line %d: voices must be a mapping (speaker label to voice name)", m.line)
+		}
+		if len(m.keys) == 0 {
+			return nil, fmt.Errorf("line %d: voices must name at least one speaker", m.line)
+		}
+		if s.CatchUp != session.CatchUpPolicyCatchUp {
+			return nil, fmt.Errorf("line %d: voices is only allowed with catch_up %q (the speaker attribution it keys on is read only under that policy)", m.line, session.CatchUpPolicyCatchUp)
+		}
+		s.Voices = make(map[string]string, len(m.keys))
+		for _, k := range m.keys {
+			if k == "narrator" {
+				return nil, fmt.Errorf("line %d: voices[\"narrator\"] is the narrator's slot: the narrator's voice is inference.voice (the scenario's default), the single source the unattributed lines take", m.line)
+			}
+			v, vok := m.child(k)
+			if !vok || v.kind != yscalar || v.str == "" {
+				return nil, fmt.Errorf("line %d: voices[%s] must be a non-empty voice name", m.line, k)
+			}
+			if err := tts.ValidateName(v.str); err != nil {
+				return nil, fmt.Errorf("line %d: voices[%s] %q is not a registry-approved voice name (%v)", m.line, k, v.str, err)
+			}
+			s.Voices[k] = v.str
+		}
+	}
+
 	// status / reason: the blocked register (ADR-0037). status is closed:
 	// the only value the loader understands is "blocked".
 	if status, l, ok := root.scalarStr("status"); ok {
@@ -523,7 +574,7 @@ var topLevelKeys = map[string]bool{
 	"schema_version": true, "id": true, "catalog": true, "origin": true, "profile": true,
 	"mode": true, "input": true, "inference": true, "assertions": true,
 	"faults": true, "status": true, "reason": true, "narrated_kinds": true,
-	"catch_up": true, "speakers": true,
+	"catch_up": true, "speakers": true, "voices": true,
 	// Carried by the spec's own example; accepted and ignored until a milestone
 	// consumes it.
 	"reports": true,
