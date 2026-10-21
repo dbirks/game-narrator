@@ -21,10 +21,10 @@ LDFLAGS := -X $(PKG).version=$(VERSION) -X $(PKG).commit=$(COMMIT)
 
 # Gate targets that test-full runs, in order.
 RUN_GATES := test-unit test-ui diagnostics release-snapshot bench \
-             test-replay test-dolphin test-models test-hardware secret-scan
+             test-replay test-dolphin test-av test-models test-hardware secret-scan
 
-.PHONY: bootstrap dev build web-build test-unit test-replay test-ui test-dolphin test-models \
-        test-hardware test-full lint release-snapshot verify-apt-pins diagnostics bench soak secret-scan
+.PHONY: bootstrap dev build web-build test-unit test-replay test-ui test-dolphin test-av \
+        test-models test-hardware test-full lint release-snapshot verify-apt-pins diagnostics bench soak secret-scan
 
 ## web-build: build the React UI and stage it for go:embed
 web-build:
@@ -326,6 +326,27 @@ test-dolphin:
 	rc3=$$?; \
 	if [ $$rc1 -eq 1 ] || [ $$rc2 -eq 1 ] || [ $$rc3 -eq 1 ]; then rc=1; elif [ $$rc1 -eq 2 ] || [ $$rc2 -eq 2 ] || [ $$rc3 -eq 2 ]; then rc=2; else rc=0; fi; \
 	echo $$rc > artifacts/gates/test-dolphin.rc ; exit $$rc
+
+## test-av: the multimodal Dolphin A/V harness gate (ADR-0143). The real
+## Dolphin emulator + real model providers, the isolated PipeWire null sink,
+## the shared-clock FFmpeg capture (one .mp4 + one 16 kHz mono .wav from the
+## same wall clock) of the display AND the sink's monitor, the predictive-
+## mode session driven through the first in-game conversation, the dev event
+## stream correlated onto that shared clock into a per-line timeline (box →
+## text → commit → Clef → TTS → audio, with the acoustic RMS onset measured
+## in the recorded track), the per-line multimodal clips and the per-clip
+## ASR WER/CER. The fixture's lines are pre-synthesised into the speech
+## cache (both voices) so the latency gate measures the session's own
+## stages, not a TTS round trip. Acceptance: >= 2 committed lines, no stale
+## start, no duplicate commit, and the settled → audio p50/p95 within the
+## warm-run bounds (p50<=500 ms, p95<=800 ms) unless GN_AV_NO_LATENCY_GATE=1.
+## Requires the test-dolphin host prerequisites plus pactl (PipeWire);
+## without them the test reports NOT RUN (the script exits 2). -p 1: one
+## Dolphin at a time; 45 m covers the voice design, the import, the drive
+## and the settle. Runs scripts/gates/test-av.sh, which records
+## artifacts/gates/test-av.rc.
+test-av:
+	@scripts/gates/test-av.sh
 
 ## test-models: the live provider contract gate (docs/spec/12 "provider
 ## schema — recorded every PR, live conditional") — the -run Live tests in
