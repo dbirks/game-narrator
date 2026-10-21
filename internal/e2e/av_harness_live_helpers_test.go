@@ -518,7 +518,7 @@ func avGateFailures(rep avTimelineReport) []string {
 	}
 	for i := range rep.Lines {
 		l := &rep.Lines[i]
-		if l.ExpectedVoiceID != "" && !l.VoiceMatch {
+		if l.ExpectedVoiceID != "" && l.TAudioStartEventMS > 0 && !l.VoiceMatch { // only a line that played has a voice to judge
 			fails = append(fails, fmt.Sprintf("line %d: spoken in voice %q; the line's expected voice is %q (a line with a known expected voice must speak in it); the timeline row is the evidence", l.Index, l.VoiceID, l.ExpectedVoiceID))
 		}
 	}

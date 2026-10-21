@@ -433,6 +433,24 @@ func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvel
 		byOcc[rep.Lines[i].OccurrenceID] = i
 	}
 	runLines := map[string][]int{} // run occurrence → covered line indices
+	// A cross-region duplicate (a box seen through two profile regions) is
+	// never routed: its one terminal is skipped/duplicate_region. It must not
+	// take the run's audio from the copy that was routed (run
+	// av-20261021T210125Z pinned a run on the duplicate, leaving the spoken
+	// copy with no audio).
+	dupOcc := map[string]bool{}
+	for _, e := range evs {
+		if e.Name != "speech.ended" {
+			continue
+		}
+		var d struct {
+			Occ    string `json:"dialogue_occurrence_id"`
+			Reason string `json:"reason"`
+		}
+		if json.Unmarshal(e.Data, &d) == nil && d.Reason == "duplicate_region" {
+			dupOcc[d.Occ] = true
+		}
+	}
 	for _, e := range evs {
 		if e.Name != "speech.requested" && e.Name != "speech.ready" {
 			continue
@@ -455,7 +473,7 @@ func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvel
 			// conversation is a different occurrence).
 			best := -1
 			for j := range rep.Lines {
-				if rep.Lines[j].MessageID == mid && !used[j] && !rep.Lines[j].Batched {
+				if rep.Lines[j].MessageID == mid && !used[j] && !rep.Lines[j].Batched && !dupOcc[rep.Lines[j].OccurrenceID] {
 					best = j
 				}
 			}
