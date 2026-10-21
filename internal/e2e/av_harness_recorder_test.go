@@ -186,6 +186,11 @@ func avSliceClips(t *testing.T, sessionMP4, sessionWAV, clipsDir string, lines *
 		}
 		to := l.TAudioEndMS + 300
 		dur := to - from
+		wavFrom := from
+		if l.clipAudioStartMS > 0 && l.clipAudioStartMS-100 > wavFrom && l.clipAudioStartMS < l.TAudioEndMS {
+			wavFrom = l.clipAudioStartMS - 100
+		}
+		wavDur := to - wavFrom
 		mp4 := filepath.Join(clipsDir, fmt.Sprintf("line-%02d.mp4", i+1))
 		wav := filepath.Join(clipsDir, fmt.Sprintf("line-%02d.wav", i+1))
 		// Input-side -ss (the fast seek) + -t (the clip's duration): the clips
@@ -196,8 +201,8 @@ func avSliceClips(t *testing.T, sessionMP4, sessionWAV, clipsDir string, lines *
 			t.Logf("av harness: line %02d mp4 clip failed: %v: %s", i+1, err, strings.TrimSpace(string(out)))
 			continue
 		}
-		if out, err := exec.Command("ffmpeg", "-y", "-ss", avSec(from),
-			"-i", sessionWAV, "-t", avSec(dur), "-c:a", "pcm_s16le", "-ac", "1", "-ar", "16000", wav).CombinedOutput(); err != nil {
+		if out, err := exec.Command("ffmpeg", "-y", "-ss", avSec(wavFrom),
+			"-i", sessionWAV, "-t", avSec(wavDur), "-c:a", "pcm_s16le", "-ac", "1", "-ar", "16000", wav).CombinedOutput(); err != nil {
 			t.Logf("av harness: line %02d wav clip failed: %v: %s", i+1, err, strings.TrimSpace(string(out)))
 			continue
 		}

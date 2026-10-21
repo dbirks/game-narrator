@@ -101,10 +101,10 @@ func avPreSynthesize(t *testing.T, ctx context.Context, st *store.Store, svc *vo
 			continue
 		}
 		lines = append(lines, corpusLine{key: k, msg: &storeMessage{
-			id: m.ID, norm: strings.TrimSpace(m.NormalizedText), speech: strings.TrimSpace(m.SpeechText),
+			idx: i, id: m.ID, norm: strings.TrimSpace(m.NormalizedText), speech: strings.TrimSpace(m.SpeechText),
 		}})
 		if _, ok := exact[k]; !ok {
-			exact[k] = &storeMessage{id: m.ID, norm: strings.TrimSpace(m.NormalizedText), speech: strings.TrimSpace(m.SpeechText)}
+			exact[k] = &storeMessage{idx: i, id: m.ID, norm: strings.TrimSpace(m.NormalizedText), speech: strings.TrimSpace(m.SpeechText)}
 		}
 	}
 	if len(all) == 0 {
@@ -133,6 +133,8 @@ func avPreSynthesize(t *testing.T, ctx context.Context, st *store.Store, svc *vo
 	}
 
 	inserted := 0
+	warmedIDs := map[string]bool{}
+	var targets []*storeMessage
 	for _, fix := range prof.Messages {
 		k := pcScriptKey(fix.OriginalText)
 		if k == "" {
@@ -165,6 +167,23 @@ func avPreSynthesize(t *testing.T, ctx context.Context, st *store.Store, svc *vo
 			t.Logf("prewarm: fixture line did not map onto the corpus (a cold miss live; the reading and the import must share the lines)")
 			continue
 		}
+		// Warm the mapped fixture line plus its contiguous conversation block
+		// in corpus order (the first-dialogue fixture records the opening
+		// pages; cuDriveConversation drives the rest of the same watchtower
+		// conversation).
+		for off := 0; off <= 6 && target.idx+off < len(all); off++ {
+			m := &all[target.idx+off]
+			if warmedIDs[m.ID] {
+				continue
+			}
+			warmedIDs[m.ID] = true
+			targets = append(targets, &storeMessage{
+				idx: target.idx + off, id: m.ID,
+				norm: strings.TrimSpace(m.NormalizedText), speech: strings.TrimSpace(m.SpeechText),
+			})
+		}
+	}
+	for _, target := range targets {
 		// The line's TTS text candidates (deduped): the normalized reading
 		// (the runtime's committed text) and the speech form.
 		variants := []string{}
@@ -191,13 +210,14 @@ func avPreSynthesize(t *testing.T, ctx context.Context, st *store.Store, svc *vo
 			}
 		}
 	}
-	t.Logf("prewarm: warmed %d (voice, line-text) cache entries across %d fixture lines (the live run's latency gate now measures the session, not TTS)", inserted, len(prof.Messages))
+	t.Logf("prewarm: warmed %d (voice, line-text) cache entries across %d conversation lines (the live run's latency gate now measures the session, not TTS)", inserted, len(targets))
 	return inserted
 }
 
 // storeMessage is the corpus row's prewarm-relevant fields (id + the two
 // TTS text candidates).
 type storeMessage struct {
+	idx              int
 	id, norm, speech string
 }
 

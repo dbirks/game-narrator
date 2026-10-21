@@ -79,6 +79,7 @@ type Tracker struct {
 	committedKey    string
 	committedReason string
 	predicted       bool
+	abstained       bool
 	committedFrame  int64
 
 	stats Stats
@@ -200,7 +201,7 @@ func (t *Tracker) Reset() {
 	t.text, t.raw, t.conf, t.key = "", "", 0, ""
 	t.changed = 0
 	t.anchor, t.anchorKey = "", ""
-	t.committed, t.committedReason, t.predicted = "", "", false
+	t.committed, t.committedReason, t.predicted, t.abstained = "", "", false, false
 	t.committedKey = ""
 	t.readyHold = false
 	t.stabilizedFrame = 0
@@ -224,6 +225,11 @@ type CommitRequest struct {
 	// Reason carries the matcher's reason code for the commit, and must be
 	// ReasonPredictivePrefix for a commit out of StateRevealing.
 	Reason string
+	// Abstained marks a commit whose ranking did not resolve to a known corpus
+	// message (e.g. a typewriter prefix that paused mid-reveal): a subsequent
+	// extension of the text on screen re-enters StateRevealing so the completed
+	// sentence can be ranked and matched.
+	Abstained bool
 }
 
 // Commit applies a commit decision and returns the transition it caused.
@@ -268,6 +274,7 @@ func (t *Tracker) Commit(req CommitRequest) ([]Transition, error) {
 	t.committedKey = t.key
 	t.committedReason = req.Reason
 	t.predicted = t.state == StateRevealing
+	t.abstained = req.Abstained
 	t.committedFrame = req.FrameSeq
 	t.stats.Commits++
 	return []Transition{t.moveTo(StateCommitted, req.Reason, req.FrameSeq, req.CaptureTimestampNS)}, nil
@@ -407,7 +414,7 @@ func (t *Tracker) Step(o Observation) []Transition {
 	if tailKey, run := tailRun(t.entries); run >= t.cfg.AdvanceRunFrames && tailKey != acceptedKey {
 		overrides := acceptedKey == "" ||
 			isMaterial(acceptedKey, tailKey, t.cfg.ChangeThreshold) ||
-			(t.state == StateCommitted && t.predicted && isExtension(acceptedKey, tailKey))
+			(t.state == StateCommitted && (t.predicted || t.abstained) && isExtension(acceptedKey, tailKey))
 		if overrides {
 			accepted, acceptedKey = newestForKey(t.entries, tailKey), tailKey
 			conf = confidenceOf(t.entries, tailKey)
@@ -473,14 +480,17 @@ func (t *Tracker) progress(o Observation) []Transition {
 			out = append(out, t.moveTo(StateAdvancing, reason, o.FrameSeq, o.CaptureTimestampNS))
 			out = append(out, t.moveTo(StateRevealing, ReasonNewTextRevealing, o.FrameSeq, o.CaptureTimestampNS))
 			t.setAnchor()
-		case t.predicted && kind == changeExtension:
-			// A predictive commit claims the prefix was a *complete* message, so
-			// more text on screen falsifies it — even though for a normally
-			// committed line an extension is explicitly not a new utterance
-			// (docs/spec/05 "A typewriter prefix is not a new distinct
-			// utterance"). The distinction is which claim was made, not which
-			// pixels moved.
-			out = append(out, t.moveTo(StateAdvancing, ReasonPredictionMisfire, o.FrameSeq, o.CaptureTimestampNS))
+		case (t.predicted || t.abstained) && kind == changeExtension:
+			// A predictive commit claims the prefix was a *complete* message, and an
+			// abstained commit means the prefix did not match any complete message
+			// in the corpus (e.g. a typewriter pause mid-sentence), so more text on
+			// screen falsifies the earlier claim and re-enters StateRevealing so the
+			// completed line can be ranked and committed.
+			reason := ReasonMaterialChange
+			if t.predicted {
+				reason = ReasonPredictionMisfire
+			}
+			out = append(out, t.moveTo(StateAdvancing, reason, o.FrameSeq, o.CaptureTimestampNS))
 			out = append(out, t.moveTo(StateRevealing, ReasonNewTextRevealing, o.FrameSeq, o.CaptureTimestampNS))
 			t.setAnchor()
 		case kind == changeJitter:
@@ -621,7 +631,7 @@ func (t *Tracker) clearBox() {
 	t.text, t.raw, t.conf, t.key = "", "", 0, ""
 	t.changed = 0
 	t.anchor, t.anchorKey = "", ""
-	t.committed, t.committedKey, t.committedReason, t.predicted = "", "", "", false
+	t.committed, t.committedKey, t.committedReason, t.predicted, t.abstained = "", "", "", false, false
 	t.contradiction = 0
 }
 

@@ -351,6 +351,7 @@ func avASRScore(t *testing.T, ctx context.Context, asrCfg providers.RoleConfig, 
 		}
 		rec := speech.Evaluate(exp, tr.Text)
 		l.ASRWER, l.ASRCER = rec.WER, rec.CER
+		l.asrScored = true
 		scored++
 	}
 	t.Logf("av asr: scored %d line clips (model %s)", scored, asrCfg.Model)
@@ -364,7 +365,7 @@ func avWriteManifest(t *testing.T, bundle, runID string, pc avPreconds, s cuScen
 	t.Helper()
 	werSum, cerSum, scored := 0.0, 0.0, 0
 	for _, l := range rep.Lines {
-		if l.ClipWAV != "" && (l.ASRWER > 0 || l.ASRCER > 0) {
+		if l.asrScored {
 			werSum, cerSum, scored = werSum+l.ASRWER, cerSum+l.ASRCER, scored+1
 		}
 	}

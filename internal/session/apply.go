@@ -788,6 +788,7 @@ func (r *Reducer) maybeCommit(ctx context.Context, reg *region, res *Result) err
 		CaptureTimestampNS: reg.tr.Snapshot().LastTimestampNS,
 		Text:               reg.text,
 		Reason:             commitReason(predictive),
+		Abstained:          messageID == UnknownMessage,
 	})
 	if err != nil {
 		// A refused commit is a policy mismatch between the two state machines,

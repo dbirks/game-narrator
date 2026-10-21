@@ -1160,7 +1160,7 @@ func (w *speechWiring) maybeUnmatchedReadThrough(e events.Envelope, d commitPayl
 		return
 	}
 	cleaned := cleanReadThroughText(readText)
-	if cleaned == "" {
+	if cleaned == "" || wordCharCount(cleaned) < 4 {
 		w.log("speech: unmatched read-through empty after the noise trim",
 			"session_id", w.id, "occurrence", d.Occurrence)
 		return
@@ -1373,6 +1373,19 @@ func hasWordChar(s string) bool {
 		}
 	}
 	return false
+}
+
+// wordCharCount counts the letters and digits in s: an unmatched read-through
+// requires at least 4 word characters so a 1–3 letter OCR noise fragment from
+// an unoccupied region or the first frame of a revealing box does not speak.
+func wordCharCount(s string) int {
+	n := 0
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			n++
+		}
+	}
+	return n
 }
 
 // catchUpBatchCommit is the catch-up policy's commit-side decision

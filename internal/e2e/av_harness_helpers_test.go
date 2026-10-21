@@ -11,6 +11,7 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/speech"
@@ -44,6 +45,8 @@ type avLineRecord struct {
 	ASRCER             float64 `json:"asr_cer"`
 	ClipMP4            string  `json:"clip_mp4,omitempty"`
 	ClipWAV            string  `json:"clip_wav,omitempty"`
+	clipAudioStartMS   int64
+	asrScored          bool
 }
 
 // avTimelineReport is the run's synchronized A/V timeline (ADR 0143): the
@@ -163,13 +166,14 @@ func avObsKey(region string, lifetime uint64) string {
 // wiring correlates every one with the occurrence; the scheduler's raw
 // events fall back to the utterance id).
 type avSpeechData struct {
-	Occ       string `json:"dialogue_occurrence_id"`
-	Utterance string `json:"utterance_id"`
-	FromCache bool   `json:"from_cache"`
-	VoiceID   string `json:"voice_id"`
-	Result    string `json:"result"`
-	StartedAt string `json:"started_at"`
-	EndedAt   string `json:"ended_at"`
+	Occ        string   `json:"dialogue_occurrence_id"`
+	Utterance  string   `json:"utterance_id"`
+	MessageIDs []string `json:"message_ids"`
+	FromCache  bool     `json:"from_cache"`
+	VoiceID    string   `json:"voice_id"`
+	Result     string   `json:"result"`
+	StartedAt  string   `json:"started_at"`
+	EndedAt    string   `json:"ended_at"`
 }
 
 // avBuildTimeline correlates the session's dev event stream onto the
@@ -204,6 +208,7 @@ func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvel
 		gen, seq                int64
 	}
 	obsGroups := map[string][]obsRec{}
+	obsByTrace := map[string][]obsRec{}
 	var coms []comRec
 	var decs []decRec
 	for _, e := range evs {
@@ -224,6 +229,9 @@ func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvel
 			}
 			k := avObsKey(d.RegionID, d.Lifetime)
 			obsGroups[k] = append(obsGroups[k], obsRec{at: at, state: d.State})
+			if e.TraceID != "" {
+				obsByTrace[e.TraceID] = append(obsByTrace[e.TraceID], obsRec{at: at, state: d.State})
+			}
 		case "message.committed":
 			var d struct {
 				Occ        string `json:"dialogue_occurrence_id"`
@@ -232,8 +240,9 @@ func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvel
 				Lifetime   uint64 `json:"lifetime"`
 				Generation int64  `json:"generation"`
 				ObsSeq     int64  `json:"observation_seq"`
+				Eligible   *bool  `json:"speech_eligible"`
 			}
-			if len(e.Data) == 0 || json.Unmarshal(e.Data, &d) != nil || d.Occ == "" || d.Msg == "" {
+			if len(e.Data) == 0 || json.Unmarshal(e.Data, &d) != nil || d.Occ == "" || d.Msg == "" || d.Msg == "unknown" || (d.Eligible != nil && !*d.Eligible) {
 				continue
 			}
 			coms = append(coms, comRec{at: at, trace: e.TraceID, occ: d.Occ, msg: d.Msg, region: d.Region, lifetime: d.Lifetime, gen: d.Generation, seq: d.ObsSeq})
@@ -265,19 +274,29 @@ func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvel
 			RegionID: c.region, TCommitMS: avMS(recStart, c.at),
 			ExpectedVoiceID: expectedVoice,
 		}
-		// The box's readings at/before the commit (a later reading belongs
-		// to the box the player advanced into).
-		var appear, settled time.Time
-		for _, o := range obsGroups[avObsKey(c.region, c.lifetime)] {
+		// The box's readings at/before the commit: in a live session each page
+		// turn mints its own trace_id on StateAdvancing (internal/session/apply.go),
+		// so obsByTrace isolates in-place page turns that share lifetime=1;
+		// synthetic unit streams fall back to the region+lifetime group.
+		obsList := obsByTrace[c.trace]
+		if len(obsList) == 0 {
+			obsList = obsGroups[avObsKey(c.region, c.lifetime)]
+		}
+		var appear, settled, lastPre time.Time
+		for _, o := range obsList {
 			if o.at.After(c.at) {
 				continue
 			}
 			if appear.IsZero() {
 				appear = o.at
 			}
-			if settled.IsZero() && o.state == "READY" {
+			lastPre = o.at
+			if settled.IsZero() && strings.EqualFold(o.state, "ready") {
 				settled = o.at
 			}
+		}
+		if settled.IsZero() && !lastPre.IsZero() {
+			settled = lastPre
 		}
 		line.TBoxAppearMS = avMS(recStart, appear)
 		line.TTextSettledMS = avMS(recStart, settled)
@@ -319,6 +338,34 @@ func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvel
 		}
 		i, ok := byOcc[d.Occ]
 		if !ok {
+			if len(d.MessageIDs) == 1 {
+				for j := range rep.Lines {
+					if rep.Lines[j].MessageID == d.MessageIDs[0] {
+						switch e.Name {
+						case "speech.ready":
+							if rep.Lines[j].TTSReadyMS == 0 {
+								if at, ok := avParseAt(e.OccurredAt); ok {
+									rep.Lines[j].TTSReadyMS = avMS(recStart, at)
+								}
+							}
+							rep.Lines[j].FromCache = d.FromCache
+						case "speech.started":
+							at, _ := avParseAt(e.OccurredAt)
+							if d.StartedAt != "" {
+								if sa, ok := avParseAt(d.StartedAt); ok {
+									at = sa
+								}
+							}
+							if rep.Lines[j].clipAudioStartMS == 0 {
+								rep.Lines[j].clipAudioStartMS = avMS(recStart, at)
+							}
+						}
+						if rep.Lines[j].VoiceID == "" {
+							rep.Lines[j].VoiceID = d.VoiceID
+						}
+					}
+				}
+			}
 			continue
 		}
 		line := &rep.Lines[i]
@@ -339,6 +386,9 @@ func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvel
 			}
 			if line.TAudioStartEventMS == 0 {
 				line.TAudioStartEventMS = avMS(recStart, at)
+			}
+			if line.clipAudioStartMS == 0 {
+				line.clipAudioStartMS = avMS(recStart, at)
 			}
 		case "speech.ended":
 			if d.Result == "" {

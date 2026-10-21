@@ -203,6 +203,8 @@ func TestLiveDolphinAVHarness(t *testing.T) {
 	// The expected voice is the scene speaker's: the matched lines' speaker
 	// resolves to the character (the narrator carries only the unattributed).
 	rep := avBuildTimeline(runID, sessionID, recStart, evs, sessionWAV, cuV.char.VoiceID)
+	rep.SessionMP4 = filepath.Join(mediaDir, "session.mp4")
+	rep.SessionWAV = filepath.Join(mediaDir, "session.wav")
 	clipsDir := filepath.Join(bundle, "clips")
 	avSliceClips(t, filepath.Join(mediaDir, "session.mp4"), filepath.Join(mediaDir, "session.wav"), clipsDir, &rep.Lines)
 	expected := avCorpusTexts(t, ctx, st, s.profileID)
