@@ -18,36 +18,39 @@ import (
 )
 
 // seedSpeakerPlaceholder plants exactly what an opaque-speaker import leaves
-// behind: a proposed placeholder named by the source's own opaque key, a
-// confirmed character to link to, and three lines pointing at the placeholder
-// with the parser's proposed source-field evidence. The texts are invented
-// (AGENTS.md rule 5): nothing here is game material.
-func seedSpeakerPlaceholder(t *testing.T, e *catalogEnv, profileID string) (placeholderID, targetID string) {
+// behind: a proposed placeholder named by the source's own opaque key and its
+// proposed lines, and — when targetName is non-empty — a confirmed character
+// to link to (the key is the placeholder's name and its alias, the evidence
+// carries it, and the line texts are invented: AGENTS.md rule 5).
+func seedSpeakerPlaceholder(t *testing.T, e *catalogEnv, profileID, key, targetName string) (placeholderID, targetID string) {
 	t.Helper()
 	placeholderID = games.NewID()
-	targetID = games.NewID()
 	placeholder := games.Character{
 		ID:                 placeholderID,
 		ProfileID:          profileID,
-		Name:               "ww:spk:7",
-		Aliases:            json.RawMessage(`["ww:spk:7"]`),
+		Name:               key,
+		Aliases:            json.RawMessage(fmt.Sprintf(`[%q]`, key)),
 		VerifiedSourceRefs: json.RawMessage(`[]`),
 		Status:             games.CharacterProposed,
 		CreatedAt:          nowStamp(),
 	}
-	target := games.Character{
-		ID:                 targetID,
-		ProfileID:          profileID,
-		Name:               "Marla",
-		Aliases:            json.RawMessage(`["harbourmaster"]`),
-		VerifiedSourceRefs: json.RawMessage(`[]`),
-		Status:             games.CharacterConfirmed,
-		CreatedAt:          nowStamp(),
+	rows := []games.Character{placeholder}
+	if targetName != "" {
+		targetID = games.NewID()
+		rows = append(rows, games.Character{
+			ID:                 targetID,
+			ProfileID:          profileID,
+			Name:               targetName,
+			Aliases:            json.RawMessage(`["harbourmaster"]`),
+			VerifiedSourceRefs: json.RawMessage(`[]`),
+			Status:             games.CharacterConfirmed,
+			CreatedAt:          nowStamp(),
+		})
 	}
-	if err := e.st.PutCharacters(e.ctx, profileID, []games.Character{placeholder, target}); err != nil {
+	if err := e.st.PutCharacters(e.ctx, profileID, rows); err != nil {
 		t.Fatalf("PutCharacters: %v", err)
 	}
-	evidence := json.RawMessage(`[{"method":"source_field","field":"inf1:attribute_0","key":"ww:spk:7","posterior":1.0}]`)
+	evidence := json.RawMessage(fmt.Sprintf(`[{"method":"source_field","field":"inf1:attribute_0","key":%q,"posterior":1.0}]`, key))
 	msgs := make([]games.Message, 0, 3)
 	for _, line := range []string{
 		"invented line one of the placeholder",
@@ -92,7 +95,7 @@ func postSpeakerLink(t *testing.T, e *catalogEnv, profileID, placeholderID, targ
 func TestSpeakerLinkHappyPath(t *testing.T) {
 	e := newCatalogEnv(t)
 	_, _, profileID, _ := newDraft(t, e, "speaker-link", "sl")
-	placeholderID, targetID := seedSpeakerPlaceholder(t, e, profileID)
+	placeholderID, targetID := seedSpeakerPlaceholder(t, e, profileID, "ww:spk:7", "Marla")
 	etag := e.etag(profileID)
 
 	out, etagHeader := postSpeakerLink(t, e, profileID, placeholderID, targetID, etag)
@@ -213,7 +216,7 @@ func jsonField(v any) []byte {
 func TestSpeakerLinkRefusals(t *testing.T) {
 	e := newCatalogEnv(t)
 	_, _, profileID, _ := newDraft(t, e, "speaker-link-refuse", "slr")
-	placeholderID, targetID := seedSpeakerPlaceholder(t, e, profileID)
+	placeholderID, targetID := seedSpeakerPlaceholder(t, e, profileID, "ww:spk:7", "Marla")
 	etag := e.etag(profileID)
 	target := fmt.Sprintf("/api/v1/profiles/%s/characters/%s/speaker-link", profileID, placeholderID)
 
@@ -249,4 +252,144 @@ func TestSpeakerLinkRefusals(t *testing.T) {
 	rec = e.post(auth.RoleCurator, target, fmt.Sprintf(`{"target_character_id":%q}`, targetID), "If-Match", etag)
 	e.requireStatus(rec, http.StatusConflict, "POST a link on a review revision")
 	requireProblem(t, rec, http.StatusConflict, codeConflict)
+}
+
+// TestSpeakerLinkByName is the name half of ADR 0134: the link may name the
+// target by name instead of by row identifier. The name resolves to the
+// roster's non-retired row of that exact name when one exists, and to a new
+// confirmed character created in the same transaction when it does not; the
+// response's name half (target_name, created) says which happened.
+func TestSpeakerLinkByName(t *testing.T) {
+	e := newCatalogEnv(t)
+	_, _, profileID, _ := newDraft(t, e, "speaker-link-name", "sln")
+	// The CSV import newDraft runs has already confirmed a Marla with her
+	// own lines; the two placeholders are what the opaque-speaker half of an
+	// import leaves behind. The existing-row case links to the roster's own
+	// Marla rather than a planted duplicate, which would shadow it.
+	placeholderID, _ := seedSpeakerPlaceholder(t, e, profileID, "ww:spk:7", "")
+	ghostID, _ := seedSpeakerPlaceholder(t, e, profileID, "ww:spk:8", "")
+	chars := mustList(e.mustOK(auth.RoleCurator, "/api/v1/profiles/"+profileID+"/characters")["characters"])
+	var marlaID string
+	for _, raw := range chars {
+		c := raw.(map[string]any)
+		if c["name"] == "Marla" && c["status"] == "confirmed" {
+			marlaID = c["id"].(string)
+		}
+	}
+	if marlaID == "" {
+		t.Fatalf("the roster has no confirmed Marla row: %v", chars)
+	}
+	postName := func(cid, name string) map[string]any {
+		target := fmt.Sprintf("/api/v1/profiles/%s/characters/%s/speaker-link", profileID, cid)
+		rec := e.post(auth.RoleCurator, target, fmt.Sprintf(`{"name":%q}`, name), "If-Match", e.etag(profileID))
+		return e.requireStatus(rec, http.StatusOK, "POST …/speaker-link "+name)
+	}
+
+	// Existing row, named: the same join the identifier half makes, and the
+	// response's name half carries the resolved name with created absent
+	// (the row was not created).
+	out := postName(placeholderID, "Marla")
+	if out["target_character_id"] != marlaID {
+		t.Errorf("target_character_id = %v, want the roster's Marla row", out["target_character_id"])
+	}
+	if out["target_name"] != "Marla" {
+		t.Errorf("target_name = %v, want the name the link resolved", out["target_name"])
+	}
+	if _, has := out["created"]; has {
+		t.Errorf("created present in %v, want it absent when the row was not created", out)
+	}
+	if n, ok := out["repointed_messages"].(float64); !ok || int(n) != 3 {
+		t.Errorf("repointed_messages = %v, want the placeholder's three lines", out["repointed_messages"])
+	}
+	got := e.mustOK(auth.RoleCurator, "/api/v1/profiles/"+profileID+"/messages?speaker="+marlaID)
+	if n := len(mustList(got["messages"])); n < 3 {
+		t.Errorf("Marla has %d lines, want at least the three the named link moved", n)
+	}
+
+	// Create: a name the roster does not have plants a confirmed row the
+	// lines move to; the placeholder retires and its key folds into the new
+	// row's aliases (the same tail the id half runs, with the new row as
+	// the target).
+	out = postName(ghostID, "Boating")
+	boatingID, _ := out["target_character_id"].(string)
+	if boatingID == "" || boatingID == ghostID {
+		t.Fatalf("target_character_id = %v, want a row the roster did not have", out)
+	}
+	if out["target_name"] != "Boating" || out["created"] != true {
+		t.Errorf("name half = (%v, %v), want the new row named Boating with created", out["target_name"], out["created"])
+	}
+	chars = mustList(e.mustOK(auth.RoleCurator, "/api/v1/profiles/"+profileID+"/characters")["characters"])
+	var ghost, boating map[string]any
+	for _, raw := range chars {
+		c := raw.(map[string]any)
+		switch c["id"] {
+		case ghostID:
+			ghost = c
+		case boatingID:
+			boating = c
+		}
+	}
+	if ghost == nil || boating == nil {
+		t.Fatalf("the roster lost a row: %v", chars)
+	}
+	if ghost["status"] != "retired" {
+		t.Errorf("placeholder status = %v, want retired", ghost["status"])
+	}
+	if boating["status"] != "confirmed" {
+		t.Errorf("created row status = %v, want confirmed (the curation decision is the confirmation)", boating["status"])
+	}
+	var aliases []string
+	_ = json.Unmarshal(jsonField(boating["aliases"]), &aliases)
+	folded := false
+	for _, a := range aliases {
+		if a == "ww:spk:8" {
+			folded = true
+		}
+	}
+	if !folded {
+		t.Errorf("created row aliases = %v, want the placeholder's key folded in", aliases)
+	}
+	got = e.mustOK(auth.RoleCurator, "/api/v1/profiles/"+profileID+"/messages?speaker="+boatingID)
+	if n := len(mustList(got["messages"])); n != 3 {
+		t.Errorf("the created row has %d lines, want the three the link moved", n)
+	}
+}
+
+// TestSpeakerLinkByNameRefusals pins the name half's malformed calls: both
+// halves given and naming two different rows is a 400 (the caller said two
+// different things), and a name that resolves to the placeholder's own row
+// is the self-link 400 the identifier half earns.
+func TestSpeakerLinkByNameRefusals(t *testing.T) {
+	e := newCatalogEnv(t)
+	_, _, profileID, _ := newDraft(t, e, "speaker-link-name-refuse", "slrn")
+	ghostID, _ := seedSpeakerPlaceholder(t, e, profileID, "ww:spk:8", "")
+	chars := mustList(e.mustOK(auth.RoleCurator, "/api/v1/profiles/"+profileID+"/characters")["characters"])
+	var marlaID string
+	for _, raw := range chars {
+		c := raw.(map[string]any)
+		if c["name"] == "Marla" && c["status"] == "confirmed" {
+			marlaID = c["id"].(string)
+		}
+	}
+	if marlaID == "" {
+		t.Fatalf("the roster has no confirmed Marla row: %v", chars)
+	}
+	target := fmt.Sprintf("/api/v1/profiles/%s/characters/%s/speaker-link", profileID, ghostID)
+
+	// Both halves, two different rows: the named row is not the id's row.
+	rec := e.post(auth.RoleCurator, target,
+		fmt.Sprintf(`{"target_character_id":%q,"name":"Boating"}`, marlaID), "If-Match", e.etag(profileID))
+	e.requireStatus(rec, http.StatusBadRequest, "POST a name that does not carry the named target")
+	requireProblem(t, rec, http.StatusBadRequest, codeInvalidParameter)
+
+	// The name resolves to the placeholder's own row: the self-link 400 the
+	// identifier half earns, whichever half named it.
+	rec = e.post(auth.RoleCurator, target, `{"name":"ww:spk:8"}`, "If-Match", e.etag(profileID))
+	e.requireStatus(rec, http.StatusBadRequest, "POST a name that resolves to the placeholder itself")
+	requireProblem(t, rec, http.StatusBadRequest, codeInvalidParameter)
+
+	// A name over 200 characters is a 400, not a 422 on a planted row.
+	long := strings.Repeat("a", 201)
+	rec = e.post(auth.RoleCurator, target, fmt.Sprintf(`{"name":%q}`, long), "If-Match", e.etag(profileID))
+	e.requireStatus(rec, http.StatusBadRequest, "POST a name over 200 characters")
 }

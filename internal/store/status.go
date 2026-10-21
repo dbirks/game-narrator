@@ -121,25 +121,39 @@ func (s *Store) GameTitleForProfile(ctx context.Context, profileID string) (stri
 	return title, nil
 }
 
-// ProfileCharacterVoiceCounts is the setup run's "9 of 12 voiced" pair: the
-// profile's character count, and how many of those characters have a voice
-// revision that is not retired (a draft or auditioning take still counts —
-// the line has a voice, whether the curator approved it or the auto-cast
-// default did; retired is the only state that means "no voice"). Two COUNT
-// statements on indexed columns, one read transaction.
+// ProfileCharacterVoiceCounts is the shared "9 of 12 voiced" pair behind the
+// Library read, the status bar's setup-run progress and the Cast page header
+// (ADR 0134): one definition everywhere, so the tile chip and the bar cannot
+// disagree about how much of a game has a voice.
+//
+// The denominator is the profile's **active speaking characters**: rows whose
+// status is not retired (a retired row never counts, with or without lines)
+// AND that hold at least one assigned line (a roster slot nobody speaks is
+// not a speaker). The numerator counts the subset of those that carries at
+// least one voice revision in a state other than retired — a draft or
+// auditioning take still counts, the line has a voice whether the curator
+// approved it or the auto-cast default did; retired is the only state that
+// means "no voice". The voice side joins on the character's **name**:
+// voice_profiles.character is the voice surface's identity (UNIQUE
+// (character, revision), migration 0009), not a characters.id — joining the
+// name column to the id column matched nothing and read every profile's
+// voiced count as 0. Two COUNT statements on indexed columns (the EXISTS
+// rides messages_profile_speaker_idx, the voice side
+// idx_voice_profiles_character), one read transaction.
 func (s *Store) ProfileCharacterVoiceCounts(ctx context.Context, profileID string) (characters, voiced int, err error) {
 	const op = "profile character voice counts"
+	speaking := "EXISTS (SELECT 1 FROM messages m WHERE m.profile_id = c.profile_id AND m.speaker_id = c.id)"
 	err = s.inRead(ctx, func(ctx context.Context, q queryable) error {
 		if err := q.queryRow(ctx, op,
-			`SELECT COUNT(*) FROM characters WHERE profile_id = ?`, profileID,
+			`SELECT COUNT(*) FROM characters c
+			 WHERE c.profile_id = ? AND c.status <> 'retired' AND `+speaking, profileID,
 		).Scan(&characters); err != nil {
 			return mapReadError(op, err)
 		}
 		return q.queryRow(ctx, op,
-			`SELECT COUNT(DISTINCT vp.character)
-			 FROM voice_profiles vp
-			 JOIN characters c ON c.id = vp.character
-			 WHERE c.profile_id = ? AND vp.state <> 'retired'`, profileID,
+			`SELECT COUNT(DISTINCT c.id) FROM characters c
+			 JOIN voice_profiles vp ON vp.character = c.name
+			 WHERE c.profile_id = ? AND c.status <> 'retired' AND vp.state <> 'retired' AND `+speaking, profileID,
 		).Scan(&voiced)
 	})
 	if err != nil {

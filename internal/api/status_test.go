@@ -448,24 +448,53 @@ func seedStatusContent(t *testing.T, ctx context.Context, st *store.Store) (prof
 	if err := st.PutCharacters(ctx, profileID, chars); err != nil {
 		t.Fatalf("PutCharacters: %v", err)
 	}
+	// A line per character (ADR 0134's denominator): the count's universe is
+	// the active speaking characters, and a roster slot nobody speaks is not
+	// a speaker, so every one of the twelve must hold a line to count at all.
+	msgs := make([]games.Message, 0, 12)
+	for i, id := range charIDs {
+		text := fmt.Sprintf("Line for character %d.", i+1)
+		msgs = append(msgs, games.Message{
+			ID:                    games.NewID(),
+			ProfileID:             profileID,
+			OriginalText:          text,
+			MarkupJSON:            json.RawMessage(`[]`),
+			NormalizedText:        text,
+			SpeechText:            text,
+			Language:              "en",
+			TextKind:              games.TextDialogue,
+			SpeakerID:             id,
+			AttributionStatus:     games.AttributionConfirmed,
+			AttributionConfidence: 1.0,
+			Flags:                 json.RawMessage(`{}`),
+			Revision:              1,
+			CreatedAt:             now,
+			UpdatedAt:             now,
+		})
+	}
+	if err := st.PutMessages(ctx, profileID, msgs, nil); err != nil {
+		t.Fatalf("PutMessages: %v", err)
+	}
 	// The first nine characters get a draft voice; character ten's only
 	// revision is retired (no voice); eleven and twelve have none.
 	// Character nine also gets a fresh second revision on top of its draft:
-	// the count is per character, so it must not be double-counted.
+	// the count is per character, so it must not be double-counted. The voice
+	// rows are keyed by NAME the way the voice surface keys them (ADR 0134)
+	// — a row id here would be what the old, broken join expected.
 	for i := 0; i < 9; i++ {
 		if err := st.CreateVoiceRevision(ctx, store.VoiceProfile{
-			ID: games.NewID(), Character: charIDs[i], Revision: 1, State: store.VoiceStateDraft,
+			ID: games.NewID(), Character: fmt.Sprintf("Character %d", i+1), Revision: 1, State: store.VoiceStateDraft,
 		}); err != nil {
 			t.Fatalf("CreateVoiceRevision %d: %v", i+1, err)
 		}
 	}
 	if err := st.CreateVoiceRevision(ctx, store.VoiceProfile{
-		ID: games.NewID(), Character: charIDs[8], Revision: 2, State: store.VoiceStateDraft,
+		ID: games.NewID(), Character: "Character 9", Revision: 2, State: store.VoiceStateDraft,
 	}); err != nil {
 		t.Fatalf("CreateVoiceRevision char-9 rev 2: %v", err)
 	}
 	if err := st.CreateVoiceRevision(ctx, store.VoiceProfile{
-		ID: games.NewID(), Character: charIDs[9], Revision: 1, State: store.VoiceStateRetired,
+		ID: games.NewID(), Character: "Character 10", Revision: 1, State: store.VoiceStateRetired,
 	}); err != nil {
 		t.Fatalf("CreateVoiceRevision char-10: %v", err)
 	}

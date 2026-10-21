@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/games"
@@ -37,16 +38,37 @@ import (
 
 type speakerLinkRequest struct {
 	TargetCharacterID string `json:"target_character_id"`
+	// Name is the character the placeholder's speaker is, by name (ADR 0134):
+	// the existing link when the roster already holds a non-retired row with
+	// that exact name, or a new confirmed character created in the same
+	// transaction when it does not. One of name / target_character_id is
+	// required; when both are given they must name the same row.
+	Name string `json:"name,omitempty"`
 }
 
 // speakerLinkResponse is the transaction's outcome, counts only: which row
-// was identified, with which one, and how many lines moved.
+// was identified, with which one, and how many lines moved. TargetName and
+// Created are the name half of the answer (ADR 0134): which name the target
+// carries, and whether the link created it.
 type speakerLinkResponse struct {
 	ProfileID         string `json:"profile_id"`
 	SourceCharacterID string `json:"source_character_id"`
 	TargetCharacterID string `json:"target_character_id"`
 	RepointedMessages int    `json:"repointed_messages"`
+	TargetName        string `json:"target_name,omitempty"`
+	Created           bool   `json:"created,omitempty"`
 }
+
+// errNameMismatch is the 400 the name half of the request earns when both
+// halves were given and they name two different rows (ADR 0134): the caller
+// said two different things, and neither half is the answer.
+var errNameMismatch = errors.New("speaker-link: name does not carry the target character")
+
+// errSelfLink is the 400 the self-link earns whichever half named it: the
+// id half said so outright, the name half resolved to the placeholder's own
+// row. The refusal is the same either way — a placeholder is never its own
+// identification.
+var errSelfLink = errors.New("speaker-link: the placeholder names itself")
 
 // handleSpeakerLink serves POST /api/v1/profiles/{id}/characters/{cid}/speaker-link.
 func (s *Server) handleSpeakerLink(w http.ResponseWriter, r *http.Request) {
@@ -68,18 +90,24 @@ func (s *Server) handleSpeakerLink(w http.ResponseWriter, r *http.Request) {
 	if !s.decodeJSONBody(w, r, &req, maxJSONBodyBytes) {
 		return
 	}
-	if req.TargetCharacterID == "" {
+	name := strings.TrimSpace(req.Name)
+	if req.TargetCharacterID == "" && name == "" {
 		s.writeCodeProblem(w, r, http.StatusBadRequest, "missing-field", codeInvalidParameter,
-			"Bad Request", "target_character_id is required")
+			"Bad Request", "target_character_id or name is required")
+		return
+	}
+	if name != "" && len(name) > 200 {
+		s.writeCodeProblem(w, r, http.StatusBadRequest, "invalid-parameter", codeInvalidParameter,
+			"Bad Request", "name must be at most 200 characters")
 		return
 	}
 	target := req.TargetCharacterID
-	if !games.ValidID(target) {
+	if target != "" && !games.ValidID(target) {
 		s.writeCodeProblem(w, r, http.StatusBadRequest, "invalid-parameter", codeInvalidParameter,
 			"Bad Request", "target_character_id must be a character identifier")
 		return
 	}
-	if target == cid {
+	if target == cid && name == "" {
 		s.writeCodeProblem(w, r, http.StatusBadRequest, "self-link", codeInvalidParameter,
 			"Bad Request", "a placeholder cannot be linked to itself; the link names a different character")
 		return
@@ -111,6 +139,55 @@ func (s *Server) handleSpeakerLink(w http.ResponseWriter, r *http.Request) {
 		chars, err := s.store.ListCharacters(ctx, p.ID)
 		if err != nil {
 			return err
+		}
+		// The name half (ADR 0134), resolved before the rows are pulled: with
+		// no target id, the name resolves to the roster's non-retired row
+		// with that exact name — the existing link when one exists — or to a
+		// new confirmed character created in this same transaction when it
+		// does not (the curation decision IS the confirmation, so the row
+		// lands confirmed, not proposed). When both halves were given, they
+		// must name the same row: the caller said two different things. A
+		// target the roster does not have falls through to the 404
+		// twoCharacters answers, the same as before ADR 0134.
+		if name != "" {
+			if target == "" {
+				for _, c := range chars {
+					if c.Name == name && c.Status != games.CharacterRetired {
+						target = c.ID
+						break
+					}
+				}
+				if target == "" {
+					stamp := time.Now().UTC().Format(time.RFC3339)
+					created := games.Character{
+						ID:        games.NewID(),
+						ProfileID: p.ID,
+						Name:      name,
+						Status:    games.CharacterConfirmed,
+						CreatedAt: stamp,
+					}
+					if err := created.Validate(); err != nil {
+						return err
+					}
+					if err := s.store.PutCharacters(ctx, p.ID, []games.Character{created}); err != nil {
+						return err
+					}
+					resp.Created = true
+					target = created.ID
+					chars = append(chars, created)
+				}
+			} else {
+				for _, c := range chars {
+					if c.ID == target && c.Name != name {
+						return fmt.Errorf("store: %s: %w", op, errNameMismatch)
+					}
+				}
+			}
+		}
+		if target == cid {
+			// A self-link, whichever half named it: the id half said so
+			// outright, the name half resolved to the placeholder's own row.
+			return fmt.Errorf("store: %s: the placeholder names itself: %w", op, errSelfLink)
 		}
 		source, targetRow, err := twoCharacters(chars, cid, target)
 		if err != nil {
@@ -188,8 +265,10 @@ func (s *Server) handleSpeakerLink(w http.ResponseWriter, r *http.Request) {
 		resp = speakerLinkResponse{
 			ProfileID:         p.ID,
 			SourceCharacterID: source.ID,
-			TargetCharacterID: target,
+			TargetCharacterID: targetRow.ID,
 			RepointedMessages: len(updates),
+			TargetName:        targetRow.Name,
+			Created:           resp.Created,
 		}
 		return nil
 	})
@@ -206,7 +285,8 @@ func (s *Server) handleSpeakerLink(w http.ResponseWriter, r *http.Request) {
 	s.auditCatalogWrite(r, "catalog.speaker.link", map[string]any{
 		"profile_id":          p.ID,
 		"source_character_id": cid,
-		"target_character_id": target, "repointed_messages": resp.RepointedMessages,
+		"target_character_id": resp.TargetCharacterID, "repointed_messages": resp.RepointedMessages,
+		"target_name": resp.TargetName, "created": resp.Created,
 	})
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -336,6 +416,12 @@ func jsonStringSlice(raw json.RawMessage) []string {
 // row this handler itself built is a 422 with the findings.
 func (s *Server) speakerLinkProblem(w http.ResponseWriter, r *http.Request, err error, profileID, sourceID, targetID string) {
 	switch {
+	case errors.Is(err, errNameMismatch):
+		s.writeCodeProblem(w, r, http.StatusBadRequest, "name-mismatch", codeInvalidParameter,
+			"Bad Request", "name does not carry the character the target_character_id names; give one half, or make the two agree")
+	case errors.Is(err, errSelfLink):
+		s.writeCodeProblem(w, r, http.StatusBadRequest, "self-link", codeInvalidParameter,
+			"Bad Request", "a placeholder cannot be linked to itself; the link names a different character")
 	case errors.Is(err, store.ErrNotFound):
 		s.writeCodeProblem(w, r, http.StatusNotFound, "character-not-found", codeNotFound, "Not Found",
 			"no character of this profile revision has that identifier")
