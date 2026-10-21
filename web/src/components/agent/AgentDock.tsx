@@ -8,7 +8,9 @@
  * "or keep going" escape, UX-04), the condensed tool cards (✓ name · result ·
  * duration; an in-flight card is dashed with a dither dot), the
  * user/agent chat, and the input. The pill stays where it is; this panel is
- * the docked form of it.
+ * the docked form of it. An empty conversation shows the "try asking…" hints
+ * tied to the current screen (the 2026-10-20 review): a short, screen-tied
+ * list that prefills the input on a pick.
  *
  * Every state the panel renders is a server fact: the turns and questions
  * are the thread's durable conversation, the tool cards are the run's
@@ -25,6 +27,35 @@ import { agentChipText, routeContextChip, useSelectionLabel } from "./agentConte
 import { useAgentDock, type DockEventSource, type DockQuestion } from "./useAgentDock";
 
 const MAX_MESSAGE_LEN = 4000; // the server's assistantMaxText bound
+
+/** The empty dock's "try asking…" hints (the 2026-10-20 review): a short
+ *  list tied to the current screen — the chip's own seam names the screen,
+ *  so the hints and the context chip can never disagree. Neutral questions
+ *  the agent's context payload (UX-01) lets it answer; none quotes game
+ *  text (AGENTS.md rule 5). A screen without hints gets the generic pair. */
+const SCREEN_SUGGESTIONS: Record<string, readonly string[]> = {
+  library: [
+    "Which games are ready to narrate?",
+    "What's on the shelf, and what's still setting up?",
+  ],
+  play: ["What's the state of the current session?", "Why did it skip that line?"],
+  traces: ["Which lines were slow?", "Why did the matcher rank that one on top?"],
+  cast: ["Which characters still need a voice?", "Regenerate the selected character's take"],
+  setup: ["What stage is the run at?", "What is blocking the run?"],
+  health: ["Which checks need attention?", "Why is the capture tile unknown?"],
+  settings: ["Which model roles are not configured?", "What is the effective audio output?"],
+  game: ["What is the state of this game's revisions?", "What can I run from this game?"],
+};
+const GENERIC_SUGGESTIONS: readonly string[] = [
+  "What can you see on this screen?",
+  "What do you need from me?",
+];
+
+/** The hints for the dock's current screen (the chip's seam, not a second
+ *  route map). */
+export function dockSuggestions(pathname: string): readonly string[] {
+  return SCREEN_SUGGESTIONS[routeContextChip(pathname)] ?? GENERIC_SUGGESTIONS;
+}
 
 /** One NEEDS-YOU card: the question's prompt, its answer pills (the model's
  *  options, or confirm/cancel for a confirmation), and the "or keep going"
@@ -111,6 +142,12 @@ export function AgentDock({ onClose, eventSourceFactory, initialQuery }: Options
 
   const [draft, setDraft] = useState(initialQuery ?? "");
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // The empty dock's hints (the 2026-10-20 review): a pick prefills the
+  // input and hands it the keyboard — the hint is a start, not a submit.
+  const pickSuggestion = (text: string) => {
+    setDraft(text);
+    inputRef.current?.focus();
+  };
 
   // The chip seam: the bare screen name, or `screen › name` once the screen's
   // selection has resolved to one (UX-01: the chip follows the selection).
@@ -228,11 +265,29 @@ export function AgentDock({ onClose, eventSourceFactory, initialQuery }: Options
           the snapshot replaces its local seq with the durable one. */}
         <div className="dock-chat" ref={chatRef} data-testid="dock-chat" aria-label="Conversation">
           {turns.length === 0 ? (
-            <p className="muted dock-chat-empty" data-testid="dock-chat-empty">
-              {problem?.threadDead
-                ? "This conversation ended on a fault; start a new one."
-                : "Ask the agent about this screen. It sees the route, the game, the revision and what you have selected."}
-            </p>
+            <>
+              <p className="muted dock-chat-empty" data-testid="dock-chat-empty">
+                {problem?.threadDead
+                  ? "This conversation ended on a fault; start a new one."
+                  : "Ask the agent about this screen. It sees the route, the game, the revision and what you have selected."}
+              </p>
+              {problem?.threadDead === true ? null : (
+                <ul className="dock-suggestions" data-testid="dock-suggestions">
+                  {dockSuggestions(location.pathname).map((suggestion, index) => (
+                    <li key={suggestion}>
+                      <button
+                        type="button"
+                        className="dock-suggestion"
+                        onClick={() => pickSuggestion(suggestion)}
+                        data-testid={`dock-suggestion-${index}`}
+                      >
+                        {suggestion}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
           ) : (
             turns.map((turn) => (
               <p
