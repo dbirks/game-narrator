@@ -380,8 +380,11 @@ test("the cast screen: screenshots and axe at the design's three widths", async 
   await expect(page).toHaveURL(/\/cast\?profile=/);
   await page.getByTestId(`cast-row-name-${CHARACTER}`).click();
   await expect(page.getByTestId("cast-detail-name")).toHaveText(CHARACTER);
-  // The take's facts settled (the player fetched the real clip).
-  await expect(page.getByTestId("cast-take-player")).toBeVisible({ timeout: 30_000 });
+  // The take's facts settled (the player fetched the real clip). Sixty
+  // seconds: on a full-suite run (every project's servers live at once)
+  // the audition clip's fetch and the panel's render have been observed
+  // to outrun thirty (the 2026-10-20 workers=2 run's flake).
+  await expect(page.getByTestId("cast-take-player")).toBeVisible({ timeout: 60_000 });
 
   const reports: ScanReport[] = [];
   for (const width of WIDTHS) {
