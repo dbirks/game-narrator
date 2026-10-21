@@ -254,11 +254,16 @@ func captureStdout(t *testing.T, fn func() int) capturedStdout {
 
 // clearGatewayEnv makes the doctor CLI tests independent of whatever gateway
 // the developer shell happens to export: with these set to empty the roles are
-// unconfigured, which is the first-run state under test.
+// unconfigured, which is the first-run state under test. The listen address
+// is pinned to a free port for the same reason: the network.listen row (ADR-
+// 0150) FAILs on whatever holds the configured address, and a developer box
+// running a dev server on the default must not flip the suite's exit-code
+// assertions.
 func clearGatewayEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("GAME_NARRATOR_GATEWAY_URL", "")
 	t.Setenv("GAME_NARRATOR_GATEWAY_TOKEN", "")
+	t.Setenv("GAME_NARRATOR_LISTEN", freeListenAddress(t))
 	for _, role := range []string{
 		"AGENT_REASONING", "FAST_REASONING", "VISION_OCR_FALLBACK", "DECISION",
 		"VOICE_DESIGN", "VOICE_CLONE", "SPEECH_ASR",

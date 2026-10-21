@@ -183,7 +183,7 @@ flags:
     	durable data directory; overrides GAME_NARRATOR_DATA_DIR
 `
 
-const doctorUsageText = `usage: game-narrator doctor [--data-dir DIR] [--dev] [--json]
+const doctorUsageText = `usage: game-narrator doctor [--listen ADDR] [--data-dir DIR] [--dev] [--json]
 
 Probe each component and report OK, DEGRADED, BLOCKED, NOT CONFIGURED or FAIL.
 Nothing is reported as working unless it was actually exercised, and provider
@@ -1884,6 +1884,8 @@ func runDoctor(args []string, log *slog.Logger) (int, error) {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() { fmt.Fprint(os.Stderr, doctorUsageText) }
+	listen := fs.String("listen", "",
+		"TCP listen address probed by the network.listen row; overrides "+bootstrap.EnvListen)
 	dataDir := fs.String("data-dir", "",
 		"durable data directory; overrides "+bootstrap.EnvDataDir)
 	dev := fs.Bool("dev", false,
@@ -1897,7 +1899,7 @@ func runDoctor(args []string, log *slog.Logger) (int, error) {
 		return 2, fmt.Errorf("%w: unexpected argument", errUsage)
 	}
 
-	cfg, err := bootstrap.LoadConfig("", *dataDir, os.LookupEnv)
+	cfg, err := bootstrap.LoadConfig(*listen, *dataDir, os.LookupEnv)
 	if err != nil {
 		return 2, err
 	}
@@ -1906,7 +1908,11 @@ func runDoctor(args []string, log *slog.Logger) (int, error) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	report := doctor.Run(ctx, doctor.Options{DataDir: cfg.DataDir, DataDirSource: cfg.DataDirSource, Dev: *dev,
+	report := doctor.Run(ctx, doctor.Options{DataDir: cfg.DataDir, DataDirSource: cfg.DataDirSource,
+		// The network.listen row probes the same address serve will bind
+		// (ADR-0150: the two-install port collision is a FAIL here, not a
+		// crash loop after the deploy).
+		Listen: cfg.Listen, Dev: *dev,
 		// The update row shares the serve process's offline cache, so the CLI
 		// and the appliance agree on the last good answer (ADR-0088).
 		Updates: doctor.ProbeFromEnv(os.LookupEnv, filepath.Join(cfg.DataDir, "updates", "latest.json")),

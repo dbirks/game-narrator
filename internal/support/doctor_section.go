@@ -25,7 +25,7 @@ const offlineNote = "network provider probes were skipped (offline bundle): no r
 // checks (storage, tools, OCR image, capture devices, audio sinks) run for
 // real either way, so the bundle always says what is actually there.
 func buildDoctor(ctx context.Context, o Options) ([]byte, string, error) {
-	opts := doctor.Options{DataDir: o.DataDir}
+	opts := doctor.Options{DataDir: o.DataDir, Listen: o.Listen}
 	mode := DoctorModeOffline
 	var note string
 	if !o.Probe {

@@ -66,6 +66,12 @@ const (
 type Options struct {
 	// DataDir is the durable data directory to bundle.
 	DataDir string
+	// Listen is the configured TCP address the doctor section's
+	// network.listen row probes (ADR-0150): a second install holding the
+	// port is the incident a support bundle most often exists to explain.
+	// The CLI passes the resolved address; empty leaves the row NOT
+	// CONFIGURED rather than probing an invented address.
+	Listen string
 	// Since limits the dev-trace metadata window (0 = no limit): only blobs
 	// modified within [now-Since, now] are listed. There is no log file to
 	// window over (see the manifest's logging note), so this flag only has

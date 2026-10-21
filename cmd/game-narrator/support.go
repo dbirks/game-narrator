@@ -118,7 +118,10 @@ func runSupportBundle(args []string, log *slog.Logger) (int, error) {
 	defer stop()
 
 	man, err := support.Build(ctx, support.Options{
-		DataDir:         cfg.DataDir,
+		DataDir: cfg.DataDir,
+		// The bundle's doctor section probes the same listen address the
+		// service will bind (ADR-0150).
+		Listen:          cfg.Listen,
 		Since:           *since,
 		IncludeDevTrace: *includeDevTrace,
 		Probe:           *probe,

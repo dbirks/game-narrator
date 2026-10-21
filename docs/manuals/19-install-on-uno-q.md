@@ -576,6 +576,106 @@ yours to decide (docs/release.md §5). If you used Step 2's bind mount,
 disable and unmount it afterwards (`sudo systemctl disable --now
 gn-data.mount`).
 
+## One install only (systemd unit vs user-level run)
+
+A board can carry **two** game-narrator installs at once, and both layouts
+really exist in the field:
+
+| | the packaged unit | the hand-run user-level process |
+|---|---|---|
+| what starts it | `systemctl start game-narrator` | `setsid nohup /usr/bin/game-narrator serve >>serve.log 2>&1 </dev/null &` |
+| runs as | the `game-narrator` service user | the ssh login user |
+| env file | `/etc/game-narrator/env` | `~/gn-live/env` |
+| data directory | `/var/lib/game-narrator` | `~/gn-live/data` (`GAME_NARRATOR_DATA_DIR`) |
+| logs | `journalctl -u game-narrator` | `~/gn-live/serve.log` |
+
+Both bind the same listen address by default. The 2026-10-21 incident: a
+deploy installed a new binary and restarted the **unit** while the
+**user-level process** still held port 8080 — the unit crash-looped (503
+restarts) on `listen tcp <addr>:8080: bind: address already in use`,
+burning CPU on a CPU-bound board, the new build never served, and the unit
+was pointed at a different, empty data directory. The rule is therefore:
+**one active install per board**, and check the other before starting or
+deploying either:
+
+```sh
+systemctl status game-narrator   # the unit (active means it holds the port)
+pgrep -x game-narrator           # the process(es); matches BOTH installs
+```
+
+`pgrep -x` is exact-name only, so it never matches an ssh shell. The two
+"stop the other one" commands are `sudo systemctl disable --now
+game-narrator` (the unit) and `kill $(pgrep -x game-narrator)` (the
+user-level process). **Never** `pkill -f "game-narrator serve"`: the pattern
+matches the ssh shell running the command and kills your own session.
+
+`game-narrator doctor` now catches the collision before a crash loop starts:
+run it with the target install's env, and the `network.listen` row probes the
+configured address. Because you normally run doctor **while the narrator is
+serving**, the row disambiguates the holder (ADR-0150, amendment) instead of
+failing on the healthy install: if the holder answers as a game-narrator
+(`GET /api/v1/system/info` on the loopback, 2 s budget) and there is no
+second-install evidence (a second `pgrep -x game-narrator` process, or the
+unit restarting while a non-unit process holds the port), the row is `OK`
+("held by a running game-narrator <version>"). If something that is **not** a
+game-narrator owns the address, the row is `FAIL` with "another program holds
+<addr>: the holder does not answer as a game-narrator"; with a game-narrator
+holder **plus** second-install evidence it is `FAIL` with "another process
+holds <addr>; is a second game-narrator install running?" (exit code 1
+in both FAIL cases).
+
+## Deploying a dev build
+
+`scripts/board/deploy.sh` deploys a locally built binary to the board in one
+of the two layouts above (ADR-0150). It takes the target only from
+`GN_BOARD_SSH` — it is never defaulted:
+
+```sh
+make web-build   # stage the UI into internal/webassets/dist (the binary embeds it)
+GN_BOARD_SSH=<user>@<uno-q-host> ./scripts/board/deploy.sh --systemd   # the packaged unit
+GN_BOARD_SSH=<user>@<uno-q-host> ./scripts/board/deploy.sh --user      # the ~/gn-live layout
+GN_BOARD_SSH=<user>@<uno-q-host> ./scripts/board/deploy.sh --user --dry-run   # print the steps, touch nothing
+```
+
+The script, in order: cross-builds the arm64 binary stamped with
+`0.1.0-<short commit>`
+
+```sh
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
+  -ldflags "-X github.com/dbirks/game-narrator/internal/bootstrap.version=0.1.0-$SHA \
+            -X github.com/dbirks/game-narrator/internal/bootstrap.commit=$SHA" \
+  -o <out> ./cmd/game-narrator
+```
+
+— `scp`s it to the board, **backs up the data directory first** (the
+`--user` backup lands at `~/gn-live/data-backup-<ts>.tar.gz`, the `--systemd`
+backup at `/var/lib/game-narrator-data-backup-<ts>.tar.gz`), keeps the
+previous binary at `/usr/bin/game-narrator.prev`, stops the old process by
+exact PID, installs with `sudo -n install`, starts, waits up to 30 s for
+`GET /api/v1/health/live`, and prints `game-narrator version` (there is no
+`--version` flag).
+
+Gotchas the script encodes (each one cost an incident on a real board):
+
+- **The data backup is tolerant of a live service.** `tar czf` exits 1 when a
+  file changes while being read — and `dev-trace` blobs are rewritten while
+  the service runs, so a `set -e` script aborts at the backup. The recipe
+  excludes `data/dev-trace` from the archive and treats tar exit 1 as a
+  warning ("file changed as we read it", backup still usable) and exit >1 as
+  a stop. Manual equivalent:
+  `tar czf data-backup-<ts>.tar.gz --exclude=data/dev-trace data`.
+- **Stop by exact PID, never by pattern.** `pkill -f "game-narrator serve"`
+  matches the ssh shell running the deploy. The script kills the PIDs from
+  `pgrep -x game-narrator` (SIGTERM, 15 s grace, SIGKILL fallback).
+- **It refuses while the OTHER install is active.** Deploying `--user` while
+  the unit is active (or `--systemd` while a user-level process runs) stops
+  before touching anything and prints the one command that disables the other
+  install ("One install only" above). That refusal is the incident fix.
+- **Rollback:** `sudo -n install -m 755 /usr/bin/game-narrator.prev
+  /usr/bin/game-narrator`, then restart the install; the data backup from the
+  failed deploy is the restore path (manual 12 / docs/release.md §4 if the
+  schema moved under you).
+
 ## Verification
 
 - `systemctl status game-narrator` is active; `GET /api/v1/health/ready` is

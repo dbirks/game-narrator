@@ -162,6 +162,13 @@ type Options struct {
 	// leaves the row's reporting unchanged and disables the stale-default
 	// warning, because "explicitly configured" cannot be assumed.
 	DataDirSource bootstrap.DataDirSource
+	// Listen is the TCP address the service is configured to bind to; the
+	// network.listen row probes it with a real bind (ADR-0150: a second
+	// install holding the port is a FAIL, not a serve-time surprise). The
+	// CLI resolves it the way serve does (flag > GAME_NARRATOR_LISTEN >
+	// default); an empty value leaves the row NOT CONFIGURED, because a
+	// check that cannot name the address cannot probe it.
+	Listen string
 	// Dev adds developer-host checks (Dolphin, game image) that have no
 	// meaning on a production UNO Q install.
 	Dev bool
@@ -217,6 +224,14 @@ type Options struct {
 	// prerequisites (linger, the headless override); nil leaves the row
 	// NOT CONFIGURED.
 	Bluetooth BluetoothProbe
+
+	// InstallEvidence is the seam over the process and systemd probes the
+	// network.listen row uses for the second-install evidence when the
+	// configured address is held by a game-narrator (ADR-0150 amendment):
+	// the pgrep -x count and the unit's restart state. nil uses the real
+	// pgrep/systemctl probes; tests inject a fake so the suite never
+	// shells out.
+	InstallEvidence InstallEvidence
 
 	// OCRImage overrides the embedded controlled image.
 	OCRImage []byte
@@ -344,6 +359,9 @@ func Run(ctx context.Context, o Options) Report {
 
 	r.add(ctx, "storage.data_dir", r.opts.Timeout, func(ctx context.Context) Check { return r.checkDataDir(ctx) })
 	r.add(ctx, "storage.database", r.opts.Timeout, func(ctx context.Context) Check { return r.checkDatabase(ctx) })
+	// The listen-address row (ADR-0150): the two-install port collision is
+	// the deploy incident this check names before the crash loop starts.
+	r.add(ctx, "network.listen", r.opts.Timeout, func(ctx context.Context) Check { return r.checkListen(ctx) })
 
 	for _, tool := range defaultTools {
 		tool := tool
