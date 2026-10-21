@@ -51,6 +51,8 @@ The first full-suite `--workers=2` gate run (2026-10-21) found the same hazard i
 
 The same run also found the health walk's appliance claim asserted the first claim's 201 strictly, while its two sibling tests on the same server already accepted the already-claimed 409: at two workers a sibling's claim can land first. The walk now accepts `[201, 409]` like its siblings (ADR-0016 §7: the claim is once per appliance; either way the admin exists for the sign-in).
 
+A third instance of the same hazard, in the same run: `web/e2e/settings-theme.spec.ts`'s UX-12 and widths tests sign in on the UX-13 walk's appliance, and the widths test also reads the walk's theme state — at two workers UX-12 reached `/login` before the walk's claim landed, the page rendered the first-run setup form, and the login fields never appeared. The UX-13 walk now holds the scenario lock (`scenario: "settings-theme-walk"`) from its start to its end (finally); the two dependents take it as a completion barrier before they sign in (wait: the walk's 600 s test timeout + 30 s margin; their timeouts cover the barrier plus their work).
+
 ## Reversal plan
 
 Remove the `acquireScenarioLock`/`finally` from test (a), the two-stage barrier from (b)/(c) and the `timeoutMs` parameter from `acquireScenarioLock`; restore the deep-linkers' original timeouts. The suite at `workers: 1` (the config default) makes the handoff serial again, so nothing else reverts.

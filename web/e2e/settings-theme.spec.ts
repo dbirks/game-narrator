@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 
 import { ports } from "./support/ports";
+import { acquireScenarioLock } from "./support/scenario-lock";
 
 /**
  * The settings-and-theme walk (plan.md Phase 1 item 9, ADR-0109): the theme
@@ -31,6 +32,15 @@ const WCAG_21_A_AA = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] as const;
 
 /** The synthetic audio inventory (the project's GAME_NARRATOR_AUDIO_FAKE_DEVICES). */
 const HDMI_ID = "hdmi-out";
+/** The walk to the siblings' completion barrier (ADR-0130, the 2026-10-21
+ *  full-suite gate): the same scenario-lock primitive the setup-board and
+ *  cast walks use — the siblings sign in on the walk's appliance.
+ */
+const SETTINGS_THEME_LOCK = "settings-theme-walk";
+/** The walk's test timeout (600 s) plus a scheduling margin: a walk that
+ *  legitimately runs its full length never trips the barrier's wait.
+ */
+const SETTINGS_THEME_BARRIER_MS = 630_000;
 const USB_ID = "jbl-usb-dac";
 const HEADSET_SINK_ID = "bluez_output.AA:BB:CC:DD:EE:FF.1";
 /** The synthetic Bluetooth inventory (internal/bt's DefaultFake). */
@@ -91,129 +101,155 @@ async function fontsSettled(page: Page): Promise<void> {
 
 test("UX-13: the tailnet URL is the API's own answer, and the theme card links the picker", async ({
   page,
-}) => {
+}, testInfo) => {
   test.setTimeout(600_000);
-  await claim(page);
 
-  await page.goto("/settings");
-  await settingsSettled(page);
+  // The run lock (ADR-0130, the 2026-10-21 full-suite gate): the sibling tests
+  // sign in on this walk’s appliance, and fullyParallel lets one of them reach the
+  // sign-in before the claim lands (its 2026-10-21 flake: /login rendered the
+  // first-run setup form and the login fields never appeared). Held for the whole
+  // walk (released in the finally); the siblings take it as a completion barrier
+  // before they sign in.
+  const releaseWalkLock = await acquireScenarioLock(testInfo, SETTINGS_THEME_LOCK);
+  try {
+    await claim(page);
 
-  // UX-13: the displayed URL equals the running system's own answer — read
-  // the API and assert text equality (the pin's value, verbatim).
-  const api = await page.request.get("/api/v1/settings");
-  expect(api.status(), "GET /api/v1/settings answers 200").toBe(200);
-  const body = (await api.json()) as {
-    network: { tailnet_url: string | null; source: string | null; note: string };
-  };
-  expect(body.network.tailnet_url, "the API reports the pinned tailnet URL").not.toBeNull();
-  await expect(page.getByTestId("tailnet-url")).toHaveText(body.network.tailnet_url as string);
-  await expect(page.getByTestId("tailnet-note")).toContainText(body.network.note);
-  expect(body.network.note.length, "the note is rendered, never a blank field").toBeGreaterThan(0);
+    await page.goto("/settings");
+    await settingsSettled(page);
 
-  // The theme card: the current theme named and the link to the picker.
-  await expect(page.getByTestId("settings-theme-current")).toHaveText("Plum & Peach");
-  await expect(page.getByTestId("theme-page-link")).toHaveAttribute("href", "/settings/theme");
-
-  // UX-09: the picker re-themes the whole app without a reload and persists
-  // the choice across a reload.
-  const plumInk = await rootToken(page, "ink");
-  const plumPaper = await rootToken(page, "paper");
-  expect(plumInk, "the plum theme has an --ink on :root").not.toBe("");
-  expect(plumInk).not.toBe(plumPaper);
-
-  await page.goto("/settings/theme");
-  await expect(page.getByTestId("theme-grid")).toBeVisible({ timeout: 20_000 });
-  await expect(page.getByTestId("theme-selected-plum")).toHaveText("selected");
-
-  await page.getByTestId("theme-pick-lilac-night").click();
-  // Live: <html> carries the theme attribute and :root's tokens switched —
-  // no reload (the whole app re-themed at once).
-  await expect.poll(async () => rootToken(page, "ink")).not.toBe(plumInk);
-  await expect.poll(async () => rootToken(page, "paper")).not.toBe(plumPaper);
-  await expect(page.getByTestId("theme-selected-lilac-night")).toBeVisible();
-  await expect(page.getByTestId("theme-pick-lilac-night")).toBeDisabled();
-
-  // Persistence: the choice survives a reload (localStorage seam, Phase 0).
-  await page.reload();
-  await expect(page.getByTestId("theme-grid")).toBeVisible({ timeout: 20_000 });
-  await expect(page.getByTestId("theme-selected-lilac-night")).toBeVisible();
-  expect(
-    await rootToken(page, "ink"),
-    "the reloaded page still carries Lilac Night's --ink",
-  ).not.toBe(plumInk);
-
-  // The token slot table: every theme's eight slots, the handoff's derived
-  // slots flagged (README "Themes": the coral/sand/hair of Ink Blue & Apricot
-  // and the muted/sand/hair of Sherbet were not in the mocks).
-  await expect(page.getByTestId("theme-slot-table")).toBeVisible();
-  for (const derived of [
-    "theme-slot-derived-ink-apricot-coral",
-    "theme-slot-derived-ink-apricot-sand",
-    "theme-slot-derived-ink-apricot-hair",
-    "theme-slot-derived-sherbet-muted",
-    "theme-slot-derived-sherbet-sand",
-    "theme-slot-derived-sherbet-hair",
-  ]) {
-    await expect(page.getByTestId(derived), `${derived} is flagged derived`).toBeVisible();
-  }
-  const values = await page.locator("[data-testid^='theme-slot-'] code").allTextContents();
-  expect(
-    values.every((value) => value.startsWith("#")),
-    `the slot table read its values from the computed style (got ${values.slice(0, 3).join(", ")}…)`.slice(
+    // UX-13: the displayed URL equals the running system's own answer — read
+    // the API and assert text equality (the pin's value, verbatim).
+    const api = await page.request.get("/api/v1/settings");
+    expect(api.status(), "GET /api/v1/settings answers 200").toBe(200);
+    const body = (await api.json()) as {
+      network: { tailnet_url: string | null; source: string | null; note: string };
+    };
+    expect(body.network.tailnet_url, "the API reports the pinned tailnet URL").not.toBeNull();
+    await expect(page.getByTestId("tailnet-url")).toHaveText(body.network.tailnet_url as string);
+    await expect(page.getByTestId("tailnet-note")).toContainText(body.network.note);
+    expect(body.network.note.length, "the note is rendered, never a blank field").toBeGreaterThan(
       0,
-      80,
-    ),
-  ).toBe(true);
+    );
 
-  // The slot table is a REAL grid — four theme rows of eight slot columns,
-  // the cells of a row side by side, not stacked: the a11y/visual review
-  // caught the display:grid-on-the-td regression that collapsed the body
-  // into one ~32-row column. The row boxes stay single-row height.
-  const grid = await page.evaluate(() => {
-    interface SlotEl {
-      getBoundingClientRect: () => { x: number; height: number };
-      querySelectorAll: (selector: string) => ArrayLike<SlotEl>;
+    // The theme card: the current theme named and the link to the picker.
+    await expect(page.getByTestId("settings-theme-current")).toHaveText("Plum & Peach");
+    await expect(page.getByTestId("theme-page-link")).toHaveAttribute("href", "/settings/theme");
+
+    // UX-09: the picker re-themes the whole app without a reload and persists
+    // the choice across a reload.
+    const plumInk = await rootToken(page, "ink");
+    const plumPaper = await rootToken(page, "paper");
+    expect(plumInk, "the plum theme has an --ink on :root").not.toBe("");
+    expect(plumInk).not.toBe(plumPaper);
+
+    await page.goto("/settings/theme");
+    await expect(page.getByTestId("theme-grid")).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId("theme-selected-plum")).toHaveText("selected");
+
+    await page.getByTestId("theme-pick-lilac-night").click();
+    // Live: <html> carries the theme attribute and :root's tokens switched —
+    // no reload (the whole app re-themed at once).
+    await expect.poll(async () => rootToken(page, "ink")).not.toBe(plumInk);
+    await expect.poll(async () => rootToken(page, "paper")).not.toBe(plumPaper);
+    await expect(page.getByTestId("theme-selected-lilac-night")).toBeVisible();
+    await expect(page.getByTestId("theme-pick-lilac-night")).toBeDisabled();
+
+    // Persistence: the choice survives a reload (localStorage seam, Phase 0).
+    await page.reload();
+    await expect(page.getByTestId("theme-grid")).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId("theme-selected-lilac-night")).toBeVisible();
+    expect(
+      await rootToken(page, "ink"),
+      "the reloaded page still carries Lilac Night's --ink",
+    ).not.toBe(plumInk);
+
+    // The token slot table: every theme's eight slots, the handoff's derived
+    // slots flagged (README "Themes": the coral/sand/hair of Ink Blue & Apricot
+    // and the muted/sand/hair of Sherbet were not in the mocks).
+    await expect(page.getByTestId("theme-slot-table")).toBeVisible();
+    for (const derived of [
+      "theme-slot-derived-ink-apricot-coral",
+      "theme-slot-derived-ink-apricot-sand",
+      "theme-slot-derived-ink-apricot-hair",
+      "theme-slot-derived-sherbet-muted",
+      "theme-slot-derived-sherbet-sand",
+      "theme-slot-derived-sherbet-hair",
+    ]) {
+      await expect(page.getByTestId(derived), `${derived} is flagged derived`).toBeVisible();
     }
-    const g = globalThis as {
-      document?: {
-        querySelector: (selector: string) => {
-          querySelectorAll: (selector: string) => ArrayLike<SlotEl>;
-        } | null;
-      };
-    };
-    const table = g.document?.querySelector("[data-testid='theme-slot-table']");
-    if (!table) return null;
-    const rows = table.querySelectorAll("tbody tr");
-    const rowCount = rows.length;
-    const cellXs: number[] = [];
-    const firstRowCells = rowCount > 0 ? rows[0].querySelectorAll("td") : null;
-    if (firstRowCells) {
-      for (let i = 0; i < firstRowCells.length; i++) {
-        cellXs.push(firstRowCells[i].getBoundingClientRect().x);
+    const values = await page.locator("[data-testid^='theme-slot-'] code").allTextContents();
+    expect(
+      values.every((value) => value.startsWith("#")),
+      `the slot table read its values from the computed style (got ${values.slice(0, 3).join(", ")}…)`.slice(
+        0,
+        80,
+      ),
+    ).toBe(true);
+
+    // The slot table is a REAL grid — four theme rows of eight slot columns,
+    // the cells of a row side by side, not stacked: the a11y/visual review
+    // caught the display:grid-on-the-td regression that collapsed the body
+    // into one ~32-row column. The row boxes stay single-row height.
+    const grid = await page.evaluate(() => {
+      interface SlotEl {
+        getBoundingClientRect: () => { x: number; height: number };
+        querySelectorAll: (selector: string) => ArrayLike<SlotEl>;
       }
-    }
-    let maxRowHeight = 0;
-    for (let i = 0; i < rowCount; i++) {
-      maxRowHeight = Math.max(maxRowHeight, rows[i].getBoundingClientRect().height);
-    }
-    return {
-      rowCount,
-      cellCount: cellXs.length,
-      sideBySide: cellXs.every((x, i) => i === 0 || x > cellXs[i - 1]),
-      maxRowHeight,
-    };
-  });
-  expect(grid, "the slot table rendered its theme rows").not.toBeNull();
-  expect(grid?.rowCount, "one row per theme").toBe(4);
-  expect(grid?.cellCount, "one column per slot").toBe(8);
-  expect(grid?.sideBySide, "the row's cells sit side by side, not stacked").toBe(true);
-  expect(grid?.maxRowHeight, "each theme row is one row, not a stack of cells").toBeLessThan(90);
+      const g = globalThis as {
+        document?: {
+          querySelector: (selector: string) => {
+            querySelectorAll: (selector: string) => ArrayLike<SlotEl>;
+          } | null;
+        };
+      };
+      const table = g.document?.querySelector("[data-testid='theme-slot-table']");
+      if (!table) return null;
+      const rows = table.querySelectorAll("tbody tr");
+      const rowCount = rows.length;
+      const cellXs: number[] = [];
+      const firstRowCells = rowCount > 0 ? rows[0].querySelectorAll("td") : null;
+      if (firstRowCells) {
+        for (let i = 0; i < firstRowCells.length; i++) {
+          cellXs.push(firstRowCells[i].getBoundingClientRect().x);
+        }
+      }
+      let maxRowHeight = 0;
+      for (let i = 0; i < rowCount; i++) {
+        maxRowHeight = Math.max(maxRowHeight, rows[i].getBoundingClientRect().height);
+      }
+      return {
+        rowCount,
+        cellCount: cellXs.length,
+        sideBySide: cellXs.every((x, i) => i === 0 || x > cellXs[i - 1]),
+        maxRowHeight,
+      };
+    });
+    expect(grid, "the slot table rendered its theme rows").not.toBeNull();
+    expect(grid?.rowCount, "one row per theme").toBe(4);
+    expect(grid?.cellCount, "one column per slot").toBe(8);
+    expect(grid?.sideBySide, "the row's cells sit side by side, not stacked").toBe(true);
+    expect(grid?.maxRowHeight, "each theme row is one row, not a stack of cells").toBeLessThan(90);
+  } finally {
+    releaseWalkLock();
+  }
 });
 
 test("UX-12: the selector lists the sink categories, persists the HDMI pick, the tone records its WAV, and the unpaired Bluetooth device shows the pairing prompt", async ({
   page,
-}) => {
-  test.setTimeout(600_000);
+}, testInfo) => {
+  // The barrier's wait (the walk's full test length) plus this test's own
+  // work (ADR-0130): the walk's claim must land before this test signs in.
+  test.setTimeout(SETTINGS_THEME_BARRIER_MS + 150_000);
+  // Stage one: the walk's run lock — held from its start to its end, so
+  // acquiring it proves the claim (and the walk's settings state) landed.
+  // The release is immediate: a barrier, not a claim (this test is
+  // read-only over the walk's appliance).
+  const release = await acquireScenarioLock(
+    testInfo,
+    SETTINGS_THEME_LOCK,
+    SETTINGS_THEME_BARRIER_MS,
+  );
+  release();
   await signIn(page);
   await page.goto("/settings");
   await settingsSettled(page);
@@ -309,7 +345,19 @@ test("UX-13: the un-pinned server renders the explicit not-configured tailnet st
 test("Settings and theme page: screenshots and axe at 1440/1024/390, no horizontal scroll at 390", async ({
   page,
 }, testInfo) => {
-  test.setTimeout(600_000);
+  // The barrier's wait (the walk's full test length) plus this test's own
+  // work (ADR-0130): the walk's claim must land before this test signs in.
+  test.setTimeout(SETTINGS_THEME_BARRIER_MS + 150_000);
+  // Stage one: the walk's run lock — held from its start to its end, so
+  // acquiring it proves the walk (and its appliance claim) finished. The
+  // release is immediate: a barrier, not a claim (this test is read-only
+  // over the walk's state).
+  const release = await acquireScenarioLock(
+    testInfo,
+    SETTINGS_THEME_LOCK,
+    SETTINGS_THEME_BARRIER_MS,
+  );
+  release();
   await signIn(page);
 
   // The default theme for the settings shots; the dark theme for the theme
