@@ -228,10 +228,12 @@ describe("healthSummaryText", () => {
     // The rollup's non-ok tail, in the mock's shape (1 slow + 1 fail).
     expect(healthSummaryText({ slow: 1, fail: 0, unknown: 0 })).toBe("1 needs attention");
     expect(healthSummaryText({ slow: 1, fail: 1, unknown: 0 })).toBe("2 need attention");
-    // An unprobed tile keeps its own word, never a restyled "all fine".
-    expect(healthSummaryText({ slow: 0, fail: 0, unknown: 5 })).toBe("5 unprobed");
+    // An unprobed tile keeps its own human word (the 2026-10-20 review:
+    // "N unprobed" was developer-speak), never a restyled "all fine".
+    expect(healthSummaryText({ slow: 0, fail: 0, unknown: 5 })).toBe("5 checks not run yet");
+    expect(healthSummaryText({ slow: 0, fail: 0, unknown: 1 })).toBe("1 check not run yet");
     expect(healthSummaryText({ slow: 1, fail: 1, unknown: 3 })).toBe(
-      "2 need attention · 3 unprobed",
+      "2 need attention · 3 checks not run yet",
     );
   });
 });
