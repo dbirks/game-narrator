@@ -8,7 +8,6 @@ import (
 	"io"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -529,45 +528,7 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 	// to a silent session (logged), never a failed run: audio output
 	// misconfiguration must not take the capture down with it.
 	if m.opts.Speech != nil {
-		speakers := make(map[string]string, len(content.Messages))
-		// speakerAliasByID maps each character ID to its display name so that
-		// approvedVoice can resolve voices created via the Cast UI or auto-cast
-		// (where voice_profiles.character stores c.Name per ADR-0109/ADR-0135)
-		// as well as voices imported via profileio (where voice_profiles.character
-		// stores c.ID per ADR-0101).
-		speakerAliasByID := make(map[string]string, len(content.Characters))
-		for _, ch := range content.Characters {
-			if ch.ID != "" && ch.Name != "" && ch.Name != ch.ID {
-				speakerAliasByID[ch.ID] = ch.Name
-			}
-		}
-		// prewarmTexts is the canonical TTS text of every profile message —
-		// the best prediction of what a later commit of the line will read:
-		// the speech text when the profile gives one (what the narrator
-		// says), then the original text, then the normalized key. The
-		// prewarm synthesises the successor under this text, and the commit
-		// speaks it: the key a later commit computes is the key the
-		// prewarm booked (the commit's own tracker text — folded, a prefix
-		// or a typo — is not the TTS text of a matched line).
-		prewarmTexts := make(map[string]string, len(content.Messages))
-		for _, msg := range content.Messages {
-			if msg.SpeakerID != "" {
-				// The line's speaker, through the curator's link (ADR-0070/
-				// ADR-0101): a placeholder the target character's aliases name
-				// speaks with the target's voice, not the placeholder's.
-				speakers[msg.ID] = resolveSpeaker(msg.SpeakerID)
-			}
-			t := msg.SpeechText
-			if t == "" {
-				t = msg.OriginalText
-			}
-			if t == "" {
-				t = msg.NormalizedText
-			}
-			if t != "" {
-				prewarmTexts[msg.ID] = strings.TrimSpace(t)
-			}
-		}
+		speakers, speakerAliasByID, prewarmTexts := profileSpeechMaps(content, resolveSpeaker)
 		if w := m.newSpeechWiring(id, speakers, published.NarratorFallback, runCtx, runner, idx, prewarmTexts, sess.voiceLat); w != nil {
 			w.speakerAliasByID = speakerAliasByID
 			sess.speech = w

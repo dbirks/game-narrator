@@ -1928,16 +1928,7 @@ func (w *speechWiring) speak(u *utteranceInfo) {
 	u.voiceID = rv.profile.ID
 	w.mu.Unlock()
 
-	key, err := speech.CacheKeyOf(speech.KeyInput{
-		UtteranceText:            u.text,
-		OriginalMessageID:        u.messageID,
-		SpeechRulesRevision:      1,
-		Language:                 rv.profile.Language,
-		VoiceRevisionFingerprint: rv.profile.Fingerprint,
-		TTSModelID:               rv.profile.ModelID,
-		BackendConfigDigest:      w.voices.BackendDigest,
-		Format:                   "wav/pcm16",
-	})
+	key, err := w.lineCacheKey(rv, u.messageID, u.text)
 	if err != nil {
 		w.finishEnded(u, "failed", fmt.Sprintf("cache_key:%v", err))
 		return
@@ -2782,16 +2773,7 @@ func (w *speechWiring) prewarmWorker(batch context.Context, messageID string) {
 		// the same silence-with-reason the commit path takes; the line's own
 		// commit reports it when it comes.
 	}
-	key, err := speech.CacheKeyOf(speech.KeyInput{
-		UtteranceText:            text,
-		OriginalMessageID:        messageID,
-		SpeechRulesRevision:      1,
-		Language:                 rv.profile.Language,
-		VoiceRevisionFingerprint: rv.profile.Fingerprint,
-		TTSModelID:               rv.profile.ModelID,
-		BackendConfigDigest:      w.voices.BackendDigest,
-		Format:                   "wav/pcm16",
-	})
+	key, err := w.lineCacheKey(rv, messageID, text)
 	if err != nil {
 		return
 	}
@@ -2843,6 +2825,22 @@ func (w *speechWiring) prewarmWorker(batch context.Context, messageID string) {
 	}
 	w.prewarmBytes += int64(len(res.WAV))
 	w.mu.Unlock()
+}
+
+// lineCacheKey is a matched line's TTS cache key under a resolved voice: the
+// identity the prewarm, the profile pre-synthesis (presynth.go) and a commit
+// of the line share, so cached audio is found by whichever path speaks it.
+func (w *speechWiring) lineCacheKey(rv resolvedVoice, messageID, text string) (speech.CacheKey, error) {
+	return speech.CacheKeyOf(speech.KeyInput{
+		UtteranceText:            text,
+		OriginalMessageID:        messageID,
+		SpeechRulesRevision:      1,
+		Language:                 rv.profile.Language,
+		VoiceRevisionFingerprint: rv.profile.Fingerprint,
+		TTSModelID:               rv.profile.ModelID,
+		BackendConfigDigest:      w.voices.BackendDigest,
+		Format:                   "wav/pcm16",
+	})
 }
 
 // prewarmKeyConsumed records that a committed line resolved one of this
