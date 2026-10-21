@@ -10,7 +10,7 @@ Base `/api/v1`; JSON UTF-8; RFC3339 UTC timestamps; UUID/ULID identifiers; `Idem
 |---|---|
 | `GET /api/v1/health/live`, `GET /api/v1/health/ready` | process vs dependencies health |
 | `GET /api/v1/system/info` | build/OS/device capacities, no secrets |
-| `GET/PUT /api/v1/config` | redacted settings and validated changes |
+| `GET /api/v1/settings`, `PUT /api/v1/settings` (405 by design) | redacted settings; no general runtime-mutable setting — change the environment variables and restart (ADR-0047); the one runtime-mutable setting is the audio output selection and master volume via `PUT /api/v1/settings/audio` (ADR-0074). Replaces the original `GET/PUT /api/v1/config` row, whose deviation is decided and kept by ADR-0133 (single-operator LAN appliance; env plus restart) |
 | `POST /api/v1/diagnostics/run`, `GET /api/v1/diagnostics/:id` | runnable preflight and results |
 | `GET /api/v1/capture/devices`, `POST /api/v1/capture/probe` | UVC device list, mode negotiation |
 | `GET /api/v1/capture/preview` | throttled MJPEG/snapshot, auth, privacy |
