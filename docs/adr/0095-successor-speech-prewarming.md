@@ -159,3 +159,63 @@ atomically-read cache counters. Reversal is a revert of the prewarm hunk in
 the test files; the cache-counter change stands on its own (it only removes
 a data race) and can stay or go independently. No schema, protocol or
 persistence surface is touched, so no migration is required.
+
+## Amendment (2026-10-21): canonical text on matched commits, wider defaults, and speculative prewarm
+
+Status: accepted. Owners: agent worker (task presynth). Builds on the
+composition above; the key-identity, priority, cancellation and stats
+decisions are unchanged.
+
+**Canonical text on matched commits (the key-mismatch fix).** The commit
+payload's `text` is the recognition tracker's output — the comparison fold
+(lowercased), a prefix in predictive mode, a typo in a fuzzy match — while
+the prewarm synthesised the profile's canonical text under
+`speechWiring.prewarmTexts` (`Manager.Start`). A matched line whose commit
+computed its TTS key from the folded text therefore missed every prewarmed
+byte (the keys differ in case/length), and a predictive commit spoke the
+prefix instead of the full line. The wiring's commit path now resolves the
+line's TTS text from the canonical prewarm text when the message id has one
+(`onCommit`, after the eligibility gate): the commit speaks the canonical
+text under the prewarmed key, so the first occurrence of a prewarmed line
+resolves from the cache. The unmatched read-through is untouched by design
+(ADR-0136: it speaks the screen's text, and an abstained line has no
+canonical text in the corpus). `Manager.Start`'s `prewarmTexts` precedence
+is the speech text first (what the narrator says, when the profile gives
+one), then the original text, then the normalized key — the TTS text of the
+line, not the decision wiring's render precedence (which displays the
+canonical original and keeps its own order).
+
+**Default retune (wider forks, longer scenes).** `DefaultPrewarmTopK`
+3 → 5, `DefaultPrewarmMaxEntropyBits` 1.5 → 2.0 bits (a flat four-way fork
+reads exactly 2.0 and prewarms; a flat five-way coin flip, ≈ 2.32 bits,
+still refuses), `DefaultPrewarmByteQuota` 4 → 8 MiB (≈ 4 minutes of
+16 kHz/16-bit mono speech): dialogue forks and longer scenes stay warm. The
+exposure tradeoff (wasted prewarmed bytes) is the same, bounded by the
+gates and visible in `prewarm.wasted`/`prewarm.bytes`.
+
+**Speculative prewarm (`PrewarmCandidate` / `PrewarmMessages`).** The wiring
+gains two entry points that warm a profile message (or a list of scene
+lines) into the shared cache before anything commits it, for callers that
+see likely lines before the commit path does (a decision-layer candidate,
+an operator's scene list). The job runs the same `prewarmWorker` — same key
+identity, `PriorityBackground`, one synthesis per key (a list that overlaps
+a batch or itself dedupes on the shared booking) — under the session's end
+context rather than a commit batch's: the candidate belongs to no batch,
+nothing fences it, and its bytes are still a hit if the line commits. Safe
+to call from any goroutine; a nil wiring, an empty or `"unknown"` id, a
+closed session, and a message without a canonical text are no-ops.
+
+**Validation.** `internal/runtime/speech_fence_test.go`: `TestSpeechPrewarmCanonicalTextMatchesLowercaseCommit`
+(a folded lowercased-prefix commit of the prewarmed line resolves
+`from_cache: true` with the prewarm hit booked, and `speech.requested`
+carries the full canonical text — the test fails on the pre-fix key
+mismatch), `TestSpeechPrewarmCandidateSpeculative` (a speculative candidate
+warms before any commit and the commit resolves it; the no-op and
+dedupe halves), and `TestSpeechPrewarmEntropySkipsBatch` re-scripted to a
+flat five-way fork (≈ 2.32 bits > the 2.0-bit cap). `internal/runtime/
+speech_test.go`: `TestSpeechCommitSpeaksCanonicalText` — the full pipeline
+(the production `Manager.Start` path): the second line's commit carries the
+tracker's folded text while its `speech.requested` carries the canonical
+line, and the run makes exactly one TTS call per line (the canonical key
+is shared by the prewarm and the commit). `go test -race -count=1
+./internal/runtime/... ./internal/speech/...` green.

@@ -1068,6 +1068,80 @@ func TestSpeechCacheHitSecondSession(t *testing.T) {
 	}
 }
 
+// TestSpeechCommitSpeaksCanonicalText is the end-to-end half of the
+// canonical-text fix (FR-11's key identity through the full pipeline): the
+// commit carries the recognition tracker's folded text — the fixture's line
+// as the recognition machine read it, lowercased — while the speech layer
+// speaks the profile's canonical text. The second line's speech.requested
+// therefore carries the script's casing (the TTS key the prewarm booked),
+// and the whole run makes one TTS call per line: the prewarm's canonical key
+// and the commit's key are identical, so the second line never pays a third
+// generation under the folded key.
+func TestSpeechCommitSpeaksCanonicalText(t *testing.T) {
+	const line2 = "Nobody in the village had seen that boat before."
+	sink := dummy.New(0, 0)
+	e := newVoiceEnv(t, 10*time.Millisecond, 100*time.Millisecond, true, sink, "", nil, "")
+	sid := e.startReplay()
+
+	e.waitEvents(t, sid, "both lines ready", 30*time.Second, func(evs []events.Envelope) bool {
+		var ready int
+		for _, ev := range evs {
+			if ev.Name == events.SpeechReady {
+				ready++
+			}
+		}
+		return ready >= 2
+	})
+	waitState(t, e.mgr, sid, 30*time.Second)
+	evs := e.sessionEvents(sid)
+
+	// The commit of the second line carries the tracker's folded text —
+	// the fixture's OCR truth is the mixed-case line, so the fold is the
+	// lowercased one: the mismatch the prewarm used to miss.
+	var commitOcc, commitText string
+	for _, ev := range evs {
+		if ev.Name != events.MessageCommitted {
+			continue
+		}
+		p := payload(t, ev)
+		if txt, _ := p["text"].(string); strings.Contains(txt, "nobody") {
+			commitOcc, _ = p["dialogue_occurrence_id"].(string)
+			commitText = txt
+		}
+	}
+	if commitOcc == "" {
+		t.Fatal("the second line never committed (the fixture's clip shows it)")
+	}
+	if commitText != strings.ToLower(line2) {
+		t.Fatalf("the commit carried %q, want the tracker's folded text %q (the recognition output, not the script's casing)", commitText, strings.ToLower(line2))
+	}
+
+	// The speech layer of that same line (the occurrence is the correlation
+	// id) speaks the canonical text: the TTS key the prewarm booked, the
+	// line the player sees, not the recognition fold.
+	var requestedText string
+	for _, ev := range evs {
+		if ev.Name != events.SpeechRequested {
+			continue
+		}
+		p := payload(t, ev)
+		if occ, _ := p["dialogue_occurrence_id"].(string); occ == commitOcc {
+			requestedText, _ = p["text"].(string)
+		}
+	}
+	if requestedText != line2 {
+		t.Fatalf("speech.requested carried %q, want the canonical line %q (a matched commit speaks the profile's canonical text, not the tracker's fold)", requestedText, line2)
+	}
+
+	// One TTS generation per line: the prewarm and the commit share the
+	// canonical key, so the second line resolved from the prewarmed bytes
+	// (or singleflotted behind the commit) — never a third generation
+	// under the folded key.
+	if n := e.tts.callCount(); n != 2 {
+		t.Fatalf("the run made %d TTS calls, want 2 (one per line — the canonical key is shared by the prewarm and the commit)", n)
+	}
+}
+
 // TestSpeechAudioValidation is the control contract: out-of-range values are
 // refused, an unknown session gets its sentinel, and a session with no
 // speech pipeline reports the audio unavailable.

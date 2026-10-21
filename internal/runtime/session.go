@@ -525,11 +525,13 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 			}
 		}
 		// prewarmTexts is the canonical TTS text of every profile message —
-		// the best prediction of what a later commit of the line will read,
-		// the same precedence the decision wiring renders its texts with.
-		// The prewarm synthesises the successor under this text, so the key
-		// a later commit computes (observed text, the same string for a
-		// confirmed line) resolves to the prewarmed bytes.
+		// the best prediction of what a later commit of the line will read:
+		// the speech text when the profile gives one (what the narrator
+		// says), then the original text, then the normalized key. The
+		// prewarm synthesises the successor under this text, and the commit
+		// speaks it: the key a later commit computes is the key the
+		// prewarm booked (the commit's own tracker text — folded, a prefix
+		// or a typo — is not the TTS text of a matched line).
 		prewarmTexts := make(map[string]string, len(content.Messages))
 		for _, msg := range content.Messages {
 			if msg.SpeakerID != "" {
@@ -538,12 +540,12 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 				// speaks with the target's voice, not the placeholder's.
 				speakers[msg.ID] = resolveSpeaker(msg.SpeakerID)
 			}
-			t := msg.OriginalText
+			t := msg.SpeechText
 			if t == "" {
-				t = msg.NormalizedText
+				t = msg.OriginalText
 			}
 			if t == "" {
-				t = msg.SpeechText
+				t = msg.NormalizedText
 			}
 			if t != "" {
 				prewarmTexts[msg.ID] = strings.TrimSpace(t)

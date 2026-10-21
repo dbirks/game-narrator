@@ -119,18 +119,18 @@ const byGenerationCap = 64
 const (
 	// DefaultPrewarmTopK is how many of the committed line's weighted
 	// successors are prewarmed per commit.
-	DefaultPrewarmTopK = 3
+	DefaultPrewarmTopK = 5
 	// DefaultPrewarmMaxEntropyBits is the Shannon entropy (bits) of the
 	// successor weight distribution above which the batch is skipped: with
 	// two near-equal successors the entropy is ~1.0 bit, so the default
-	// prewarms a confident next line and a two-way fork, but not a flat
-	// three-way choice (1.58 bits).
-	DefaultPrewarmMaxEntropyBits = 1.5
+	// prewarms a confident next line and forks up to a flat four-way
+	// choice (2.0 bits), but not a flat five-way coin flip (~2.32 bits).
+	DefaultPrewarmMaxEntropyBits = 2.0
 	// DefaultPrewarmByteQuota bounds the bytes of prewarmed audio one
-	// session may commit. 4 MiB is ~2 minutes of 16 kHz/16-bit mono speech:
+	// session may commit. 8 MiB is ~4 minutes of 16 kHz/16-bit mono speech:
 	// the prewarm stays ahead of the player for the rest of the scene
 	// without filling the box's storage budget.
-	DefaultPrewarmByteQuota = 4 << 20
+	DefaultPrewarmByteQuota = 8 << 20
 	// DefaultPrewarmJobDeadline bounds one prewarm's synthesis: a prewarm
 	// that cannot finish while the player likely still has the committed
 	// line on screen has lost the race, and the commit pays the round trip.
@@ -1078,6 +1078,20 @@ func (w *speechWiring) onCommit(e events.Envelope) {
 	if !d.Eligible || d.MessageID == "" || d.MessageID == ses.UnknownMessage || text == "" {
 		w.maybeUnmatchedReadThrough(e, d)
 		return
+	}
+
+	// The matched line speaks the profile's canonical text, not the
+	// screen's: the commit's text is the recognition tracker's output —
+	// the comparison fold (lowercased), a prefix in predictive mode, a
+	// typo in a fuzzy match — while the prewarm already synthesised the
+	// canonical text under it (FR-11's key identity). Speaking the
+	// tracker text would compute a different key for the same line and
+	// miss the prewarmed bytes, and a predictive commit would speak the
+	// prefix instead of the full line. Only a matched line reaches here:
+	// the unmatched read-through above deliberately keeps the screen's
+	// text (ADR-0136), and it has no canonical text in the corpus.
+	if canon := strings.TrimSpace(w.prewarmTexts[d.MessageID]); canon != "" {
+		text = canon
 	}
 
 	w.routeUtterance(&utteranceInfo{
@@ -2565,6 +2579,39 @@ func (w *speechWiring) cancelPrewarmLocked() {
 	if w.prewarmCancel != nil {
 		w.prewarmCancel()
 		w.prewarmCancel = nil
+	}
+}
+
+// PrewarmCandidate speculatively prewarms one profile message into the
+// shared TTS cache before it commits: a candidate line the decision layer
+// surfaced, or a scene line the operator wants ready, warms through the
+// same worker the successor batch uses (same key identity, background
+// priority, one synthesis per key), so its later commit resolves from the
+// cache. Safe to call from any goroutine; a nil wiring, an unknown or
+// empty message id, a closed session, and a message with no canonical text
+// do nothing. The job's lifetime is the session's end context — not a
+// commit batch's: the speculative candidate belongs to no batch, nothing
+// fences it, and a cancellation would only waste what the next commit
+// could still use.
+func (w *speechWiring) PrewarmCandidate(messageID string) {
+	if w == nil || messageID == "" || messageID == ses.UnknownMessage {
+		return
+	}
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return
+	}
+	w.mu.Unlock()
+	go w.prewarmWorker(w.endCtx, messageID)
+}
+
+// PrewarmMessages speculatively prewarms a list of scene lines (the
+// PrewarmCandidate contract, one message at a time; the shared
+// one-synthesis-per-key booking dedupes a list that overlaps a batch).
+func (w *speechWiring) PrewarmMessages(messageIDs []string) {
+	for _, id := range messageIDs {
+		w.PrewarmCandidate(id)
 	}
 }
 

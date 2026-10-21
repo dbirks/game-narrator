@@ -27,6 +27,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/games"
 	"github.com/dbirks/game-narrator/internal/matcher"
 	"github.com/dbirks/game-narrator/internal/providers/tts"
+	ses "github.com/dbirks/game-narrator/internal/session"
 	"github.com/dbirks/game-narrator/internal/speech"
 	"github.com/dbirks/game-narrator/internal/speech/dummy"
 	"github.com/dbirks/game-narrator/internal/store"
@@ -752,21 +753,27 @@ func TestSpeechPrewarmByteQuotaSkipsBatch(t *testing.T) {
 // successor is prewarmed.
 func TestSpeechPrewarmEntropySkipsBatch(t *testing.T) {
 	e := newFenceEnv(t, 0.1, true, nil)
-	// Three equal-weight successors: the distribution is flat, the entropy
-	// is log2(3) ≈ 1.585 bits — above the 1.5-bit default cap.
+	// Five equal-weight successors: the distribution is flat, the entropy
+	// is log2(5) ≈ 2.32 bits — above the 2.0-bit default cap. (Forks up to
+	// a flat four-way choice (exactly 2.0 bits) prewarm; the gate refuses
+	// only above the cap.)
 	idx, texts := prewarmGraph(t,
 		[]struct{ id, text string }{
 			{"m-a", "line a"},
 			{"m-b", "line b"},
 			{"m-c", "line c"},
 			{"m-d", "line d"},
+			{"m-e", "line e"},
+			{"m-f", "line f"},
 		},
 		[]games.MessageEdge{
 			{FromID: "m-a", ToID: "m-b", EdgeType: games.EdgeNext, Confidence: 0.8},
 			{FromID: "m-a", ToID: "m-c", EdgeType: games.EdgeNext, Confidence: 0.8},
 			{FromID: "m-a", ToID: "m-d", EdgeType: games.EdgeNext, Confidence: 0.8},
+			{FromID: "m-a", ToID: "m-e", EdgeType: games.EdgeNext, Confidence: 0.8},
+			{FromID: "m-a", ToID: "m-f", EdgeType: games.EdgeNext, Confidence: 0.8},
 		})
-	e.withGraph(t, idx, texts) // default config: the 1.5-bit cap
+	e.withGraph(t, idx, texts) // default config: the 2.0-bit cap
 
 	e.commit(t, "occ-a", "m-a", "region-box", 1, "line a", true)
 
@@ -798,4 +805,122 @@ func TestSpeechPrewarmEntropySkipsBatch(t *testing.T) {
 		}
 		return false
 	})
+}
+
+// TestSpeechPrewarmCanonicalTextMatchesLowercaseCommit is the canonical-text
+// contract (the cache-key mismatch the prewarm used to miss): the commit
+// payload's text is the recognition tracker's output — here the folded
+// lowercased prefix of the line — while the prewarm synthesised the
+// profile's canonical text. A matched line's commit must speak the canonical
+// text under the prewarmed key: a cache hit, not a round trip, and the full
+// line, not the prefix.
+func TestSpeechPrewarmCanonicalTextMatchesLowercaseCommit(t *testing.T) {
+	const canonicalB = "Nobody in the village had seen that boat before."
+	e := newFenceEnv(t, 0.1, true, nil)
+	idx, texts := prewarmGraph(t,
+		[]struct{ id, text string }{{"a", "line a"}, {"b", canonicalB}},
+		[]games.MessageEdge{{FromID: "a", ToID: "b", EdgeType: games.EdgeNext, Confidence: 0.9}})
+	e.withGraph(t, idx, texts)
+
+	e.commit(t, "occ-a", "a", "region-box", 1, "line a", true)
+
+	// Let the prewarm of b fill the cache under the canonical key before b
+	// commits: the ordering is the test, not a wall-clock margin. a's own
+	// synthesis lands in the same shared cache, so the count is 2.
+	by := time.Now().Add(10 * time.Second)
+	for e.cache.Stats().Generated < 2 {
+		if time.Now().After(by) {
+			t.Fatalf("the prewarm of b filled %d of 2 cache entries within the deadline: %+v",
+				e.cache.Stats().Generated, e.cache.Stats())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// b commits with the tracker's folded text — the lowercased prefix the
+	// recognition tracker emits on a predictive or normalized commit.
+	e.commit(t, "occ-b", "b", "region-box", 2, "nobody in the village", true)
+	e.waitEvents(t, "line b ready from the prewarm", 10*time.Second, func(evs []events.Envelope) bool {
+		for _, ev := range evs {
+			if ev.Name == events.SpeechReady && genOfEv(t, ev) == 2 {
+				return evPayload(t, ev)["from_cache"] == true
+			}
+		}
+		return false
+	})
+
+	// The commit resolved the prewarmed canonical key: the prewarm books the
+	// hit on the session's stats.
+	if st := e.w.audioInfo().Prewarm; st.Hit != 1 {
+		t.Fatalf("prewarm hit = %d, want 1 (b's folded commit resolved the prewarmed canonical key): %+v", st.Hit, st)
+	}
+	// speech.requested carries the full canonical text — not the tracker's
+	// folded prefix.
+	var reqText string
+	for _, ev := range e.sessionEvents() {
+		if ev.Name == events.SpeechRequested && genOfEv(t, ev) == 2 {
+			reqText, _ = evPayload(t, ev)["text"].(string)
+		}
+	}
+	if reqText != canonicalB {
+		t.Fatalf("speech.requested text = %q, want the full canonical line %q (the commit speaks the canonical text, not the tracker's prefix)", reqText, canonicalB)
+	}
+}
+
+// TestSpeechPrewarmCandidateSpeculative is the speculative-prewarm contract:
+// PrewarmCandidate warms a line into the shared cache before anything
+// commits it — no commit batch is involved — and the line's commit resolves
+// from the cache with the hit booked. The no-op half: an empty or unknown
+// id, and a nil wiring, do nothing (no job, no crash).
+func TestSpeechPrewarmCandidateSpeculative(t *testing.T) {
+	e := newFenceEnv(t, 0.1, true, nil)
+	idx, texts := prewarmGraph(t,
+		[]struct{ id, text string }{{"a", "line a"}, {"b", "line b"}},
+		[]games.MessageEdge{{FromID: "a", ToID: "b", EdgeType: games.EdgeNext, Confidence: 0.9}})
+	e.withGraph(t, idx, texts)
+
+	// The no-op contract, before the real candidate: nothing may have
+	// booked a job yet.
+	e.w.PrewarmCandidate("")
+	e.w.PrewarmCandidate(ses.UnknownMessage)
+	e.w.PrewarmMessages(nil)
+	var nw *speechWiring
+	nw.PrewarmCandidate("b")
+	if st := e.w.audioInfo().Prewarm; st.Requested != 0 {
+		t.Fatalf("the no-op candidates booked %d prewarm job(s), want 0: %+v", st.Requested, st)
+	}
+
+	// Warm b speculatively, before anything commits (so no successor batch
+	// could have warmed it).
+	e.w.PrewarmCandidate("b")
+
+	// Wait for the speculative prewarm to fill the cache and book the bytes.
+	by := time.Now().Add(10 * time.Second)
+	for e.w.audioInfo().Prewarm.Bytes == 0 {
+		if time.Now().After(by) {
+			t.Fatalf("the speculative prewarm of b never booked bytes: %+v", e.w.audioInfo().Prewarm)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if st := e.w.audioInfo().Prewarm; st.Requested != 1 {
+		t.Fatalf("prewarm requested = %d, want 1 (the speculative candidate): %+v", st.Requested, st)
+	}
+
+	// A second warm of the same line dedupes on the shared one-synthesis-per
+	// key booking: the requested count stays 1.
+	e.w.PrewarmCandidate("b")
+	e.w.PrewarmMessages([]string{"b"})
+
+	// The commit of b resolves from the speculative prewarm.
+	e.commit(t, "occ-b", "b", "region-box", 1, "line b", true)
+	e.waitEvents(t, "line b ready from the speculative prewarm", 10*time.Second, func(evs []events.Envelope) bool {
+		for _, ev := range evs {
+			if ev.Name == events.SpeechReady && genOfEv(t, ev) == 1 {
+				return evPayload(t, ev)["from_cache"] == true
+			}
+		}
+		return false
+	})
+	if st := e.w.audioInfo().Prewarm; st.Hit != 1 {
+		t.Fatalf("prewarm hit = %d, want 1 (b's commit resolved the speculative prewarm): %+v", st.Hit, st)
+	}
 }
