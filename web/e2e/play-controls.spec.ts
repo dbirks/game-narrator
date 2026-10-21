@@ -262,6 +262,22 @@ test("play controls: pause/resume, narrated classes, decision mode (synthetic re
   await setPlayView(page, "operator");
   await expect(page.getByTestId("play-audio-sink")).toBeVisible({ timeout: 30_000 });
 
+  // P3 regression: the volume's range input must sit inside the dithered
+  // bar's box. The box's single grid column was auto — it grew to the
+  // input's intrinsic width (~158px in Chromium, above the box's 140px),
+  // the input overflowed the bar to the right, and at 100 the thumb drew
+  // over the "100%" value (the P3 review's "reads as 00%"). The column is
+  // minmax(0, 1fr) now, so the input's box can never pass the bar's.
+  const volumeBox = await page.locator(".pp-slice .pp-volume").boundingBox();
+  const volumeInputBox = await page.getByTestId("play-volume").boundingBox();
+  expect(volumeBox !== null && volumeInputBox !== null, "the volume's bar and input box").toBe(
+    true,
+  );
+  expect(
+    volumeInputBox!.x + volumeInputBox!.width,
+    `the range input overflows the dithered bar's box: input right ${volumeInputBox!.x + volumeInputBox!.width} vs bar right ${volumeBox!.x + volumeBox!.width}`,
+  ).toBeLessThanOrEqual(volumeBox!.x + volumeBox!.width + 0.5);
+
   await expect(page.getByTestId("play-state")).toHaveText("running", { timeout: 60_000 });
 
   // The clip's lifetime on a real OCR engine is short (~20s for the 24-frame
