@@ -1885,11 +1885,19 @@ pre.muted {
 
 .traces-candidates li {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(60px, 96px) minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--sp-8);
   font-family: var(--font-mono);
   font-size: 11px;
+}
+
+/* The row's line text (the 2026-10-20 review's raw-ULID fix): one line,
+   ellipsised; the full id stays in the row's title attribute. */
+.traces-candidate-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .traces-candidates .bar {

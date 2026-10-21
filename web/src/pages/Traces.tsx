@@ -28,6 +28,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 
 import { api, ApiError, apiStatus, type Schemas } from "../api/client";
+import { fetchAllMessages } from "../api/profiles";
 import {
   devApi,
   sessionsApi,
@@ -41,6 +42,7 @@ import { Chip, KitEmptyState, PillButton } from "../components/kit";
 import { DeveloperPage } from "./developer/DeveloperPage";
 import { DetailPanel } from "./developer/DetailPanel";
 import { correctionForLabel, CORRECTION_LABELS, wavPeaks } from "./developer/actions";
+import { lineSnippet } from "./play/shared";
 import {
   matchReasonSentence,
   traceLine,
@@ -105,6 +107,10 @@ function TracesView() {
   const [eventsError, setEventsError] = useState<unknown>(null);
   const [sessionMap, setSessionMap] = useState<Record<string, Session>>({});
   const [characters, setCharacters] = useState<Record<string, string>>({});
+  // The "why this line" rows name the candidate line, not its store ULID
+  // (the 2026-10-20 review — the same fix as Play's candidate rows): the
+  // profile's own message list, keyed by message id, is the snippet source.
+  const [messageText, setMessageText] = useState<Record<string, string>>({});
   const [thread, setThread] = useState<AgentThread | null>(null);
 
   const deepTrace = searchParams.get("trace");
@@ -146,6 +152,7 @@ function TracesView() {
     let cancelled = false;
     setSessionMap({});
     setCharacters({});
+    setMessageText({});
     if (sessionIds.length === 0) return;
     void (async () => {
       try {
@@ -174,6 +181,21 @@ function TracesView() {
           }
         }
         if (!cancelled) setCharacters(names);
+        // The candidates' line text (one read per profile, the same cursor
+        // walk the Play page's speaker chips use): the "why this line" row
+        // shows the line's own words, its id kept in the row's title.
+        const texts: Record<string, string> = {};
+        for (const profileId of profileIds) {
+          try {
+            for (const message of await fetchAllMessages(profileId)) {
+              texts[message.id] =
+                message.speech_text || message.normalized_text || message.original_text;
+            }
+          } catch {
+            // A profile whose list fails still renders (ids as names).
+          }
+        }
+        if (!cancelled) setMessageText(texts);
       } catch {
         if (!cancelled) setCharacters({});
       }
@@ -258,6 +280,7 @@ function TracesView() {
               thread={thread}
               onThreadChange={setThread}
               profileId={selectedSession?.profile_id ?? null}
+              messageText={messageText}
             />
           ) : (
             <KitEmptyState title="No lines yet" testid="traces-empty">
@@ -375,6 +398,7 @@ function LineDetail({
   thread,
   onThreadChange,
   profileId,
+  messageText,
 }: {
   line: TraceLine;
   traceEvents: EventEnvelope[] | null;
@@ -384,6 +408,7 @@ function LineDetail({
   thread: AgentThread | null;
   onThreadChange: (thread: AgentThread | null) => void;
   profileId: string | null;
+  messageText: Record<string, string>;
 }) {
   const detail = useMemo(
     () => (traceEvents ? traceLine(line.traceId, traceEvents, characters) : null),
@@ -464,14 +489,25 @@ function LineDetail({
         </p>
         <ul className="traces-candidates" data-testid="traces-candidate-rows">
           {(detail?.candidates ?? []).map((candidate, index) => (
-            <li key={`${candidate.messageId}-${index}`} data-testid={`traces-candidate-${index}`}>
+            <li
+              key={`${candidate.messageId}-${index}`}
+              data-testid={`traces-candidate-${index}`}
+              title={candidate.messageId}
+            >
               <span className="bar">
                 <span
                   className="bar-fill"
                   style={{ width: `${barWidth(candidate.probability ?? 0)}%` }}
                 />
               </span>
-              <span className="muted">{candidate.messageId}</span>
+              {/* The row names the candidate's line text (the 2026-10-20
+                  review's raw-ULID finding), the message id kept in the
+                  row's title — the same fix as Play's candidate rows. */}
+              <span className="muted traces-candidate-text">
+                {messageText[candidate.messageId]
+                  ? lineSnippet(messageText[candidate.messageId])
+                  : `message ${candidate.messageId}`}
+              </span>
               <span data-testid={`traces-candidate-prob-${index}`}>
                 {candidate.probability === null ? "—" : candidate.probability.toFixed(4)}
               </span>
