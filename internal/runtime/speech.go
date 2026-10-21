@@ -1216,6 +1216,13 @@ func (w *speechWiring) crossRegionDuplicate(key string, u *utteranceInfo) bool {
 // comparison key, already lower-cased, and a narration of it would flatten
 // the line the way a transcript does. The raw read is what the user is
 // looking at, and what "plain as day" refers to.
+//
+// The plausibility gate (readthrough_gate.go, the ADR-0136 amendment): a
+// settled read of a screen with no box on it is still noise the moment the
+// crop lands on the watermark or the border — the gate keeps the ADR's
+// original contract that a read which is not a line says nothing, and a
+// rejected text gets the empty read's answer: silent, logged, named
+// readthrough_implausible.
 func (w *speechWiring) maybeUnmatchedReadThrough(e events.Envelope, d commitPayload) {
 	if d.MessageID != ses.UnknownMessage || d.Reason != ses.ReasonCommittedAbstain {
 		return
@@ -1247,6 +1254,17 @@ func (w *speechWiring) maybeUnmatchedReadThrough(e events.Envelope, d commitPayl
 	if cleaned == "" || wordCharCount(cleaned) < 4 {
 		w.log("speech: unmatched read-through empty after the noise trim",
 			"session_id", w.id, "occurrence", d.Occurrence)
+		return
+	}
+	// The plausibility gate (the ADR-0136 amendment): the trim keeps what
+	// survives the edge-noise cut, and the gate decides whether that
+	// survivor is a line. A rejection is the empty read's answer — silent,
+	// logged, no terminal (the line never routed into the pipeline) — named
+	// so the operator's "did it speak, and why not" record names the rule.
+	if !isReadThroughPlausible(cleaned) {
+		w.log("speech: unmatched read-through rejected by the plausibility gate",
+			"session_id", w.id, "occurrence", d.Occurrence,
+			"reason", "readthrough_implausible", "text", cleaned)
 		return
 	}
 	character := narratorCharacter
@@ -1449,30 +1467,6 @@ func truncateReadThrough(s string, n int) string {
 		}
 	}
 	return string(cut)
-}
-
-// hasWordChar reports whether s carries a letter or a digit: the test that
-// separates "a line with noise at its edges" from "noise".
-func hasWordChar(s string) bool {
-	for _, r := range s {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			return true
-		}
-	}
-	return false
-}
-
-// wordCharCount counts the letters and digits in s: an unmatched read-through
-// requires at least 4 word characters so a 1–3 letter OCR noise fragment from
-// an unoccupied region or the first frame of a revealing box does not speak.
-func wordCharCount(s string) int {
-	n := 0
-	for _, r := range s {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			n++
-		}
-	}
-	return n
 }
 
 // catchUpBatchCommit is the catch-up policy's commit-side decision
