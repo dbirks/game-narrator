@@ -224,11 +224,25 @@
 /* Volume: the dithered bar over the range input (the track's fill is the
    50% checker on sand; the input itself stays a native, keyboard-usable
    range). The fill width is CSS-only: the input's own value styles the
-   thumb position, the bar mirrors the percentage as a static texture. */
+   thumb position, the bar mirrors the percentage as a static texture.
+   The single column is minmax(0, 1fr), not auto: an auto track grows to
+   the range input's intrinsic width (~158px in Chromium) instead of the
+   box's 140px, so the input overflowed the dithered bar to the right and,
+   at 100, its thumb drew over the "100%" value (the P3 review's "reads as
+   00%"). Pinned to the box, the thumb stays inside the bar and the value
+   keeps the gap + its own space to the right of it at every width.
+
+   The input also strips the base input reset (index.css's `input, select,
+   textarea` border + padding): applied to the native slider it widens its
+   border box by 18px (1px border + 4px/8px padding each side) past the
+   track, so the element's box still overflowed the bar and its hit area
+   reached under the value. With the chrome off the input's box is the
+   track — the bar's box — at every width. */
 .pp-volume {
   position: relative;
   width: 140px;
   display: inline-grid;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .pp-volume-bar {
@@ -246,6 +260,8 @@
   position: relative;
   width: 100%;
   margin: 0;
+  padding: 0;
+  border: 0;
   background: transparent;
   accent-color: var(--coral);
 }
@@ -254,7 +270,9 @@
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--muted);
-  min-width: 3ch;
+  /* "100%" is 4ch: the value gets its own box so a shrunk slice can never
+     crowd the digits into the slider's edge (the P3 review's overlap). */
+  min-width: 4ch;
 }
 
 .pp-delay input[type="number"] {

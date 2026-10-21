@@ -1890,10 +1890,18 @@ textarea:focus-visible,
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.1em;
+  /* The head may ellipsize, never overflow: a wider-than-column title must
+     not push the mono count out of its own column's box (390 and 1024). */
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .setup-board-col-count {
   margin-left: auto;
+  flex: none;
+  white-space: nowrap;
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--muted);
@@ -2159,7 +2167,9 @@ textarea:focus-visible,
 
 /* Narrow screens: the agent panel stacks under the board, the rail wraps
    to two rows of three, and the board's four columns stay (their cards
-   shrink; the names ellipsize). Nothing may scroll horizontally (390). */
+   shrink; the names ellipsize). At phone width (≤640) the columns wrap to
+   two rows of two inside the board's card instead — a fourth of ~390px is
+   too narrow for a name tab, and the page never scrolls horizontally. */
 @media (max-width: 1024px) {
   .setup-main {
     grid-template-columns: 1fr;
@@ -2186,6 +2196,99 @@ textarea:focus-visible,
 
   .cast-page h1 {
     font-size: 26px;
+  }
+
+  /* The board's columns wrap to two rows of two inside the board's card:
+     at 390 a fourth-wide column is ~80px and the name tab clipped its
+     character at the chip's right edge ("MAR…"). Half slices keep the full
+     name in the tab, and nothing scrolls. The header wraps the same way —
+     the wrapped heads are pulled out of the grid and set above the block
+     they label, one stage block (all six rows) lower than the first two —
+     and the stage layer grows to two blocks of six rows. */
+  .setup-board-cols {
+    position: relative;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .setup-board-cols .setup-board-col:nth-child(3),
+  .setup-board-cols .setup-board-col:nth-child(4) {
+    position: absolute;
+    top: calc(var(--setup-rows) * (var(--setup-card-h) + var(--setup-card-gap)));
+  }
+
+  /* The bottom row keeps the grid's 8px column gap: each head's box is the
+     card column's own width (50% − gap/2, the .setup-card width at these
+     lefts), so the mono count sits inside its own column — "VOICING 0"
+     never runs into "DONE" with no gap. */
+  .setup-board-cols .setup-board-col:nth-child(3) {
+    left: 0;
+    right: calc(50% + var(--setup-card-gap) / 2);
+  }
+
+  .setup-board-cols .setup-board-col:nth-child(4) {
+    left: calc(50% + var(--setup-card-gap) / 2);
+    right: 0;
+  }
+
+  .setup-board-stage-layer {
+    height: calc(
+      2 * var(--setup-rows) * (var(--setup-card-h) + var(--setup-card-gap)) - var(--setup-card-gap)
+    );
+  }
+
+  /* FINDING and BRIEF take the top half slices: col0 keeps the base left,
+     but col1's 4-column left (25% + gap/2) would still cut the card into
+     col0's half (a 25%-wide overlap at the same row) — it re-anchors to the
+     second half slice exactly as col3 does for the bottom block. */
+  .setup-card[data-col="1"] {
+    left: calc(50% + var(--setup-card-gap) / 2);
+  }
+
+  /* VOICING and DONE move to the bottom row: the same half slices as
+     FINDING and BRIEF, one block (all six rows) lower. The width doubles
+     to the half slice, and the row overrides carry an extra attribute so
+     they beat the position table's [data-row] rules. */
+  .setup-card {
+    width: calc(50% - var(--setup-card-gap) / 2);
+  }
+
+  .setup-card[data-col="2"] {
+    left: 0;
+    top: calc(var(--setup-rows) * (var(--setup-card-h) + var(--setup-card-gap)));
+  }
+  .setup-card[data-col="2"][data-row="1"] {
+    top: calc((var(--setup-rows) + 1) * (var(--setup-card-h) + var(--setup-card-gap)));
+  }
+  .setup-card[data-col="2"][data-row="2"] {
+    top: calc((var(--setup-rows) + 2) * (var(--setup-card-h) + var(--setup-card-gap)));
+  }
+  .setup-card[data-col="2"][data-row="3"] {
+    top: calc((var(--setup-rows) + 3) * (var(--setup-card-h) + var(--setup-card-gap)));
+  }
+  .setup-card[data-col="2"][data-row="4"] {
+    top: calc((var(--setup-rows) + 4) * (var(--setup-card-h) + var(--setup-card-gap)));
+  }
+  .setup-card[data-col="2"][data-row="5"] {
+    top: calc((var(--setup-rows) + 5) * (var(--setup-card-h) + var(--setup-card-gap)));
+  }
+  .setup-card[data-col="3"] {
+    left: calc(50% + var(--setup-card-gap) / 2);
+    top: calc(var(--setup-rows) * (var(--setup-card-h) + var(--setup-card-gap)));
+  }
+  .setup-card[data-col="3"][data-row="1"] {
+    top: calc((var(--setup-rows) + 1) * (var(--setup-card-h) + var(--setup-card-gap)));
+  }
+  .setup-card[data-col="3"][data-row="2"] {
+    top: calc((var(--setup-rows) + 2) * (var(--setup-card-h) + var(--setup-card-gap)));
+  }
+  .setup-card[data-col="3"][data-row="3"] {
+    top: calc((var(--setup-rows) + 3) * (var(--setup-card-h) + var(--setup-card-gap)));
+  }
+  .setup-card[data-col="3"][data-row="4"] {
+    top: calc((var(--setup-rows) + 4) * (var(--setup-card-h) + var(--setup-card-gap)));
+  }
+  .setup-card[data-col="3"][data-row="5"] {
+    top: calc((var(--setup-rows) + 5) * (var(--setup-card-h) + var(--setup-card-gap)));
   }
 }
 
