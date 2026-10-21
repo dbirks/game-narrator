@@ -612,3 +612,26 @@ func TestSpeechCatchUpLatestOnlyIsImmediate(t *testing.T) {
 		t.Fatalf("TTS requests = %d (%v), want 2 (one per line, unmerged)", len(textsOut), textsOut)
 	}
 }
+
+// TestSpeechCatchUpIdleBatchFlushesFast is the idle flush (#41): a line that
+// batches while NOTHING is audible — the earlier line is still being
+// synthesised, not playing — has no playback to wait behind, so the batch
+// flushes after the short coalescing delay instead of the window. The window
+// here is 30 s: before the fix the newest line waited for it (the A/V harness
+// measured the 900 ms default as an idle line's settled→audio).
+func TestSpeechCatchUpIdleBatchFlushesFast(t *testing.T) {
+	e := newCatchUpEnv(t, 0.4, "catch_up", 30*time.Second, 0, nil)
+	e.tts.latency = 300 * time.Millisecond // line A is in synthesis, not playing
+	e.commit(t, "occ-a1", "line-a1", "bottom", 1, "The first line is still being voiced.")
+	time.Sleep(50 * time.Millisecond)
+	start := time.Now()
+	e.commit(t, "occ-b1", "line-b1", "bottom", 2, "The second line must not wait the window.")
+	e.waitEvents(t, "the idle batch spoke", 5*time.Second, func(evs []events.Envelope) bool {
+		return lineTerminals(evs)["occ-b1"][0] == "ended"
+	})
+	// The flush (120 ms) + one 300 ms synthesis + the 0.4 s tone, far inside
+	// the 30 s window the old path waited for.
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("the idle batch took %s to speak; it waited for the window", d)
+	}
+}

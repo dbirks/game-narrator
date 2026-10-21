@@ -307,3 +307,15 @@ texts so a report can show the merged text the merge produced.
   cache table is a supported fallback (it is a cache). No migration is
   needed (no schema change; the purge query change is forward-compatible
   with pre-merge rows, which the LIKE clause simply does not match).
+
+## Amendment (2026-10-21): an idle batch flushes after 120 ms, not the window (#41)
+
+**Context.** The A/V harness (ADR 0143) run `av-20261021T210125Z` measured an idle, cache-hit line speaking 824 ms after its text settled. The line batched while nothing was audible: the earlier line was pending, and its synthesis had just been rescued. So the batch waited out the full 900 ms window behind no playback at all, which broke the settled→audio p95 ≤ 800 ms gate.
+
+**Decision.** When a commit batches and no playback is running (`playingGen == 0`), the batch timer is re-armed to `catchUpIdleFlush` (120 ms). That is long enough to coalesce near-simultaneous commits (a duplicate box, a burst of A presses). While a line is playing, behaviour is unchanged: the batch waits for the playback's end or the window, whichever comes first.
+
+**Tradeoffs.** Fewer merges when the player taps through boxes faster than synthesis completes. The newest line speaks sooner, and the staleness rules still drop superseded lines.
+
+**Validation.** `TestSpeechCatchUpIdleBatchFlushesFast` (30 s window, line A held in a 300 ms synthesis, line B commits) fails on the old path and passes 3/3 with the change. The whole `internal/runtime` suite passes under `-race`. `make test-av` measures the effect on live play.
+
+**Reversal.** Remove the `playingGen == 0` branch in `catchUpBatchCommit`.

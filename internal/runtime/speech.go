@@ -1672,7 +1672,21 @@ func (w *speechWiring) catchUpBatchCommit(u *utteranceInfo) bool {
 	w.lineClaim[u.occurrence] = 0
 	w.settled[u.generation] = true // the batch owns the line from here
 	delete(w.byGeneration, u.generation)
-	if w.catchUpTimer == nil {
+	if w.playingGen == 0 {
+		// Nothing is audible (the batch is busy only with pending lines or
+		// an in-flight synthesis it just rescued): there is no playback to
+		// wait behind, so the window would only delay the newest line. The
+		// batch flushes after a short coalescing delay instead (a duplicate
+		// commit of the same box lands within it). The A/V harness run
+		// av-20261021T210125Z measured the full window here: an idle,
+		// cached line spoke 824 ms after its text settled (#41).
+		if w.catchUpTimer != nil {
+			t := w.catchUpTimer
+			w.catchUpTimer = nil
+			t()
+		}
+		w.armCatchUpTimerLocked(catchUpIdleFlush)
+	} else if w.catchUpTimer == nil {
 		w.armCatchUpTimerLocked(w.catchUp.BatchWindow)
 	}
 	w.mu.Unlock()
@@ -1786,6 +1800,11 @@ func catchUpLineOf(u *utteranceInfo) speech.CatchUpLine {
 // on the runtime's own goroutine (time.AfterFunc), so the session's event
 // loop is never blocked waiting for narration; the timer's Stop is stored
 // as catchUpTimer so a later flush or the session's end can disarm it.
+// catchUpIdleFlush is the batch's flush delay when nothing is playing: long
+// enough to coalesce near-simultaneous commits, short against the ≤ 500 ms
+// settled→audio p50 budget.
+const catchUpIdleFlush = 120 * time.Millisecond
+
 func (w *speechWiring) armCatchUpTimerLocked(window time.Duration) {
 	if window <= 0 {
 		window = speech.DefaultCatchUpBatchWindow
