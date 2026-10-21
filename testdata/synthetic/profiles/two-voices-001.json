@@ -1,0 +1,35 @@
+{
+  "id": "two-voices-001",
+  "origin": "generated_synthetic",
+  "description": "Synthetic dialogue profile for the generated 18-frame two-character replay clip testdata/synthetic/replay/two-voices-001 (issue #36, gap row G3, ADR-0132; docs/spec/11 'Fixture origins'). The three real lines are the clip's invented sentences: two characters' lines and one unattributed (narrator) line; the rest are invented distractors so ranking a half-revealed line is a real decision (docs/spec/05 'Short strings and overlapping prefixes require more evidence'). No real game text. The speaker attribution and the per-character approved voices are deliberately NOT here: they live in the scenario (testdata/scenarios/synthetic/two-voices-001.yaml), because a profile has no speaker or voice column and the synthetic scenario declares both.",
+  "text_kind": "dialogue",
+  "messages": [
+    { "id": "tv-01", "original_text": "The lighthouse keeper had not come down in three days." },
+    { "id": "tv-02", "original_text": "His lamp still burns, though the town has stopped watching." },
+    { "id": "tv-03", "original_text": "Somewhere past the breakwater a horn sounds twice." },
+    { "id": "tv-x01", "original_text": "The lighthouse keeper came down at first light." },
+    { "id": "tv-x02", "original_text": "His last letter spoke of the fog rolling in." },
+    { "id": "tv-x03", "original_text": "The town kept its own lamp lit for the boats." },
+    { "id": "tv-x04", "original_text": "Nobody lit the lamp after the keeper left." },
+    { "id": "tv-x05", "original_text": "The harbour bell answered the horn once at dusk." },
+    { "id": "tv-x06", "original_text": "The breakwater held against the winter sea." },
+    { "id": "tv-x07", "original_text": "A horn sounded once past the second point." },
+    { "id": "tv-x08", "original_text": "Lamplight burned low in the keeper's house." },
+    { "id": "tv-x09", "original_text": "The boats came in before the tide turned." },
+    { "id": "tv-x10", "original_text": "The water stayed grey all the way to the mole." }
+  ],
+  "edges": [
+    { "from": "tv-01", "to": "tv-02", "type": "next", "confidence": 0.9 },
+    { "from": "tv-02", "to": "tv-03", "type": "next", "confidence": 0.9 }
+  ],
+  "regions": [
+    {
+      "id": "bottom",
+      "type": "textbox",
+      "x": 0.096875,
+      "y": 0.75625,
+      "w": 0.80625,
+      "h": 0.158333
+    }
+  ]
+}

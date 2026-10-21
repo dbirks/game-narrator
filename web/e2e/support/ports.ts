@@ -94,7 +94,8 @@ async function bandFree(base: number): Promise<boolean> {
     base + 38,
     base + 39,
     base + 40,
-  ); // the dev port and the redesign/library/ksearch/agent-dock/setup-board-model/setup-board/traces/fake-assistant/theme/theme-notcfg/play-pc review ports
+    base + 41,
+  ); // the dev port and the redesign/library/ksearch/agent-dock/setup-board-model/setup-board/traces/fake-assistant/theme/theme-notcfg/play-pc/second-game review ports
   return (await Promise.all(ports.map(isPortFree))).every(Boolean);
 }
 
@@ -408,4 +409,11 @@ export const ports = {
    *  "just past the band" placement as the review ports above, one step
    *  further out so the review ports stay unique per project. */
   playPc: base + 40,
+  /** the packaged binary the G12 second-game walk drives (second-game.spec.ts,
+   *  ADR-0079 / issue #33): the committed bench-synthetic-002 profile imported
+   *  through the API, the committed black-water-001 clip replayed through the
+   *  real pipeline, asserted on the Library / Regions / developer-inspector
+   *  pages. Same "just past the band" placement as the review ports above,
+   *  one step further out so the review ports stay unique per project. */
+  secondGame: base + 41,
 } as const;

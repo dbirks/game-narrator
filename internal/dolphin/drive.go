@@ -281,6 +281,9 @@ func RunDrive(ctx context.Context, b Bridge, opts DriveOptions, table ActionTabl
 		maxChange  float64
 		seenName   bool
 		obsIters   int // story-subtitle observations after the success frame (amendment 6)
+		// boxConfirmed carries the first real-form box sample of the run to the
+		// next iteration (the confirmation hold, the success case below).
+		boxConfirmed bool
 	)
 
 	// finishSuccess closes the run as a SUCCESS on its recorded success
@@ -345,6 +348,12 @@ func RunDrive(ctx context.Context, b Bridge, opts DriveOptions, table ActionTabl
 		}
 		sig := ScreenSigOf(img)
 		screen, side := DriveScreenOf(sig)
+		// The confirmation hold (the success case below) expires on the first
+		// sample that does not measure the real box: the candidate must be
+		// CONSECUTIVE real-form samples, and a new candidate starts fresh.
+		if screen != DriveScreenDialogueBox || !sig.RealBoxForm() {
+			boxConfirmed = false
+		}
 		// The name-confirm prompt (amendment 5): a Yes/No prompt seen AFTER
 		// the name entry is the "is this name OK?" confirm (same measured
 		// shape as the create-save prompt — the cursor blob is what any
@@ -393,6 +402,27 @@ func RunDrive(ctx context.Context, b Bridge, opts DriveOptions, table ActionTabl
 		// dialogue box. The first one reached keeps the credit.
 		switch {
 		case screen == DriveScreenDialogueBox && sig.RealBoxForm():
+			if (opts.PastLegend || tr.SuccessScreen == "") && !boxConfirmed {
+				// The FIRST real-form box sample of the run is a candidate, not
+				// yet the success: it must hold at the NEXT sample (one
+				// confirmation at the drive's ~2 s cadence) before it counts.
+				// The measured legend carries transient frames that measure the
+				// box's dark form — a sparse storybook page in the
+				// between-subtitle gap (the 2026-10-20 gate run's early stop:
+				// boxband mean=57 edges=0.095, the legend still minutes from the
+				// box) — and the pre-box scene carries the BRIEF box that
+				// auto-advances within 1-2 s (runs 1-3 stop frames: boxband
+				// mean=62/59); neither persists. The first NPC dialogue box
+				// A-HOLDS unchanged for 10+ minutes (the 64 s no-input sample:
+				// steady at boxband 46/0.031), so the confirmation cost is one
+				// cadence against minutes. The classifier is unchanged (the G8
+				// telescope's bright-scene box keeps its own clauses); the
+				// candidate iteration runs the table's no-op dialogue-box action
+				// and the loop keeps observing, exactly like the bright-form
+				// case below.
+				boxConfirmed = true
+				break
+			}
 			// The measured real box: the classifier's DARK form (the band below
 			// the bright floor, RealBoxForm). The bright-form frames fall to
 			// the case below — the measured goal was NOT reached.

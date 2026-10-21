@@ -73,7 +73,12 @@ func TestSyntheticReplaySessionRealTesseract(t *testing.T) {
 	if info.ID == "" || (info.State != runtime.StateStarting && info.State != runtime.StateRunning) {
 		t.Fatalf("start info = %+v, want a live session", info)
 	}
-	final := waitState(t, e.mgr, info.ID, 180*time.Second)
+	// Wedge guard, not part of the contract (ADR-0113): a healthy replay is a
+	// function of the frames and the engine, but under a race build on a
+	// saturated host every real Tesseract call can spend the full scaled
+	// engine budget, so the patience ceiling is race-scaled like the rest of
+	// this package's ceilings.
+	final := waitState(t, e.mgr, info.ID, 180*time.Second*patienceScale)
 	if final.State != runtime.StateStopped {
 		t.Fatalf("state = %q (reason %q, stats %+v), want stopped", final.State, final.Reason, final.Stats)
 	}

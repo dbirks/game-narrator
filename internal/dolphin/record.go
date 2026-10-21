@@ -32,6 +32,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/draw"
@@ -1364,7 +1365,26 @@ func (r *FixtureRecorder) ocrImageCrop(ctx context.Context, img image.Image, cro
 		return text, nil
 	}
 	big := enlarge(c, ocrSubtitleScale)
-	res, err := ocr.Tesseract{PSM: ocr.DefaultPSM}.Recognize(ctx, big)
+	// A single engine timeout (the 4 s per-read deadline, a shared host's
+	// load) is retryable — ocr.ErrTimeout is documented as one ("the region
+	// may simply have been expensive") and the read is idempotent (same
+	// pixels, same answer). Bounded retry (AGENTS.md rule 11: idempotent
+	// operation, max attempts): one slow frame must not sink a 10+ minute
+	// recording's finalize (the 2026-10-20 17:23 first-dialogue re-record:
+	// frame-00055 timed out under the host's load and aborted the run).
+	var res ocr.Result
+	var err error
+	for attempt := 1; ; attempt++ {
+		res, err = ocr.Tesseract{PSM: ocr.DefaultPSM}.Recognize(ctx, big)
+		if !errors.Is(err, ocr.ErrTimeout) || attempt >= ocrTimeoutRetries {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(ocrTimeoutBackoff):
+		}
+	}
 	if err != nil {
 		return "", err
 	}
@@ -1740,6 +1760,15 @@ func ManifestSHA256(dir string) (string, error) {
 // (480p letterbox text is ~14px tall at native size — far below Tesseract's
 // useful input). The factor is recorded in the fixture's OCR recipe.
 const ocrSubtitleScale = 4
+
+// ocrTimeoutRetries/ocrTimeoutBackoff bound the finalize OCR pass's retry of
+// a TIMED-OUT engine read (a shared host's load can push one 4 s tesseract
+// deadline; the read is idempotent — same crop pixels, same answer — so a
+// fresh deadline on the same pixels is the retry, AGENTS.md rule 11).
+const (
+	ocrTimeoutRetries = 3
+	ocrTimeoutBackoff = time.Second
+)
 
 // lineRuns is one screen family's reveal runs with their canonical lines:
 // the profile's message set (Canonical, the distinct settled lines in

@@ -511,3 +511,98 @@ under Arch's `vercmp` (pacman 7.1.0, `-1` = first is older), but the Arch
 package's `pkgver` stays `0.0.0-1` (section 8): making it monotonic would
 require `epoch`/`prerelease`, which goreleaser 2.14 applies to *all* formats
 including the .deb of tagged releases.
+
+## 10. The image's apt pins and their drift guard (ADR 0131)
+
+The OCI image (section 1, `dockers_v2`) installs six exact Debian package
+versions — `ca-certificates`, `ffmpeg`, `tesseract-ocr`, `tesseract-ocr-eng`,
+`v4l-utils`, `wget` — on the digest-pinned `debian:bookworm-slim` base
+(ADR 0012). The live Debian archive keeps only the *newest* version of each
+package, so an upstream upload can silently remove a pinned version: on
+2026-10-21 the security upload `ca-certificates 20250419~deb12u1 →
+20250419~deb12u2` removed the pinned version from `deb.debian.org` and the
+edge image build failed inside the apt stage (run 39530207238).
+
+The durable fix (ADR 0131): the Dockerfile's apt stage resolves the pins
+from **immutable snapshot.debian.org timestamps** matching the base
+image's build date (2026-10-05), not from the live archive:
+
+- `DEBIAN_SNAPSHOT_TS=20261005T023518Z` → suites `bookworm`,
+  `bookworm-updates` (component `main`)
+- `DEBIAN_SECURITY_SNAPSHOT_TS=20261005T022253Z` → suite
+  `bookworm-security` (component `main`)
+
+(The `debian` and `debian-security` mirrors are snapshotted on independent
+schedules, so each has its own timestamp. The base image's own
+`/etc/apt/sources.list.d/debian.sources` records the reference
+`20261005T000000Z`; the two ARGs are the nearest *real* snapshots, from the
+`https://snapshot.debian.org/archive/debian/?year=2026&month=10` index.)
+
+Mechanics, as implemented in `packaging/Dockerfile`:
+
+- The stock `debian.sources` is swapped, for one `RUN` layer only (stage
+  `apt-pins`), for a file of the same deb822 shape pointing at the frozen
+  snapshots, then restored at the end of that layer. The runtime image
+  therefore keeps the stock apt configuration and carries no frozen
+  pointer (docs/spec/15: the container is not an apt appliance).
+- Integrity is the same model the stock image uses: the frozen
+  `InRelease` is GPG-verified against the base image's own keyring
+  (`Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg`), with
+  `Check-Valid-Until: no` because a frozen release is *by design* past its
+  short valid-until window. The sources use plain `http://` because the
+  slim base ships no CA store and the first package installed *is*
+  `ca-certificates` — the same chicken-and-egg the official image has with
+  `deb.debian.org`.
+- The six pinned versions are **unchanged**: each was verified present in
+  exactly these snapshots for both `linux/amd64` and `linux/arm64`, so the
+  image content is byte-identical to what the pins were validated against.
+- The final stage continues with `FROM apt-pins` plus the binary `COPY` /
+  user / healthcheck (unchanged); `docker buildx build --target apt-pins`
+  builds only the apt layer (the stage copies nothing from the build
+  context), which makes it a cheap, self-contained verification target.
+
+**Drift guard.** `make verify-apt-pins` (`scripts/release/verify-apt-pins.sh`)
+uses `packaging/Dockerfile` as the single source of truth (it parses the
+`BASE_IMAGE` and the two snapshot ARGs plus the `pkg=version` pins) and
+verifies in two layers:
+
+1. **Index check** (always; network, no docker needed): each pin must exist
+   in the frozen snapshot index for **both** `linux/amd64` and
+   `linux/arm64`, over the union of the enabled suites. On drift it prints
+   the version(s) that *are* available and the fix recipe, then fails.
+2. **Stage build** (when docker is usable): `docker buildx build
+   --target apt-pins` — the real `apt-get update` + exact-version install,
+   GPG-verified — for `linux/amd64`, and the same for `linux/arm64` under
+   binfmt emulation (otherwise reported NOT RUN, never pass). It builds
+   against an **empty context dir** (the apt stage references no context
+   files), and a grep over the plain-progress log fails the check on apt
+   `W:`/`E:` lines (GPG/index trouble) that BuildKit would otherwise
+   swallow as success.
+
+The guard is wired into `make release-snapshot` (first step) and both jobs
+of `.github/workflows/publish.yml` (after the QEMU/BuildKit setup, before
+any GoReleaser work), so a Debian version update fails *there* with an
+actionable message instead of mid-image-build.
+
+**When the guard fails (fix recipe):**
+
+- **A pin does not resolve in the frozen snapshots** (e.g. you updated a
+  pin to a newer version that the frozen timestamp predates): update the
+  pin in `packaging/Dockerfile` to a version the guard lists as available,
+  verifying it for **both** architectures, then re-run the guard. The six
+  version pins change only when tool feature/doctor requirements demand it
+  (ADR 0012's CLI-drift note).
+- **A snapshot index cannot be fetched** (the pinned timestamp no longer
+  serves a suite/arch, or it was never a real snapshot): pick a real
+  snapshot of the base image's build date from
+  `https://snapshot.debian.org/archive/debian/?year=<yyyy>&month=<mm>` (and
+  `…/archive/debian-security/?year=<yyyy>&month=<mm>`), update the ARG, and
+  re-run the guard.
+- **The base image digest is updated** (rebuild cadence, ADR 0012): update
+  *both* snapshot ARGs to the nearest real snapshots of the new build date,
+  re-run the guard, and keep the version pins unless the guard says
+  otherwise. This is the whole cadence: two ARGs plus a guard run.
+
+The known trade-offs (snapshot-host dependency, plain-`http` transport, the
+frozen sources lagging upstream security fixes by design) and their
+mitigations are recorded in ADR 0131; they are accepted, not deferred.

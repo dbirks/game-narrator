@@ -87,7 +87,7 @@ async function scan(page: Page, name: string, report: Record<string, RouteReport
 }
 
 test("axe: every route of the ui-coverage matrix, WCAG 2.1 A/AA", async ({ page }, testInfo) => {
-  test.setTimeout(600_000);
+  test.setTimeout(900_000);
   test.skip(testInfo.project.name !== "a11y", "runs on the a11y project's fresh appliance");
   const run = serverRun("a11y");
   // 503 joins 401 on the ignore list: on this appliance the capture layer is
@@ -282,6 +282,33 @@ test("axe: every route of the ui-coverage matrix, WCAG 2.1 A/AA", async ({ page 
     },
   ];
   for (const stop of stops) await visit(stop.name, stop.url, stop.settle);
+
+  // ── 4b. the theme page and the same signed-in matrix under Lilac Night
+  //     (issue #30) ─────────────────────────────────────────────────────
+  // The dark theme inverts which token is the background, so a component
+  // style that names --ink for text is correct on every light theme and
+  // unreadable here. The picker's own walk switches the theme (the UX-09
+  // seam: the choice applies to <html> without a reload and persists), the
+  // signed-in matrix — plus the theme page itself, which the default-theme
+  // matrix above does not carry — is repeated under the dark token set, and
+  // the theme is restored so the anonymous states below keep their
+  // default-theme coverage.
+  await page.goto("/settings/theme");
+  await settled(page, "theme-grid");
+  await scan(page, "theme (picker)", report);
+  await page.getByTestId("theme-pick-lilac-night").click();
+  await expect(page.getByTestId("theme-selected-lilac-night")).toBeVisible();
+  await expect(page.getByTestId("theme-pick-lilac-night")).toBeDisabled();
+  await page.reload(); // the persisted choice survives the reload (UX-09)
+  await expect(page.getByTestId("theme-selected-lilac-night")).toBeVisible();
+  await scan(page, "theme (picker, lilac night)", report);
+  for (const stop of stops) {
+    await visit(`${stop.name} (lilac night)`, stop.url, stop.settle);
+  }
+  await page.goto("/settings/theme");
+  await settled(page, "theme-pick-plum");
+  await page.getByTestId("theme-pick-plum").click();
+  await expect(page.getByTestId("theme-selected-plum")).toBeVisible();
 
   // ── 5. anonymous again: the sign-in page and the claimed /setup redirect ─
   await page.getByTestId("nav-logout").click();

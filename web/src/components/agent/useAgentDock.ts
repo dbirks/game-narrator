@@ -169,10 +169,19 @@ export function useAgentDock(options: Options = {}) {
       case "assistant.message": {
         const text = frame.data?.text;
         if (text !== undefined && text !== "") {
-          setTurns((prev) => [
-            ...prev,
-            { seq: frame.seq ?? prev.length, role: "assistant", content: text },
-          ]);
+          setTurns((prev) => {
+            // Convergence guard: the snapshot (the panel's source of truth,
+            // refetched on the open thread and on the finished attempt) may
+            // already carry this reply — the thread row is written before the
+            // frame's SSE delivery, and the finished-attempt refetch runs off
+            // the same frame. A frame matching the latest assistant turn is
+            // that convergence, not a second turn.
+            const last = prev[prev.length - 1];
+            if (last?.role === "assistant" && last.content === text) {
+              return prev;
+            }
+            return [...prev, { seq: frame.seq ?? prev.length, role: "assistant", content: text }];
+          });
         }
         setRunState("succeeded");
         // The finished attempt's snapshot carries the tool cards' durations
@@ -189,15 +198,23 @@ export function useAgentDock(options: Options = {}) {
       case "assistant.question": {
         const data = frame.data;
         if (data?.id !== undefined) {
-          setQuestions((prev) => [
-            ...prev,
-            {
-              id: String(data.id),
-              kind: (data.kind as "question" | "confirmation") ?? "question",
-              prompt: String(data.prompt ?? ""),
-              options: data.options,
-            },
-          ]);
+          const id = String(data.id);
+          setQuestions((prev) => {
+            // Idempotent on the id: the snapshot may already carry this
+            // question (the row is written before the frame's delivery, the
+            // same convergence the tool cards get) and a replayed frame is
+            // not a second NEEDS-YOU card.
+            if (prev.some((q) => q.id === id)) return prev;
+            return [
+              ...prev,
+              {
+                id,
+                kind: (data.kind as "question" | "confirmation") ?? "question",
+                prompt: String(data.prompt ?? ""),
+                options: data.options,
+              },
+            ];
+          });
         }
         break;
       }
@@ -205,10 +222,17 @@ export function useAgentDock(options: Options = {}) {
         const data = frame.data;
         const id = String(data?.tool_call_id ?? data?.id ?? "");
         if (id !== "") {
-          setTools((prev) => [
-            ...prev,
-            { id, name: String(data?.name ?? "tool"), state: "running" },
-          ]);
+          const name = String(data?.name ?? "tool");
+          setTools((prev) => {
+            // Idempotent on the id: the snapshot (the convergence point)
+            // may already carry this card and the stream's replay
+            // (Last-Event-ID resume) re-delivers the start — neither is a
+            // second card. A card the panel already holds keeps its own
+            // state: a late "started" must not demote a settled card back
+            // to "running".
+            if (prev.some((c) => c.id === id)) return prev;
+            return [...prev, { id, name, state: "running" }];
+          });
         }
         break;
       }

@@ -24,7 +24,7 @@ RUN_GATES := test-unit test-ui diagnostics release-snapshot bench \
              test-replay test-dolphin test-models test-hardware secret-scan
 
 .PHONY: bootstrap dev build web-build test-unit test-replay test-ui test-dolphin test-models \
-        test-hardware test-full lint release-snapshot diagnostics bench soak secret-scan
+        test-hardware test-full lint release-snapshot verify-apt-pins diagnostics bench soak secret-scan
 
 ## web-build: build the React UI and stage it for go:embed
 web-build:
@@ -71,11 +71,12 @@ test-unit:
 ## secret scan in tree mode (the history-including run is the dedicated
 ## `secret-scan` gate target below and the CI step).
 lint:
-	@unformatted="$$(gofmt -l .)"; \
+	@unformatted="$$(git ls-files -z --cached --others --exclude-standard -- '*.go' | xargs -0 -r gofmt -l)"; \
 	if [ -n "$$unformatted" ]; then \
 		echo "gofmt needed on:"; echo "$$unformatted"; exit 1; \
 	fi
 	go vet ./...
+	pnpm --dir web check:api
 	pnpm --dir web lint
 	pnpm --dir web fmt:check
 	scripts/gates/secret-scan.sh
@@ -106,14 +107,22 @@ bootstrap:
 	fi
 
 ## test-full: run every gate in order, continue past failures, then print a
-## final table (gate | result | detail). Result PASS comes from exit 0; a
-## go gate's recorded exit 2 (artifacts/gates/<gate>.rc) or a legacy gate's
-## own "NOT RUN: <gate> ..." output is NOT RUN; anything else is FAIL.
+## final table (gate | result | detail) and write the machine-readable
+## evidence manifest (scripts/gates/test-full-manifest.sh: the per-gate rows
+## plus the bench second set's report, ADR-0079, for the second game's
+## holdout leg — the AGENTS.md evidence bundle's machine half). Result PASS
+## comes from exit 0; a go gate's recorded exit 2 (artifacts/gates/<gate>.rc)
+## or a legacy gate's own "NOT RUN: <gate> ..." output is NOT RUN; anything
+## else is FAIL.
 ## Exits 1 if any gate FAILed, 2 if nothing failed but at least one gate is
 ## NOT RUN, and 0 only if every gate passed. Per-gate logs:
-## artifacts/gates/full-<gate>.log (gitignored).
+## artifacts/gates/full-<gate>.log (gitignored); the manifest:
+## artifacts/gates/test-full-manifest.json (gitignored, like the rest of
+## artifacts/).
 test-full:
 	@mkdir -p artifacts/gates ; \
+	tsv=artifacts/gates/test-full-gates.tsv ; \
+	rm -f "$$tsv" ; \
 	fail=0; notrun=0; table="" ; \
 	for target in $(RUN_GATES); do \
 		out=artifacts/gates/full-$$target.log ; \
@@ -132,10 +141,16 @@ test-full:
 		[ -n "$$detail" ] || detail="exit $$rc" ; \
 		detail=$$(printf '%s' "$$detail" | head -c 140) ; \
 		table="$$table$$target | $$res | $$detail\n" ; \
+		printf '%s\t%s\t%s\n' "$$target" "$$res" "$$detail" >>"$$tsv" ; \
 	done ; \
 	printf '\n=== test-full summary ===\n'; \
 	printf 'gate | result | detail\n'; \
 	printf '%b' "$$table" ; \
+	if bash scripts/gates/test-full-manifest.sh artifacts/gates/test-full-manifest.json ; then \
+		printf 'evidence manifest: artifacts/gates/test-full-manifest.json\n' ; \
+	else \
+		printf 'test-full: WARNING: the evidence manifest was not written (the gate results above stand)\n' >&2 ; \
+	fi ; \
 	rc=0 ; \
 	if [ $$fail -ne 0 ] ; then rc=1 ; elif [ $$notrun -ne 0 ] ; then rc=2 ; fi ; \
 	printf '%s' "$$rc" > artifacts/gates/test-full.rc ; \
@@ -274,11 +289,26 @@ test-ui:
 ## AFTER the real-drive phase: one Dolphin at a time, and this phase boots
 ## the only emulator of its phase. 60 m: the voice auditions and the
 ## screen-driven walk to the opening legend take minutes each.
+## The liveui phase needs the packaged SPA go:embedded into the test
+## binary (webassets.Built()); the recipe builds it between the scenario
+## and liveui phases (make web-build) so the phase RUNS on a host with pnpm
+## instead of reporting NOT RUN. Without pnpm the build is skipped and the
+## phase stays NOT RUN (a host without it never turns this gate red); a
+## failed build removes the staged dist so the phase reports NOT RUN
+## instead of walking a half-built UI. NOTE: no comment lines inside the
+## recipe body — a `#` line mid-recipe splits the recipe into separate shell
+## invocations (measured, GNU Make 4.4.1), so the rc1/rc2/rc3 assignments
+## would not reach the final rc aggregation line (2026-10-20, dolphin-gate).
 test-dolphin:
 	@GN_GATE=test-dolphin scripts/gates/run-go-gate.sh test-dolphin -count=1 -p 1 -timeout 45m -run Real -skip 'TestRealReOCRFixture$$' ./internal/dolphin/... ; \
 	rc1=$$?; \
 	GN_GATE=test-dolphin scripts/gates/run-go-gate.sh test-dolphin-scenarios -count=1 -timeout 30m -run TestDolphinScenarios ./internal/scenario/... ; \
 	rc2=$$?; \
+	if command -v pnpm >/dev/null 2>&1; then \
+		$(MAKE) --no-print-directory web-build || { echo "web-build failed: the live play UI phase will report NOT RUN (the staged SPA was removed)" >&2; rm -rf internal/webassets/dist; } ; \
+	else \
+		echo "(web-build skipped: pnpm not on PATH - the live play UI phase reports NOT RUN)" >&2; \
+	fi ; \
 	GN_GATE=test-dolphin scripts/gates/run-go-gate.sh test-dolphin-liveui -count=1 -p 1 -timeout 60m -run 'TestLivePlayUI$$' ./internal/e2e/... ; \
 	rc3=$$?; \
 	if [ $$rc1 -eq 1 ] || [ $$rc2 -eq 1 ] || [ $$rc3 -eq 1 ]; then rc=1; elif [ $$rc1 -eq 2 ] || [ $$rc2 -eq 2 ] || [ $$rc3 -eq 2 ]; then rc=2; else rc=0; fi; \
@@ -330,6 +360,16 @@ test-hardware:
 	@GAME_NARRATOR_HW_SMOKE=1 scripts/gates/run-go-gate.sh test-hardware -count=1 -timeout 15m ./internal/hwsmoke/... ; \
 	rc=$$?; echo $$rc > artifacts/gates/test-hardware.rc ; exit $$rc
 
+## verify-apt-pins: drift guard for the OCI image's apt version pins (ADR 0131).
+## packaging/Dockerfile pins exact package versions against immutable
+## snapshot.debian.org timestamps; this verifies the pins resolve (fast index
+## check, no docker needed) and, when docker is usable, builds the
+## `apt-pins` stage for linux/amd64 (+ linux/arm64 under binfmt emulation).
+## Wired into release-snapshot and publish.yml so a Debian version update
+## fails early with an actionable message instead of at image build time.
+verify-apt-pins:
+	@scripts/release/verify-apt-pins.sh
+
 ## release-snapshot: local snapshot pipeline (docs/spec/15, ADR 0033).
 ## Validates the build, archives, SBOMs, .debs and the OCI image WITHOUT
 ## publishing: --snapshot skips all publishing and dockers_v2 snapshot builds
@@ -341,6 +381,7 @@ test-hardware:
 release-snapshot:
 	@command -v goreleaser >/dev/null 2>&1 || { echo "NOT RUN: release-snapshot (goreleaser not installed; see docs/spec/16)" >&2; exit 1; }
 	@set -e; \
+	scripts/release/verify-apt-pins.sh; \
 	goreleaser check; \
 	if docker info >/dev/null 2>&1; then \
 		echo "release-snapshot: docker available in this session"; \

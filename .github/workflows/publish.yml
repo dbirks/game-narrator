@@ -82,6 +82,14 @@ jobs:
       - name: Set up BuildKit
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
+      - name: Guard the apt version pins (ADR 0131 — fail before the image build)
+        # The image's apt pins resolve against immutable snapshot.debian.org
+        # timestamps; this verifies the pins (index check + apt-pins stage
+        # build for amd64 and, under the QEMU set up above, arm64) so a
+        # Debian version update fails here with an actionable message
+        # instead of inside the GoReleaser image build.
+        run: scripts/release/verify-apt-pins.sh
+
       - name: Log in to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -230,6 +238,14 @@ jobs:
 
       - name: Set up BuildKit
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Guard the apt version pins (ADR 0131 — fail before the image build)
+        # The image's apt pins resolve against immutable snapshot.debian.org
+        # timestamps; this verifies the pins (index check + apt-pins stage
+        # build for amd64 and, under the QEMU set up above, arm64) so a
+        # Debian version update fails here with an actionable message
+        # instead of inside the GoReleaser image build.
+        run: scripts/release/verify-apt-pins.sh
 
       - name: Log in to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0

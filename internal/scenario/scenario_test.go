@@ -122,6 +122,92 @@ assertions:
 	}
 }
 
+// --- voices (issue #36, gap G3, ADR-0132) -----------------------------------
+
+const voicesBase = `schema_version: 1
+id: synthetic/voices
+origin: generated_synthetic
+profile: p
+mode: frame_replay
+catch_up: catch_up
+input:
+  frames_dir: d
+  timestamps: timestamps.json
+inference:
+  decision: none
+  tts: recorded
+  voice: gn_test_4b715186
+speakers:
+  tv-01: mara
+  tv-02: eldo
+voices:
+  mara: gn_test_5d41402a
+  eldo: gn_test_9e107d2d
+assertions:
+  - type: no_duplicate_commit
+`
+
+// TestLoadScenarioVoices pins the per-character roster's loader contract
+// (ADR-0132): a valid block loads with the mapping, a name the registry
+// refuses is a line-numbered error, and the block is refused under
+// latest_only, where the speaker attribution it keys on is never read.
+func TestLoadScenarioVoices(t *testing.T) {
+	load := func(t *testing.T, content string) (*Scenario, error) {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "s.yaml")
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return Load(path)
+	}
+
+	t.Run("valid", func(t *testing.T) {
+		sc, err := load(t, voicesBase)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if len(sc.Voices) != 2 || sc.Voices["mara"] != "gn_test_5d41402a" || sc.Voices["eldo"] != "gn_test_9e107d2d" {
+			t.Fatalf("voices = %v", sc.Voices)
+		}
+		if sc.CatchUp != "catch_up" {
+			t.Fatalf("catch_up = %q", sc.CatchUp)
+		}
+	})
+	t.Run("refused name is a load error", func(t *testing.T) {
+		_, err := load(t, strings.Replace(voicesBase, "gn_test_5d41402a", "friendly-narrator", 1))
+		if err == nil || !strings.Contains(err.Error(), "not a registry-approved voice name") {
+			t.Fatalf("want a registry-name error, got %v", err)
+		}
+		if !strings.Contains(err.Error(), "line ") {
+			t.Fatalf("error has no line number: %v", err)
+		}
+	})
+	t.Run("refused under latest_only", func(t *testing.T) {
+		_, err := load(t, strings.Replace(voicesBase, "catch_up: catch_up\n", "", 1))
+		if err == nil || !strings.Contains(err.Error(), "voices is only allowed with catch_up") {
+			t.Fatalf("want the catch_up gate error, got %v", err)
+		}
+	})
+	t.Run("not a mapping", func(t *testing.T) {
+		_, err := load(t, strings.Replace(voicesBase, "voices:\n  mara: gn_test_5d41402a\n  eldo: gn_test_9e107d2d\n", "voices: one-voice\n", 1))
+		if err == nil || !strings.Contains(err.Error(), "voices must be a mapping") {
+			t.Fatalf("want the mapping error, got %v", err)
+		}
+	})
+	t.Run("narrator slot is refused", func(t *testing.T) {
+		_, err := load(t, strings.Replace(voicesBase, "  mara: gn_test_5d41402a\n", "  narrator: gn_test_5d41402a\n", 1))
+		if err == nil || !strings.Contains(err.Error(), "narrator's slot") {
+			t.Fatalf("want the narrator-slot error, got %v", err)
+		}
+	})
+	t.Run("empty mapping", func(t *testing.T) {
+		_, err := load(t, strings.Replace(voicesBase, "voices:\n  mara: gn_test_5d41402a\n  eldo: gn_test_9e107d2d\n", "voices: {}\n", 1))
+		if err == nil || !strings.Contains(err.Error(), "must") {
+			t.Fatalf("want an error for an empty roster, got %v", err)
+		}
+	})
+}
+
 func TestLoadProfile(t *testing.T) {
 	p, err := LoadProfile(filepath.Join("..", "..", "testdata", "synthetic", "profiles", "dialogue-advance-001.json"))
 	if err != nil {

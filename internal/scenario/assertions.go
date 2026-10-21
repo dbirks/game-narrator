@@ -21,7 +21,7 @@ func parseAssertions(items []*ynode) ([]Assertion, error) {
 			return nil, fmt.Errorf("line %d: assertion %d: type is required (string)", item.line, i+1)
 		}
 		if !knownAssertionTypes[typ] {
-			return nil, fmt.Errorf("line %d: unknown assertion type %q (known: message_detected, message_committed_count, speech_cancelled, no_duplicate_commit, no_stale_generation_applied, events_order, no_stale_speech, no_duplicate_speech, late_result_discarded, duplicate_result_discarded, no_voice_substitution, fault_count, committed_only, committed_kind, provider_degraded, speech_spoken_count, speech_merged, speech_skipped)", line, typ)
+			return nil, fmt.Errorf("line %d: unknown assertion type %q (known: message_detected, message_committed_count, speech_cancelled, no_duplicate_commit, no_stale_generation_applied, events_order, no_stale_speech, no_duplicate_speech, late_result_discarded, duplicate_result_discarded, no_voice_substitution, fault_count, committed_only, committed_kind, provider_degraded, speech_spoken_count, speech_merged, speech_skipped, speech_voice)", line, typ)
 		}
 		a := Assertion{Type: typ, Line: line}
 		allowed := allowedFields[typ]
@@ -171,6 +171,13 @@ func parseAssertions(items []*ynode) ([]Assertion, error) {
 		case "speech_merged":
 			if len(a.MessageIDs) == 0 {
 				return nil, fmt.Errorf("line %d: message_ids is required for %s", line, typ)
+			}
+		case "speech_voice":
+			if a.MessageID == "" {
+				return nil, fmt.Errorf("line %d: message_id is required for %s", line, typ)
+			}
+			if a.Voice == "" {
+				return nil, fmt.Errorf("line %d: voice is required for %s", line, typ)
 			}
 		}
 		out = append(out, a)

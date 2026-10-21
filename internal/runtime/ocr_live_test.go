@@ -142,7 +142,7 @@ func TestLiveOCRFallbackSession(t *testing.T) {
 	// ocr package's own live-test convention: a read killed by runner load
 	// must not be logged as a 1.0 CER it never earned (a timeout is
 	// inconclusive, not a defeat).
-	primary := ocr.Tesseract{Timeout: ocr.DefaultTimeout * time.Duration(liveOCRTimeoutScale)}
+	primary := ocr.Tesseract{Timeout: ocr.DefaultTimeout * time.Duration(ocrTimeoutScale)}
 	region := hardBandRect
 	ladder := hardFontLadder(t)
 	var measured []string

@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { trackConsoleErrors } from "./support/console";
+import { acquireScenarioLock } from "./support/scenario-lock";
 import {
   apiAsUser,
   claimAppliance,
@@ -48,6 +49,15 @@ const ADVENTURE_CSV = resolve(TESTDATA, "synthetic-adventure.csv");
 const ADMIN = { username: "voices-admin", password: "steady as she goes" }; // the one `voices` server the voices, voices-qa and cast specs share — the appliance claim (setup) happens once, so all three must name the same admin
 const CHARACTER = "Boy"; // the voices project's specs share one appliance and voice revisions are keyed by character name across it (UNIQUE (character, revision), migration 0009): voices.spec.ts owns Marla, voices-qa.spec.ts owns Corvin, this walk owns Boy — the spec's character is one of the CSV's speaker column values
 const CONSENT_DEFAULT = "original_synthetic_design";
+/** The walk to the widths test's completion barrier (ADR-0130, the
+ *  2026-10-21 full-suite gate): the same scenario-lock primitive the
+ *  setup-board deep-linkers use.
+ */
+const CAST_WALK_LOCK = "cast-walk";
+/** The walk's test timeout (600 s) plus a scheduling margin: a walk that
+ *  legitimately runs its full length never trips the barrier's wait.
+ */
+const CAST_WIDTHS_BARRIER_MS = 630_000;
 /** The design's three review widths (docs/design/plum-peach README, IA). */
 const WIDTHS = [1440, 1024, 390] as const;
 /** WCAG 2.1 A/AA: the 2.0 A/AA rules plus the rules 2.1 adds at those levels. */
@@ -117,7 +127,7 @@ test("the cast screen: auto-cast default, regenerate + one-step undo, selection,
   page,
   request,
   baseURL,
-}) => {
+}, testInfo) => {
   test.setTimeout(600_000);
   // The cast walk shares the voices project's server (the same fake speech
   // roles), so its isolation record is the voices run's.
@@ -131,225 +141,237 @@ test("the cast screen: auto-cast default, regenerate + one-step undo, selection,
   // cleanliness check at the end.
   const consoleErrors = trackConsoleErrors(page, [401, 409]);
 
-  // ── 1. first run: claim the appliance, sign in ────────────────────────────
-  const cookies = await signIn(page);
-  await request.addCookies(cookies);
+  // The run lock (ADR-0130, the 2026-10-21 full-suite gate): the widths test
+  // runs on this walk’s game and approved take, and fullyParallel lets it start on a
+  // sibling worker while the walk is still voicing the character (its 2026-10-21
+  // flake: the screen loaded with “no voice yet” and the take player never rendered).
+  // Held for the whole walk (released in the finally, so a failed walk cannot pin
+  // the barrier past its lease); the widths test takes it as a completion barrier
+  // before it signs in.
+  const releaseWalkLock = await acquireScenarioLock(testInfo, CAST_WALK_LOCK);
+  try {
+    // ── 1. first run: claim the appliance, sign in ────────────────────────────
+    const cookies = await signIn(page);
+    await request.addCookies(cookies);
 
-  // ── 2. a game, an edition, a draft revision ────────────────────────────────
-  await page.getByTestId("new-game").click();
-  await page.getByTestId("new-game-slug").fill("cast-harbour");
-  await page.getByTestId("new-game-title").fill("Cast Harbour");
-  await page.getByTestId("new-game-platform").fill("GameCube");
-  await page.getByTestId("new-game-submit").click();
-  await expect(page.getByTestId("game-cast-harbour")).toContainText("Cast Harbour");
+    // ── 2. a game, an edition, a draft revision ────────────────────────────────
+    await page.getByTestId("new-game").click();
+    await page.getByTestId("new-game-slug").fill("cast-harbour");
+    await page.getByTestId("new-game-title").fill("Cast Harbour");
+    await page.getByTestId("new-game-platform").fill("GameCube");
+    await page.getByTestId("new-game-submit").click();
+    await expect(page.getByTestId("game-cast-harbour")).toContainText("Cast Harbour");
 
-  await page.getByTestId("game-cast-harbour").click();
-  await expect(page.getByTestId("game-title")).toHaveText("Cast Harbour");
-  const gameId = new URL(page.url()).pathname.split("/")[2] ?? "";
-  expect(gameId).not.toBe("");
+    await page.getByTestId("game-cast-harbour").click();
+    await expect(page.getByTestId("game-title")).toHaveText("Cast Harbour");
+    const gameId = new URL(page.url()).pathname.split("/")[2] ?? "";
+    expect(gameId).not.toBe("");
 
-  await page.getByTestId("new-edition").click();
-  await page.getByTestId("edition-region").fill("us");
-  await page.getByTestId("edition-language").fill("en");
-  await page.getByTestId("edition-revision").fill("disc-1");
-  await page.getByTestId("edition-submit").click();
-  await expect(page.getByRole("tab", { name: "us / en / disc-1" })).toBeVisible();
-  await page
-    .getByTestId(/edition-panel-/)
-    .getByTestId("new-draft")
-    .click();
-  await expect(page.getByTestId("revision-1")).toBeVisible();
+    await page.getByTestId("new-edition").click();
+    await page.getByTestId("edition-region").fill("us");
+    await page.getByTestId("edition-language").fill("en");
+    await page.getByTestId("edition-revision").fill("disc-1");
+    await page.getByTestId("edition-submit").click();
+    await expect(page.getByRole("tab", { name: "us / en / disc-1" })).toBeVisible();
+    await page
+      .getByTestId(/edition-panel-/)
+      .getByTestId("new-draft")
+      .click();
+    await expect(page.getByTestId("revision-1")).toBeVisible();
 
-  // ── 3. the script: its speaker column becomes the roster ──────────────────
-  const revision1 = page.getByTestId("revision-1");
-  await revision1.getByTestId("import-file").setInputFiles(ADVENTURE_CSV);
-  await revision1.getByTestId("import-submit").click();
-  await expect(page.getByTestId("job-progress")).toContainText("succeeded", { timeout: 60_000 });
-  await expect(page.getByTestId("import-inserted")).toHaveText("40");
+    // ── 3. the script: its speaker column becomes the roster ──────────────────
+    const revision1 = page.getByTestId("revision-1");
+    await revision1.getByTestId("import-file").setInputFiles(ADVENTURE_CSV);
+    await revision1.getByTestId("import-submit").click();
+    await expect(page.getByTestId("job-progress")).toContainText("succeeded", { timeout: 60_000 });
+    await expect(page.getByTestId("import-inserted")).toHaveText("40");
 
-  // ── 4. the merged screen: one header, the dial on, the roster ─────────────
-  await page.getByTestId("cast-1").click();
-  await expect(page).toHaveURL(/\/cast\?profile=/);
-  const profileId = (await page.url()).match(/profile=([^&]+)/)?.[1] ?? "";
-  expect(profileId).not.toBe("");
+    // ── 4. the merged screen: one header, the dial on, the roster ─────────────
+    await page.getByTestId("cast-1").click();
+    await expect(page).toHaveURL(/\/cast\?profile=/);
+    const profileId = (await page.url()).match(/profile=([^&]+)/)?.[1] ?? "";
+    expect(profileId).not.toBe("");
 
-  await expect(page.getByTestId("cast-title")).toHaveText("Cast Harbour");
-  await expect(page.getByTestId("cast-tab-cast")).toHaveAttribute("aria-current", "page");
-  // The header carries the game's way out and the play entry (ADR-0093 (a)).
-  await expect(page.getByTestId("cast-tab-overview")).toBeVisible();
-  await expect(page.getByTestId("cast-start-narrating")).toBeVisible();
-  // The dial is on by default (ADR-0109, UX-03): auto-cast is the product
-  // default for new setups.
-  await expect(page.getByTestId("auto-cast-switch")).toBeChecked();
+    await expect(page.getByTestId("cast-title")).toHaveText("Cast Harbour");
+    await expect(page.getByTestId("cast-tab-cast")).toHaveAttribute("aria-current", "page");
+    // The header carries the game's way out and the play entry (ADR-0093 (a)).
+    await expect(page.getByTestId("cast-tab-overview")).toBeVisible();
+    await expect(page.getByTestId("cast-start-narrating")).toBeVisible();
+    // The dial is on by default (ADR-0109, UX-03): auto-cast is the product
+    // default for new setups.
+    await expect(page.getByTestId("auto-cast-switch")).toBeChecked();
 
-  // ── 5. the roster: selection is the URL ───────────────────────────────────
-  await expect(page.getByTestId("voice-characters")).toBeVisible();
-  await expect(page.getByTestId("character-table")).toBeVisible();
-  await expect(page.getByTestId(`character-row-${CHARACTER}`)).toBeVisible();
-  await page.getByTestId(`cast-row-name-${CHARACTER}`).click();
-  await expect(page).toHaveURL(new RegExp(`character=${encodeURIComponent(CHARACTER)}$`));
-  await expect(page.getByTestId("cast-detail-name")).toHaveText(CHARACTER);
+    // ── 5. the roster: selection is the URL ───────────────────────────────────
+    await expect(page.getByTestId("voice-characters")).toBeVisible();
+    await expect(page.getByTestId("character-table")).toBeVisible();
+    await expect(page.getByTestId(`character-row-${CHARACTER}`)).toBeVisible();
+    await page.getByTestId(`cast-row-name-${CHARACTER}`).click();
+    await expect(page).toHaveURL(new RegExp(`character=${encodeURIComponent(CHARACTER)}$`));
+    await expect(page.getByTestId("cast-detail-name")).toHaveText(CHARACTER);
 
-  // The selection survives a reload: the URL carries it, the panel re-opens.
-  await page.reload();
-  await expect(page).toHaveURL(new RegExp(`character=${encodeURIComponent(CHARACTER)}$`));
-  await expect(page.getByTestId("cast-detail-name")).toHaveText(CHARACTER, { timeout: 20_000 });
+    // The selection survives a reload: the URL carries it, the panel re-opens.
+    await page.reload();
+    await expect(page).toHaveURL(new RegExp(`character=${encodeURIComponent(CHARACTER)}$`));
+    await expect(page.getByTestId("cast-detail-name")).toHaveText(CHARACTER, { timeout: 20_000 });
 
-  // ── 6. auto-cast, on: one take, auto-approved, no prompt ──────────────────
-  // The roster shows the character's take lifecycle by testid (UX-03):
-  // queued while the design job runs, voiced once the take is approved. The
-  // window is short with the scripted providers, so assert the chip reaches
-  // a ready state rather than racing the draft frame.
-  const chip = page.getByTestId(`character-voice-state-${CHARACTER}`);
-  // The briefs are the fake ASR's seeded briefs (playwright.config.ts,
-  // FAKE_ASR_BRIEF, ";;"-separated): the stub recovers the spoken line from
-  // the tone's frequency, and the seed couples line + brief + model, so an
-  // unseeded brief would fail every QA read-back and the auto-cast would
-  // refuse the take. The edit is a genuinely different string — the run the
-  // spec regenerates with — seeded as the second entry.
-  const brief1 = "A calm harbor voice, unhurried, with a slight salt air in it.";
-  await page.getByTestId("voice-brief").fill(brief1);
-  const accepted = page.waitForResponse(
-    (r) => r.request().method() === "POST" && r.url().includes("/api/v1/voices/auditions"),
-  );
-  await page.getByTestId("generate-auditions").click();
-  const createResponse = (await (await accepted).json()) as {
-    job_id: string;
-    voice_id: string;
-    revision: number;
-    state: string;
-    auto_cast: boolean | null;
-  };
-  expect(createResponse.state).toBe("draft");
-  expect(createResponse.revision).toBe(1);
-  // The response echoes the dial as the API read it at enqueue (ADR-0109).
-  expect(createResponse.auto_cast).toBe(true);
-  // The queued state is real, not UI theatre: the draft revision is
-  // addressable the instant the 202 lands. With the scripted providers the
-  // design job may already be filling it by the time this read lands, so the
-  // assertion is on existence and liveness, not on the tick the fill left.
-  const draftNow = (await (
-    await request.get(`${origin}/api/v1/voices/${createResponse.voice_id}`)
-  ).json()) as {
-    state: string;
-  };
-  expect(["draft", "auditioning", "approved"]).toContain(draftNow.state);
+    // ── 6. auto-cast, on: one take, auto-approved, no prompt ──────────────────
+    // The roster shows the character's take lifecycle by testid (UX-03):
+    // queued while the design job runs, voiced once the take is approved. The
+    // window is short with the scripted providers, so assert the chip reaches
+    // a ready state rather than racing the draft frame.
+    const chip = page.getByTestId(`character-voice-state-${CHARACTER}`);
+    // The briefs are the fake ASR's seeded briefs (playwright.config.ts,
+    // FAKE_ASR_BRIEF, ";;"-separated): the stub recovers the spoken line from
+    // the tone's frequency, and the seed couples line + brief + model, so an
+    // unseeded brief would fail every QA read-back and the auto-cast would
+    // refuse the take. The edit is a genuinely different string — the run the
+    // spec regenerates with — seeded as the second entry.
+    const brief1 = "A calm harbor voice, unhurried, with a slight salt air in it.";
+    await page.getByTestId("voice-brief").fill(brief1);
+    const accepted = page.waitForResponse(
+      (r) => r.request().method() === "POST" && r.url().includes("/api/v1/voices/auditions"),
+    );
+    await page.getByTestId("generate-auditions").click();
+    const createResponse = (await (await accepted).json()) as {
+      job_id: string;
+      voice_id: string;
+      revision: number;
+      state: string;
+      auto_cast: boolean | null;
+    };
+    expect(createResponse.state).toBe("draft");
+    expect(createResponse.revision).toBe(1);
+    // The response echoes the dial as the API read it at enqueue (ADR-0109).
+    expect(createResponse.auto_cast).toBe(true);
+    // The queued state is real, not UI theatre: the draft revision is
+    // addressable the instant the 202 lands. With the scripted providers the
+    // design job may already be filling it by the time this read lands, so the
+    // assertion is on existence and liveness, not on the tick the fill left.
+    const draftNow = (await (
+      await request.get(`${origin}/api/v1/voices/${createResponse.voice_id}`)
+    ).json()) as {
+      state: string;
+    };
+    expect(["draft", "auditioning", "approved"]).toContain(draftNow.state);
 
-  const result = await jobResult(request, createResponse.job_id);
-  expect(result.auto_approved, "the run auto-approves its take").toBe(true);
+    const result = await jobResult(request, createResponse.job_id);
+    expect(result.auto_approved, "the run auto-approves its take").toBe(true);
 
-  // The page caught up: the take is approved, and the run never asked a
-  // human anything — no audition cards, no consent prompt, no approve
-  // button (UX-03: no per-character prompt).
-  await expect(page.getByTestId("voice-state-badge")).toHaveText("approved", {
-    timeout: 30_000,
-  });
-  await expect(page.getByTestId("audition-card-0")).toHaveCount(0);
-  await expect(page.getByTestId("approve-voice")).toHaveCount(0);
-  await expect(page.getByTestId("consent-input")).toHaveCount(0);
-  await expect(chip).toHaveText("voiced · v1", { timeout: 30_000 });
+    // The page caught up: the take is approved, and the run never asked a
+    // human anything — no audition cards, no consent prompt, no approve
+    // button (UX-03: no per-character prompt).
+    await expect(page.getByTestId("voice-state-badge")).toHaveText("approved", {
+      timeout: 30_000,
+    });
+    await expect(page.getByTestId("audition-card-0")).toHaveCount(0);
+    await expect(page.getByTestId("approve-voice")).toHaveCount(0);
+    await expect(page.getByTestId("consent-input")).toHaveCount(0);
+    await expect(chip).toHaveText("voiced · v1", { timeout: 30_000 });
 
-  // Exactly one approved version and zero pending, from outside the page.
-  const voices1 = await marlaVoices(request, origin);
-  expect(voices1).toHaveLength(1);
-  expect(voices1[0].state).toBe("approved");
-  // The consent is attributed to the profile default, not a click (ADR-0109).
-  const consent = `${CONSENT_DEFAULT}:profile-default:${profileId}`;
-  expect(voices1[0].consent_provenance).toBe(consent);
-  await expect(page.getByTestId("voice-consent")).toContainText(consent);
-  // The current take plays in the panel (the peach pill of docs/design 2d).
-  await expect(page.getByTestId("cast-take-player")).toBeVisible();
-  await expect(page.getByTestId("cast-take-audio")).toBeVisible();
+    // Exactly one approved version and zero pending, from outside the page.
+    const voices1 = await marlaVoices(request, origin);
+    expect(voices1).toHaveLength(1);
+    expect(voices1[0].state).toBe("approved");
+    // The consent is attributed to the profile default, not a click (ADR-0109).
+    const consent = `${CONSENT_DEFAULT}:profile-default:${profileId}`;
+    expect(voices1[0].consent_provenance).toBe(consent);
+    await expect(page.getByTestId("voice-consent")).toContainText(consent);
+    // The current take plays in the panel (the peach pill of docs/design 2d).
+    await expect(page.getByTestId("cast-take-player")).toBeVisible();
+    await expect(page.getByTestId("cast-take-audio")).toBeVisible();
 
-  // ── 7. regenerate: the brief edit is a new current version ────────────────
-  // The button label moves with the state (docs/design/plum-peach 2d).
-  await expect(page.getByTestId("generate-auditions")).toHaveText("↻ Regenerate voice");
-  const brief2 = "A steadier take: slower, with the salt further out.";
-  await page.getByTestId("voice-brief").fill(brief2);
-  const regen = page.waitForResponse(
-    (r) => r.request().method() === "POST" && r.url().includes("/api/v1/voices/auditions"),
-  );
-  await page.getByTestId("generate-auditions").click();
-  const regenResponse = (await (await regen).json()) as {
-    job_id: string;
-    voice_id: string;
-    revision: number;
-  };
-  expect(regenResponse.revision).toBe(2);
-  const regenResult = await jobResult(request, regenResponse.job_id);
-  expect(regenResult.auto_approved).toBe(true);
+    // ── 7. regenerate: the brief edit is a new current version ────────────────
+    // The button label moves with the state (docs/design/plum-peach 2d).
+    await expect(page.getByTestId("generate-auditions")).toHaveText("↻ Regenerate voice");
+    const brief2 = "A steadier take: slower, with the salt further out.";
+    await page.getByTestId("voice-brief").fill(brief2);
+    const regen = page.waitForResponse(
+      (r) => r.request().method() === "POST" && r.url().includes("/api/v1/voices/auditions"),
+    );
+    await page.getByTestId("generate-auditions").click();
+    const regenResponse = (await (await regen).json()) as {
+      job_id: string;
+      voice_id: string;
+      revision: number;
+    };
+    expect(regenResponse.revision).toBe(2);
+    const regenResult = await jobResult(request, regenResponse.job_id);
+    expect(regenResult.auto_approved).toBe(true);
 
-  await expect(page.getByTestId("voice-state-badge")).toHaveText("approved", {
-    timeout: 30_000,
-  });
-  const voices2 = await marlaVoices(request, origin);
-  expect(voices2).toHaveLength(2);
-  const [second, first] = voices2;
-  expect(second.state).toBe("approved");
-  // The previous take is not deleted and stays approved (it stays playable;
-  // the runtime speaks the highest approved, so v1 is silent until undone).
-  expect(first.state).toBe("approved");
-  // A genuinely different take: new fingerprint, same consent rule.
-  expect(second.fingerprint).not.toBe(first.fingerprint);
-  expect(second.design_instruction).toBe(brief2);
-  expect(second.consent_provenance).toBe(consent);
-  await expect(chip).toHaveText("voiced · v2", { timeout: 30_000 });
+    await expect(page.getByTestId("voice-state-badge")).toHaveText("approved", {
+      timeout: 30_000,
+    });
+    const voices2 = await marlaVoices(request, origin);
+    expect(voices2).toHaveLength(2);
+    const [second, first] = voices2;
+    expect(second.state).toBe("approved");
+    // The previous take is not deleted and stays approved (it stays playable;
+    // the runtime speaks the highest approved, so v1 is silent until undone).
+    expect(first.state).toBe("approved");
+    // A genuinely different take: new fingerprint, same consent rule.
+    expect(second.fingerprint).not.toBe(first.fingerprint);
+    expect(second.design_instruction).toBe(brief2);
+    expect(second.consent_provenance).toBe(consent);
+    await expect(chip).toHaveText("voiced · v2", { timeout: 30_000 });
 
-  // ── 8. the one-step undo: keep the old take ───────────────────────────────
-  await expect(page.getByTestId("keep-old-take")).toBeVisible();
-  const undo = page.waitForResponse(
-    (r) => r.request().method() === "POST" && r.url().includes("/undo"),
-  );
-  await page.getByTestId("keep-old-take").click();
-  expect(await (await undo).status()).toBe(200);
+    // ── 8. the one-step undo: keep the old take ───────────────────────────────
+    await expect(page.getByTestId("keep-old-take")).toBeVisible();
+    const undo = page.waitForResponse(
+      (r) => r.request().method() === "POST" && r.url().includes("/undo"),
+    );
+    await page.getByTestId("keep-old-take").click();
+    expect(await (await undo).status()).toBe(200);
 
-  const voices3 = await marlaVoices(request, origin);
-  const [undone, restored] = voices3;
-  expect(undone.id).toBe(second.id);
-  expect(undone.state).toBe("retired");
-  expect(restored.id).toBe(first.id);
-  expect(restored.state).toBe("approved");
-  // The panel agrees: v1 is the take again, and the undo is gone (one step).
-  await expect(chip).toHaveText("voiced · v1", { timeout: 30_000 });
-  await expect(page.getByTestId("keep-old-take")).toHaveCount(0);
-  // The restored take still plays: nothing was deleted, only reordered.
-  await expect(page.getByTestId("cast-take-player")).toBeVisible();
-  await expect(page.getByTestId("cast-take-audio")).toBeVisible();
+    const voices3 = await marlaVoices(request, origin);
+    const [undone, restored] = voices3;
+    expect(undone.id).toBe(second.id);
+    expect(undone.state).toBe("retired");
+    expect(restored.id).toBe(first.id);
+    expect(restored.state).toBe("approved");
+    // The panel agrees: v1 is the take again, and the undo is gone (one step).
+    await expect(chip).toHaveText("voiced · v1", { timeout: 30_000 });
+    await expect(page.getByTestId("keep-old-take")).toHaveCount(0);
+    // The restored take still plays: nothing was deleted, only reordered.
+    await expect(page.getByTestId("cast-take-player")).toBeVisible();
+    await expect(page.getByTestId("cast-take-audio")).toBeVisible();
 
-  // A second undo has nothing to undo: the domain refuses it (409).
-  const nothingToUndo = await api.post(`/api/v1/voices/${first.id}/undo`);
-  expect(nothingToUndo.status()).toBe(409);
-  const refusal = (await nothingToUndo.json()) as { code: string };
-  expect(refusal.code).toBe("NOTHING_TO_UNDO");
+    // A second undo has nothing to undo: the domain refuses it (409).
+    const nothingToUndo = await api.post(`/api/v1/voices/${first.id}/undo`);
+    expect(nothingToUndo.status()).toBe(409);
+    const refusal = (await nothingToUndo.json()) as { code: string };
+    expect(refusal.code).toBe("NOTHING_TO_UNDO");
 
-  // ── 9. the old routes redirect, query included (ADR-0093) ─────────────────
-  await page.goto(`/games/${gameId}/voices?profile=${profileId}&character=${CHARACTER}`);
-  await expect(page).toHaveURL(new RegExp(`/cast\\?profile=${profileId}&character=${CHARACTER}`));
-  await expect(page.getByTestId("cast-detail-name")).toHaveText(CHARACTER, { timeout: 20_000 });
+    // ── 9. the old routes redirect, query included (ADR-0093) ─────────────────
+    await page.goto(`/games/${gameId}/voices?profile=${profileId}&character=${CHARACTER}`);
+    await expect(page).toHaveURL(new RegExp(`/cast\\?profile=${profileId}&character=${CHARACTER}`));
+    await expect(page.getByTestId("cast-detail-name")).toHaveText(CHARACTER, { timeout: 20_000 });
 
-  await page.goto(`/games/${gameId}/characters?profile=${profileId}`);
-  await expect(page).toHaveURL(new RegExp(`/cast\\?profile=${profileId}`));
-  await expect(page.getByTestId("character-table")).toBeVisible({ timeout: 20_000 });
+    await page.goto(`/games/${gameId}/characters?profile=${profileId}`);
+    await expect(page).toHaveURL(new RegExp(`/cast\\?profile=${profileId}`));
+    await expect(page.getByTestId("character-table")).toBeVisible({ timeout: 20_000 });
 
-  // ── 10. the view toggle persists (UX-08) ──────────────────────────────────
-  await expect(page.getByTestId("character-table")).toBeVisible();
-  const toggle = page.getByTestId("cast-view-toggle");
-  await toggle.getByRole("tab", { name: "cards" }).click();
-  await expect(page.getByTestId("cast-cards")).toBeVisible();
-  await expect(page.getByTestId("character-table")).toHaveCount(0);
-  const stored = await page.evaluate(() => {
-    const ls = (globalThis as { localStorage?: { getItem(k: string): string | null } })
-      .localStorage;
-    return ls?.getItem("gn.cast.view") ?? null;
-  });
-  expect(stored).toBe("cards");
-  await page.reload();
-  await expect(page.getByTestId("cast-cards")).toBeVisible({ timeout: 20_000 });
-  await expect(page.getByTestId("character-table")).toHaveCount(0);
+    // ── 10. the view toggle persists (UX-08) ──────────────────────────────────
+    await expect(page.getByTestId("character-table")).toBeVisible();
+    const toggle = page.getByTestId("cast-view-toggle");
+    await toggle.getByRole("tab", { name: "cards" }).click();
+    await expect(page.getByTestId("cast-cards")).toBeVisible();
+    await expect(page.getByTestId("character-table")).toHaveCount(0);
+    const stored = await page.evaluate(() => {
+      const ls = (globalThis as { localStorage?: { getItem(k: string): string | null } })
+        .localStorage;
+      return ls?.getItem("gn.cast.view") ?? null;
+    });
+    expect(stored).toBe("cards");
+    await page.reload();
+    await expect(page.getByTestId("cast-cards")).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId("character-table")).toHaveCount(0);
 
-  // ── 11. nothing leaked, nothing was touched elsewhere ─────────────────────
-  expect(consoleErrors, `browser console: ${consoleErrors.join("\n")}`).toEqual([]);
-  expectDefaultDataDirUntouched(run);
+    // ── 11. nothing leaked, nothing was touched elsewhere ─────────────────────
+    expect(consoleErrors, `browser console: ${consoleErrors.join("\n")}`).toEqual([]);
+    expectDefaultDataDirUntouched(run);
+  } finally {
+    releaseWalkLock();
+  }
 });
 
 /**
@@ -363,17 +385,34 @@ test("the cast screen: auto-cast default, regenerate + one-step undo, selection,
  * Runs after the walk above, on the walk's game and take: the screenshots
  * show the real screen state (a voiced character, a reference line, the
  * current-take player), not an empty shell.
+ *
+ * "After" is enforced, not assumed: the gate's workers=2 + fullyParallel let
+ * this test start on a sibling worker while the walk is still voicing the
+ * character (the 2026-10-21 full-suite run's flake: the screen loaded with
+ * "no voice for Boy yet" and the take player never rendered). The walk holds
+ * CAST_WALK_LOCK from its start to its end (ADR-0130); this test takes it as
+ * a completion barrier before it signs in, so the screen it opens already
+ * carries the walk's approved take.
  */
 test("the cast screen: screenshots and axe at the design's three widths", async ({
   page,
 }, testInfo) => {
-  test.setTimeout(300_000);
+  // The barrier's wait (the walk's full test length) plus this test's own
+  // work: the budget covers a walk that runs the entire 600 s.
+  test.setTimeout(780_000);
   const run = serverRun("voices");
   const consoleErrors = trackConsoleErrors(page, [401, 409]);
 
-  // The walk's game and take already exist on this server; sign in and open
-  // the merged screen with the walk's character selected (its approved take
-  // is the one the walk left current).
+  // Stage one: the walk's run lock — held from its start to its end, so
+  // acquiring it proves the walk finished (the game, the roster and the
+  // approved take all exist). The release is immediate: the lock is a
+  // barrier here, not a claim (this test is read-only over the walk's state).
+  const release = await acquireScenarioLock(testInfo, CAST_WALK_LOCK, CAST_WIDTHS_BARRIER_MS);
+  release();
+
+  // The walk's game and take exist on this server (the barrier above); sign
+  // in and open the merged screen with the walk's character selected (its
+  // approved take is the one the walk left current).
   await signIn(page);
   await page.goto("/library");
   await page.getByTestId("game-cast-harbour").click();

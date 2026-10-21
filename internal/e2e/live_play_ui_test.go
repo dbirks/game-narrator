@@ -809,6 +809,18 @@ func TestLivePlayUI(t *testing.T) {
 		if chainReady {
 			break
 		}
+		// Fail fast on a terminal session (issue #39): the runtime publishes
+		// session.stopped last — after the session's audio has ended — so a
+		// terminal event on the page means no further event of the session
+		// will ever arrive, and the 10-minute budget is for running sessions.
+		// The failure names the terminal state and the last stats the rerun
+		// needs; the 2026-10-20 run instead idled the emulator for 10 m on a
+		// session the walk had already stopped.
+		if term, terminal := sessionTerminal(evs, sessionID); terminal {
+			t.Fatalf("no committed-and-spoken chain: the session is terminal (state=%s reason=%s; last stats: frames_delivered=%d frames_processed=%d ocr_calls=%d rankings=%d commits=%d), so no further events will ever arrive (bundle %s carries the events so far)",
+				term.state, term.reason, term.stats.FramesDelivered, term.stats.FramesProcessed,
+				term.stats.OCRCalls, term.stats.Rankings, term.stats.Commits, bundle)
+		}
 	}
 	if commit.TraceID == "" {
 		t.Fatalf("chain found but the commit event carries no trace id: %s", commit.EventID)
@@ -1038,4 +1050,63 @@ func livePlayDiagnostics(bridge dolphin.Bridge, sessionID string, snap runtime.I
 			drive.OK, drive.Reason, drive.LastKey, len(drive.Transitions), drive.TransitionLog())
 	}
 	return b.String()
+}
+
+// sessionTerminalReport is the step-9 poll's fail-fast decision (issue #39):
+// the session's terminal event is already on the dev log, and the report
+// names the terminal state, its reason and the last stats the terminal
+// event carried — the diagnosis a rerun needs instead of the 10-minute
+// silence.
+type sessionTerminalReport struct {
+	state  string // runtime.StateFailed or runtime.StateStopped
+	reason string // the terminal event's reason: requested, source_end, error, closed
+	stats  pipeline.Stats
+}
+
+// sessionTerminal decides, from one session's decoded event page, whether the
+// session is already terminal — and if so which terminal state. It is pure
+// over the decoded envelopes, so it unit-tests without an emulator, server
+// or provider.
+//
+// Soundness: the runtime publishes the terminal events last
+// (internal/runtime's session run: stopSpeech — pending synthesis cancelled,
+// active playback stopped — runs before session.failed / session.stopped go
+// out, and the publisher suppresses the reducer's duplicate session.stopped).
+// Once session.stopped is on the durable log, no further event of that
+// session can arrive — in particular no speech.ended — so a terminal session
+// whose chain is incomplete can never complete it, and the poll must not
+// burn the 10-minute budget idling the emulator under the bridge. The
+// budget still covers sessions that are still running.
+//
+// A terminal event only counts for sessionID (the caller's session): the
+// poll's own page is already filtered to it (dolphinDevEvents), and the
+// match keeps the decision honest on a page that is not.
+func sessionTerminal(evs []devEnvelope, sessionID string) (sessionTerminalReport, bool) {
+	var rep sessionTerminalReport
+	terminal := false
+	for _, e := range evs {
+		if e.SessionID != sessionID {
+			continue
+		}
+		switch e.Name {
+		case runtime.EventSessionFailed:
+			if rep.state == "" {
+				rep.state = runtime.StateFailed
+			}
+		case events.SessionStopped:
+			terminal = true
+			if rep.state == "" {
+				rep.state = runtime.StateStopped
+			}
+			var d struct {
+				Reason string         `json:"reason"`
+				Stats  pipeline.Stats `json:"stats"`
+			}
+			if err := json.Unmarshal(e.Data, &d); err == nil {
+				rep.reason = d.Reason
+				rep.stats = d.Stats
+			}
+		}
+	}
+	return rep, terminal
 }
