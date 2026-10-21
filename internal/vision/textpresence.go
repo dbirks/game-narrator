@@ -108,3 +108,176 @@ func TextPresence(g *image.Gray, darkLuma, brightLuma uint8) (dark, text, onPane
 // (dark, < 90) and the anti-aliased edge while below the white of the glyph,
 // the split measured on the live-hdmi capture (ADR-0137).
 const DefaultTextLuma = 140
+
+// PanelPresence is the presence gate's read of one raw colour crop (ADR-0137,
+// Amendment: the sea false positive): the panel's darkness, the text riding
+// it, and the panel's colour. The dark and text numbers are the same walk
+// TextPresence runs; SaturatedDark is what the old gate could not see, and
+// what let the open sea read as a panel.
+type PanelPresence struct {
+	// Dark is the panel share — the fraction of luma pixels below darkLuma —
+	// the same walk DarkShare runs, the presence the textbox detector has
+	// always asked.
+	Dark float64
+	// Text is the bright-on-dark stroke share (TextPresence's text): the
+	// letterforms riding the panel, the signal that separates "there is a
+	// line" from "the scene is dark".
+	Text float64
+	// SaturatedDark is the fraction of the crop's dark pixels that are
+	// saturated (max(r,g,b)−min(r,g,b) at or above satFloor): the panel's
+	// colour. A dialogue panel is a translucent darkening of the scene, so
+	// its dark pixels are the panel's own desaturated tint. A saturated
+	// scene — the open sea: dark blue water, measured 0.93–0.97 on the
+	// 2026-10-21 board capture — fills the band with dark pixels that are
+	// saturated, and a band like that is scene wearing through the band, not
+	// a panel.
+	SaturatedDark float64
+}
+
+// DefaultSatFloor is the saturation (max(r,g,b)−min(r,g,b)) at or above which
+// a dark pixel counts as saturated for PanelPresenceOf's SaturatedDark share:
+// the sea's blue is far past it (measured mean dark-pixel saturation 92–96),
+// while the panel's tint, the scene's shadows and their capture noise sit
+// well under (measured 0–18 on the box fixtures).
+const DefaultSatFloor = 80
+
+// PanelPresenceOf measures one raw colour crop for the presence gate: the
+// same luma walk TextPresence runs (dark and text, one conversion) plus one
+// colour walk counting the dark pixels and the saturated dark ones — two
+// DarkShare-order passes, still negligible against the ~600 ms OCR it steers
+// (docs/spec/05). The caller keeps its floors in the pipeline's PresenceConfig
+// (docs/spec/11 step 4: the detector's shape is measured here, its thresholds
+// configured there). A nil or empty crop reads as no panel and no text at all.
+func PanelPresenceOf(img image.Image, darkLuma, brightLuma, satFloor uint8) PanelPresence {
+	if img == nil {
+		return PanelPresence{}
+	}
+	b := img.Bounds()
+	if b.Dx() <= 0 || b.Dy() <= 0 {
+		return PanelPresence{}
+	}
+	g := ToGray(img)
+	dark, text, _ := TextPresence(g, darkLuma, brightLuma)
+	darkN, satDarkN := saturatedDarkPixels(img, g, darkLuma, satFloor)
+	sd := 0.0
+	if darkN > 0 {
+		sd = float64(satDarkN) / float64(darkN)
+	}
+	return PanelPresence{Dark: dark, Text: text, SaturatedDark: sd}
+}
+
+// saturatedDarkPixels walks the colour source counting the crop's dark pixels
+// — judged by the shared gray g, so the count matches TextPresence's dark
+// exactly — and the saturated dark ones. NRGBA and YCbCr (the capture's two
+// live shapes) are walked directly; any other source goes through At().
+func saturatedDarkPixels(img image.Image, g *image.Gray, darkLuma, satFloor uint8) (int, int) {
+	b := img.Bounds()
+	var darkN, satDarkN int
+	switch src := img.(type) {
+	case *image.NRGBA:
+		for y := b.Min.Y; y < b.Max.Y; y++ {
+			y0 := y - b.Min.Y
+			ys := y0 * src.Stride
+			gs := y0 * g.Stride
+			for x := b.Min.X; x < b.Max.X; x++ {
+				x0 := x - b.Min.X
+				if g.Pix[gs+x0] >= darkLuma {
+					continue
+				}
+				darkN++
+				xs := x0 * 4
+				if sat8(src.Pix[ys+xs], src.Pix[ys+xs+1], src.Pix[ys+xs+2]) >= satFloor {
+					satDarkN++
+				}
+			}
+		}
+	case *image.YCbCr:
+		// The Y plane is the luma g already took; Cb/Cr are subsampled at the
+		// chroma stride, so a chroma address divides the pixel offset by the
+		// plane ratio (CStride/YStride horizontally, chroma rows / luma rows
+		// vertically: 4:4:4, 4:2:2 and 4:2:0 all fall out of the same math).
+		crRows := len(src.Cb) / src.CStride
+		for y := b.Min.Y; y < b.Max.Y; y++ {
+			y0 := y - b.Min.Y
+			yc := y0 * crRows / b.Dy()
+			ycs := yc * src.CStride
+			ys := y0 * src.YStride
+			gs := y0 * g.Stride
+			for x := b.Min.X; x < b.Max.X; x++ {
+				x0 := x - b.Min.X
+				if g.Pix[gs+x0] >= darkLuma {
+					continue
+				}
+				darkN++
+				xc := x0 * src.CStride / src.YStride
+				cb := int(src.Cb[ycs+xc]) - 128
+				crr := int(src.Cr[ycs+xc]) - 128
+				yi := int(src.Y[ys+x0])
+				// BT.601 reconstruction, JPEG's ×256 integer coefficients.
+				r := yi + (359*crr+128)>>8         // 1.402
+				gch := yi - (88*cb+183*crr+128)>>8 // 0.344, 0.714
+				bl := yi + (454*cb+128)>>8         // 1.772
+				if sat8(clamp8(r), clamp8(gch), clamp8(bl)) >= satFloor {
+					satDarkN++
+				}
+			}
+		}
+	default:
+		for y := b.Min.Y; y < b.Max.Y; y++ {
+			y0 := y - b.Min.Y
+			gs := y0 * g.Stride
+			for x := b.Min.X; x < b.Max.X; x++ {
+				if g.Pix[gs+x-b.Min.X] >= darkLuma {
+					continue
+				}
+				darkN++
+				r16, g16, b16, a16 := src.At(x, y).RGBA()
+				if a16 == 0 {
+					continue // transparent: no colour to judge
+				}
+				if a16 != 0xffff {
+					// Un-premultiply with lumaOf's arithmetic, so the colour and
+					// the luma that judged the pixel dark are one number.
+					r16 = clamp16(int(uint64(r16) * 0xffff / uint64(a16)))
+					g16 = clamp16(int(uint64(g16) * 0xffff / uint64(a16)))
+					b16 = clamp16(int(uint64(b16) * 0xffff / uint64(a16)))
+				}
+				if sat8(uint8(r16>>8), uint8(g16>>8), uint8(b16>>8)) >= satFloor {
+					satDarkN++
+				}
+			}
+		}
+	}
+	return darkN, satDarkN
+}
+
+// sat8 is the 8-bit pixel's saturation, max(r,g,b)−min(r,g,b): the cheap
+// chroma distance that needs no colour space, the same rule the probe that
+// measured the sea's false positive ran.
+func sat8(r, g, b uint8) uint8 {
+	mx, mn := r, b
+	if g > mx {
+		mx = g
+	}
+	if r < mn {
+		mn = r
+	}
+	if g < mn {
+		mn = g
+	}
+	if b < mn {
+		mn = b
+	}
+	return mx - mn
+}
+
+// clamp8 bounds the BT.601 YCbCr→RGB reconstruction to [0,255].
+func clamp8(v int) uint8 {
+	if v < 0 {
+		return 0
+	}
+	if v > 255 {
+		return 255
+	}
+	return uint8(v)
+}

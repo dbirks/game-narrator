@@ -60,11 +60,17 @@ func (r *Runner) analyze(f capture.Frame, reg games.Region, rect vision.Rect) an
 		a.empty = true
 		return a
 	}
-	// Presence is measured on the raw grayscale crop, not on the preprocessed
+	// Presence is measured on the raw colour crop, not on the preprocessed
 	// one: AutoInvert and Otsu deliberately destroy the light/dark relationship
-	// this detector asks about.
-	g := vision.ToGray(crop)
-	a.present = vision.DarkShare(g, r.cfg.Presence.DarkLuma) >= r.cfg.Presence.MinDarkShare
+	// and the panel's colour this detector asks about. The panel read is the
+	// triple gate of vision.PanelPresenceOf (ADR-0137, Amendment: the sea false
+	// positive): dark enough to be a panel, carrying a line (the text share —
+	// the letters a box exists to show; the old dark-only read called the open
+	// sea a box and OCR'd it), and not a saturated scene wearing through the
+	// band (the sea's dark is saturated blue, the panel's is its own
+	// desaturated tint).
+	pp := vision.PanelPresenceOf(crop, r.cfg.Presence.DarkLuma, vision.DefaultTextLuma, vision.DefaultSatFloor)
+	a.present = r.cfg.Presence.Present(pp)
 	// The perceptual dedupe key (ADR-0115 §3) is on the raw crop for the same
 	// reason presence is: the question is "did the box the camera sees change",
 	// and the preprocess recipe's binarisation would move the answer with the

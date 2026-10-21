@@ -140,25 +140,52 @@ var (
 // RegionPresent drives APPEARING and DISMISSED) and which nothing upstream
 // provides: the capture layer knows pixels, not semantics.
 //
-// The rule is deliberately crude and game-agnostic — the share of a raw crop
-// whose luma is below DarkLuma must reach MinDarkShare. A dialogue box is a
-// translucent panel, so it is darker than the scene behind it; a scene that
-// happens to be dark makes the region read "present" with no text, which the
-// tracker handles as an empty read rather than as a line. A profile that needs a
-// different detector supplies its own thresholds rather than a code path
+// The rule is deliberately crude and game-agnostic — the crop must look like
+// a PANEL carrying a LINE, in three measured shares (vision.PanelPresenceOf):
+// its dark share reaches MinDarkShare (a box is a translucent panel darker
+// than the scene), its text share reaches MinTextShare (the letters, which
+// are what a box exists to show), and its saturated-dark share stays under
+// MaxSaturatedDarkShare (the panel's dark is its own desaturated tint; a band
+// whose dark pixels are a saturated scene — the open sea, ADR-0137 amendment
+// — is the scene wearing through the band, not a panel). A profile that needs
+// a different detector supplies its own thresholds rather than a code path
 // (docs/spec/11 step 4 forbids fixture-specific branches).
 type PresenceConfig struct {
 	// DarkLuma is the luma below which a pixel counts as panel, in [0,255].
 	DarkLuma uint8
 	// MinDarkShare is the fraction of the crop that must be dark.
 	MinDarkShare float64
+	// MinTextShare is the fraction of the crop the panel's bright-on-dark
+	// strokes (the letters) must reach. A line's text share scales with its
+	// length — about 0.0002 per character on a 512x120 box crop (a
+	// 15-character line read 0.0032 on the A/V harness frames) — so the
+	// floor sits at one character: a "Huh?"-length line (≈ 0.0008) must stay
+	// present. The sea is rejected by the saturated-dark ceiling, not by this
+	// floor (sea crops read text shares up to 0.0024); this floor only drops
+	// the dark, desaturated no-box bands, which all read exactly 0 on the
+	// 2026-10-21 board capture (ADR-0137, Amendment: the sea false positive).
+	MinTextShare float64
+	// MaxSaturatedDarkShare is the ceiling on the share of the crop's dark
+	// pixels that are saturated. Zero is a legitimate value (no saturated
+	// dark at all); negative takes the default. Measured 0.93–0.97 on the
+	// dark sea bands and 0.000–0.053 on the box fixtures, the ceiling sits
+	// at 0.5 an order of magnitude from either side.
+	MaxSaturatedDarkShare float64
 }
 
-// DefaultPresence is the panel detector described above. Both numbers are
-// measured on the synthetic corpus (scripts/fixtures/gen-synthetic-replay.sh),
-// which is an invented clip, not a game — see TestPresenceMatchesCorpusTruth.
+// DefaultPresence is the panel detector described above. The dark and text
+// numbers are measured on the synthetic corpus (scripts/fixtures/gen-synthetic-
+// replay.sh), which is an invented clip, not a game — see
+// TestPresenceMatchesCorpusTruth; the text and saturated-dark numbers are
+// measured on the 2026-10-21 board capture and the Dolphin box fixtures
+// (ADR-0137, Amendment: the sea false positive).
 func DefaultPresence() PresenceConfig {
-	return PresenceConfig{DarkLuma: 90, MinDarkShare: 0.30}
+	return PresenceConfig{
+		DarkLuma:              90,
+		MinDarkShare:          0.30,
+		MinTextShare:          0.0002,
+		MaxSaturatedDarkShare: 0.5,
+	}
 }
 
 func (p PresenceConfig) normalize() PresenceConfig {
@@ -171,7 +198,41 @@ func (p PresenceConfig) normalize() PresenceConfig {
 	if p.MinDarkShare > 1 {
 		p.MinDarkShare = 1
 	}
+	if !(p.MinTextShare > 0) {
+		p.MinTextShare = DefaultPresence().MinTextShare
+	}
+	if p.MinTextShare > 1 {
+		p.MinTextShare = 1
+	}
+	if p.MaxSaturatedDarkShare < 0 { // unset is negative; 0 is legitimate
+		p.MaxSaturatedDarkShare = DefaultPresence().MaxSaturatedDarkShare
+	}
+	if p.MaxSaturatedDarkShare > 1 {
+		p.MaxSaturatedDarkShare = 1
+	}
 	return p
+}
+
+// Present is the presence gate the pipeline applies to one crop's
+// PanelPresence read (roi.go's analyze, ADR-0137 Amendment: the sea false
+// positive): all three shares must agree — the crop is dark enough to be a
+// panel, carries a line, and is not a saturated scene wearing through the
+// band. One predicate here keeps the runner and the captured-fixture tests
+// on the same decision.
+func (p PresenceConfig) Present(pp vision.PanelPresence) bool {
+	return pp.Dark >= p.MinDarkShare &&
+		pp.Text >= p.MinTextShare &&
+		p.SaturatedDarkCeiling() >= pp.SaturatedDark
+}
+
+// SaturatedDarkCeiling is MaxSaturatedDarkShare for the gate: normalize maps
+// the unset negative value to the default, so a zero-value config reads the
+// default ceiling rather than rejecting everything with dark pixels.
+func (p PresenceConfig) SaturatedDarkCeiling() float64 {
+	if p.MaxSaturatedDarkShare < 0 {
+		return DefaultPresence().MaxSaturatedDarkShare
+	}
+	return p.MaxSaturatedDarkShare
 }
 
 // QueuePolicy selects the frame queue between the capture loop and the ROI

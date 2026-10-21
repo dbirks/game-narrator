@@ -236,9 +236,12 @@ bench:
 ## external gitignored captures under $GAME_NARRATOR_FIXTURE_DIR or
 ## artifacts/catch-up-live and report NOT RUN without them, so -skip keeps
 ## them out of this gate and a fixture-less host (CI) sees a clean 0 instead
-## of a NOT RUN exit 2.
+## of a NOT RUN exit 2. TestPresenceRejectsSeaAcceptsBoxes (the ADR-0137 sea
+## amendment) runs in make test-dolphin's captures phase instead; the three
+## placement replays need a live-capture JPEG bundle as the fixture root and
+## currently run in no gate (issue filed 2026-10-21).
 test-replay:
-	@scripts/gates/run-go-gate.sh test-replay -race -count=1 -skip 'TestDolphinScenarios|TestPlacementOnLiveCapture|TestPlacementOnDolphinProbe|TestPlacementOCRBeforeAfterFix' ./internal/scenario/... ./internal/pipeline/... ; \
+	@scripts/gates/run-go-gate.sh test-replay -race -count=1 -skip 'TestDolphinScenarios|TestPlacementOnLiveCapture|TestPlacementOnDolphinProbe|TestPlacementOCRBeforeAfterFix|TestPresenceRejectsSeaAcceptsBoxes' ./internal/scenario/... ./internal/pipeline/... ; \
 	rc=$$?; echo $$rc > artifacts/gates/test-replay.rc ; exit $$rc
 
 ## test-ui: the real UI gate (docs/spec/09, docs/spec/12 "UI") — frontend
@@ -317,6 +320,8 @@ test-dolphin:
 	rc1=$$?; \
 	GN_GATE=test-dolphin scripts/gates/run-go-gate.sh test-dolphin-scenarios -count=1 -timeout 30m -run TestDolphinScenarios ./internal/scenario/... ; \
 	rc2=$$?; \
+	GN_GATE=test-dolphin scripts/gates/run-go-gate.sh test-dolphin-captures -count=1 -timeout 30m -run 'TestPresenceRejectsSeaAcceptsBoxes' ./internal/pipeline/... ; \
+	rc4=$$?; \
 	if command -v pnpm >/dev/null 2>&1; then \
 		$(MAKE) --no-print-directory web-build || { echo "web-build failed: the live play UI phase will report NOT RUN (the staged SPA was removed)" >&2; rm -rf internal/webassets/dist; } ; \
 	else \
@@ -324,7 +329,7 @@ test-dolphin:
 	fi ; \
 	GN_GATE=test-dolphin scripts/gates/run-go-gate.sh test-dolphin-liveui -count=1 -p 1 -timeout 115m -run 'TestLivePlayUI$$|TestLiveCatchUpRapidDialogue$$' ./internal/e2e/... ; \
 	rc3=$$?; \
-	if [ $$rc1 -eq 1 ] || [ $$rc2 -eq 1 ] || [ $$rc3 -eq 1 ]; then rc=1; elif [ $$rc1 -eq 2 ] || [ $$rc2 -eq 2 ] || [ $$rc3 -eq 2 ]; then rc=2; else rc=0; fi; \
+	if [ $$rc1 -eq 1 ] || [ $$rc2 -eq 1 ] || [ $$rc3 -eq 1 ] || [ $$rc4 -eq 1 ]; then rc=1; elif [ $$rc1 -eq 2 ] || [ $$rc2 -eq 2 ] || [ $$rc3 -eq 2 ] || [ $$rc4 -eq 2 ]; then rc=2; else rc=0; fi; \
 	echo $$rc > artifacts/gates/test-dolphin.rc ; exit $$rc
 
 ## test-av: the multimodal Dolphin A/V harness gate (ADR-0143). The real

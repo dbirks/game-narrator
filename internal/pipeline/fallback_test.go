@@ -155,9 +155,12 @@ func TestOCRFallbackOptionWrapsAndValidates(t *testing.T) {
 
 // TestOCRFallbackResolvedNeverCalls is the cost property: a resolved local
 // read costs exactly what it costs today — no crop prepared, nothing sent.
-// The only unresolved reads in this clip are the box-present-but-empty crops
-// (docs/spec/05 names that case explicitly), and those — and only those —
-// reach the VLM.
+// The clip's only unresolved reads were its blank-panel crops (truth: box
+// present, no text). Since the ADR-0137 sea amendment the presence gate
+// requires a text share, so a blank panel reads absent and never reaches OCR
+// or the VLM: the clip sends nothing at all. (A panel that carries strokes
+// the local engine cannot read still reaches the VLM — docs/spec/05's case —
+// and the resolving tests below exercise it.)
 func TestOCRFallbackResolvedNeverCalls(t *testing.T) {
 	eng := &fakeOCR{script: ocrScript(t), delay: fastScript, respectCtx: true}
 	sec := &countingSecondary{text: lineA}
@@ -172,9 +175,12 @@ func TestOCRFallbackResolvedNeverCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	want := distinctPresentEmptyCrops(t)
+	if n := distinctPresentEmptyCrops(t); n == 0 {
+		t.Fatal("the clip has no blank-panel crops: the property below would be vacuous")
+	}
+	want := 0 // blank panels read absent (ADR-0137 sea amendment); resolved reads never send
 	if got := sec.calls.Load(); got != int32(want) {
-		t.Errorf("the VLM was called %d times, want %d (one per distinct empty box crop; every non-empty read is resolved and never sends anything)", got, want)
+		t.Errorf("the VLM was called %d times, want %d (blank panels read absent; every non-empty read is resolved and never sends anything)", got, want)
 	}
 	if st.OCRFallbackFrames != uint64(want) || st.OCRFallbackSecondaryCalls != uint64(want) {
 		t.Errorf("fallback counters = %d frames / %d calls, want %d/%d", st.OCRFallbackFrames, st.OCRFallbackSecondaryCalls, want, want)

@@ -136,6 +136,13 @@ func (s *twoRegionSource) Start(ctx context.Context) (<-chan capture.Frame, erro
 					img.Pix[y*320+x] = 30
 				}
 			}
+			// A short bright stroke in each panel: the letters the presence
+			// gate's text share asks for (ADR-0137 sea amendment) — a blank
+			// panel reads absent and would never be OCR'd.
+			for x := 30; x < 60; x++ {
+				img.Pix[80*320+x] = 230
+				img.Pix[80*320+x+160] = 230
+			}
 			sx := 24 + (k*11)%90
 			img.Pix[(44+sx/20)*320+sx] = 230
 			sx2 := 184 + (k*13)%90

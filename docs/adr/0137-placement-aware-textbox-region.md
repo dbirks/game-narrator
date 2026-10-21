@@ -104,3 +104,36 @@ With the gate, the banner is **not a box** (on-panel 0.80 < 0.9): no band is box
 ## Reversal plan
 
 Set `Config.PlacementDisabled` true (the runtime wiring) to restore the single-band crop for every region without a code change — the base-band path is kept as the disabled branch, so the reversal is a config flip. To remove the feature entirely, delete the selection from `regionState.accept` (crop `vision.RectOf` directly as it does today), the candidate/metric helpers in `internal/pipeline` and `internal/vision.TextPresence`, and the `Config` knobs. No schema or migration is touched, so the reversal touches no data.
+
+## Amendment (2026-10-21): the sea false positive (#41, #44)
+
+**Context.** On the UNO Q, while Link sailed with no dialogue box on screen, the presence rule (dark share ≥ 0.30 of the crop) called the open sea a box. The bottom bands of 640×480 V316B frames are mostly dark saturated blue. Tesseract then read junk ("™ a a", "gh\"") and the unmatched read-through spoke it. Private fixture: `board-sailing-20261021` (40 OCR'd crops plus 20 frames, all with no box; outside git).
+
+**Decision.** Presence is a triple gate on the raw colour crop (`vision.PanelPresenceOf`, `PresenceConfig.Present`):
+
+| Gate | Threshold | Purpose |
+|---|---|---|
+| dark share | ≥ `MinDarkShare` (0.30, unchanged) | it looks like a panel |
+| saturated-dark share | ≤ `MaxSaturatedDarkShare` (0.5) | it isn't a saturated scene showing through |
+| text share | ≥ `MinTextShare` (0.0002) | it carries at least about one character |
+
+Measured values:
+
+| Input | Saturated-dark share | Text share |
+|---|---|---|
+| sea crops | 0.86–0.97 | up to 0.0024 |
+| Wind Waker boxes, Dolphin fixtures | 0.000–0.057 | — |
+| Wind Waker boxes, raw board crops | 0.002–0.069 | — |
+| desaturated no-box bands (board capture) | — | exactly 0 |
+| a 15-character line | — | 0.0032 (≈ 0.0002 per character) |
+
+The ceiling sits an order of magnitude from both sides. The text floor is set to one character so that a "Huh?"-length line (≈ 0.0008) stays present. The worker's first value, 0.001, would have silenced lines of about 4 characters. The sea itself is rejected by the saturation ceiling, not by the text floor.
+
+**Validation.**
+- `TestPresenceRejectsSeaAcceptsBoxes` (fixture-gated: NOT RUN without `$GAME_NARRATOR_FIXTURE_DIR`):
+  - all 40 board crops and 20 frames read absent;
+  - the positive box-row counts on the three Dolphin fixtures are identical to the old dark-only rule (72/98, 193/1085, 533/682);
+  - with the new gates neutralized, the same test fails on the sea crops.
+- `TestPresenceMatchesCorpusTruth` (synthetic corpus) and `make test-replay` stay green.
+
+**Reversal.** Set `MaxSaturatedDarkShare: 1` and `MinTextShare` to a tiny positive value in the profile's presence config.
