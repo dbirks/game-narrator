@@ -82,7 +82,17 @@ export function OperatorView({
       <div className="pp-operator-frame-col">
         <OperatorFrame line={line} />
 
-        <div className="pp-frame-completed" data-testid="play-operator-line">
+        {/* The committed line beneath the frame is the operator's twin of
+            the caption view's aria-live region: it updates as the session
+            commits, and the text equivalent is announced like the caption
+            (docs/design/plum-peach "Accessibility": the line is the
+            caption for the audio; issue #34 pins it in the a11y walk). */}
+        <div
+          className="pp-frame-completed"
+          data-testid="play-operator-line"
+          aria-live="polite"
+          aria-atomic="true"
+        >
           {line ? (
             <span className="pp-name-tab-row">
               <NameTab testid="play-operator-line-speaker">{speakerLabel}</NameTab>

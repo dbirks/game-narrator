@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { Profiler } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -98,6 +98,52 @@ function installFetch(): void {
     scene: { id: "s1", name: "Harbour" },
   }));
   const graphPage = { nodes, edges: [], total: ROWS };
+  installGraphFetch(graphPage);
+}
+
+/** The table view's fetch: a small page with two edges, so the successors
+ *  cell has something to render (one node's two transitions, one node with
+ *  none on the page). */
+function installTableFetch(): void {
+  installGraphFetch({
+    nodes: [
+      {
+        id: "a",
+        kind: "dialogue",
+        text: "line a",
+        attribution_status: "confirmed",
+        attribution_confidence: 0.95,
+        speaker: { id: "marina", name: "Marina" },
+        scene: null,
+      },
+      {
+        id: "b",
+        kind: "sign",
+        text: "line b",
+        attribution_status: "unknown",
+        attribution_confidence: 0,
+        speaker: { id: "marina", name: "Marina" },
+        scene: null,
+      },
+      {
+        id: "c",
+        kind: "dialogue",
+        text: "line c",
+        attribution_status: "unknown",
+        attribution_confidence: 0,
+        speaker: null,
+        scene: null,
+      },
+    ],
+    edges: [
+      { from: "a", to: "b", kind: "next", confidence: 0.9, source: null, evidence: 3 },
+      { from: "a", to: "c", kind: "branch", confidence: 0.4, source: null, evidence: 1 },
+    ],
+    total: 3,
+  });
+}
+
+function installGraphFetch(graphPage: unknown): void {
   const bodyFor = (path: string): unknown => {
     if (path === "/api/v1/auth/me")
       return {
@@ -208,6 +254,64 @@ it("a resize leaves the list's measured height at its own fixed box", async () =
     onRender.mock.calls.length,
     "no observer or effect keeps scheduling re-renders after the resize",
   ).toBeLessThanOrEqual(before + 50);
+});
+
+it("the table view carries the page's messages with kind, speaker and successors", async () => {
+  installTableFetch();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter initialEntries={["/games/g1/graph?profile=p1"]}>
+        <AuthProvider>
+          <Routes>
+            <Route path="/games/:id/graph" element={<GraphPage />} />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+
+  // The page settles on its default (canvas) view; the toggle is the design's
+  // segmented switch (issue #34's non-canvas alternative).
+  await screen.findByTestId("graph-node-list", undefined, { timeout: 10_000 });
+  await screen.findByText("3 of 3 lines", { exact: false });
+  const toggle = screen.getByTestId("graph-view-toggle");
+  expect(toggle, "the view toggle is on the page").toBeTruthy();
+
+  // The toggle is keyboard-operable (Radix tabs: the trigger is a real
+  // button in the tab list, Enter-activatable — the activation the design's
+  // keyboard contract names): focus it and press Enter.
+  const tableTab = screen.getByRole("tab", { name: "table" });
+  tableTab.focus();
+  fireEvent.keyDown(tableTab, { key: "Enter" });
+  const table = await screen.findByTestId("graph-table", undefined, { timeout: 10_000 });
+  expect(table).toBeTruthy();
+  // The choice persists per user (UX-08), the way the library/cast toggles.
+  expect(window.localStorage.getItem("gn-graph-view")).toBe("table");
+  // The canvas list is gone: one view, no duplicated data in the DOM.
+  expect(screen.queryByTestId("graph-node-list")).toBeNull();
+
+  // Every message of the page, with its text kind and speaker.
+  const rowA = screen.getByTestId("graph-table-row-a");
+  expect(rowA.textContent ?? "").toContain("line a");
+  expect(rowA).toHaveTextContent("dialogue");
+  expect(rowA).toHaveTextContent("Marina");
+  const rowB = screen.getByTestId("graph-table-row-b");
+  expect(rowB).toHaveTextContent("sign");
+  const rowC = screen.getByTestId("graph-table-row-c");
+  expect(rowC.textContent ?? "").toContain("line c");
+
+  // The successors: node a's two transitions, each naming the successor's
+  // kind and speaker and the edge's kind — the same edges the canvas colours.
+  expect(rowA).toHaveTextContent("next → line b");
+  // Successor b is a sign: its kind is named, not the source line's.
+  expect(rowA).toHaveTextContent("(sign, Marina)");
+  expect(rowA).toHaveTextContent("90%");
+  expect(rowA).toHaveTextContent("branch → line c");
+  expect(rowA).toHaveTextContent("unattributed");
+  expect(rowA).toHaveTextContent("40%");
+  // Node b has no outgoing edge on the page: the honest empty answer.
+  expect(rowB).toHaveTextContent("none on this page");
 });
 
 afterEach(cleanup);
