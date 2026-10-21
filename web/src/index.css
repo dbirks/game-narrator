@@ -1190,6 +1190,33 @@ pre.muted {
   color: var(--ink);
 }
 
+/* The graph's table view (issue #34): the canvas's own page as a real
+   table. The design's card treatment for the wrapper — --card surface,
+   1.5px --ink line, the kit-table's own dashed rows and mono headers
+   carry the rest. */
+.graph-table-wrap {
+  display: grid;
+  gap: var(--sp-8);
+  align-content: start;
+  background: var(--card);
+  border: 1.5px solid var(--ink);
+  border-radius: 12px;
+  padding: var(--sp-16);
+  overflow-x: auto;
+}
+.graph-table-successors {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--sp-4);
+}
+.graph-table-successors li {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
 /* ── OCR regions (m5) ────────────────────────────────────────────────── */
 .regions-page {
   display: grid;

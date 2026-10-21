@@ -1,8 +1,12 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
+import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 
 import { trackConsoleErrors } from "./support/console";
+import { buildManifest, type SeedProfile } from "./support/manifest";
+import { setPlayView } from "./support/play";
 import { expectDefaultDataDirUntouched, serverRun } from "./support/servers";
 
 /**
@@ -21,8 +25,23 @@ import { expectDefaultDataDirUntouched, serverRun } from "./support/servers";
  * JSON, and any serious or critical violation fails the run (moderate and
  * minor are recorded without failing — the fix target is A/AA).
  *
- * Model boundary: none. No session, audition or preview runs in this walk, so
- * no scripted model instance is needed (AGENTS.md rule 3).
+ * Plus the live-session stop (issue #34, gap row G16): the states a user
+ * reaches DURING play — streaming committed lines, the in-play audio
+ * controls, the now-speaking caption — are the a11y surface the idle walk
+ * above cannot see. Two replay sessions of the committed synthetic clip
+ * cover it: one carries the in-play keyboard contract at the head of the
+ * session, where the clip's whole lifetime is ahead of the walk whatever the
+ * host's OCR throughput (issue #23's placement — the replay drains at the
+ * host's own throughput and a pause does not stop the source), and the other
+ * streams its committed lines through the real pipeline and is read settled
+ * (the play-pc walks' wait-out-the-run pattern) for the now-speaking and
+ * operator scans.
+ *
+ * Model boundary: AGENTS.md rule 3 class (b) — the live sessions are a
+ * captured-frame replay of the repo's synthetic clip: the real Tesseract OCR
+ * and the local matcher/commit chain, no model providers (the appliance
+ * carries no speech roles, so the utterances end skipped and the speech
+ * counters say so; the walk is never presented as a real voice).
  */
 
 const ADMIN = { username: "a11y-admin", password: "steady as the tide" };
@@ -86,7 +105,11 @@ async function scan(page: Page, name: string, report: Record<string, RouteReport
   }
 }
 
-test("axe: every route of the ui-coverage matrix, WCAG 2.1 A/AA", async ({ page }, testInfo) => {
+test("axe: every route of the ui-coverage matrix, WCAG 2.1 A/AA", async ({
+  page,
+  request,
+  baseURL,
+}, testInfo) => {
   test.setTimeout(900_000);
   test.skip(testInfo.project.name !== "a11y", "runs on the a11y project's fresh appliance");
   const run = serverRun("a11y");
@@ -95,8 +118,11 @@ test("axe: every route of the ui-coverage matrix, WCAG 2.1 A/AA", async ({ page 
   // renders that 503 as its own "no capture layer" note — the machine's
   // answer, not a fault of the walk. 409 joins them for the same layer on
   // the health page's signal read: ADR-0110 §1's 409 carries the layer's own
-  // reason and the tile renders it as its own state.
-  const consoleErrors = trackConsoleErrors(page, [401, 409, 503]);
+  // reason and the tile renders it as its own state. 429 joins for the
+  // live-session stop: the operator view's frame poller on the replay server
+  // gets the one-shot preview's designed throttle answer — the frame card
+  // renders it as its own state (the play/m5-part1 walks' documented noise).
+  const consoleErrors = trackConsoleErrors(page, [401, 409, 429, 503]);
   const report: Record<string, RouteReport> = {};
 
   const visit = async (name: string, url: string, settle: (page: Page) => Promise<void>) => {
@@ -283,6 +309,26 @@ test("axe: every route of the ui-coverage matrix, WCAG 2.1 A/AA", async ({ page 
   ];
   for (const stop of stops) await visit(stop.name, stop.url, stop.settle);
 
+  // ── 4a. the graph's table view (issue #34): the non-canvas alternative ──
+  // The canvas's own page as a real table (the spec 09 keyboard-accessibility
+  // rule's text equivalent), reached through the toggle's own keyboard
+  // contract — focus the "table" tab, Enter — and scanned on its own. The
+  // canvas default is restored afterwards (the choice persists per user,
+  // UX-08, and the Lilac matrix below re-walks the route in its default
+  // state); the kit table's tokens are the ones the dialogue route already
+  // carries into both themes.
+  await page.goto(`/games/${gameId}/graph`);
+  await settled(page, "graph-node-list");
+  const graphTableTab = page.getByRole("tab", { name: "table" });
+  await graphTableTab.focus();
+  await page.keyboard.press("Enter");
+  await settled(page, "graph-table");
+  await scan(page, "graph (table view)", report);
+  const graphCanvasTab = page.getByRole("tab", { name: "canvas" });
+  await graphCanvasTab.focus();
+  await page.keyboard.press("Enter");
+  await settled(page, "graph-node-list");
+
   // ── 4b. the theme page and the same signed-in matrix under Lilac Night
   //     (issue #30) ─────────────────────────────────────────────────────
   // The dark theme inverts which token is the background, so a component
@@ -309,6 +355,259 @@ test("axe: every route of the ui-coverage matrix, WCAG 2.1 A/AA", async ({ page 
   await settled(page, "theme-pick-plum");
   await page.getByTestId("theme-pick-plum").click();
   await expect(page.getByTestId("theme-selected-plum")).toBeVisible();
+
+  // ── 4c. the live-session stop (issue #34, gap row G16): /play during play ─
+  // The idle walk above settles on the start form; the states a user reaches
+  // while a session runs — the streaming committed lines, the in-play audio
+  // controls, the now-speaking caption — are covered here by two replay
+  // sessions of the committed synthetic clip (AGENTS.md rule 3 class (b):
+  // real Tesseract OCR and the local matcher/commit chain, no model — this
+  // appliance carries no speech roles, so the utterances end skipped and the
+  // speech counters say so). The replay drains at the host's own OCR
+  // throughput (lossless and back-pressured, never real-time paced — the
+  // play-controls walk's issue #23 note), and a pause does not stop the
+  // source — the text machines keep observing through it — so the keyboard
+  // contract runs at the head of the first session, where the clip's whole
+  // lifetime is ahead of the walk whatever the host's speed (issue #23's
+  // placement); the axe scans read the second session's settled run, the way
+  // the play-pc walks wait the run out instead of racing source_end.
+  const liveOrigin = new URL((baseURL as string) ?? "").origin;
+  // The walk already claimed the appliance through the page; the API context
+  // (its own cookie jar) only signs in and seeds the sessions' profile the
+  // way the play-pc / m5-part1 walks do.
+  const apiLogin = await request.post(`${liveOrigin}/api/v1/auth/login`, {
+    data: { username: ADMIN.username, password: ADMIN.password },
+  });
+  expect(apiLogin.status(), `api login: ${await apiLogin.text()}`).toBe(200);
+  const csrf = async () =>
+    (await request.cookies(liveOrigin)).find((cookie) => cookie.name === "gn_csrf")?.value ?? "";
+  const livePost = (path: string, data?: unknown, headers: Record<string, string> = {}) =>
+    request.post(`${liveOrigin}${path}`, {
+      data,
+      headers: {
+        ...(data === undefined ? {} : { "content-type": "application/json" }),
+        ...headers,
+      },
+    });
+  const LIVE = { slug: "a11y-live-harbour", title: "A11y Live Harbour" };
+  const liveGame = await livePost(
+    "/api/v1/games",
+    { slug: LIVE.slug, title: LIVE.title },
+    { "idempotency-key": randomUUID(), "x-csrf-token": await csrf() },
+  );
+  expect(liveGame.status(), `create live game: ${await liveGame.text()}`).toBe(201);
+  const liveGameId = (await liveGame.json()) as { id: string };
+  const liveEdition = await livePost(
+    `/api/v1/games/${liveGameId.id}/editions`,
+    { region: EDITION.region, language: EDITION.language, revision: EDITION.revision },
+    { "idempotency-key": randomUUID(), "x-csrf-token": await csrf() },
+  );
+  expect(liveEdition.status(), `create live edition: ${await liveEdition.text()}`).toBe(201);
+  const liveEditionId = ((await liveEdition.json()) as { id: string }).id;
+  // The clip's own engine-tuned profile (the seed the replay commits its two
+  // pages from), with the roster the committed lines name (Marina speaks the
+  // clip's two real lines; the distractors ride the Keeper, unattributed).
+  const liveSeed = JSON.parse(
+    readFileSync(
+      resolve(import.meta.dirname, "../../testdata/synthetic/profiles/dialogue-advance-001.json"),
+      "utf8",
+    ),
+  ) as SeedProfile;
+  for (const message of liveSeed.messages) {
+    const isRealLine = message.id === "demo-page-1" || message.id === "demo-page-2";
+    message.speaker = isRealLine ? "marina" : "keeper";
+    message.attribution = isRealLine
+      ? { status: "confirmed", confidence: 0.95 }
+      : { status: "unknown", confidence: 0 };
+  }
+  liveSeed.characters = [
+    { id: "marina", name: "Marina", role: "protagonist", status: "confirmed" },
+    { id: "keeper", name: "Keeper", role: "supporting", status: "proposed" },
+  ];
+  const { doc: liveManifest } = buildManifest(liveSeed, {
+    edition: {
+      ...LIVE,
+      region: EDITION.region,
+      language: EDITION.language,
+      revision: EDITION.revision,
+    },
+  });
+  const liveImported = await livePost(
+    `/api/v1/editions/${liveEditionId}/profiles/import-manifest`,
+    liveManifest,
+    { "x-csrf-token": await csrf() },
+  );
+  expect(liveImported.status(), `import live profile: ${await liveImported.text()}`).toBe(201);
+  const { profile: liveProfile } = (await liveImported.json()) as { profile: { id: string } };
+  const liveEtag = async (id: string) => {
+    const res = await request.get(`${liveOrigin}/api/v1/profiles/${id}`);
+    expect(res.status(), "the live profile read carries an ETag").toBe(200);
+    return res.headers()["etag"] as string;
+  };
+  await livePost(
+    `/api/v1/profiles/${liveProfile.id}/status`,
+    { to: "review" },
+    { "if-match": await liveEtag(liveProfile.id), "x-csrf-token": await csrf() },
+  );
+  const livePublished = await livePost(`/api/v1/profiles/${liveProfile.id}/publish`, undefined, {
+    "if-match": await liveEtag(liveProfile.id),
+    "x-csrf-token": await csrf(),
+  });
+  expect(livePublished.status(), `publish live profile: ${await livePublished.text()}`).toBe(200);
+
+  // Both sessions start through the page (the walk is signed in): the form's
+  // default replay directory is the synthetic clip's own.
+  const startLiveSession = async () => {
+    await page.goto("/play");
+    await expect(page.getByTestId("play-profile")).toBeVisible({ timeout: 30_000 });
+    await page.getByTestId("play-profile").selectOption(liveProfile.id, { timeout: 30_000 });
+    await page.getByTestId("play-start").click();
+    await expect(page).toHaveURL(/\/play\?session=/, { timeout: 30_000 });
+    await expect(page.getByTestId("play-state")).toHaveText(/^(starting|running)$/, {
+      timeout: 60_000,
+    });
+  };
+
+  // ── session one: the in-play keyboard contract, at the head ──────────────
+  // The bar's own Pause is the head freeze — the keyboard activation the
+  // contract names (Space on the live control), and the placement issue #23
+  // proved: at the head the clip's whole lifetime is ahead of the pause
+  // window, whatever the host's OCR throughput. Live-but-paused, every
+  // in-play control the bar renders for a running session stays enabled, and
+  // the commit gate holds — no committed line (and no correction button it
+  // would enable in the bar) renders under the walk, so the Tab order
+  // recorded below is stable ground truth for the re-walk.
+  await startLiveSession();
+  await page.getByTestId("play-pause").focus();
+  await page.keyboard.press("Space");
+  await expect(page.getByTestId("play-pause")).toHaveAttribute("aria-pressed", "true", {
+    timeout: 15_000,
+  });
+  await expect(page.getByTestId("play-pause")).toHaveText("Resume", { timeout: 15_000 });
+
+  const activeTestId = () =>
+    page.evaluate(() => {
+      const g = globalThis as unknown as {
+        document?: { activeElement?: { getAttribute?: (name: string) => string | null } };
+      };
+      return g.document?.activeElement?.getAttribute?.("data-testid") ?? "";
+    });
+
+  // Tab order from the session header's "show workings" toggle (a known
+  // focusable in the page's top action group): the watch's close link, then
+  // the bar's Pause, Mute, (volume · delay · careful/eager), Stop and the
+  // read-through toggles — each reached by Tab.
+  await page.getByTestId("play-show-workings").focus();
+  const tabOrder: string[] = [];
+  const tabTargets = [
+    "play-pause",
+    "play-mute",
+    "play-stop",
+    "play-class-signs",
+    "play-class-items",
+  ];
+  for (let i = 0; i < 30; i += 1) {
+    await page.keyboard.press("Tab");
+    tabOrder.push(await activeTestId());
+    if (tabTargets.every((target) => tabOrder.includes(target))) break;
+  }
+  const orderOf = (testid: string) => tabOrder.indexOf(testid);
+  expect(
+    orderOf("play-pause"),
+    `Tab reached Pause (order: ${tabOrder.join(" → ")})`,
+  ).toBeGreaterThanOrEqual(0);
+  expect(orderOf("play-mute"), `Tab reached Mute (order: ${tabOrder.join(" → ")})`).toBeGreaterThan(
+    orderOf("play-pause"),
+  );
+  expect(orderOf("play-stop"), `Tab reached Stop (order: ${tabOrder.join(" → ")})`).toBeGreaterThan(
+    orderOf("play-mute"),
+  );
+  expect(
+    orderOf("play-class-signs"),
+    `Tab reached the read-through toggles (order: ${tabOrder.join(" → ")})`,
+  ).toBeGreaterThan(orderOf("play-stop"));
+  expect(
+    orderOf("play-class-items"),
+    `Tab reached the second read-through toggle (order: ${tabOrder.join(" → ")})`,
+  ).toBeGreaterThan(orderOf("play-class-signs"));
+
+  // The activations, re-driven from the anchor along the recorded path: the
+  // walk Tabs step for step and acts on each target as focus lands on it —
+  // Space on Mute and on the read-through toggle, then Enter on Stop ends the
+  // session. The session sits paused (its own head freeze above), so no
+  // commit lands under the walk and the recorded path is the path.
+  await page.getByTestId("play-show-workings").focus();
+  for (let i = 0; i < tabOrder.length; i += 1) {
+    await page.keyboard.press("Tab");
+    const focused = await activeTestId();
+    expect(focused, `the re-walk follows the recorded path (step ${i + 1})`).toBe(tabOrder[i]);
+    if (focused === "play-mute") {
+      await page.keyboard.press("Space");
+      await expect(page.getByTestId("play-mute")).toHaveAttribute("aria-checked", "true", {
+        timeout: 15_000,
+      });
+    } else if (focused === "play-class-signs") {
+      await page.keyboard.press("Space");
+      await expect(page.getByTestId("play-class-signs")).toBeChecked({ timeout: 15_000 });
+      await expect(page.getByTestId("play-narrated")).toContainText("sign", { timeout: 15_000 });
+      // The Applying… window disables the toggle (focus would drop to body);
+      // re-anchor on the header's own toggle and walk forward to the bar's
+      // Stop along the recorded path — (stopIndex + 1) Tabs from the anchor
+      // land on tabOrder[stopIndex], the Stop itself. Enter ends the session.
+      await page.getByTestId("play-show-workings").focus();
+      const stopIndex = tabOrder.indexOf("play-stop");
+      for (let step = 0; step <= stopIndex; step += 1) {
+        await page.keyboard.press("Tab");
+        expect(await activeTestId(), `back to Stop (step ${step + 1})`).toBe(tabOrder[step]);
+      }
+      await page.keyboard.press("Enter");
+      break;
+    }
+  }
+  await expect(page.getByTestId("play-state")).toHaveText("stopped", { timeout: 180_000 });
+
+  // ── session two: the live-session surface, read settled ──────────────────
+  // The same clip streams its committed lines through the real pipeline (the
+  // walk above ended its own session before the first commit — this session
+  // is the one that lets the run play out: the play-pc walks' pattern of
+  // waiting the run out and reading the settled truth, never racing
+  // source_end). The now-speaking and operator views the scans read are the
+  // in-play surface itself — the same regions a live session renders — in
+  // their settled state, where the walk is deterministic.
+  await startLiveSession();
+  const committedLines = page.locator('[data-testid="recent-lines"] li');
+  // The first committed line — the real OCR over the synthetic clip's frames,
+  // the commit chain's local verdict.
+  await expect
+    .poll(() => committedLines.count(), { timeout: 180_000, intervals: [250] })
+    .toBeGreaterThanOrEqual(1);
+  // Then the run plays out to its own end (the clip's source_end).
+  await expect(page.getByTestId("play-state")).toHaveText("stopped", { timeout: 180_000 });
+
+  // Now-speaking: the committed line settled on screen (the caption — the
+  // text equivalent of the audio, docs/design/plum-peach "Accessibility"),
+  // and the aria-live contract on the caption region and the committed-lines
+  // list, pinned here over a run that actually streamed them.
+  await expect(page.getByTestId("play-now-speaking")).toBeVisible();
+  await expect(page.getByTestId("current-line-text")).not.toBeEmpty();
+  await expect(page.getByTestId("current-line-speaker")).toHaveText("Marina");
+  await expect(committedLines).not.toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Current committed line" })).toHaveAttribute(
+    "aria-live",
+    "polite",
+  );
+  await expect(page.getByTestId("recent-lines")).toHaveAttribute("aria-live", "polite");
+  await scan(page, "play (live session, now-speaking)", report);
+
+  // Operator: the same settled run's committed line beneath the frame —
+  // the operator's twin of the caption, aria-live the same way — and the
+  // run's own event stream behind it.
+  await setPlayView(page, "operator");
+  await expect(page.getByTestId("play-operator-line")).toBeVisible();
+  await expect(page.getByTestId("play-operator-line")).not.toBeEmpty();
+  await expect(page.getByTestId("play-operator-line")).toHaveAttribute("aria-live", "polite");
+  await expect(page.getByTestId("play-events")).toBeVisible({ timeout: 30_000 });
+  await scan(page, "play (live session, operator)", report);
 
   // ── 5. anonymous again: the sign-in page and the claimed /setup redirect ─
   await page.getByTestId("nav-logout").click();

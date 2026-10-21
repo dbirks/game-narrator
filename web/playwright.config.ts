@@ -831,11 +831,15 @@ export default defineConfig({
     },
     {
       // The accessibility walk on the packaged binary: a fresh appliance the
-      // spec claims and seeds through the UI; no env is needed because the
-      // walk never runs a session, an audition or a preview.
+      // spec claims and seeds through the UI. The replay allowlist admits the
+      // repo's testdata (the synthetic clip the live-session stop replays —
+      // AGENTS.md rule 3 class (b), the same wiring as the play server);
+      // no model env: the walk's live session runs the local OCR/matcher/
+      // commit chain and the utterances end skipped (no speech roles).
       command: `node web/e2e/serve.mjs a11y 127.0.0.1:${ports.a11y} ${embeddedBinary} serve`,
       cwd: "..",
       url: `${a11yUrl}/api/v1/health/live`,
+      env: { GAME_NARRATOR_REPLAY_ROOTS: replayRoots },
       reuseExistingServer: false,
       timeout: 60_000,
       stdout: "ignore",
