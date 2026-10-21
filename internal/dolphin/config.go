@@ -207,6 +207,16 @@ func dolphinIni(backend, userDir string, hotkeys bool) string {
 	// anything. Unknown keys are ignored and preserved by Dolphin's parser.
 	b.WriteString("Fullscreen = False\n")
 	b.WriteString("ConfirmOnClose = False\n\n")
+	// On-screen-display messages off (Main/Interface/OnScreenDisplayMessages
+	// lives in Dolphin.ini, not GFX.ini). With them on, llvmpipe's "Video
+	// Info: … Mesa … Core Profile" toast and the "Loaded State" message are
+	// drawn over the game after boot and every savestate load, and the
+	// narrator's OCR reads them as dialogue: the A/V harness run
+	// av-20261021T201114Z spoke the toast for ~40 s and queued every real
+	// line behind it. A GameCube through a capture card has no such overlay
+	// (#41).
+	b.WriteString("[Interface]\n")
+	b.WriteString("OnScreenDisplayMessages = False\n\n")
 	if hotkeys {
 		// ADR-0043: without this the hotkey scheduler's input gate demands
 		// window focus, which the unfocused Xvfb render window never gets
@@ -243,18 +253,6 @@ WriteToFile = True
 WriteToWindow = False
 `
 
-// gfxIni turns Dolphin's on-screen-display messages off. With them on, the
-// llvmpipe renderer's "Video Info: … Mesa, llvmpipe (LLVM …) … Core Profile
-// Mesa" toast is drawn over the game frame after boot and every savestate
-// load; the narrator's OCR reads it as dialogue (the 2026-10-21 A/V harness
-// run transcribed it in the spoken audio through the unmatched read-through).
-// A real GameCube through a capture card has no such overlay, so the dev
-// emulator must not draw one either (#41).
-const gfxIni = `[Settings]
-OnScreenDisplayMessages = False
-ShowFPS = False
-`
-
 // writeUserConfig lays the whole isolated config down before launch. It is
 // idempotent: an existing file is patched in place (the [GCPad1] section is
 // replaced wholesale, BackgroundInput forced on, other sections preserved),
@@ -283,9 +281,6 @@ func writeUserConfig(userDir, backend string, hotkeys bool) (gcpadDev, hotkeyDev
 	}
 	if err := os.WriteFile(filepath.Join(filepath.Join(userDir, "Config"), "Logger.ini"), []byte(loggerIni), 0o644); err != nil {
 		return "", "", fmt.Errorf("dolphin: write Logger.ini: %w", err)
-	}
-	if err := os.WriteFile(filepath.Join(cfg, "GFX.ini"), []byte(gfxIni), 0o644); err != nil {
-		return "", "", fmt.Errorf("dolphin: write GFX.ini: %w", err)
 	}
 	// The FIFO exists before the device strings are computed: the strings
 	// are measured FROM the directory's raw readdir order (the same

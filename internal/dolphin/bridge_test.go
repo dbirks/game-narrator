@@ -192,7 +192,7 @@ func TestLaunchConfigFilesAndIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read Dolphin.ini: %v", err)
 	}
-	for _, want := range []string{"[Core]", "GFXBackend = OGL", "SlotA = 1", "MemcardAPath = " + st.MemcardPath, "[Input]", "BackgroundInput = True", "Fullscreen = False"} {
+	for _, want := range []string{"[Core]", "GFXBackend = OGL", "SlotA = 1", "MemcardAPath = " + st.MemcardPath, "[Input]", "BackgroundInput = True", "Fullscreen = False", "[Interface]", "OnScreenDisplayMessages = False"} {
 		if !strings.Contains(string(dini), want) {
 			t.Errorf("Dolphin.ini missing %q:\n%s", want, dini)
 		}
