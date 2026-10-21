@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
 	"runtime"
 	"time"
 
@@ -282,7 +283,20 @@ const (
 
 // Config is the Runner's whole input. Zero fields mean defaults except where a
 // value is genuinely required (Engine, Index, Regions). Zero Mode is ModeLive.
+// RevealCompleteDetector is a game's reveal-complete marker (ADR-0152): the
+// adapter that knows the marker's pixels answers whether the full frame shows
+// it for a band (frame pixel coordinates). adapter.RevealCompleteDetector
+// satisfies it.
+type RevealCompleteDetector interface {
+	RevealComplete(img image.Image, band image.Rectangle) bool
+}
+
 type Config struct {
+	// RevealDetector, when set, is consulted per analysed band and its verdict
+	// rides on the observation (ADR-0152). Nil: the stability window alone
+	// settles a line, as for every game without a marker.
+	RevealDetector RevealCompleteDetector
+
 	// Mode selects live versus lossless-replay semantics; see Mode. ModeReplay
 	// forces Queue to QueueLossless in normalize, so a caller cannot ask for a
 	// replay that drops frames.

@@ -716,6 +716,7 @@ func runServe(args []string, log *slog.Logger, ring *logbuf.Ring) (int, error) {
 	capStack := stack.DefaultOptions(os.LookupEnv, captureSelectionStore{st: st}, log)
 	sessions, err := runtime.New(runtime.Options{
 		Store:       st,
+		Adapters:    adapters,
 		Hub:         hub,
 		Jobs:        runner,
 		AssetsRoot:  devTraceDir,

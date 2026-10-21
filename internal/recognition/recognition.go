@@ -190,6 +190,12 @@ type Observation struct {
 	// the caller chose not to report a result (which the tracker reads as "no
 	// new evidence", not as "the text disappeared").
 	OCR *ocr.Result
+	// RevealDetector reports that the region's game draws a reveal-complete
+	// marker and the pipeline looked for it on this frame (ADR-0152);
+	// RevealComplete is the marker's verdict. Games without a marker leave
+	// both false and the tracker settles on the stability window alone.
+	RevealDetector bool
+	RevealComplete bool
 }
 
 // Validate enforces the input contract. It returns a descriptive error rather

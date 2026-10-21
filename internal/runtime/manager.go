@@ -12,6 +12,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/capture"
 	"github.com/dbirks/game-narrator/internal/capture/stack"
 	"github.com/dbirks/game-narrator/internal/events"
+	"github.com/dbirks/game-narrator/internal/games/adapter"
 	"github.com/dbirks/game-narrator/internal/jobs"
 	"github.com/dbirks/game-narrator/internal/pipeline"
 	"github.com/dbirks/game-narrator/internal/recognition"
@@ -205,6 +206,10 @@ type Options struct {
 	Store *store.Store
 	Hub   *events.Hub
 	Jobs  *jobs.Runner
+	// Adapters resolves a profile's source parser to its game adapter, for
+	// the optional per-game capabilities a session uses (ADR-0152's
+	// reveal-complete marker). Nil: no game capability is used.
+	Adapters *adapter.Registry
 
 	AssetsRoot  string
 	ReplayRoots []string

@@ -307,6 +307,7 @@ func TestLiveCatchUpRapidDialogue(t *testing.T) {
 	}
 
 	sessions, err := runtime.New(runtime.Options{
+		Adapters:    adapters,
 		Store:       st,
 		Hub:         hub,
 		Jobs:        runner,

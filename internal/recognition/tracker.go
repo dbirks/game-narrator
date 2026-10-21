@@ -35,9 +35,12 @@ type entry struct {
 // code path as the live runtime.
 type Tracker struct {
 	regionID string
-	cfg      Config
-	fold     *textnorm.Folder // comparison fold (FoldOptions)
-	norm     *textnorm.Folder // output fold: the text a caller ranks and logs
+	// promptSeen: this region has shown its game's reveal-complete marker at
+	// least once (ADR-0152) — the detector works on this source's pixels.
+	promptSeen bool
+	cfg        Config
+	fold       *textnorm.Folder // comparison fold (FoldOptions)
+	norm       *textnorm.Folder // output fold: the text a caller ranks and logs
 
 	state    State
 	lifetime uint64
@@ -460,6 +463,24 @@ func (t *Tracker) progress(o Observation) []Transition {
 		t.changed = o.CaptureTimestampNS
 	}
 	stable := elapsed >= t.cfg.StableWindow
+	// The game's reveal-complete marker (ADR-0152, Wind Waker's advance
+	// prompt): when it is on screen the typewriter has finished, so text
+	// unchanged since the previous read is final now — no stability wait.
+	// Once the marker has been seen on this source (the detector is proven to
+	// work on these pixels), a pause WITHOUT it is a mid-line typewriter pause
+	// ("That's…" … "why Grandma"), not the end: stability waits for the
+	// marker, up to revealPromptFallback. A source on which the marker never
+	// registers (other colour handling, another game) keeps the plain window.
+	if o.RevealDetector {
+		if o.RevealComplete {
+			t.promptSeen = true
+			if t.key != "" && elapsed > 0 {
+				stable = true
+			}
+		} else if t.promptSeen && t.state == StateRevealing && elapsed < revealPromptFallback {
+			stable = false
+		}
+	}
 	if t.readyHold && o.FrameSeq != t.stabilizedFrame {
 		t.readyHold = false
 	}
@@ -547,6 +568,11 @@ func (t *Tracker) progress(o Observation) []Transition {
 	}
 	return out
 }
+
+// revealPromptFallback bounds the wait for a reveal-complete marker that the
+// source has shown before (ADR-0152): a box whose marker is hidden (cut-scene
+// boxes, a missed frame) still settles on stability after this long.
+const revealPromptFallback = 2500 * time.Millisecond
 
 // setAnchor records the text the current stability claim is about.
 func (t *Tracker) setAnchor() { t.anchor, t.anchorKey = t.text, t.key }

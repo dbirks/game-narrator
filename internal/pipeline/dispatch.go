@@ -778,6 +778,8 @@ func (rs *regionState) emit(r *Runner, ctx context.Context, in chan<- *obsIn, p 
 		RegionPresent:      p.a.present,
 		RegionHash:         p.a.hash,
 		OCR:                p.ready,
+		RevealDetector:     p.a.revealDetector,
+		RevealComplete:     p.a.revealComplete,
 	}
 	if err := o.Validate(); err != nil {
 		// An unusable observation is not fed to the tracker — recognition would put

@@ -27,6 +27,10 @@ type analysis struct {
 	// not read as "perceptually equal to" the previous crop's hash.
 	pHash     uint64
 	havePHash bool
+	// revealDetector/revealComplete: the game's reveal-complete marker was
+	// looked for on this frame and its verdict (ADR-0152).
+	revealDetector bool
+	revealComplete bool
 }
 
 // analyze crops, decides textbox presence, preprocesses and hashes. It is pure
@@ -55,7 +59,15 @@ func (r *Runner) analyze(f capture.Frame, reg games.Region, rect vision.Rect) an
 	// inspector and the signal route draw this box; noteCrop records nothing
 	// for an empty box, so a region that crops nothing keeps answering "no
 	// crop yet".
-	r.noteCrop(reg.ID, vision.CropRect(f.Image, rect, r.cfg.Crop))
+	cropRect := vision.CropRect(f.Image, rect, r.cfg.Crop)
+	r.noteCrop(reg.ID, cropRect)
+	// The game's reveal-complete marker (ADR-0152) sits relative to the band
+	// on the full frame (below the box's edge), so it is read here, the one
+	// stage that holds the frame and the band together.
+	if d := r.cfg.RevealDetector; d != nil && f.Image != nil && !cropRect.Empty() {
+		a.revealDetector = true
+		a.revealComplete = d.RevealComplete(f.Image, cropRect)
+	}
 	if crop == nil || crop.Bounds().Empty() {
 		a.empty = true
 		return a

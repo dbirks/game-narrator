@@ -8,6 +8,7 @@ import (
 	"io"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/clips"
 	"github.com/dbirks/game-narrator/internal/events"
 	"github.com/dbirks/game-narrator/internal/games"
+	"github.com/dbirks/game-narrator/internal/games/adapter"
 	"github.com/dbirks/game-narrator/internal/matcher"
 	"github.com/dbirks/game-narrator/internal/pipeline"
 	"github.com/dbirks/game-narrator/internal/recognition"
@@ -354,6 +356,7 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 	// never blocks the caller that pressed them.
 	controls := make(chan ses.Msg, 16)
 	cfg := m.pipelineConfig(req, published, id, content.Regions, idx, kind, mode, controls)
+	cfg.RevealDetector = m.revealDetector(content.Sources)
 
 	// The Clef adjudication (docs/spec/05, ADR-0050): when the process has a
 	// configured System One decision role, the session's commitment policy
@@ -1703,4 +1706,27 @@ func speakerLinkResolver(characters []games.Character) func(string) string {
 		}
 		return speakerID
 	}
+}
+
+// revealDetector is the profile's game reveal-complete marker (ADR-0152):
+// the first source whose parser ("<adapter id>@<version>") names a
+// registered adapter offering the capability. Nil when none does.
+func (m *Manager) revealDetector(sources []games.Source) pipeline.RevealCompleteDetector {
+	if m.opts.Adapters == nil {
+		return nil
+	}
+	for _, src := range sources {
+		id, _, _ := strings.Cut(src.Parser, "@")
+		if id == "" {
+			continue
+		}
+		a, ok := m.opts.Adapters.Get(id)
+		if !ok {
+			continue
+		}
+		if d, ok := a.(adapter.RevealCompleteDetector); ok {
+			return d
+		}
+	}
+	return nil
 }

@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"io"
 	"sort"
 	"strings"
@@ -529,6 +530,22 @@ type DiscExtractor interface {
 	// the name to record on the source row, and the disc's game id for
 	// provenance. The image is read in place and never copied.
 	ExtractDiscSource(ctx context.Context, d *gcdisc.Disc) (script []byte, name, gameID string, err error)
+}
+
+// RevealCompleteDetector is an optional capability: an adapter whose game
+// draws a visible marker once the typewriter has finished a line (docs/spec/04
+// "detectPageCompletion"; ADR-0152). The recognition stage is game-free, so
+// the marker's pixels stay in the adapter that knows them; the pipeline runs
+// the detector where the region's crop is taken — the only stage that holds
+// the frame image and the region rect together — and hands the verdict to the
+// dialogue state machine as a single boolean on the observation (ADR-0152).
+type RevealCompleteDetector interface {
+	// RevealComplete reports whether img (the full frame) shows the marker
+	// for the region whose frame-pixel rect is region. region is the
+	// calibrated rect before the OCR inset: the marker sits relative to the
+	// edge the profile calibrated, not the edge the crop cut. The call is
+	// pure over the pixels and must allocate nothing per frame.
+	RevealComplete(img image.Image, region image.Rectangle) bool
 }
 
 // Match is one Detect answer in Registry ordering.
