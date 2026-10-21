@@ -118,6 +118,7 @@ func TestLiveWebSourceProposalForPublicTitle(t *testing.T) {
 		proposeOK   bool
 		importOK    bool
 		fetchPageOK bool
+		proposedIDs = map[string]bool{}
 	)
 	for _, c := range rows {
 		toolNames = append(toolNames, c.Name+"("+c.Status+")")
@@ -128,6 +129,9 @@ func TestLiveWebSourceProposalForPublicTitle(t *testing.T) {
 		switch {
 		case c.Name == "propose_web_import" && res.Status == agent.StatusSucceeded:
 			proposeOK = true
+			for _, id := range res.SourceIDs {
+				proposedIDs[id] = true
+			}
 		case c.Name == "import_web_source" && res.Status == agent.StatusSucceeded:
 			importOK = true
 		case c.Name == "fetch_page" && res.Status == agent.StatusSucceeded:
@@ -146,23 +150,47 @@ func TestLiveWebSourceProposalForPublicTitle(t *testing.T) {
 		t.Fatalf("state = %s (reason %s), want review: the proposal must stop the run at the human boundary", out.State, out.StopReason)
 	}
 
-	// The proposal is provenance, not content: the source row carries a URL
-	// and a raw-body hash (never logged here), and nothing was imported.
+	// The proposal is provenance, not content: the PROPOSED source row
+	// carries a URL and a raw-body hash (never logged here), and nothing was
+	// imported. The web_search hits are provenance-only rows by contract (the
+	// search provider returns no page body, so those rows legitimately carry
+	// no raw-body hash — docs/spec/01: "'' = no addressable payload"), and the
+	// model files them on the profile when it searches with the profile id.
+	// Pinnability is enforced where it matters, at the propose_web_import
+	// boundary, which refuses a hashless source. The deterministic shape of
+	// these rows is pinned by
+	// TestWebSearchProvenanceRowsStayPinnableAtTheProposeBoundary (the
+	// synthetic fixture behind this live assertion).
 	sources, err := e.store.ListSources(e.ctx, p.ID)
 	if err != nil {
 		t.Fatalf("ListSources: %v", err)
 	}
 	webPages := 0
 	for _, s := range sources {
-		if s.SourceType == games.SourceWebPage {
-			if s.URI == "" || s.ContentSHA256 == "" {
-				t.Fatalf("web source row is missing its URL or raw-body hash: the proposal would be unpinnable")
+		if s.SourceType != games.SourceWebPage {
+			continue
+		}
+		webPages++
+		if s.URI == "" {
+			t.Fatalf("web source row %s is missing its URL", s.ID)
+		}
+		if proposedIDs[s.ID] {
+			if s.ContentSHA256 == "" {
+				t.Fatalf("the proposed source row %s is missing its raw-body hash: the proposal would be unpinnable", s.ID)
 			}
-			webPages++
 		}
 	}
 	if webPages == 0 {
 		t.Fatal("no web_page source row: the proposed source was not registered")
+	}
+	foundProposed := false
+	for _, s := range sources {
+		if proposedIDs[s.ID] {
+			foundProposed = true
+		}
+	}
+	if !foundProposed {
+		t.Fatal("none of the proposed source ids names a stored web_page row")
 	}
 
 	if importOK {
