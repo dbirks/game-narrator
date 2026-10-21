@@ -13,6 +13,7 @@ import {
   Segmented,
   Sparkline,
   StatTile,
+  Switch,
   Table,
   Waveform,
   readSegmented,
@@ -84,6 +85,42 @@ describe("DitherCover", () => {
     for (const band of ["dither-0", "dither-12", "dither-50", "dither-75", "dither-100"]) {
       expect(container.querySelector(`.${band}`)).not.toBeNull();
     }
+  });
+
+  it("keeps the paper base by default and takes the peach portrait base", () => {
+    const plain = render(<DitherCover label="Mira" />);
+    expect(
+      plain.container.querySelector("[data-testid='kit-dither-cover']")?.className,
+    ).not.toContain("dither-cover-peach");
+    const peach = render(<DitherCover label="Mira" tone="peach" />);
+    expect(peach.container.querySelector("[data-testid='kit-dither-cover']")?.className).toContain(
+      "dither-cover-peach",
+    );
+  });
+});
+
+describe("Switch", () => {
+  it("is a labelled checkbox with role=switch and fires onChange", () => {
+    const changes: boolean[] = [];
+    render(
+      <Switch label="auto-cast" checked testid="sw" onChange={(next) => changes.push(next)} />,
+    );
+    const input = screen.getByTestId("sw");
+    expect(input).toHaveAttribute("role", "switch");
+    expect(input).toHaveAttribute("aria-checked", "true");
+    expect(input).toBeChecked();
+    expect(screen.getByText("auto-cast")).toBeInTheDocument();
+    fireEvent.click(input);
+    expect(changes).toEqual([false]);
+  });
+
+  it("reports the unchecked state and the disabled state", () => {
+    render(
+      <Switch label="auto-cast" checked={false} disabled testid="sw" onChange={() => undefined} />,
+    );
+    const input = screen.getByTestId("sw");
+    expect(input).toHaveAttribute("aria-checked", "false");
+    expect(input).toBeDisabled();
   });
 });
 

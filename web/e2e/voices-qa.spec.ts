@@ -109,11 +109,15 @@ test("audition ASR QA: the passed badges, the flagged badge and the approval gat
   await revision1.getByTestId("import-submit").click();
   await expect(page.getByTestId("job-progress")).toContainText("succeeded", { timeout: 60_000 });
 
-  // ── 4. the voice page, the character, the brief ────────────────────────────
-  await page.getByTestId("voices-1").click();
-  await expect(page).toHaveURL(/\/voices\?profile=/);
-  const corvin = page.getByTestId("voice-characters").locator("label", { hasText: CHARACTER });
-  await corvin.getByRole("radio").click();
+  // ── 4. the cast page, the character, the brief ───────────────────────────
+  // Cast merged the voices page (ADR-0093). The dial is switched off: this
+  // spec drives the manual approval path (three takes, one QA-flagged), and
+  // with the dial on the job would auto-approve the first passing take.
+  await page.getByTestId("cast-1").click();
+  await expect(page).toHaveURL(/\/cast\?profile=/);
+  await page.getByTestId("auto-cast-switch").click();
+  await expect(page.getByTestId("auto-cast-switch")).not.toBeChecked();
+  await page.getByTestId(`cast-row-name-${CHARACTER}`).click();
   await expect(page).toHaveURL(new RegExp(`character=${encodeURIComponent(CHARACTER)}$`));
   await expect(page.getByTestId("no-voice")).toContainText(`No voice for ${CHARACTER} yet`);
 

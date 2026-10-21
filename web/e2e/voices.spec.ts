@@ -107,15 +107,19 @@ test("voice setup: auditions, consent-gated approval, registration, preview cach
   await expect(page.getByTestId("job-progress")).toContainText("succeeded", { timeout: 60_000 });
   await expect(page.getByTestId("import-inserted")).toHaveText("40");
 
-  // ── 4. the voice page: the roster, then a character with no voice ─────────
-  await page.getByTestId("voices-1").click();
-  await expect(page).toHaveURL(/\/voices\?profile=/);
+  // ── 4. the cast page: the roster, then a character with no voice ─────────
+  // Cast merged the voices page (ADR-0093). The dial is switched off: this
+  // spec drives the manual, consent-gated approval (three takes, the server
+  // refuses the flag-less click), and with the dial on the job would
+  // auto-approve (that path is cast.spec.ts's).
+  await page.getByTestId("cast-1").click();
+  await expect(page).toHaveURL(/\/cast\?profile=/);
   await expect(page.getByTestId("voice-characters")).toBeVisible();
-  const marla = page.getByTestId("voice-characters").locator("label", { hasText: CHARACTER });
-  await expect(marla).toBeVisible();
-  await marla.getByRole("radio").click();
+  await page.getByTestId("auto-cast-switch").click();
+  await expect(page.getByTestId("auto-cast-switch")).not.toBeChecked();
+  await page.getByTestId(`cast-row-name-${CHARACTER}`).click();
   // The selection is a URL change (the page derives `character` from the
-  // query param), so assert on the param rather than the radio's checked
+  // query param), so assert on the param rather than the row's selected
   // state, which React owns.
   await expect(page).toHaveURL(new RegExp(`character=${encodeURIComponent(CHARACTER)}$`));
 

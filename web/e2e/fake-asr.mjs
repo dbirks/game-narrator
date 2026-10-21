@@ -30,10 +30,12 @@ const LINES = [
   "The morning was calm, and the road ahead was long.",
   "I would like to ask you a small question, if that is all right.",
 ];
-// The brief the spec must use when it creates the auditions (the seed
-// couples line + brief + model, so the stub cannot recover a line it was
-// designed with a different brief).
-const brief = process.env.FAKE_ASR_BRIEF ?? "A calm narrator voice.";
+// The briefs the specs use when they create auditions, ";;"-separated (the
+// seed couples line + brief + model, so the stub cannot recover a line it was
+// designed with an unseeded brief). The first entry is the legacy single
+// brief; the cast spec's regeneration brief is the second (its edited brief
+// is a genuinely different string, so its run must be seeded too).
+const BRIEFS = (process.env.FAKE_ASR_BRIEF ?? "A calm narrator voice.").split(";;");
 const failLine = Number(process.env.FAKE_ASR_FAIL_LINE ?? 3);
 const DESIGN_MODEL = "fake-voicedesign";
 // The planted mishearing: shares no word with any of the three lines, so the
@@ -101,19 +103,21 @@ function parseMultipart(body, contentType) {
 }
 
 // Which audition line produced this clip: match the recovered frequency
-// against the three possible seeds (line, the configured brief, the design
-// model). Returns the 0-based line index, or -1 when nothing matches.
+// against the possible seeds (line × seeded brief, the design model).
+// Returns the 0-based line index, or -1 when nothing matches.
 function lineFor(wav) {
   const recovered = frequencyOf(wav);
   if (!recovered) return -1;
   let best = -1;
   let bestDelta = Infinity;
   for (let i = 0; i < LINES.length; i++) {
-    const seed = hash(`${LINES[i]}|${brief}|${DESIGN_MODEL}`);
-    const delta = Math.abs(frequencyFor(seed) - recovered);
-    if (delta < bestDelta) {
-      bestDelta = delta;
-      best = i;
+    for (const seeded of BRIEFS) {
+      const seed = hash(`${LINES[i]}|${seeded}|${DESIGN_MODEL}`);
+      const delta = Math.abs(frequencyFor(seed) - recovered);
+      if (delta < bestDelta) {
+        bestDelta = delta;
+        best = i;
+      }
     }
   }
   // Adjacent seeds are ~2 crossings apart per second; allow a full crossing

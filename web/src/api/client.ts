@@ -828,6 +828,21 @@ export const catalogApi = {
   listPublishActions(id: string, signal?: AbortSignal) {
     return api.get("/api/v1/profiles/{id}/publish-actions", { params: { id }, signal });
   },
+  /** The per-profile auto-cast dial (ADR-0109, UX-03): on by default; an
+   *  audition run created for one of the profile's characters auto-approves
+   *  its take when the ASR QA read-back is not failed, the consent attributed
+   *  to the profile-level default. If-Match like the other profile writes.
+   *  The ETag is refreshed first (the dial's write does not bump the row
+   *  version, but it answers against the revision the caller last read). */
+  async setAutoCast(id: string, enabled: boolean, signal?: AbortSignal) {
+    const etag = (await refreshProfileEtag(id, signal)) ?? "";
+    return api.post("/api/v1/profiles/{id}/auto-cast", {
+      params: { id },
+      body: { enabled },
+      etag,
+      signal,
+    });
+  },
   /** Status moves and publication are If-Match writes (ADR-0015). */
   setStatus(id: string, to: ProfileStatus, etag?: string) {
     return api.post("/api/v1/profiles/{id}/status", { params: { id }, body: { to }, etag });

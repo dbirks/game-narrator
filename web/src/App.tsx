@@ -1,9 +1,8 @@
-import { BrowserRouter, Navigate, Route, Routes, useSearchParams } from "react-router";
+import { BrowserRouter, Navigate, Route, Routes, useParams, useSearchParams } from "react-router";
 
 import { AuthProvider, RequireAuth } from "./auth/auth-context";
 import { Shell } from "./components/Shell";
 import { CastPage } from "./pages/Cast";
-import { CharactersPage } from "./pages/Characters";
 import { DialoguePage } from "./pages/Dialogue";
 import { DevKitPage } from "./pages/DevKit";
 import { GameOverviewPage } from "./pages/GameOverview";
@@ -22,7 +21,6 @@ import { SettingsPage } from "./pages/Settings";
 import { TestsPage } from "./pages/Tests";
 import { ThemePage } from "./pages/Theme";
 import { TracesPage } from "./pages/Traces";
-import { VoicesPage } from "./pages/Voices";
 
 /**
  * Routes (docs/spec/09 "Routes and page requirements"). The milestone 1 slice
@@ -164,22 +162,11 @@ export function App() {
             </RequireAuth>
           }
         />
-        <Route
-          path="/games/:id/voices"
-          element={
-            <RequireAuth>
-              <VoicesPage />
-            </RequireAuth>
-          }
-        />
-        <Route
-          path="/games/:id/characters"
-          element={
-            <RequireAuth>
-              <CharactersPage />
-            </RequireAuth>
-          }
-        />
+        {/* Plum & Peach IA (ADR-0093 §4): Cast merges the characters and
+            voices pages; the old paths redirect, query included (the
+            ?profile= and ?character= selections survive the move). */}
+        <Route path="/games/:id/characters" element={<CastRedirect />} />
+        <Route path="/games/:id/voices" element={<CastRedirect />} />
         <Route
           path="/games/:id/graph"
           element={
@@ -216,6 +203,16 @@ export function App() {
       </Routes>
     </Shell>
   );
+}
+
+/** The old /characters and /voices paths, redirected to Cast with the query
+ *  intact (docs/design/plum-peach ADR-0093 §4): a saved link that selected a
+ *  revision and a character still selects both after the move. */
+function CastRedirect() {
+  const { id = "" } = useParams();
+  const [params] = useSearchParams();
+  const query = params.toString();
+  return <Navigate to={`/games/${id}/cast${query !== "" ? `?${query}` : ""}`} replace />;
 }
 
 export function Root() {

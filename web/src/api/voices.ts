@@ -71,12 +71,23 @@ export const voicesApi = {
     return api.get("/api/v1/voices/{id}", { params: { id }, signal });
   },
 
-  /** 202: the draft revision exists; the clips arrive when the job runs. */
+  /** 202: the draft revision exists; the clips arrive when the job runs.
+   *  With `profile_id` (ADR-0109, UX-03) the run is the cast's: the character
+   *  is checked against the profile's roster, one take is the default when the
+   *  profile's auto_cast dial is on, and the job auto-approves the take after
+   *  its ASR QA read-back (consent attributed to the profile default). */
   createAuditions(
-    body: { character: string; brief: string; count?: number },
+    body: { character: string; brief: string; count?: number; profile_id?: string },
     signal?: AbortSignal,
   ) {
     return api.post("/api/v1/voices/auditions", { body, signal });
+  },
+
+  /** One-step undo (ADR-0109, UX-03d): the named revision retires and the
+   *  character's previous approved take becomes current again; both keeps
+   *  its audio. A second undo is a 409 NOTHING_TO_UNDO. */
+  undoVoice(id: string, signal?: AbortSignal) {
+    return api.post("/api/v1/voices/{id}/undo", { params: { id }, signal });
   },
 
   approveVoice(id: string, body: { audition_id: string; consent: string }, signal?: AbortSignal) {

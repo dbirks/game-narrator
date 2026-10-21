@@ -13,6 +13,7 @@ import {
   Segmented,
   Sparkline,
   StatTile,
+  Switch,
   Table,
   Waveform,
   readSegmented,
@@ -111,12 +112,34 @@ function KitGallery() {
         </div>
       </Card>
 
+      <Card title="Switch (ink pill toggle)">
+        <div className="actions">
+          <Switch
+            label="auto-cast"
+            checked
+            testid="kit-gallery-switch-on"
+            onChange={() => undefined}
+          />
+          <Switch
+            label="show workings"
+            checked={false}
+            testid="kit-gallery-switch-off"
+            onChange={() => undefined}
+          />
+        </div>
+        <p className="muted">
+          A real checkbox with <code>role="switch"</code> — the Cast auto-cast dial (ADR-0109) and
+          the Play toggles take it.
+        </p>
+      </Card>
+
       <Card title="Dithered cover">
         <div className="actions">
           <DitherCover
             label="Mira, portrait placeholder"
             testid="kit-gallery-cover"
             className="devkit-cover"
+            tone="peach"
           />
         </div>
       </Card>

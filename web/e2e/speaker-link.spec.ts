@@ -46,7 +46,13 @@ test("link the import's speaker placeholders on the characters page", async ({
     "runs on the disc project's own embedded-binary backend",
   );
   const run = serverRun("disc");
-  const consoleErrors = trackConsoleErrors(page, [401]);
+  // 401 is the unauthenticated probe the guard makes on mount. 503 joins it:
+  // the disc server's voice workflow is unwired (no speech roles, docs/spec/13
+  // degraded mode), and the merged Cast screen (ADR-0093) reads the voice
+  // roster on load — the page degrades (the roster stays, the voice work
+  // shows its unavailable note), so the read is the machine's answer, not a
+  // fault of the walk.
+  const consoleErrors = trackConsoleErrors(page, [401, 503]);
   const shot = (step: string) =>
     page.screenshot({ path: `test-results/speaker-link-${step}.png`, fullPage: true });
 
@@ -109,9 +115,11 @@ test("link the import's speaker placeholders on the characters page", async ({
   await expect(revision1.getByTestId("disc-import-inserted")).toHaveText("4");
   await shot("01-disc-imported");
 
-  // ── 4. the characters page of the draft lists the placeholders ───────
-  await revision1.getByTestId("characters-1").click();
-  await expect(page.getByTestId("characters-title")).toBeVisible({ timeout: 30_000 });
+  // ── 4. the cast page of the draft lists the placeholders ─────────────
+  // Cast merged the characters page (ADR-0093): the roster and the speaker
+  // placeholders are one screen.
+  await revision1.getByTestId("cast-1").click();
+  await expect(page.getByTestId("cast-title")).toBeVisible({ timeout: 30_000 });
 
   const section = page.getByTestId("speaker-placeholders");
   await expect(section).toBeVisible();

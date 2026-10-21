@@ -212,6 +212,13 @@ test("axe: every route of the ui-coverage matrix, WCAG 2.1 A/AA", async ({ page 
       settle: (page) => settled(page, "character-table"),
     },
     {
+      // The merged screen (ADR-0093); the two entries above reach it
+      // through the redirects and audit the same page.
+      name: "cast",
+      url: `/games/${gameId}/cast`,
+      settle: (page) => settled(page, "character-table"),
+    },
+    {
       name: "graph",
       url: `/games/${gameId}/graph`,
       settle: (page) => settled(page, "graph-node-list"),

@@ -191,11 +191,14 @@ test("the audition clip and the preview line are real, playable WAV blobs", asyn
   expect(imported.status(), `import-manifest: ${await imported.text()}`).toBe(201);
   const profileId = ((await imported.json()) as { profile: { id: string } }).profile.id;
 
-  // ── 3. the voice page: audition, approve, register (UI only from here) ────
-  await page.goto(`/games/${gameId.id}/voices?profile=${encodeURIComponent(profileId)}`);
+  // ── 3. the cast page: audition, approve, register (UI only from here) ─────
+  // Cast merged the voices page (ADR-0093); the dial is switched off so the
+  // manual approval path (three takes, one of which is frozen) is exercised.
+  await page.goto(`/games/${gameId.id}/cast?profile=${encodeURIComponent(profileId)}`);
   await expect(page.getByTestId("voice-characters")).toBeVisible({ timeout: 20_000 });
-  const marina = page.getByTestId("voice-characters").locator("label", { hasText: CHARACTER });
-  await marina.getByRole("radio").click();
+  await page.getByTestId("auto-cast-switch").click();
+  await expect(page.getByTestId("auto-cast-switch")).not.toBeChecked();
+  await page.getByTestId(`cast-row-name-${CHARACTER}`).click();
   await expect(page).toHaveURL(new RegExp(`character=${encodeURIComponent(CHARACTER)}$`));
   await expect(page.getByTestId("no-voice")).toContainText(`No voice for ${CHARACTER} yet`);
 

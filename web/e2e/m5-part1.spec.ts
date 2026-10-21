@@ -372,7 +372,9 @@ test("m5 part 1: play, characters, publish review, diagnostics", async ({
   await expect(keeper).toBeVisible();
   await expect(page.getByTestId("character-lines-Keeper")).toHaveText("12");
   await expect(page.getByTestId("character-attribution-Keeper")).toContainText("inferred");
-  await expect(page.getByTestId("characters-voices-link")).toBeVisible();
+  // The roster and the voice work are one screen now (ADR-0093): the row's
+  // voice cell is the seam the old page's "Voices" link pointed at.
+  await expect(page.getByTestId("character-voice-Marina")).toBeVisible();
   await shot("04-characters");
 
   // ── 4. publish review: derive, edit one line, diff, publish, history ─────

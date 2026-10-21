@@ -1924,3 +1924,502 @@ pre.muted {
   display: grid;
   gap: var(--sp-8);
 }
+
+/* ── Cast page (ADR-0093, docs/design/plum-peach 2d) ────────────────────────
+ * The merged Cast screen: the roster (a table in list view, name-tab cards
+ * in cards view) beside the 380px detail panel. Colours come only from the
+ * design tokens (ADR-0011): --ink lines, --card surfaces, --sand tints,
+ * --coral for the single active voice, --hair for quiet separators. */
+
+.cast-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  padding-bottom: var(--sp-8);
+  border-bottom: 1px solid var(--hair);
+  margin-bottom: var(--sp-8);
+}
+
+.cast-title {
+  font-family: var(--font-display);
+  font-size: 36px;
+  font-weight: 600;
+  line-height: 1.1;
+  margin: 0;
+}
+
+.cast-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-16);
+}
+
+.cast-tabs a {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  text-decoration: none;
+  color: var(--muted);
+  padding: 4px 0;
+  border-bottom: 2px solid transparent;
+}
+
+.cast-tabs a:hover {
+  color: var(--ink);
+}
+
+.cast-tabs .cast-tab-active,
+.cast-tabs a[aria-current="page"] {
+  color: var(--ink);
+  border-bottom-color: var(--coral);
+}
+
+.cast-header-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-16);
+  flex-wrap: wrap;
+}
+
+/* The auto-cast dial is the kit's Switch (the .kit-switch classes live in
+   src/styles/tokens.css with the rest of the kit). */
+
+.cast-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  gap: var(--sp-24);
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .cast-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* The roster in list view reuses the .roster table language; the selected
+   row gets the peach fill and the coral edge (the design's active state,
+   README: "Clicking a row selects it (--peach row bg)"). */
+.cast-roster {
+  min-width: 0;
+}
+
+.cast-roster-table tr.cast-row-selected > td {
+  background: var(--peach);
+}
+
+/* The design's contrast rule (plan Phase 2: "no --muted on --peach"): the
+   muted text inside the selected (peach) row takes ink, which holds 6.3:1
+   on peach; --muted would fall to 3.6:1 there. */
+.cast-roster-table tr.cast-row-selected .muted {
+  color: var(--ink);
+}
+
+.cast-roster-table tr.cast-row-selected > td:first-child {
+  box-shadow: inset 3px 0 0 var(--coral);
+}
+
+/* At phone width the table stacks each row into a card (the design allows no
+   horizontal page scroll at 390px, and the Voice column was being cut off
+   inside the row): the avatar and the name share the first line, and every
+   remaining column becomes a labelled value line. The DOM stays a table —
+   only the display reflows — so the row and cell testids keep working. */
+@media (max-width: 600px) {
+  .cast-roster-table {
+    display: block;
+  }
+
+  .cast-roster-table thead {
+    display: none;
+  }
+
+  .cast-roster-table tbody {
+    display: grid;
+    gap: var(--sp-12);
+  }
+
+  .cast-roster-table tr {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-8) var(--sp-12);
+    border: 1px solid var(--ink);
+    border-radius: var(--radius-card);
+    background: var(--card);
+    padding: var(--sp-12);
+  }
+
+  .cast-roster-table td {
+    border-bottom: 0;
+    padding: 0;
+    min-width: 0;
+  }
+
+  .cast-roster-table td:nth-child(1) {
+    flex: 0 0 auto;
+  }
+
+  .cast-roster-table td:nth-child(2) {
+    flex: 1 1 auto;
+  }
+
+  /* The remaining columns become full-width label/value lines. */
+  .cast-roster-table td:nth-child(n + 3) {
+    flex: 1 1 100%;
+    display: grid;
+    grid-template-columns: 4.5rem minmax(0, 1fr);
+    gap: var(--sp-6);
+    align-items: baseline;
+    border-top: 1px dashed var(--hair);
+    padding-top: var(--sp-8);
+  }
+
+  .cast-roster-table td:nth-child(n + 3)::before {
+    content: attr(data-th);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .cast-roster-table td .cast-row-brief {
+    max-width: none;
+    white-space: normal;
+  }
+
+  .cast-roster-table .cast-row-avatar {
+    width: 36px;
+    height: 46px;
+  }
+}
+
+.cast-row-name {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.cast-row-name:hover,
+.cast-row-name[aria-current="true"] {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--coral);
+}
+
+.cast-row-avatar {
+  width: 44px;
+  height: 56px;
+  display: block;
+}
+
+.character-status {
+  margin-left: 0.25rem;
+}
+
+.cast-row-brief {
+  display: block;
+  max-width: 34ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+/* The cards view (2d): name tab over a dithered portrait strip. */
+.cast-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--sp-12);
+}
+
+@media (max-width: 700px) {
+  .cast-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.cast-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  padding: var(--sp-14) var(--sp-12) var(--sp-12);
+  background: var(--card);
+  border: 1px solid var(--ink);
+  border-radius: var(--radius-card);
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cast-card:hover {
+  box-shadow: var(--offset-shadow);
+}
+
+.cast-card-selected {
+  border: 2px solid var(--coral);
+}
+
+.cast-card .kit-name-tab {
+  position: absolute;
+  top: -10px;
+  left: var(--sp-12);
+}
+
+.cast-card-cover {
+  height: 72px;
+  display: block;
+}
+
+.cast-card .badge {
+  align-self: flex-start;
+}
+
+/* The detail panel: a flat card that grows with the page. The inner
+   max-height/scroll it used to carry clipped the actions and the sample
+   lines (the review pass at 1440×900); growing with the page keeps every
+   block — facts, brief, take, actions, sample lines — in the document flow
+   and the full-page screenshot, and the compact gaps keep the Regenerate
+   action above the 900px fold at the 1440 review width. The facts are long
+   unbroken tokens (the consent record, the first-line id), so the panel
+   breaks them anywhere — the design allows no horizontal page scroll at
+   phone width, and the panel is the widest fact column. */
+.cast-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  padding: var(--sp-16);
+  background: var(--card);
+  border: 1px solid var(--ink);
+  border-radius: var(--radius-card);
+  overflow-wrap: anywhere;
+}
+
+/* The facts: a two-column mono definition list (label · value). The state
+   pills sit inline beside their value; the long records (the consent id,
+   the reference line) truncate on the line with the full text in the title
+   and a copy button beside them; the gain row carries the range control
+   (docs/design/plum-peach 2d). */
+.cast-facts {
+  display: grid;
+  gap: var(--sp-6);
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.cast-facts > div {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--sp-8);
+  align-items: baseline;
+}
+
+.cast-facts dt {
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.cast-facts dd {
+  margin: 0;
+  min-width: 0;
+}
+
+/* A long unbroken record on one line (the consent id, the reference line):
+   truncate with the full text in the title. */
+.cast-facts-trunc {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The copy affordance beside a truncated record: a quiet mono underlined
+   word — the actions row owns the pills. */
+.cast-copy {
+  margin-left: var(--sp-6);
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--muted);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.cast-copy:hover {
+  color: var(--ink);
+}
+
+/* The gain: an ink track with the coral thumb and its value read-out.
+   The row's dt carries the "gain" label, so the control draws the slider
+   and the value only — the old inline label plus trailing note overlapped
+   in the facts grid. The "applied at playback" note takes its own line so
+   it can never collide with the slider at the panel's width. */
+.cast-gain {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-6) var(--sp-8);
+  min-width: 0;
+}
+
+.cast-gain input[type="range"] {
+  flex: 1 1 auto;
+  min-width: 96px;
+  appearance: none;
+  margin: 0;
+  height: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--ink);
+  cursor: pointer;
+}
+
+.cast-gain input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--coral);
+  border: 1.5px solid var(--ink);
+  cursor: pointer;
+}
+
+.cast-gain input[type="range"]::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--coral);
+  border: 1.5px solid var(--ink);
+  cursor: pointer;
+}
+
+.cast-gain input[type="range"]::-moz-range-track {
+  height: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--ink);
+}
+
+.cast-gain-value {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.cast-gain-note {
+  flex: 1 1 100%;
+}
+
+.cast-detail h3 {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin: 0 0 var(--sp-8);
+  color: var(--muted);
+}
+
+.cast-detail-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-12);
+}
+
+.cast-detail-head .kit-name-tab {
+  flex: 0 0 auto;
+  z-index: 1;
+}
+
+.cast-portrait {
+  height: 72px;
+  flex: 1;
+  display: block;
+}
+
+.cast-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-8);
+}
+
+/* The current take sits on the warm tint (the design's peach block). */
+.cast-take {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  padding: var(--sp-8);
+  border-radius: var(--radius-card);
+  background: var(--sand);
+}
+
+.cast-take-player {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+}
+
+.cast-take-player audio,
+.cast-sample-lines audio {
+  width: 100%;
+}
+
+/* The panel's audio controls keep a steady 36px so the take block's height
+   is predictable at the review widths (the full control would be taller). */
+.cast-take-player audio {
+  height: 36px;
+}
+
+.cast-sample-lines {
+  border-top: 1px solid var(--hair);
+  padding-top: var(--sp-12);
+}
+
+.cast-sample-lines ul {
+  margin: 0;
+  padding-left: 1.1em;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* The audition cards and the registration/preview sections keep the flat
+   card language of the rest of the page. */
+.audition-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  padding: var(--sp-12);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg);
+}
+
+.audition-card[data-approved="true"] {
+  border-color: var(--ink);
+  background: var(--card);
+}
+
+.audition-card .kit-wave {
+  width: 100%;
+  height: 34px;
+}
+
+.voice-registration,
+.preview-panel {
+  border-top: 1px solid var(--hair);
+  padding-top: var(--sp-12);
+}

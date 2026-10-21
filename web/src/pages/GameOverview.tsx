@@ -429,10 +429,10 @@ function RevisionRow({
           Dialogue
         </Link>
         <Link
-          to={`/games/${gameId}/characters?profile=${encodeURIComponent(profile.id)}`}
-          data-testid={`characters-${profile.revision_num}`}
+          to={`/games/${gameId}/cast?profile=${encodeURIComponent(profile.id)}`}
+          data-testid={`cast-${profile.revision_num}`}
         >
-          Characters
+          Cast
         </Link>
         <Link
           to={`/games/${gameId}/graph?profile=${encodeURIComponent(profile.id)}`}
@@ -445,12 +445,6 @@ function RevisionRow({
           data-testid={`regions-${profile.revision_num}`}
         >
           OCR regions
-        </Link>
-        <Link
-          to={`/games/${gameId}/voices?profile=${encodeURIComponent(profile.id)}`}
-          data-testid={`voices-${profile.revision_num}`}
-        >
-          Voices
         </Link>
         <Link
           to={`/games/${gameId}/publish?profile=${encodeURIComponent(profile.id)}`}

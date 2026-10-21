@@ -1,21 +1,34 @@
-/** The dithered cover placeholder: the stacked bands 0% → 12% → 50% → 75%
- *  → 100% (docs/design/plum-peach "Dither textures"). Real portrait art
- *  drops into the same frame in Phase 1; the bands are the honest stand-in.
- *  Static recipe, static bands: no dynamic geometry, no inline styles. */
-export function DitherCover({
-  testid = "kit-dither-cover",
-  label,
-  className = "",
-}: {
+/**
+ * `src/components/kit/DitherCover.tsx` — the dithered cover placeholder:
+ * the stacked bands 0% → 12% → 50% → 75% → 100% (docs/design/plum-peach
+ * "Dither textures"). Real portrait art drops into the same frame in
+ * Phase 1; the bands are the honest stand-in.
+ *
+ * `tone="peach"` runs the bands on the --peach base: the README names
+ * --peach the "portrait base", so character portraits (avatars, strips,
+ * the detail panel's cover) use it; non-portrait covers keep the paper
+ * base. Static recipe, static bands: no dynamic geometry, no inline
+ * styles.
+ */
+export interface DitherCoverProps {
   testid?: string;
   /** Accessible name for the placeholder (e.g. the character's name). */
   label?: string;
   /** Frame sizing is the caller's (tile 150px, hero 300px, arch 260x300). */
   className?: string;
-}) {
+  /** The bands' base token: paper by default, peach for portraits. */
+  tone?: "default" | "peach";
+}
+
+export function DitherCover({
+  testid = "kit-dither-cover",
+  label,
+  className = "",
+  tone = "default",
+}: DitherCoverProps) {
   return (
     <div
-      className={`dither-cover ${className}`.trim()}
+      className={`dither-cover ${tone === "peach" ? "dither-cover-peach" : ""} ${className}`.trim()}
       role="img"
       aria-label={label ?? "Portrait placeholder"}
       data-testid={testid}

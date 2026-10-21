@@ -124,7 +124,7 @@ test("curate a full synthetic game through the UI only, then re-import the expor
   // ── 5. the characters page: the roster the import built ───────────────────
   await page.getByTestId("overview-link").click();
   await expect(page.getByTestId("game-title")).toHaveText(GAME.title, { timeout: 20_000 });
-  await page.getByTestId("characters-1").click();
+  await page.getByTestId("cast-1").click();
   await expect(page.getByTestId("character-table")).toBeVisible({ timeout: 20_000 });
   const marinaRow = page.getByTestId("character-row-Marla");
   await expect(marinaRow).toBeVisible();
@@ -132,17 +132,25 @@ test("curate a full synthetic game through the UI only, then re-import the expor
   expect(Number(marlaLines), "Marla has lines in the script").toBeGreaterThan(0);
   await shot("03-characters");
 
-  // ── 6. the voice page: audition, approve behind consent, register, preview ─
-  // The characters page's back link carries no testid of its own (it is the
-  // page header's "Overview" link), so the role name is the selector.
-  await page.getByRole("link", { name: "Overview" }).click();
+  // ── 6. the cast page: audition, approve behind consent, register, preview ─
+  // Cast merged the characters and voices pages (ADR-0093): the roster and
+  // the voice work are one screen, and the walk uses the page's back link.
+  // The dial is switched off for this walk: it asserts the manual,
+  // consent-gated approval the server always still offers (ADR-0109); the
+  // auto-cast default path has its own spec (cast.spec.ts).
+  await page.getByTestId("cast-back").click();
   await expect(page.getByTestId("game-title")).toHaveText(GAME.title, { timeout: 20_000 });
-  await page.getByTestId("voices-1").click();
+  await page.getByTestId("cast-1").click();
   await expect(page.getByTestId("voice-characters")).toBeVisible({ timeout: 20_000 });
-  const marla = page.getByTestId("voice-characters").locator("label", { hasText: CHARACTER });
-  await marla.getByRole("radio").click();
+  await expect(page.getByTestId("character-row-Marla")).toBeVisible();
+  await page.getByTestId("cast-row-name-Marla").click();
   await expect(page).toHaveURL(new RegExp(`character=${encodeURIComponent(CHARACTER)}$`));
   await expect(page.getByTestId("no-voice")).toContainText(`No voice for ${CHARACTER} yet`);
+
+  // The auto-cast dial is on by default (ADR-0109); this walk takes the
+  // manual path, so switch it off first and confirm the profile says so.
+  await page.getByTestId("auto-cast-switch").click();
+  await expect(page.getByTestId("auto-cast-switch")).not.toBeChecked();
 
   const brief = "A steady, unhurried voice for a coastal town at dusk.";
   await page.getByTestId("voice-brief").fill(brief);
@@ -203,7 +211,7 @@ test("curate a full synthetic game through the UI only, then re-import the expor
   await shot("04-voice");
 
   // ── 7. the regions page: draw a box, preview the OCR, save, reload ────────
-  await page.getByTestId("voices-back").click();
+  await page.getByTestId("cast-back").click();
   await expect(page.getByTestId("game-title")).toHaveText(GAME.title, { timeout: 20_000 });
   await page.getByTestId("regions-1").click();
   await expect(page.getByTestId("regions-page")).toBeVisible({ timeout: 30_000 });
