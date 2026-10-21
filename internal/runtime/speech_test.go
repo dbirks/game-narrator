@@ -123,6 +123,11 @@ type voiceEnv struct {
 	assets    *assets.Local
 	tts       *fakeTTS
 	voiceID   string
+	// catchUp is the session's catch-up narration policy (issue #25,
+	// ADR-0122). The harness default is latest_only: the suite's
+	// expectations are written against the ADR-0092 immediate shape, and a
+	// test that wants the default catch_up policy says so on its own.
+	catchUp string
 }
 
 // newVoiceEnv builds the speech environment: the production shape with the
@@ -132,7 +137,7 @@ type voiceEnv struct {
 // manual is the explicitly-driven frame source seam (Options.ManualSource,
 // docs/spec/12's deterministic delay-injection suite); nil (the default)
 // leaves the kind refused and the session runs the synthetic replay.
-func newVoiceEnv(t *testing.T, ocrDelay, toneS time.Duration, seedVoice bool, sink speech.AudioSink, fileSinkDir string, manual func() (capture.Source, error)) *voiceEnv {
+func newVoiceEnv(t *testing.T, ocrDelay, toneS time.Duration, seedVoice bool, sink speech.AudioSink, fileSinkDir string, manual func() (capture.Source, error), catchUp ...string) *voiceEnv {
 	t.Helper()
 	corpusPresent(t)
 	ctx := context.Background()
@@ -169,7 +174,19 @@ func newVoiceEnv(t *testing.T, ocrDelay, toneS time.Duration, seedVoice bool, si
 	}
 
 	e := &voiceEnv{t: t, ctx: ctx, st: st, hub: hub, mem: mem, svc: svc, assets: a, tts: fake, voiceID: voiceID}
+	if len(catchUp) > 0 {
+		e.catchUp = catchUp[0]
+	}
 	opts := runtime.SpeechOptions{Voices: svc, Assets: a}
+	// The ADR-0092 immediate shape is the harness default (see voiceEnv's
+	// catchUp field): the suite's fence and terminal expectations are
+	// written against it, and the catch-up policy is tested where it is
+	// opted into.
+	if policy := e.catchUp; policy != "" {
+		opts.CatchUp = &runtime.CatchUpOptions{Policy: policy}
+	} else {
+		opts.CatchUp = &runtime.CatchUpOptions{Policy: speech.CatchUpPolicyLatestOnly}
+	}
 	if sink != nil {
 		opts.SinkFactory = func() (speech.AudioSink, error) { return sink, nil }
 	} else {
@@ -352,7 +369,7 @@ func mustCommitGen(t *testing.T, evs []events.Envelope, n int) int64 {
 // generation and the committing frame's trace id.
 func TestSpeechCommitLifecycle(t *testing.T) {
 	sink := dummy.New(0, 0)
-	e := newVoiceEnv(t, 10*time.Millisecond, 100*time.Millisecond, true, sink, "", nil)
+	e := newVoiceEnv(t, 10*time.Millisecond, 100*time.Millisecond, true, sink, "", nil, "")
 	sid := e.startReplay()
 	defer waitState(t, e.mgr, sid, 30*time.Second)
 
@@ -600,7 +617,7 @@ func TestSpeechRapidAdvanceCancelsStale(t *testing.T) {
 // and no TTS call, ever (never a builtin or a different voice).
 func TestSpeechNoApprovedVoice(t *testing.T) {
 	sink := dummy.New(0, 0)
-	e := newVoiceEnv(t, 10*time.Millisecond, 100*time.Millisecond, false, sink, "", nil)
+	e := newVoiceEnv(t, 10*time.Millisecond, 100*time.Millisecond, false, sink, "", nil, "")
 	sid := e.startReplay()
 	defer waitState(t, e.mgr, sid, 30*time.Second)
 
@@ -1015,7 +1032,7 @@ func TestSpeechSessionEndTerminatesPending(t *testing.T) {
 // the cache, with no second TTS request.
 func TestSpeechCacheHitSecondSession(t *testing.T) {
 	sink := dummy.New(0, 0)
-	e := newVoiceEnv(t, 10*time.Millisecond, 100*time.Millisecond, true, sink, "", nil)
+	e := newVoiceEnv(t, 10*time.Millisecond, 100*time.Millisecond, true, sink, "", nil, "")
 
 	first := e.startReplay()
 	// Let both lines resolve (and commit to the cache) before the run ends.
@@ -1056,7 +1073,7 @@ func TestSpeechCacheHitSecondSession(t *testing.T) {
 // speech pipeline reports the audio unavailable.
 func TestSpeechAudioValidation(t *testing.T) {
 	sink := dummy.New(0, 0)
-	e := newVoiceEnv(t, 10*time.Millisecond, 100*time.Millisecond, true, sink, "", nil)
+	e := newVoiceEnv(t, 10*time.Millisecond, 100*time.Millisecond, true, sink, "", nil, "")
 	sid := e.startReplay()
 	defer waitState(t, e.mgr, sid, 30*time.Second)
 

@@ -248,6 +248,12 @@ type ttsGateway struct {
 	// fault off. stampMS is the capture time of the request in flight.
 	downFromMS, downToMS int
 	stampMS              int64
+	// toneMS is the tone the endpoint answers with, in milliseconds; the
+	// harness default (100) is the historical shape. A scenario that models
+	// an utterance still playing when the next line commits (the catch-up
+	// policy's batched path, issue #25, ADR-0122) names a tone longer than
+	// its clip's commit cadence.
+	toneMS int
 
 	mu       sync.Mutex
 	injector *faultInjector
@@ -260,9 +266,19 @@ type ttsGateway struct {
 
 // newTTSGateway starts the endpoint; Close stops it.
 func newTTSGateway(model, missingVoice string, injector *faultInjector, idx, downFromMS, downToMS int) *ttsGateway {
-	g := &ttsGateway{model: model, missingVoice: missingVoice, injector: injector, idx: idx, downFromMS: downFromMS, downToMS: downToMS}
+	g := &ttsGateway{model: model, missingVoice: missingVoice, injector: injector, idx: idx, downFromMS: downFromMS, downToMS: downToMS, toneMS: 100}
 	g.srv = httptest.NewServer(http.HandlerFunc(g.handle))
 	return g
+}
+
+// setToneMS sizes the tone the endpoint answers with (the scenario's
+// inference.tts_tone_ms, issue #25, ADR-0122): a tone longer than the
+// clip's commit cadence is what makes an utterance still playing when the
+// next line commits, the overlap the catch-up policy's batched path grades.
+func (g *ttsGateway) setToneMS(ms int) {
+	if ms > 0 {
+		g.toneMS = ms
+	}
 }
 
 // url is the base URL the tts.Client is pointed at.
@@ -339,11 +355,13 @@ func (g *ttsGateway) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A real deployment returns the voice's audio; the fake returns a short
-	// tone so the client's WAV validation and the session lifecycle run on
-	// real bytes. One tenth of a second at 24 kHz: a playable utterance,
-	// too short to matter in the 2.4 s scenario budget.
-	wav := speech.MakeToneWAV(440, 0.1, 24000)
+	// A real deployment returns the voice's audio; the fake returns a tone
+	// so the client's WAV validation and the session lifecycle run on real
+	// bytes. The tone's duration is the scenario's (g.toneMS): short by
+	// default (100 ms, too short to matter in the 2.4 s scenario budget),
+	// longer when the scenario models an utterance still playing when the
+	// next line commits (issue #25, ADR-0122).
+	wav := speech.MakeToneWAV(440, float64(g.toneMS)/1000.0, 24000)
 	if !req.Stream {
 		// The atomic wire: one validated WAV answer.
 		w.Header().Set("Content-Type", "audio/wav")

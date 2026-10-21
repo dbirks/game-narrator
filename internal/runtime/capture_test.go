@@ -26,6 +26,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/capture/stack"
 	"github.com/dbirks/game-narrator/internal/events"
 	"github.com/dbirks/game-narrator/internal/runtime"
+	"github.com/dbirks/game-narrator/internal/scenario"
 )
 
 // fakeCaptureResolve is the test's enumeration seam: one device (the ADR-0074
@@ -114,6 +115,79 @@ func (s *capturePushSource) Close() error {
 	return nil
 }
 
+// waitFrameSettled is the push loop's channel synchronisation (issue #22):
+// it waits until the session's live pipeline stats show the frame's
+// observation reached the reducer — `Observations` counts one per processed
+// frame per region (plus the hash-reuse observations that skip a read), so
+// for the session's single region the count reaching n is the frame settled
+// past the single-slot capture bridge and past the OCR stage. Pushing the
+// next frame only then keeps two failure modes out at any host load: the
+// latest-slot bridge overwriting a frame the pipeline has not consumed, and
+// the next observation outrunning the settled frame's rank reply (a reply
+// the next observation beats is fenced stale, and a fenced reply is the
+// wall-clock dependence the held-frame tail is there to recover).
+// The bound is the race-scaled patience: a frame that never settles means
+// the pipeline stopped consuming, and the test must say so.
+func waitFrameSettled(t *testing.T, m *runtime.Manager, id string, n int64) {
+	t.Helper()
+	by := time.Now().Add(30 * time.Second * patienceScale)
+	var lastObs int64
+	stableSince := time.Time{}
+	for {
+		if info, ok := m.Get(id); ok && int64(info.Stats.FramesProcessed) >= n {
+			if int64(info.Stats.Observations) >= n {
+				return // every frame observed: settled
+			}
+			// A frame with an absent box emits no observation, so the settled
+			// mark is the observation count going quiet after the frame has
+			// been through the stage.
+			if int64(info.Stats.Observations) == lastObs {
+				if stableSince.IsZero() {
+					stableSince = time.Now()
+				} else if time.Since(stableSince) >= 200*time.Millisecond {
+					return
+				}
+			} else {
+				lastObs = int64(info.Stats.Observations)
+				stableSince = time.Time{}
+			}
+		}
+		if time.Now().After(by) {
+			t.Fatalf("frame %d never settled in the pipeline (frames_processed stuck below %d): the capture session stopped consuming frames", n, n)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// lastTextFrameN is the clip's last frame that still shows a line: the
+// screen the dongle is still delivering when the clip's recorded frames run
+// out, the frame the capture test holds in the tail while the pipeline's
+// rank reply settles.
+func lastTextFrameN(t *testing.T) int {
+	t.Helper()
+	truth, err := scenario.LoadTruth(syntheticClipDir())
+	if err != nil {
+		t.Fatalf("load truth: %v", err)
+	}
+	last := 0
+	for _, row := range truth {
+		if row.Text == "" {
+			continue
+		}
+		var n int
+		if _, err := fmt.Sscanf(row.File, "frame-%03d.png", &n); err != nil || n < 1 {
+			t.Fatalf("truth row %s: unparseable frame file", row.File)
+		}
+		if n > last {
+			last = n
+		}
+	}
+	if last == 0 {
+		t.Fatalf("the clip's truth has no non-empty text frame")
+	}
+	return last
+}
+
 // TestCaptureSessionCommitsSyntheticText is G1's hardware-free core: a full
 // session from kind v4l2 (device by stable id, mode from the "policy" seam)
 // commits the synthetic profile's text through the capture source — the same
@@ -153,31 +227,49 @@ func TestCaptureSessionCommitsSyntheticText(t *testing.T) {
 		t.Fatalf("snapshot capture mode = %q (%q), want a named mode with its provenance", info.CaptureMode, info.CaptureModeSource)
 	}
 
-	// Drive the run at the source's own cadence: the clip frames carry a 10 fps
-	// source clock (100 ms apart), and a real UVC dongle delivers at that rate —
-	// ffmpegpipe backpressures to hold it. Pushing faster would overdrive the
-	// pipeline: its OCR aging runs on wall clock (the live 4.25 s budget), so a
-	// burst of frames outruns the recognitions and every read ages out before it
-	// resolves, and the text never stabilizes to a commit. Pacing the pushes to
-	// the source clock is both the honest simulation of the dongle and what keeps
-	// the run green under -race, where the pipeline's wall-clock pace slows down.
-	for n := 1; n <= clipFrameCount(t); n++ {
+	// Drive the run the way the dongle drives it: the clip frames carry a
+	// 10 fps source clock (100 ms apart), and a real UVC dongle delivers at
+	// that rate — ffmpegpipe backpressures to hold it. Pushing faster would
+	// overdrive the pipeline: its OCR aging runs on wall clock (the live
+	// 4.25 s budget), so a burst of frames outruns the recognitions and every
+	// read ages out before it resolves, and the text never stabilizes to a
+	// commit. A fixed 100 ms sleep between pushes is only a guess at the
+	// pipeline's pace, and under -race on a saturated host (issue #22) a
+	// losing guess means the single-slot live queue overwrites the frame that
+	// would have committed the line. Each push therefore waits for the
+	// pipeline to have settled the frame — its observation in the reducer,
+	// the frame ordered past the bridge — before the next one goes in.
+	nFrames := clipFrameCount(t)
+	for n := 1; n <= nFrames; n++ {
 		src.push(t, manualClipFrame(t, n))
-		time.Sleep(100 * time.Millisecond)
+		waitFrameSettled(t, e.mgr, info.ID, int64(n))
 	}
-	by := time.Now().Add(60 * time.Second)
-	for {
-		ev := latestEvent(t, e, info.ID, events.MessageCommitted)
-		if ev != nil {
-			break
-		}
+	// The clip ends on empty-text frames: if the last line's rank reply is
+	// still in flight when they land, the reply is fenced stale and the empty
+	// frames would re-trigger nothing — they carry no text to re-rank. A real
+	// dongle keeps delivering the screen the line is still on — the same
+	// pixels, at the source's own pace — so the test holds the clip's last
+	// text frame the same way (hash-reuse observations, no new reads) until
+	// the commit lands. The hold cadence is slower than the dongle's 10 fps:
+	// a dongle under load delivers late, never early, and the slower cadence
+	// gives the in-flight rank reply the room to land between two
+	// observations instead of being fenced by the next one.
+	holdN := lastTextFrameN(t)
+	by := time.Now().Add(60 * time.Second * patienceScale)
+	for latestEvent(t, e, info.ID, events.MessageCommitted) == nil {
 		if time.Now().After(by) {
-			t.Fatalf("no line committed within 60s of the stream (the capture path must commit the synthetic text the replay path commits)")
+			t.Fatalf("no line committed within the commit budget of the stream (the capture path must commit the synthetic text the replay path commits)")
 		}
-		time.Sleep(10 * time.Millisecond)
+		src.push(t, manualClipFrame(t, holdN))
+		time.Sleep(500 * time.Millisecond)
+	}
+	// The clip's recorded tail (the empty-text frames), then the source end:
+	// the session stops on source_end, the way the dongle's end does.
+	for n := holdN + 1; n <= nFrames; n++ {
+		src.push(t, manualClipFrame(t, n))
 	}
 	src.Close()
-	info = waitState(t, e.mgr, info.ID, 30*time.Second)
+	info = waitState(t, e.mgr, info.ID, 30*time.Second*patienceScale)
 	if info.State != runtime.StateStopped {
 		t.Fatalf("session ended %s (reason %s), want stopped", info.State, info.Reason)
 	}

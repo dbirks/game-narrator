@@ -598,3 +598,61 @@ func countIDs(r Ranking, ids ...string) int {
 	}
 	return n
 }
+
+// TestBoxEdgeTrimRecoversExactHit is the ADR-0115 §2 live case: the captured
+// feed OCR'd the textbox border into the reading as leading glyphs ("4 $o? "),
+// which knocked the raw observation off the exact-match path. The trimmed
+// reading restores the exact key, so the trim's ranking must win and the top
+// candidate is the line itself, matched exactly, not fuzzily.
+func TestBoxEdgeTrimRecoversExactHit(t *testing.T) {
+	msgs, idx := miniIndex(t)
+	want := textOf(msgs, "m02")
+	noisy := "4 $o? " + want
+
+	// The raw reading alone cannot be an exact hit: the border glyphs are not in
+	// any stored key.
+	if got := TrimEdgeNoise(noisy); got == noisy {
+		t.Fatalf("premise: the noise was not trimmed (%q)", noisy)
+	}
+	r := idx.Rank(Observation{Text: noisy, OCRConf: 0.9, SceneID: "scene.harbour"}, RankOptions{})
+	if r.Abstain {
+		t.Fatalf("noisy reading abstained: %+v", r)
+	}
+	if topID(r) != "m02" {
+		t.Fatalf("top = %s, want m02 (ranking: %s)", topID(r), rankingString(r))
+	}
+	// The trim must be what recovered the exact path: the winning ranking is an
+	// exact match with a near-certain calibrated probability, not a fuzzy one.
+	if r.Reason != ReasonExact {
+		t.Errorf("reason = %s, want %s (the trimmed reading is an exact key)", r.Reason, ReasonExact)
+	}
+	if r.Candidates[0].Probability < 0.9 {
+		t.Errorf("top probability = %.3f, want a confident exact hit", r.Candidates[0].Probability)
+	}
+}
+
+// TestBoxEdgeTrimDoesNotHurtShortWordLines guards the other half of the rule: a
+// line that legitimately begins with a short word must not be mangled by the
+// trim. The raw reading is an exact match; the trimmed reading (with the
+// genuine first word dropped) can only be a near-miss, so the raw ranking wins
+// and the top stays the exact line.
+func TestBoxEdgeTrimDoesNotHurtShortWordLines(t *testing.T) {
+	const line = "I saw the boat come out of the fog."
+	msgs := []games.Message{{
+		ID: "s00", ProfileID: "profile.synthetic", OriginalText: line, NormalizedText: line,
+		SpeechText: line, Language: "en", TextKind: games.TextDialogue,
+		SceneID: "scene.fog", SpeakerID: "speaker.narrator", Revision: 1,
+	}}
+	idx := mustBuild(t, msgs, nil)
+
+	r := idx.Rank(Observation{Text: line, OCRConf: 0.95, SceneID: "scene.fog"}, RankOptions{})
+	if r.Abstain {
+		t.Fatalf("an exact short-word line abstained: %+v", r)
+	}
+	if topID(r) != "s00" {
+		t.Fatalf("top = %s, want s00 (ranking: %s)", topID(r), rankingString(r))
+	}
+	if r.Reason != ReasonExact {
+		t.Fatalf("reason = %s, want %s: the raw reading must keep its exact match", r.Reason, ReasonExact)
+	}
+}

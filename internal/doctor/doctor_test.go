@@ -565,6 +565,125 @@ func TestEmptyDataDirIsFailWithRemedy(t *testing.T) {
 	}
 }
 
+// TestStaleDefaultDataDirIsDegraded is the issue #31 warning: a run whose
+// data directory was explicitly configured (flag or env) while a non-empty
+// default data directory ($XDG_DATA_HOME/game-narrator or
+// $HOME/.local/share/game-narrator) exists next to it has two databases on
+// one host. The row must say DEGRADED — not FAIL — and name both paths.
+func TestStaleDefaultDataDirIsDegraded(t *testing.T) {
+	t.Run("HOME default next to a flag directory", func(t *testing.T) {
+		h := newFakeHost(t)
+		home := t.TempDir()
+		defaultDir := filepath.Join(home, ".local", "share", bootstrap.AppName)
+		mustCreateStaleDataDir(t, defaultDir)
+		h.withEnv(bootstrap.EnvHome, home)
+		h.opts.DataDirSource = bootstrap.DataDirSourceFlag
+
+		rep := h.run()
+		c := h.check(rep, "storage.data_dir")
+		mustStatus(t, c, StatusDegraded)
+		if !strings.Contains(c.Detail, defaultDir) || !strings.Contains(c.Detail, h.opts.DataDir) {
+			t.Fatalf("detail = %q, want both the configured and the default directory named", c.Detail)
+		}
+		if !strings.Contains(c.Remedy, bootstrap.EnvDataDir) {
+			t.Fatalf("remedy = %q, want it to name %s", c.Remedy, bootstrap.EnvDataDir)
+		}
+		// A warning, not a fault: the exit-code contract is unchanged.
+		if rep.HasFail() {
+			t.Fatalf("report has a FAIL with only a stale default directory: %+v", rep.Checks)
+		}
+	})
+
+	t.Run("XDG default next to an env directory", func(t *testing.T) {
+		h := newFakeHost(t)
+		xdg := t.TempDir()
+		defaultDir := filepath.Join(xdg, bootstrap.AppName)
+		mustCreateStaleDataDir(t, defaultDir)
+		h.withEnv(bootstrap.EnvXDGDataHome, xdg)
+		h.opts.DataDirSource = bootstrap.DataDirSourceEnv
+
+		c := h.check(h.run(), "storage.data_dir")
+		mustStatus(t, c, StatusDegraded)
+		if !strings.Contains(c.Detail, defaultDir) {
+			t.Fatalf("detail = %q, want the XDG default directory named", c.Detail)
+		}
+	})
+
+	negative := func(name string, seedDefault bool, mutate func(h *fakeHost, home string)) {
+		t.Run(name, func(t *testing.T) {
+			h := newFakeHost(t)
+			home := t.TempDir()
+			defaultDir := filepath.Join(home, ".local", "share", bootstrap.AppName)
+			if seedDefault {
+				mustCreateStaleDataDir(t, defaultDir)
+			}
+			mutate(h, home)
+			c := h.check(h.run(), "storage.data_dir")
+			if c.Status != StatusOK {
+				t.Fatalf("storage.data_dir = %s (%s), want OK: no stale-default warning expected", c.Status, c.Summary)
+			}
+		})
+	}
+
+	negative("empty default directory does not warn", false, func(h *fakeHost, home string) {
+		h.withEnv(bootstrap.EnvHome, home) // nothing created under it
+		h.opts.DataDirSource = bootstrap.DataDirSourceFlag
+	})
+	negative("default source is the default itself", true, func(h *fakeHost, home string) {
+		// The configured directory IS the default location; a run sourced
+		// from the default cannot have a stale sibling to warn about.
+		h.opts.DataDir = filepath.Join(home, ".local", "share", bootstrap.AppName)
+		if err := os.MkdirAll(h.opts.DataDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		h.withEnv(bootstrap.EnvHome, home)
+		h.opts.DataDirSource = bootstrap.DataDirSourceDefault
+	})
+	negative("an unknown source cannot be called explicit", true, func(h *fakeHost, home string) {
+		h.withEnv(bootstrap.EnvHome, home)
+		h.opts.DataDirSource = ""
+	})
+}
+
+func mustCreateStaleDataDir(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, bootstrap.AppName+".sqlite"), []byte("stale database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestDataDirCheckReportsDatabaseAndSource pins the issue #31 reporting: the
+// storage row says where the durable data lives (the database path) and which
+// setting won (flag, env or default), so the report answers "which data
+// directory?" without a second probe.
+func TestDataDirCheckReportsDatabaseAndSource(t *testing.T) {
+	h := newFakeHost(t)
+	h.opts.DataDirSource = bootstrap.DataDirSourceEnv
+	c := h.check(h.run(), "storage.data_dir")
+	mustStatus(t, c, StatusOK)
+	if !strings.Contains(c.Detail, h.opts.DataDir) {
+		t.Fatalf("detail = %q, want the resolved data directory", c.Detail)
+	}
+	if !strings.Contains(c.Detail, store.DBPath(h.opts.DataDir)) {
+		t.Fatalf("detail = %q, want the database path", c.Detail)
+	}
+	if !strings.Contains(c.Detail, string(bootstrap.DataDirSourceEnv)) {
+		t.Fatalf("detail = %q, want the setting's source", c.Detail)
+	}
+
+	// An unrecorded source (seams that do not track it) leaves the row's
+	// detail unchanged — the legacy shape.
+	h2 := newFakeHost(t)
+	c2 := h2.check(h2.run(), "storage.data_dir")
+	mustStatus(t, c2, StatusOK)
+	if strings.Contains(c2.Detail, "source:") {
+		t.Fatalf("detail = %q, want no source clause for an unrecorded source", c2.Detail)
+	}
+}
+
 func TestDatabaseCheckAppliesMigrationsOnAFreshDir(t *testing.T) {
 	h := newFakeHost(t)
 	c := h.check(h.run(), "storage.database")

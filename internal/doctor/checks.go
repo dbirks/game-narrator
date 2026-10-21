@@ -81,8 +81,17 @@ func (r *runner) checkDataDir(_ context.Context) Check {
 		return Check{Status: StatusFail, Summary: "data directory write probe could not be cleaned up", Detail: fmt.Sprintf("%s: %s", dir, detail)}
 	}
 
+	// (issue #31) an explicitly configured directory next to a non-empty
+	// default one means two databases live on this host: a run that lost its
+	// GAME_NARRATOR_DATA_DIR has been writing to the default all along. That
+	// is a warning, not a fault — the configured directory is the one the
+	// service uses — so the row degrades rather than fails.
+	if c, warn := r.staleDefaultDataDir(dir); warn {
+		return c
+	}
+
 	mode := info.Mode().Perm()
-	detail := fmt.Sprintf("%s, mode 0%03o", dir, mode)
+	detail := r.dataDirDetail(dir, fmt.Sprintf("%s, mode 0%03o", dir, mode))
 	if created {
 		detail += ", created by this run"
 	}
@@ -91,11 +100,54 @@ func (r *runner) checkDataDir(_ context.Context) Check {
 		return Check{
 			Status:  StatusDegraded,
 			Summary: "data directory is readable by group or other",
-			Detail:  fmt.Sprintf("mode is 0%03o, want 0700; %s", mode, dir),
+			Detail:  r.dataDirDetail(dir, fmt.Sprintf("mode is 0%03o, want 0700; %s", mode, dir)),
 			Remedy:  fmt.Sprintf("chmod 700 %s", dir),
 		}
 	}
 	return Check{Status: StatusOK, Summary: "data directory is writable and private", Detail: detail}
+}
+
+// dataDirDetail appends the resolved storage the row probes — the database
+// path and the setting that decided the data directory — to a detail string
+// (issue #31: a storage row has to say where the data is, not just that it
+// is writable). An empty source (seams that do not record one) leaves the
+// detail unchanged.
+func (r *runner) dataDirDetail(dir, detail string) string {
+	if r.opts.DataDirSource == "" {
+		return detail
+	}
+	return fmt.Sprintf("%s; database %s (source: %s)", detail, store.DBPath(dir), r.opts.DataDirSource)
+}
+
+// staleDefaultDataDir reports a DEGRADED check when a non-empty default data
+// directory ($XDG_DATA_HOME/game-narrator, else $HOME/.local/share/game-narrator)
+// exists alongside a different, explicitly configured one (issue #31: the
+// restart opened a stale database from the default after the env file lost
+// its GAME_NARRATOR_DATA_DIR). Only flag/env sources qualify: a default-
+// sourced or unknown-source directory is the default itself. It never FAILs —
+// the default's contents are user data, and the answer is a warning, not a
+// fault.
+func (r *runner) staleDefaultDataDir(configured string) (Check, bool) {
+	switch r.opts.DataDirSource {
+	case bootstrap.DataDirSourceFlag, bootstrap.DataDirSourceEnv:
+	default:
+		return Check{}, false
+	}
+	defaultDir := bootstrap.ResolveDataDir("", r.opts.LookupEnv)
+	if defaultDir == "" || defaultDir == configured {
+		return Check{}, false
+	}
+	entries, err := os.ReadDir(defaultDir)
+	if err != nil || len(entries) == 0 {
+		return Check{}, false
+	}
+	return Check{
+		Status:  StatusDegraded,
+		Summary: "a non-empty default data directory exists alongside the configured one",
+		Detail: fmt.Sprintf("%s is in use (source: %s), but %s holds data from a run without %s — two databases on one host; database %s",
+			configured, r.opts.DataDirSource, defaultDir, bootstrap.EnvDataDir, store.DBPath(configured)),
+		Remedy: fmt.Sprintf("confirm which directory this run must use, name it with %s, and back up both directories before consolidating them", bootstrap.EnvDataDir),
+	}, true
 }
 
 // checkDatabase really opens the SQLite catalogue, applies pending migrations

@@ -90,11 +90,17 @@ const (
 	questionLineID  = "line_confirm"
 	choiceConfirmed = "confirmed"
 	choiceUnknown   = "unknown"
-	// providerTimeout bounds one provider call. A faulted endpoint is
-	// expected to be slow; a call that outlives the bound is a timeout and
-	// an honest abstain, the way docs/spec/06's decision budget behaves.
-	providerTimeout = 10 * time.Second
 )
+
+// providerTimeout bounds one provider call. A faulted endpoint is
+// expected to be slow; a call that outlives the bound is a timeout and
+// an honest abstain, the way docs/spec/06's decision budget behaves.
+// It is a var, not a const, so the race-instrumented test build can widen
+// it (race_on_test.go): under -race on a saturated host the same sidecar
+// work takes several times longer on the wall clock (issue #22), and a
+// bound that times out a healthy call turns a correctness test into a
+// load flake.
+var providerTimeout = 10 * time.Second
 
 // RunResult is the harness's verdict for one scenario.
 type RunResult struct {
@@ -243,8 +249,12 @@ func runScenarioCore(ctx context.Context, repoRoot string, sc *Scenario, framesD
 	// scoped to the real engine (engines: tesseract) is a property of a
 	// different run and is reported not-applicable, never graded here. The
 	// corpus is the profile's own: message_detected anchors on it, engine-
-	// free, exactly as the real-engine gate does.
-	report := sc.EvaluateWith(evs, run.pipelineStats, run.truth, EvaluateOpts{OCREngine: truthEngineName, Corpus: run.profile.CorpusFold()})
+	// free, exactly as the real-engine gate does. The catch-up policy is the
+	// scenario's declared one: a no_stale_speech verdict under catch_up must
+	// not read a completed non-last line as stale (ADR-0122 decision 2: the
+	// line that is playing keeps playing to the end), while latest_only keeps
+	// the historical cut-on-advance reading.
+	report := sc.EvaluateWith(evs, run.pipelineStats, run.truth, EvaluateOpts{OCREngine: truthEngineName, Corpus: run.profile.CorpusFold(), CatchUp: sc.CatchUp})
 	// The implicit check against the playback half (TTS scenarios): the
 	// sink's directory carries exactly one evidence WAV per started
 	// utterance and no temporary file. It is appended like
@@ -379,6 +389,38 @@ type run struct {
 	degraded map[string]bool   // role → degraded state last seen on the wire
 	audio    map[string][]byte // occurrence → the synthesized WAV (report material)
 	decWG    sync.WaitGroup
+
+	// Catch-up narration (issue #25, ADR-0122): the sidecar's batcher, the
+	// scenario's catch_up policy running the shared decision core
+	// (internal/speech: the window drop, the speaker-run split, the
+	// sentence-spacing join, the versioned merged id). cuMu guards the batch
+	// bookkeeping; it is a separate lock from mu because the flush workers
+	// and the scheduler's playback terminal both touch it from their own
+	// goroutines while mu guards the shared sidecar tables.
+	catchUpPolicy string // the scenario's policy (harness default: latest_only)
+	speakerTable  map[string]string
+	cuMu          sync.Mutex
+	cuPending     []speech.CatchUpLine // the batch: committed lines awaiting the flush
+	cuTimer       *time.Timer          // the window flush timer (nil while no batch is pending)
+	cuSynth       int                  // utterances in their TTS round trip
+	cuPlaying     int                  // utterances submitted, not yet terminal
+	cuPlayingGen  int64                // the generation the scheduler plays now (0 = idle)
+	cuApproved    []int64              // catch-up generations the fence spares (cap 16)
+	cuDropped     int                  // lines the window or the max age fenced
+	cuMergedRuns  int                  // merged runs the flushes built
+	cuWG          sync.WaitGroup       // the flush workers in flight
+	// cuActive is the set of catch-up generations submitted to the scheduler
+	// and not yet terminal (cuMu): the immediate line and each merged run's
+	// generation. advanceFence cancels only the stale generations it still
+	// holds — a generation that has already reached its terminal (the
+	// playback ended, the run finished) is no longer queued or playing, so a
+	// later commit must not cancel it a second time (the spurious re-cancel
+	// that cut the first line's evidence WAV before the sink wrote it).
+	cuActive map[int64]bool
+	// cuMergedOcc is the merged run's occurrences (cuMu): the scheduler
+	// plays each one through the filesink, so the audio evidence check
+	// counts their WAVs the way it counts the immediate path's.
+	cuMergedOcc map[string]bool
 }
 
 // scenarioNarratedKinds renders the scenario's narrated classes as the
@@ -431,6 +473,8 @@ func newRun(sc *Scenario, repoRoot, framesDir string, profile *Profile, truth []
 		started:       map[string]int64{},
 		degraded:      map[string]bool{},
 		audio:         map[string][]byte{},
+		cuMergedOcc:   map[string]bool{},
+		cuActive:      map[int64]bool{},
 	}
 }
 
@@ -470,6 +514,14 @@ func (r *run) buildGateways() {
 		ttsDownFrom, ttsDownTo = f.FromMS, f.ToMS
 	}
 	r.gwTTS = newTTSGateway(ttsModel, voiceMissing, r.injector, r.idxVoice, ttsDownFrom, ttsDownTo)
+	// The scenario's tone (issue #25, ADR-0122): the catch-up scenario names
+	// the overlap it models — a tone still playing when the next line commits
+	// — instead of leaving it to the scheduler's coin flip.
+	if r.sc.Inference.TTSToneMS > 0 {
+		r.gwTTS.setToneMS(r.sc.Inference.TTSToneMS)
+	}
+	r.catchUpPolicy = r.sc.CatchUp
+	r.speakerTable = r.sc.Speakers
 	ttsClient, err := tts.New(r.gwTTS.url(), "scenario-token", ttsModel)
 	if err != nil {
 		panic(fmt.Sprintf("scenario: tts client: %v", err))
@@ -489,9 +541,13 @@ func (r *run) buildGateways() {
 // against the sink's own directory rather than the event log alone.
 // The dir carries a .gn-owner marker so a SIGKILLed run's sink is
 // reclaimable by the next harness start (issue #14).
-// The scheduler's publisher is a discarding stub: the sidecar session is
-// the event recorder of record for the merged timeline, and duplicating
-// the scheduler's playback events would double-count every start.
+// The scheduler's publisher is the catch-up observer: the sidecar session
+// is the event recorder of record for the merged timeline, so the observer
+// swallows the playback events (duplicating them would double-count every
+// start) and reads them only for the catch-up policy's bookkeeping (issue
+// #25, ADR-0122): the playing generation the fence spares, and the
+// playback terminal that flushes the pending batch the way the runtime's
+// wiring flushes on the scheduler's end.
 func (r *run) buildAudioPipeline(ctx context.Context) error {
 	dir, err := os.MkdirTemp("", "gn-scenario-audio-*")
 	if err != nil {
@@ -505,21 +561,57 @@ func (r *run) buildAudioPipeline(ctx context.Context) error {
 		return fmt.Errorf("filesink: %w", err)
 	}
 	r.sink = sink
-	r.sched = speech.NewScheduler(sink, r, discardingPub{}, speech.Options{})
+	r.sched = speech.NewScheduler(sink, r, &catchUpPub{run: r}, speech.Options{})
 	r.sched.Start(ctx)
 	return nil
 }
 
 // IsCurrent is the harness's playback fence: the session's commit
 // generation is the only generation the scheduler may start (the same rule
-// the runtime's fence applies, docs/spec/01 invariant 2).
-func (r *run) IsCurrent(g int64) bool { return r.session.Generation() == g }
+// the runtime's fence applies, docs/spec/01 invariant 2) — plus, under the
+// catch-up policy, the generations a flush approved before its submits
+// (ADR-0122 decision 4: the fence approves every merged run BEFORE the
+// first submit, so a commit that lands mid-flush cannot fence a run the
+// fence already let speak).
+func (r *run) IsCurrent(g int64) bool {
+	r.cuMu.Lock()
+	for _, a := range r.cuApproved {
+		if a == g {
+			r.cuMu.Unlock()
+			return true
+		}
+	}
+	r.cuMu.Unlock()
+	return r.session.Generation() == g
+}
 
-// discardingPub swallows the scheduler's playback events: the sidecar
-// session is the publisher of record for the merged timeline.
-type discardingPub struct{}
+// catchUpPub swallows the scheduler's playback events (the sidecar session
+// is the publisher of record) and observes them for the catch-up policy's
+// bookkeeping (issue #25, ADR-0122): the start moves the playing
+// generation the fence spares, and the playing generation's terminal
+// unapproves it and flushes the pending batch on the playback end — the
+// runtime's noteSchedulerEvent flush, the batcher's own trigger.
+type catchUpPub struct {
+	run *run
+}
 
-func (discardingPub) Publish(context.Context, events.Envelope) (events.Envelope, error) {
+type schedPlaybackEvent struct {
+	UtteranceID string `json:"utterance_id"`
+	Generation  int64  `json:"generation"`
+	Result      string `json:"result"`
+}
+
+func (p *catchUpPub) Publish(_ context.Context, e events.Envelope) (events.Envelope, error) {
+	var ev schedPlaybackEvent
+	if json.Unmarshal(e.Data, &ev) != nil || ev.Generation == 0 {
+		return events.Envelope{}, nil
+	}
+	switch e.Name {
+	case events.SpeechStarted:
+		p.run.notePlaybackStarted(ev.Generation)
+	case events.SpeechEnded, events.SpeechCancelled:
+		p.run.notePlaybackTerminal(ev.Generation)
+	}
 	return events.Envelope{}, nil
 }
 
@@ -527,6 +619,10 @@ func (discardingPub) Publish(context.Context, events.Envelope) (events.Envelope,
 // every commit cancels every older generation still queued or playing, so
 // a commit that lands while an older utterance is synthesising or playing
 // stops that audio at the source (docs/spec/12 "zero stale audio starts").
+// Under the catch-up policy the line that is playing keeps being heard —
+// a new commit batches the new line instead of cutting the playback (the
+// behaviour issue #25 asked for, ADR-0122 decision 2): the fence spares
+// the playing generation the way the runtime's fence spares it.
 func (r *run) advanceFence(generation int64) {
 	r.mu.Lock()
 	var stale []int64
@@ -539,7 +635,34 @@ func (r *run) advanceFence(generation int64) {
 	if r.sched == nil {
 		return
 	}
+	// The catch-up policy's spare (ADR-0122 decision 2): the line that is
+	// playing keeps playing to the end — the tap batches, it does not cut.
+	var playing int64
+	if r.catchUpPolicy == session.CatchUpPolicyCatchUp {
+		r.cuMu.Lock()
+		playing = r.cuPlayingGen
+		r.cuMu.Unlock()
+	}
 	for _, g := range stale {
+		if g == playing {
+			continue
+		}
+		// Under the catch-up policy a generation that has already reached its
+		// terminal is no longer queued or playing: the first line's playback
+		// ended (its evidence WAV is written) long before a later commit
+		// lands, so the commit must not cancel it a second time and cut the
+		// sink's write (issue #25, ADR-0122 decision 2). Only a generation
+		// still active (submitted, not yet terminal) is cancelled at the
+		// source. latest_only keeps the historical shape: every older started
+		// generation is cancelled on the advance.
+		if r.catchUpPolicy == session.CatchUpPolicyCatchUp {
+			r.cuMu.Lock()
+			active := r.cuActive[g]
+			r.cuMu.Unlock()
+			if !active {
+				continue
+			}
+		}
 		r.sched.Cancel(g, "new_commit")
 	}
 }
@@ -586,12 +709,22 @@ func (r *run) run(ctx context.Context) error {
 		Preprocess:      vision.DefaultSteps(),
 		Trace:           true,
 		Mode:            pipeline.ModeReplay,
+		// The perceptual skip runs at its product defaults here (ADR-0115 §3,
+		// issue #26): the settle gate keeps the typewriter's word-sized steps —
+		// inside the tolerance, one frame each at the clip's 10 fps — reaching
+		// OCR one frame at a time, so the graded capture-clock contract holds
+		// with the same path the live feed uses. Byte-identical frames still
+		// take the exact-hash half, which is the "repeat observation" the spec's
+		// no-duplicate-commit assertion grades.
 		// The narrated-class setting the scenario declares (docs/spec/09
 		// "/play"): the pipeline's commitment policy applies the veto, so a
 		// sign or item that commits in a session that did not elect to hear
 		// its class is speech-ineligible in the pipeline's own commit events
-		// — the record of commitment the report grades.
-		Reducer: session.Config{NarratedKinds: r.narratedKinds},
+		// — the record of commitment the report grades. CatchUp: the session's
+		// catch-up policy the scenario names (issue #25, ADR-0122) — the same
+		// word the sidecar's speech sidecar runs, so the session state the
+		// timeline records matches the audio behaviour the run exhibits.
+		Reducer: session.Config{NarratedKinds: r.narratedKinds, CatchUp: r.sc.CatchUp},
 		Tracker: recognition.Config{VoteWindow: 3, StableWindow: 100 * time.Millisecond},
 	}
 	runner, err := pipeline.New(cfg)
@@ -610,7 +743,7 @@ func (r *run) run(ctx context.Context) error {
 	// reads, the way the runtime's speech layer reads the same flag.
 	pub := &sidecarPub{forward: speechEventNames(), hub: r.hub}
 	sess, err := session.New(sessionID, profileRevision, pub,
-		session.WithConfig(session.Config{NarratedKinds: r.narratedKinds}),
+		session.WithConfig(session.Config{NarratedKinds: r.narratedKinds, CatchUp: r.sc.CatchUp}),
 		session.WithMessageKind(r.idx.KindFor),
 		session.WithTrackerConfig(recognition.Config{VoteWindow: 3, StableWindow: 100 * time.Millisecond}))
 	if err != nil {
@@ -657,13 +790,54 @@ func (r *run) run(ctx context.Context) error {
 	return nil
 }
 
-// closeAudio stops the playback half: the scheduler stops any active
-// playback (the filesink writes the delivered prefix as the evidence WAV)
-// and drains its loop, bounded. The sink itself is closed by close(); the
-// directory is kept as the run's audio evidence.
+// closeAudio stops the playback half: the catch-up workers drain (bounded),
+// the batch the run's end meets still pending settles with the reason, and
+// the scheduler stops any active playback (the filesink writes the
+// delivered prefix as the evidence WAV) and drains its loop, bounded. The
+// sink itself is closed by close(); the directory is kept as the run's
+// audio evidence.
 func (r *run) closeAudio() {
+	// The catch-up playback chain drains before the scheduler stops
+	// (issue #25, ADR-0122): each run's end flushes the next batch, so a
+	// flush worker finishes after SUBMITTING its runs, not after the runs
+	// play. Stopping the scheduler on the flush workers' drain alone would
+	// cut the in-flight run and drop the queued one (their evidence WAVs are
+	// written on the playback's end, so the scheduler must not stop before
+	// the runs end). waitCatchUpSettled keeps the runs playing to their
+	// terminal; a wedged provider or sink must not hold the run's
+	// finalisation open, so the wait is bounded.
+	r.waitCatchUpSettled()
+	// The batch the run's end meets still pending is skipped with the
+	// reason before the scheduler stops (docs/spec/13 on the way out).
+	r.settleCatchUpBatch()
 	if r.sched != nil {
 		_ = r.sched.Stop()
+	}
+}
+
+// waitCatchUpSettled waits for the catch-up playback chain to settle: no
+// batch pending, no synthesis in flight, and no submitted utterance still
+// active. The chain's trigger is a playback's terminal, which spawns the
+// next flush worker after this method's WaitGroup drain, so the loop
+// re-waits on the group each pass and only returns once nothing is pending,
+// synthesising or playing. Under latest_only the batcher never runs (the
+// counters stay zero), so the first pass settles immediately. Bounded:
+// the per-utterance TTS is itself bounded by providerTimeout, so a wedged
+// provider or sink cannot hold the run's finalisation open.
+func (r *run) waitCatchUpSettled() {
+	deadline := time.Now().Add(providerTimeout)
+	for {
+		r.cuWG.Wait()
+		r.cuMu.Lock()
+		settled := len(r.cuPending) == 0 && r.cuSynth == 0 && r.cuPlaying == 0
+		r.cuMu.Unlock()
+		if settled {
+			return
+		}
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -692,6 +866,9 @@ func (r *run) audioEvidenceCheck() (Result, bool) {
 		started[occ] = gen
 	}
 	r.mu.Unlock()
+	r.cuMu.Lock()
+	merged := len(r.cuMergedOcc)
+	r.cuMu.Unlock()
 
 	entries, err := os.ReadDir(r.audioDir)
 	if err != nil {
@@ -710,10 +887,14 @@ func (r *run) audioEvidenceCheck() (Result, bool) {
 		}
 		files++
 	}
-	if len(offenders) == 0 && files != len(started) {
-		offenders = append(offenders, fmt.Sprintf("%d evidence WAV(s) in the sink dir for %d started utterance(s): every started utterance must leave exactly one, and no other utterance may leave one", files, len(started)))
+	// The expected count is the immediate path's started utterances plus the
+	// catch-up runs (issue #25, ADR-0122): each flush's run plays through
+	// the sink and leaves its own evidence WAV, the way a started one does.
+	want := len(started) + merged
+	if len(offenders) == 0 && files != want {
+		offenders = append(offenders, fmt.Sprintf("%d evidence WAV(s) in the sink dir for %d started utterance(s) and %d catch-up run(s): every started utterance and every run must leave exactly one, and no other utterance may leave one", files, len(started), merged))
 	}
-	detail := fmt.Sprintf("sink dir %s: %d evidence WAV(s) for %d started utterance(s), no temporary file", r.audioDir, files, len(started))
+	detail := fmt.Sprintf("sink dir %s: %d evidence WAV(s) for %d started utterance(s) and %d catch-up run(s), no temporary file", r.audioDir, files, len(started), merged)
 	if len(offenders) > 0 {
 		return Result{Type: "audio_evidence_clean", Passed: false, Detail: strings.Join(offenders, "; ")}, true
 	}
@@ -723,7 +904,16 @@ func (r *run) audioEvidenceCheck() (Result, bool) {
 // runSidecar is layer B: the paced truth feed plus the decision/TTS work it
 // triggers. The feed paces the capture clock so the commit wall times mirror
 // the clip: a decision delayed by 900 ms on the wall clock is a decision
-// delayed by 900 ms on the recording.
+// delayed by 900 ms on the recording. The pacing is a simulation of the
+// dialogue's own cadence, not a test budget: the TTS interleaving the
+// scenario assertions grade — an utterance starting while the previous line
+// is still playing, a dialogue_advanced cancel mid-playback, the evidence
+// WAV the sink writes over the utterance's duration — needs the wall gap
+// between commits a real session has while the previous line is spoken
+// (issue #22: the load sensitivity was the suite's shared 3-minute context
+// outrun by these paced runs on a saturated race host, fixed by the
+// race-scaled suite bound in scenarios_test.go — not by removing the
+// pacing, which the playback interleaving depends on).
 func (r *run) runSidecar(ctx context.Context) error {
 	base := r.truth[r.kept[0]].TsNS
 	start := time.Now()
@@ -857,7 +1047,7 @@ func (r *run) handleCommit(ctx context.Context, c commitInfo) {
 		// is not speech-eligible stays silent here, the way the runtime's
 		// speech layer reads the same flag.
 		if c.speechEligible {
-			r.speak(ctx, c)
+			r.routeSpeech(ctx, c)
 		}
 		return
 	}
@@ -975,7 +1165,7 @@ func (r *run) handleCommit(ctx context.Context, c commitInfo) {
 
 	r.emit(ctx, events.DecisionResolved, r.decisionResolved(c, outcome))
 	if eligible && outcome.applied {
-		r.speak(ctx, c)
+		r.routeSpeech(ctx, c)
 	}
 }
 
@@ -1031,6 +1221,23 @@ func (r *run) speak(ctx context.Context, c commitInfo) {
 		return
 	}
 
+	// The catch-up policy's busy bookkeeping (issue #25, ADR-0122): while
+	// this utterance is in its TTS round trip a newer commit is not idle —
+	// it batches instead of racing a second synthesis. latest_only runs
+	// carry no batcher, so the counter stays at zero and the policy's
+	// decisions never run.
+	catchUp := r.catchUpPolicy == session.CatchUpPolicyCatchUp
+	if catchUp {
+		r.cuMu.Lock()
+		r.cuSynth++
+		r.cuMu.Unlock()
+		defer func() {
+			r.cuMu.Lock()
+			r.cuSynth--
+			r.cuMu.Unlock()
+		}()
+	}
+
 	pctx, cancel := context.WithTimeout(ctx, providerTimeout)
 	defer cancel()
 	r.ttsWrap.stampMS = c.tsMS
@@ -1078,6 +1285,33 @@ func (r *run) speak(ctx context.Context, c commitInfo) {
 	// fence no longer approves is dropped before it can start ("zero stale
 	// audio starts"), and a cancelled generation is dropped with the reason.
 	if r.sched != nil {
+		if catchUp {
+			// The utterance is now the batcher's "playing or queued": a
+			// commit that lands before the scheduler drops it is busy, and
+			// the fence spares it while it plays (ADR-0122 decision 2). The
+			// immediate line is the catch-up policy's playing line, so the
+			// fence approves its generation before the submit — the fence's
+			// own rule that a generation it already let speak cannot be
+			// fenced by a commit that lands mid-submit — and the commit
+			// watcher's fence spare leaves it uncancelled while it runs out.
+			// Approving before Submit is what keeps the first line's evidence
+			// WAV off the drop path: without it the rapid commits advance the
+			// session past the line's generation and the fence drops it as
+			// stale before it ever plays (the line is speech.started but the
+			// sink never hears it, so audio_evidence_clean counts a WAV that
+			// was never written).
+			r.cuMu.Lock()
+			r.cuPlaying++
+			r.cuPlayingGen = c.generation
+			r.cuActive[c.generation] = true
+			if indexInt64(r.cuApproved, c.generation) < 0 {
+				r.cuApproved = append(r.cuApproved, c.generation)
+				if len(r.cuApproved) > speech.DefaultCatchUpApprovedCap {
+					r.cuApproved = r.cuApproved[1:]
+				}
+			}
+			r.cuMu.Unlock()
+		}
 		r.sched.Submit(speech.UtteranceReady{
 			SessionID:        sessionID,
 			Generation:       c.generation,
@@ -1114,14 +1348,18 @@ func (r *run) applySpeech(ctx context.Context, c commitInfo, kind session.Speech
 // is exactly "no stale audio starts".
 func (r *run) finishUtterances(ctx context.Context) {
 	r.mu.Lock()
-	live := make(map[string]int64, len(r.started))
-	for occ, gen := range r.started {
-		live[occ] = gen
+	live := make([]string, 0, len(r.started))
+	for occ := range r.started {
+		live = append(live, occ)
 	}
 	r.mu.Unlock()
-	for occ, gen := range live {
+	for _, occ := range live {
+		// A settling line's terminal is a new observation (playback ended now),
+		// so the header carries the current generation; the occurrence id, not
+		// the generation, ties the terminal to the line still being heard
+		// (issue #25, ADR-0122 decision 8).
 		m := session.SpeechMsg{
-			Header:       r.msgHeader(gen),
+			Header:       r.msgHeader(r.session.Generation()),
 			RegionID:     r.region,
 			OccurrenceID: occ,
 			Kind:         session.SpeechEnded,
@@ -1129,6 +1367,378 @@ func (r *run) finishUtterances(ctx context.Context) {
 		}
 		_, _ = r.session.Apply(ctx, m)
 	}
+}
+
+// ── Catch-up narration (issue #25, ADR-0122) --------------------------------
+//
+// The sidecar's catch-up policy, the runtime's wiring shape at harness
+// scale: the shared decision core (internal/speech) makes the decisions —
+// the window drop, the speaker-run split, the sentence-spacing join, the
+// versioned merged id — and this side owns the TTS calls, the scheduler
+// submits and the events, the way the runtime's wiring does. latest_only
+// runs never reach this code: routeSpeech falls straight through to speak.
+
+// speakerFor is the harness's speaker resolution for one committed message:
+// the scenario's declared attribution, the narrator when the scenario named
+// none — the same fallback the runtime's resolution applies to an
+// unattributed line (the synthetic profiles carry no character rows, so
+// this table is the only speaker source a synthetic run has).
+func (r *run) speakerFor(messageID string) string {
+	if sp, ok := r.speakerTable[messageID]; ok && sp != "" {
+		return sp
+	}
+	return "narrator"
+}
+
+// routeSpeech is the commit→speech hand-off under the session's catch-up
+// policy (issue #25, ADR-0122): latest_only speaks the line at once (the
+// historical path, byte for byte the behaviour the pre-catch-up scenarios
+// grade); catch_up speaks at once when speech is idle — the fast path keeps
+// the first line's commit→voice latency — and BATCHES the line when an
+// utterance is synthesising or playing or a batch is already pending (the
+// overlap the issue's rapid A-taps produce).
+func (r *run) routeSpeech(ctx context.Context, c commitInfo) {
+	if r.catchUpPolicy != session.CatchUpPolicyCatchUp {
+		r.speak(ctx, c)
+		return
+	}
+	line := speech.CatchUpLine{
+		Generation:  c.generation,
+		Occurrence:  c.occurrence,
+		MessageID:   c.messageID,
+		RegionID:    c.region,
+		Text:        c.text,
+		Speaker:     r.speakerFor(c.messageID),
+		CommittedAt: time.Now(),
+	}
+	var dropped []speech.CatchUpLine
+	r.cuMu.Lock()
+	busy := r.cuSynth > 0 || r.cuPlaying > 0 || len(r.cuPending) > 0
+	if !busy {
+		r.cuMu.Unlock()
+		r.speak(ctx, c)
+		return
+	}
+	// The playing line is the session's active playback, and the commit must
+	// not cut it (issue #25's point: a tap that lands while the player is
+	// listening keeps the line playing to the end; ADR-0122 decision 2). The
+	// scheduler re-checks its fence during playback, so the approval is what
+	// the "leave it to run out" is implemented with — the runtime's
+	// fence.approve(playingGen), the same shape.
+	if r.cuPlayingGen != 0 && indexInt64(r.cuApproved, r.cuPlayingGen) < 0 {
+		r.cuApproved = append(r.cuApproved, r.cuPlayingGen)
+		if len(r.cuApproved) > speech.DefaultCatchUpApprovedCap {
+			r.cuApproved = r.cuApproved[1:]
+		}
+	}
+	// The window fences the pending prefix the new line outlives (ADR-0122:
+	// "Fencing (ADR 0092) still applies to anything older than the batch
+	// window") — the batcher's own prefix rule, oldest first.
+	if n := speech.BatchWindowDrop(r.cuPending, line.CommittedAt, speech.DefaultCatchUpBatchWindow); n > 0 {
+		dropped = append([]speech.CatchUpLine(nil), r.cuPending[:n]...)
+		r.cuPending = r.cuPending[n:]
+		r.cuDropped += n
+	}
+	r.cuPending = append(r.cuPending, line)
+	if r.cuTimer == nil {
+		// The window elapsing since the batch's FIRST line flushes (the
+		// runtime's arm-once rule): a later line extends the batch's content,
+		// not its deadline.
+		r.cuTimer = time.AfterFunc(speech.DefaultCatchUpBatchWindow, func() { r.flushCatchUp("catch_up_window") })
+	}
+	r.cuMu.Unlock()
+	// The batched line's commit is still a request (the event says the line
+	// was asked for and where it went); its one terminal is the batch's
+	// outcome — the merged run's, the window's fence, or the run's end.
+	r.emit(ctx, events.SpeechRequested, map[string]any{
+		"dialogue_occurrence_id": line.Occurrence,
+		"message_id":             line.MessageID,
+		"generation":             line.Generation,
+		"region_id":              line.RegionID,
+		"text":                   line.Text,
+		"character_id":           line.Speaker,
+		"catch_up":               "batched",
+	})
+	for _, l := range dropped {
+		r.emit(ctx, events.SpeechEnded, map[string]any{
+			"dialogue_occurrence_id": l.Occurrence,
+			"message_id":             l.MessageID,
+			"generation":             l.Generation,
+			"region_id":              l.RegionID,
+			"result":                 "skipped",
+			"reason":                 "catch_up_stale",
+			"character_id":           l.Speaker,
+		})
+	}
+}
+
+// flushCatchUp takes the pending batch (if any) off the batcher and hands
+// it to a flush worker. The window timer, the playback terminal and the run
+// end all call it; an empty batch is a no-op, so the three triggers may
+// race freely.
+func (r *run) flushCatchUp(trigger string) {
+	r.cuMu.Lock()
+	if r.cuTimer != nil {
+		t := r.cuTimer
+		r.cuTimer = nil
+		t.Stop()
+	}
+	batch := r.cuPending
+	r.cuPending = nil
+	r.cuMu.Unlock()
+	if len(batch) == 0 {
+		return
+	}
+	r.cuWG.Add(1)
+	go func() {
+		defer r.cuWG.Done()
+		r.runCatchUpBatch(batch, trigger)
+	}()
+}
+
+// runCatchUpBatch is the flush (issue #25, ADR-0122): the batcher's own
+// decisions on the shared core (the max-age drop, the speaker-run split),
+// then one TTS request per speaker run, in commit order. The runs share the
+// batch's newest committed generation as their bookkeeping base — run i
+// books base+i — and the fence approves every one of them BEFORE the first
+// submit, the way the runtime's flush does (a commit that lands mid-flush
+// cannot fence a run the fence already let speak: it batches its own line
+// instead).
+func (r *run) runCatchUpBatch(batch []speech.CatchUpLine, trigger string) {
+	if len(batch) == 0 {
+		return
+	}
+	now := time.Now()
+	var batchBase int64
+	for _, l := range batch {
+		if l.Generation > batchBase {
+			batchBase = l.Generation
+		}
+	}
+	var dropped []speech.CatchUpLine
+	var runs []speech.CatchUpRun
+	for _, run := range speech.SplitRuns(batch) {
+		// The per-utterance max age (issue #25 item 1): a run whose audio
+		// would not be ready until after the newest line it covers committed
+		// plus the max age is dropped before it starts — the dismiss-
+		// without-successor backstop ADR-0092 deferred (the box is gone, no
+		// commit moved the fence, and only the age bound keeps the late audio
+		// off the sink).
+		if now.Sub(run.LatestCommittedAt()) > speech.DefaultCatchUpMaxUtteranceAge {
+			dropped = append(dropped, run.Lines...)
+			continue
+		}
+		runs = append(runs, run)
+	}
+	for _, l := range dropped {
+		r.cuMu.Lock()
+		r.cuDropped++
+		r.cuMu.Unlock()
+		r.emit(ctxOf(r), events.SpeechEnded, map[string]any{
+			"dialogue_occurrence_id": l.Occurrence,
+			"message_id":             l.MessageID,
+			"generation":             l.Generation,
+			"region_id":              l.RegionID,
+			"result":                 "skipped",
+			"reason":                 "catch_up_stale",
+			"character_id":           l.Speaker,
+		})
+	}
+	if len(runs) == 0 {
+		return
+	}
+	// Approve the fence before the first submit (ADR-0122 decision 4), and
+	// book the runs' occurrences for the audio evidence check.
+	r.cuMu.Lock()
+	for i, run := range runs {
+		gen := batchBase + int64(i)
+		if indexInt64(r.cuApproved, gen) < 0 {
+			r.cuApproved = append(r.cuApproved, gen)
+			if len(r.cuApproved) > speech.DefaultCatchUpApprovedCap {
+				r.cuApproved = r.cuApproved[1:]
+			}
+		}
+		r.cuActive[gen] = true
+		r.cuMergedOcc["cu-"+speech.MergedOriginalID(run.MessageIDs())] = true
+		r.cuMergedRuns++
+	}
+	r.cuMu.Unlock()
+	for i, run := range runs {
+		gen := batchBase + int64(i)
+		mergedID := speech.MergedOriginalID(run.MessageIDs())
+		occ := "cu-" + mergedID
+		// The merged run's request: the run's ids (the merged cache key's id
+		// form, ADR-0122 decision 6) ride the event the report grades on.
+		r.emit(ctxOf(r), events.SpeechRequested, map[string]any{
+			"dialogue_occurrence_id": occ,
+			"message_id":             mergedID,
+			"message_ids":            run.MessageIDs(),
+			"generation":             gen,
+			"region_id":              run.Lines[0].RegionID,
+			"text":                   run.Text,
+			"character_id":           run.Speaker,
+			"merged":                 len(run.Lines) > 1,
+			"trigger":                trigger,
+			"catch_up":               "merged",
+		})
+		r.speakMerged(ctxOf(r), occ, gen, run)
+	}
+}
+
+// speakMerged is one merged run's TTS worker: one request for the run's
+// merged text (the merge is the budget win, ADR-0122 decision 3), the
+// evidence WAV under the run's occurrence, the scheduler's submit under
+// the run's approved generation. The session's region lifecycle is the
+// committed box's, not the run's — the run is a harness-level utterance
+// (its events above are its record), the way the runtime's merged runs are
+// wiring-level utterances the session's per-region lifecycle does not own.
+func (r *run) speakMerged(ctx context.Context, occ string, gen int64, run speech.CatchUpRun) {
+	if r.sched == nil {
+		return
+	}
+	r.cuMu.Lock()
+	r.cuSynth++
+	r.cuMu.Unlock()
+	defer func() {
+		r.cuMu.Lock()
+		r.cuSynth--
+		r.cuMu.Unlock()
+	}()
+	pctx, cancel := context.WithTimeout(ctx, providerTimeout)
+	defer cancel()
+	audio, err := r.ttsWrap.GenerateStream(pctx, tts.GenerateRequest{Text: run.Text, Voice: r.voice})
+	if err != nil {
+		// The run's one terminal: the lines it covered end failed with the
+		// provider's reason (docs/spec/13 "did it speak, and why not").
+		for _, l := range run.Lines {
+			r.emit(ctx, events.SpeechEnded, map[string]any{
+				"dialogue_occurrence_id": l.Occurrence,
+				"message_id":             l.MessageID,
+				"generation":             l.Generation,
+				"region_id":              l.RegionID,
+				"result":                 "failed",
+				"reason":                 providerErrorKind(err),
+				"character_id":           l.Speaker,
+			})
+		}
+		return
+	}
+	r.mu.Lock()
+	r.audio[occ] = audio.WAV
+	r.mu.Unlock()
+	// The merged run's started: the line's "spoken" evidence (the report's
+	// speech_spoken_count reads the started's covered ids), the run's ids
+	// and speaker riding the way the session's started rides its line's.
+	// Emitted only when the synthesis succeeded: a run whose TTS failed has
+	// no started, so its lines count as never spoken, not as the request
+	// that preceded the failure.
+	r.emit(ctx, events.SpeechStarted, map[string]any{
+		"dialogue_occurrence_id": occ,
+		"message_id":             speech.MergedOriginalID(run.MessageIDs()),
+		"message_ids":            run.MessageIDs(),
+		"generation":             gen,
+		"voice_id":               r.voice,
+		"character_id":           run.Speaker,
+		"catch_up":               "merged",
+	})
+	r.cuMu.Lock()
+	r.cuPlaying++
+	r.cuMu.Unlock()
+	r.sched.Submit(speech.UtteranceReady{
+		SessionID:        sessionID,
+		Generation:       gen,
+		UtteranceID:      occ,
+		Priority:         speech.PriorityCurrent,
+		WAV:              audio.WAV,
+		ExpectedDuration: audio.Duration,
+	})
+}
+
+// notePlaybackStarted is the scheduler's start, read by the catch-up
+// observer: the playing generation is the fence's spare (ADR-0122
+// decision 2).
+func (r *run) notePlaybackStarted(gen int64) {
+	r.cuMu.Lock()
+	r.cuPlayingGen = gen
+	r.cuMu.Unlock()
+}
+
+// notePlaybackTerminal is the scheduler's end/cancel for one generation:
+// it unapproves the generation, and when the PLAYING generation ends it
+// moves on and flushes the pending batch on the playback end — the
+// runtime's flush trigger the batcher owes (a line that committed while
+// the previous line was still playing speaks back-to-back, not at the
+// window's end when the end came first).
+func (r *run) notePlaybackTerminal(gen int64) {
+	r.cuMu.Lock()
+	if i := indexInt64(r.cuApproved, gen); i >= 0 {
+		r.cuApproved = append(r.cuApproved[:i], r.cuApproved[i+1:]...)
+	}
+	// The generation reached its terminal: it is no longer queued or playing,
+	// so a later commit must not cancel it a second time (the spurious
+	// re-cancel that cut the first line's evidence WAV before the sink wrote
+	// it, issue #25 ADR-0122).
+	delete(r.cuActive, gen)
+	wasPlaying := r.cuPlayingGen == gen
+	if wasPlaying {
+		r.cuPlayingGen = 0
+	}
+	r.cuPlaying--
+	if r.cuPlaying < 0 {
+		r.cuPlaying = 0
+	}
+	r.cuMu.Unlock()
+	if wasPlaying {
+		r.flushCatchUp("playback_ended")
+	}
+}
+
+// ctxOf is the flush worker's publish context: the run's context is
+// already drained by the time the workers finish, and the hub's publish
+// must not fail on the run's end (the runtime's endCtx rule, scaled to the
+// harness's single context).
+func ctxOf(r *run) context.Context {
+	return context.Background()
+}
+
+// settleCatchUpBatch takes the run down: the batch the run's end meets
+// still pending is skipped with the reason (docs/spec/13 still holds on
+// the way out), and the approvals empty — a batch the run is not speaking
+// keeps nothing speakable.
+func (r *run) settleCatchUpBatch() {
+	r.cuMu.Lock()
+	if r.cuTimer != nil {
+		t := r.cuTimer
+		r.cuTimer = nil
+		t.Stop()
+	}
+	pending := r.cuPending
+	r.cuPending = nil
+	r.cuApproved = nil
+	r.cuPlayingGen = 0
+	r.cuMu.Unlock()
+	for _, l := range pending {
+		r.emit(ctxOf(r), events.SpeechEnded, map[string]any{
+			"dialogue_occurrence_id": l.Occurrence,
+			"message_id":             l.MessageID,
+			"generation":             l.Generation,
+			"region_id":              l.RegionID,
+			"result":                 "skipped",
+			"reason":                 "session_ended",
+			"character_id":           l.Speaker,
+		})
+	}
+}
+
+// indexInt64 is the approved set's linear find (the set is capped at 16;
+// a linear scan is the bound the runtime's fence relies on).
+func indexInt64(set []int64, v int64) int {
+	for i, g := range set {
+		if g == v {
+			return i
+		}
+	}
+	return -1
 }
 
 // setDegraded tracks the provider.degraded state per role: the first failure

@@ -8,6 +8,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/capture"
 	"github.com/dbirks/game-narrator/internal/games"
 	"github.com/dbirks/game-narrator/internal/recognition"
+	"github.com/dbirks/game-narrator/internal/vision"
 	"github.com/dbirks/game-narrator/internal/vision/ocr"
 )
 
@@ -26,6 +27,27 @@ type regionState struct {
 	// set when a recognition starts, not when it finishes, so frames arriving
 	// during a slow read attach to that read instead of racing a duplicate of it.
 	lastHash string
+
+	// lastPHash is the perceptual hash (ADR-0115 §3) of the crop currently
+	// being read, or the last one read. A new frame's crop within tolerance of
+	// it skips OCR the way an identical hash does: the analog feed never
+	// delivers two byte-identical crops, but it can keep the box perceptually
+	// the same for a page of dialogue, and the tolerant skip is what lets the
+	// stable box ride the last read instead of restarting one every frame.
+	// Same discipline as lastHash: set when a recognition starts, cleared when
+	// it is cancelled or fails.
+	lastPHash uint64
+	havePHash bool
+
+	// quietRun is the perceptual skip's settle counter (ADR-0115 §3): the
+	// consecutive quiet crops since the last change beyond tolerance, the last
+	// one included. The skip arms only past PerceptualSkipSettle, because a
+	// one-word typewriter growth moves 0–7 bits on the 9×8 grid — inside the
+	// tolerance — and only a run of quiet crops distinguishes "the box has been
+	// still" from "the line is still typing". It resets when the anchor moves
+	// (a new read starts, a read fails, the box vanishes) and when a change
+	// beyond tolerance arrives: the quiet run is about the current anchor.
+	quietRun int
 
 	// inflight is the one recognition this region has outstanding. One, not a
 	// list: two concurrent reads of one box return two answers about a screen the
@@ -202,8 +224,13 @@ func (r *Runner) applyOutcome(regions []*regionState, o ocrOutcome) {
 			if rs.lastHash == o.job.hash {
 				// The read that was supposed to describe these pixels was cancelled, so
 				// "unchanged hash ⇒ already read" would be a claim about a result that
-				// does not exist. The next identical frame re-reads.
+				// does not exist. The next identical frame re-reads. The perceptual
+				// memory is the same claim on a tolerant key: it goes too, with the
+				// quiet run the skip's settle is measured on.
 				rs.lastHash = ""
+				rs.lastPHash = 0
+				rs.havePHash = false
+				rs.quietRun = 0
 			}
 		}
 		return
@@ -232,8 +259,12 @@ func (r *Runner) applyOutcome(regions []*regionState, o ocrOutcome) {
 			// A failed read is not evidence. The observation still goes out — the
 			// region is present and the tracker should see the frame — but with no
 			// OCR payload, and lastHash is cleared so the next frame retries rather
-			// than reusing a result that never arrived.
+			// than reusing a result that never arrived. The perceptual memory and its
+			// quiet run go with it: the skip must not arm on a crop nobody read.
 			rs.lastHash = ""
+			rs.lastPHash = 0
+			rs.havePHash = false
+			rs.quietRun = 0
 			rs.inflight = nil
 			rs.lastOK = nil
 			rs.lastOKHash = ""
@@ -425,14 +456,54 @@ func (rs *regionState) accept(r *Runner, ctx context.Context, f capture.Frame, i
 		// The box is gone, or was never in this rect. No recognition is worth
 		// running, and the dedupe memory is cleared: reusing the last line for a box
 		// that reappeared is exactly the "same words after a menu count as one
-		// occurrence" bug docs/spec/12 tests for.
+		// occurrence" bug docs/spec/12 tests for. The perceptual memory is the
+		// same claim on a tolerant key: it goes too, with the quiet run that the
+		// skip's settle is measured on.
 		rs.discardInflight(r)
 		rs.lastHash = ""
+		rs.lastPHash = 0
+		rs.havePHash = false
+		rs.quietRun = 0
 	case a.hash == rs.lastHash && rs.lastHash != "":
 		// Identical pixels: no OCR. If a read of these very pixels is in flight the
-		// observation attaches to it rather than starting a duplicate.
+		// observation attaches to it rather than starting a duplicate. The crop is
+		// the quietest quiet, so the settle counter runs on it too.
 		p.job = rs.inflight
+		rs.quietRun++
 		r.cnt.ocrSkipped()
+	case rs.havePHash && a.havePHash && r.cfg.PerceptualSkipTolerance >= 0 && vision.PerceptualDistance(a.pHash, rs.lastPHash) <= r.cfg.PerceptualSkipTolerance:
+		// Perceptually unchanged (ADR-0115 §3): the exact hash says the crop
+		// changed — on an analog feed it changes every frame — but the picture
+		// the box shows did not. The skip is settle-gated (quietRun past
+		// PerceptualSkipSettle): a one-word typewriter growth moves 0–7 bits, inside
+		// the tolerance, so a quiet crop inside a run of changes is a word being
+		// typed, not noise, and it gets the read — the settle is what keeps the
+		// tolerant skip from freezing a line at a prefix. Armed, no OCR: the
+		// observation rides the in-flight read when one is outstanding (and gets
+		// that read's text, which is about the same picture) or, with nothing in
+		// flight, goes out on the last successful read's text (the reuse in emit).
+		// Counted with the exact-hash skip: for the operator it is the same fact —
+		// "OCR was skipped because the box had not changed" — and the counter is
+		// where docs/spec/05's suppression is asserted.
+		rs.quietRun++
+		if rs.quietRun > r.cfg.PerceptualSkipSettle {
+			p.job = rs.inflight
+			p.phashSkip = true
+			r.cnt.ocrSkipped()
+		} else if rs.inflight != nil {
+			// Quiet but the settle is not armed: the read already in flight is
+			// paying for this crop's pixels, so ride it rather than start a second —
+			// and the next frame re-anchors (the read settles, the crop after it
+			// re-reads), which is how a slow growth still reaches OCR one frame a
+			// time.
+			p.job = rs.inflight
+			r.cnt.ocrDeferred()
+		} else {
+			// Quiet but the settle is not armed and nothing is in flight: this is
+			// the word-sized change the tolerance cannot see past, so read it. The
+			// new anchor follows the read (startJob) and the quiet run starts over.
+			p.job = rs.startJob(r, ctx, f.Seq, a, jobs)
+		}
 	case a.hash != "":
 		if rs.inflight != nil {
 			// A read of a slightly older box is already in flight. Killing it on
@@ -451,7 +522,9 @@ func (rs *regionState) accept(r *Runner, ctx context.Context, f capture.Frame, i
 			// reducer's generation fence, and the frame after the read settles
 			// starts the next one. Replay never gets here: waitInflight
 			// serializes, so inflight is nil at accept time and a changed hash
-			// starts a fresh read, exactly as before.
+			// starts a fresh read, exactly as before. The quiet run breaks with
+			// the change: whatever settles next re-anchors it.
+			rs.quietRun = 0
 			p.job = rs.inflight
 			r.cnt.ocrDeferred()
 		} else {
@@ -498,6 +571,7 @@ func (rs *regionState) startJob(r *Runner, ctx context.Context, frameSeq int64, 
 		id:       rs.nextID,
 		region:   rs.region.ID,
 		hash:     a.hash,
+		pHash:    a.pHash,
 		frameSeq: frameSeq,
 		input:    a.input,
 		raw:      a.crop,
@@ -508,6 +582,16 @@ func (rs *regionState) startJob(r *Runner, ctx context.Context, frameSeq int64, 
 	}
 	rs.inflight = job
 	rs.lastHash = a.hash
+	// The perceptual memory is set at read start, like lastHash: frames that
+	// arrive during this read attach to it instead of racing a duplicate of it,
+	// and a crop that is perceptually identical to the one being read must not
+	// look "new" to the next frame's accept. The quiet run starts with the new
+	// anchor: the skip's settle is measured on crops quiet against THIS read.
+	if a.havePHash {
+		rs.lastPHash = a.pHash
+		rs.havePHash = true
+	}
+	rs.quietRun = 0
 	select {
 	case jobs <- job:
 		// The engine is actually being called about these pixels from here on;
@@ -548,8 +632,13 @@ func (rs *regionState) discardInflight(r *Runner) {
 	}
 	if rs.lastHash == job.hash {
 		// "Same hash means it was already read" cannot be claimed about a read that
-		// was cancelled, so the next identical frame re-reads.
+		// was cancelled, so the next identical frame re-reads. The perceptual
+		// memory is the same claim on a tolerant key: it goes too, with the quiet
+		// run the skip's settle is measured on.
 		rs.lastHash = ""
+		rs.lastPHash = 0
+		rs.havePHash = false
+		rs.quietRun = 0
 	}
 }
 
@@ -648,10 +737,12 @@ func (rs *regionState) emit(r *Runner, ctx context.Context, in chan<- *obsIn, p 
 		r.cnt.ocrStale()
 		return nil
 	}
-	if o.OCR == nil && !rs.deliveredOK && rs.lastOK != nil && p.a.hash != "" && p.a.hash == rs.lastOKHash {
+	if o.OCR == nil && !rs.deliveredOK && rs.lastOK != nil && (p.phashSkip || (p.a.hash != "" && p.a.hash == rs.lastOKHash)) {
 		// The pixels have been read but the answer never reached the reducer (its
-		// observation was evicted). Deliver it now rather than let the region's
-		// accepted text stay one prefix behind for the rest of the box's life.
+		// observation was evicted), or the crop is perceptually unchanged from the
+		// last read (ADR-0115 §3) and no OCR ran: deliver the last successful
+		// text rather than let the region's accepted text stay one prefix behind
+		// for the rest of the box's life.
 		o.OCR = rs.lastOK
 	}
 	if o.OCR != nil && p.a.hash == rs.lastOKHash {

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/dbirks/game-narrator/internal/games"
+	"github.com/dbirks/game-narrator/internal/session"
 )
 
 // Origin values (docs/spec/12 "provenance"): where the frames and their labels
@@ -78,6 +79,27 @@ type Scenario struct {
 	// Optional: the default is dialogue alone, the product's conservative
 	// default (session.DefaultConfig).
 	NarratedKinds []string
+	// CatchUp is the session's catch-up narration policy the harness's
+	// speech sidecar runs (issue #25, ADR-0122). The harness default is
+	// latest_only — the historical immediate shape every scenario written
+	// before the catch-up policy grades (a new commit cancels the playing
+	// line); a scenario that runs the product's catch_up default states it
+	// explicitly, so a silent default can never re-shape an existing
+	// scenario's graded behaviour. The session the sidecar builds carries
+	// the same word, so the session state the timeline records matches the
+	// audio behaviour the run exhibits.
+	CatchUp string
+	// Speakers is the synthetic speaker attribution the catch-up merge reads
+	// (issue #25, ADR-0122): message id to speaker label, invented with the
+	// scenario's own lines (AGENTS.md rule 5 — the synthetic corpus is all
+	// invented text). It exists because the synthetic profiles carry no
+	// character rows: the harness has no speaker link to resolve a speaker
+	// from, so the scenario declares the attribution the merge-under-test
+	// needs. A committed message with no declared speaker is the narrator,
+	// the same fallback the runtime's speaker resolution applies to an
+	// unattributed line. Read only when CatchUp is catch_up: under
+	// latest_only the merge (and with it the speaker split) never runs.
+	Speakers map[string]string
 }
 
 // Input names where the frames and their recording manifest live, as paths
@@ -110,6 +132,18 @@ type Inference struct {
 	// voice it expects, or its no_voice_substitution assertion has nothing to
 	// protect.
 	Voice string
+	// TTSToneMS is the duration of the tone the fake TTS endpoint answers
+	// with (the harness's TTS layer, ADR-0037's recorded inference: the
+	// endpoint's real job is to exercise the client's WAV validation and the
+	// session's lifecycle on real bytes). 0 (absent) keeps the historical
+	// 100 ms — short on purpose, so a scenario's graded playback interleave
+	// is the one the suite has always run. A scenario that needs an
+	// utterance still playing when the next line commits (the catch-up
+	// policy's batched path, issue #25) names the overlap it models: a tone
+	// longer than the clip's commit cadence is what makes "a line committed
+	// while an utterance is playing" a property of the run rather than a
+	// scheduling coin flip.
+	TTSToneMS int
 }
 
 // Assertion is one check Evaluate runs. Load validates the shape per type
@@ -137,6 +171,11 @@ type Assertion struct {
 	Role      string // provider_degraded: the provider role watched
 	Recovered bool   // provider_degraded: require the recovery event too
 	Line      int
+	// Catch-up narration assertions (issue #25, ADR-0122).
+	// MessageIDs is the ordered message-id list the catch-up merge is graded
+	// on (speech_merged: the run that speaks exactly these lines, in this
+	// order, in one utterance).
+	MessageIDs []string
 }
 
 // ocrEngineNames is the closed vocabulary an assertion's engines: scope may
@@ -165,6 +204,9 @@ var knownAssertionTypes = map[string]bool{
 	"committed_only":              true,
 	"committed_kind":              true,
 	"provider_degraded":           true,
+	"speech_spoken_count":         true,
+	"speech_merged":               true,
+	"speech_skipped":              true,
 }
 
 // allowedFields is the exact field set each type accepts besides type. Extra
@@ -186,6 +228,9 @@ var allowedFields = map[string]map[string]bool{
 	"committed_only":              {"names": true},
 	"committed_kind":              {"message_id": true, "kind": true},
 	"provider_degraded":           {"role": true, "recovered": true},
+	"speech_spoken_count":         {"message_id": true, "count": true},
+	"speech_merged":               {"message_ids": true},
+	"speech_skipped":              {"message_id": true, "reason": true, "count": true},
 }
 
 // Load reads the scenario YAML at path and validates it. Every error carries
@@ -363,6 +408,54 @@ func fromNode(root *ynode) (*Scenario, error) {
 		return nil, fmt.Errorf("line %d: inference.tts must be one of none, recorded, live (got %q)", line, s.Inference.TTS)
 	}
 	s.Inference.Voice, _, _ = inf.scalarStr("voice") // optional; the harness validates it when TTS is on
+	// tts_tone_ms: the fake TTS tone's duration (optional; the historical
+	// 100 ms when absent). Only meaningful with a TTS layer — a scenario
+	// with no voice layer has no tone to size, so the field is refused
+	// there (a field nobody reads is a promise nobody keeps).
+	if v, line, ok := inf.scalarInt("tts_tone_ms"); ok {
+		if s.Inference.TTS == InferenceNone {
+			return nil, fmt.Errorf("line %d: inference.tts_tone_ms is only allowed when inference.tts is not %q", line, InferenceNone)
+		}
+		if v <= 0 {
+			return nil, fmt.Errorf("line %d: inference.tts_tone_ms must be a positive integer", line)
+		}
+		s.Inference.TTSToneMS = v
+	}
+
+	// catch_up: the session's catch-up narration policy (issue #25,
+	// ADR-0122). Absent is the harness's latest_only pin (the historical
+	// shape the pre-catch-up scenarios grade); present must name one of the
+	// policy's two words, like the settings route validates it live.
+	if v, line, ok := root.scalarStr("catch_up"); ok {
+		switch v {
+		case session.CatchUpPolicyCatchUp, session.CatchUpPolicyLatestOnly:
+			s.CatchUp = v
+		default:
+			return nil, fmt.Errorf("line %d: catch_up must be %q or %q (got %q)", line, session.CatchUpPolicyCatchUp, session.CatchUpPolicyLatestOnly, v)
+		}
+	}
+	if s.CatchUp == "" {
+		s.CatchUp = session.CatchUpPolicyLatestOnly
+	}
+
+	// speakers: the synthetic speaker attribution (message id to speaker
+	// label) the catch-up merge reads; a mapping of non-empty scalars.
+	if m, ok := root.child("speakers"); ok {
+		if m.kind != ymap {
+			return nil, fmt.Errorf("line %d: speakers must be a mapping (message id to speaker label)", m.line)
+		}
+		if len(m.keys) == 0 {
+			return nil, fmt.Errorf("line %d: speakers must name at least one message", m.line)
+		}
+		s.Speakers = make(map[string]string, len(m.keys))
+		for _, k := range m.keys {
+			v, vok := m.child(k)
+			if !vok || v.kind != yscalar || v.str == "" {
+				return nil, fmt.Errorf("line %d: speakers[%s] must be a non-empty speaker label", m.line, k)
+			}
+			s.Speakers[k] = v.str
+		}
+	}
 
 	// status / reason: the blocked register (ADR-0037). status is closed:
 	// the only value the loader understands is "blocked".
@@ -430,6 +523,7 @@ var topLevelKeys = map[string]bool{
 	"schema_version": true, "id": true, "catalog": true, "origin": true, "profile": true,
 	"mode": true, "input": true, "inference": true, "assertions": true,
 	"faults": true, "status": true, "reason": true, "narrated_kinds": true,
+	"catch_up": true, "speakers": true,
 	// Carried by the spec's own example; accepted and ignored until a milestone
 	// consumes it.
 	"reports": true,

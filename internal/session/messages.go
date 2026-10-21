@@ -8,6 +8,37 @@ import (
 	"github.com/dbirks/game-narrator/internal/recognition"
 )
 
+// Catch-up narration policy words (issue #25, ADR-0122). The session owns
+// the setting — it is the session's policy, changed on the settings control
+// and carried on the session's state — while internal/speech owns the
+// audio behaviour the word selects. The vocabulary is therefore spelled in
+// both packages (internal/speech cannot be imported here: its fence seam
+// imports this package), and the runtime — which imports both — is the
+// boundary where the two spellings are cross-checked.
+const (
+	// CatchUpPolicyCatchUp batches the lines committed while an utterance is
+	// playing and speaks them back-to-back, merged per speaker (the default).
+	CatchUpPolicyCatchUp = "catch_up"
+	// CatchUpPolicyLatestOnly keeps the immediate shape: a speakable commit
+	// cancels the older audio and speaks the newest line at once (ADR-0092).
+	CatchUpPolicyLatestOnly = "latest_only"
+)
+
+// ValidateCatchUpPolicy normalizes one policy word: the empty word is the
+// default (catch_up), a known word is returned as given, and anything else
+// is refused — the settings route answers a 400 on a foreign word, like the
+// decision mode.
+func ValidateCatchUpPolicy(policy string) (string, error) {
+	switch policy {
+	case "":
+		return CatchUpPolicyCatchUp, nil
+	case CatchUpPolicyCatchUp, CatchUpPolicyLatestOnly:
+		return policy, nil
+	default:
+		return "", fmt.Errorf("session: catch-up policy %q is not %q or %q", policy, CatchUpPolicyCatchUp, CatchUpPolicyLatestOnly)
+	}
+}
+
 // Kind names the five message classes the reducer accepts. It is a class, not a
 // topic: the class decides eviction priority in the inbox (an observation is
 // disposable, a Stop is not) and it decides which staleness rule applies.
@@ -339,10 +370,14 @@ type ControlMsg struct {
 // predictive when true — the strings live in the runtime, where the wire
 // speaks them). NarratedKinds is the set of text classes the commitment
 // policy may narrate; dialogue is the product and is force-included by the
-// reducer, never by the caller.
+// reducer, never by the caller. CatchUp is the speech side's catch-up
+// narration policy (issue #25, ADR-0122): catch_up (the default) batches the
+// lines committed while an utterance is playing and speaks them merged per
+// speaker; latest_only keeps the immediate, cancel-the-older shape.
 type Settings struct {
 	Predictive    bool
 	NarratedKinds []games.TextKind
+	CatchUp       string
 }
 
 func (m ControlMsg) MsgKind() Kind     { return KindControl }
@@ -363,6 +398,9 @@ func (m ControlMsg) Validate() error {
 			if !k.Valid() {
 				return fmt.Errorf("settings narrated kind %q is not a known text class", string(k))
 			}
+		}
+		if _, err := ValidateCatchUpPolicy(m.Settings.CatchUp); err != nil {
+			return err
 		}
 	}
 	return m.Header.validate(true)

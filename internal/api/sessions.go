@@ -31,13 +31,18 @@ type startSessionRequest struct {
 	DevTrace    bool          `json:"dev_trace"`
 }
 
-// startFrameSrc names the frame input. Dir is the replay clip's directory
-// for kind replay, and the capture device's stable id for kind v4l2 (ADR-
-// 0078: the enumeration is the allowlist, an empty id resolves the persisted
-// selection then the first usable device). ClipID (ADR-0073) selects a clip
-// from the managed clip store by id; the runtime resolves it inside the store
-// and re-checks the result against the replay-root allowlist, so the id alone
-// cannot name a path.
+// startFrameSrc names the frame input. The whole object (and its kind)
+// may be omitted (ADR-0119, issue #28): the runtime then resolves the
+// default frame source — the usable capture device, or the developer-mode
+// test pattern, or a 409 that names the operator action. Dir is the replay
+// clip's directory for kind replay, and the capture device's stable id for
+// kind v4l2 (ADR-0078: the enumeration is the allowlist, an empty id
+// resolves the persisted selection then the first usable device). ClipID
+// (ADR-0073) selects a clip from the managed clip store by id; the runtime
+// resolves it inside the store and re-checks the result against the
+// replay-root allowlist, so the id alone cannot name a path. A dir or a
+// clip id without a kind is a 400 (incomplete-frame-source): the shape is
+// ambiguous and the remedy is to name the kind.
 type startFrameSrc struct {
 	Kind   string `json:"kind"`
 	Dir    string `json:"dir,omitempty"`
@@ -252,6 +257,21 @@ func (s *Server) sessionProblem(w http.ResponseWriter, r *http.Request, err erro
 	case errors.Is(err, runtime.ErrUnknownSourceKind):
 		s.writeProblem(w, r, http.StatusBadRequest, "unknown-source-kind",
 			"Bad Request", "frame_source.kind is not a known frame source kind")
+	case errors.Is(err, runtime.ErrIncompleteFrameSource):
+		// A dir or a clip id without a kind (ADR-0119, issue #28): the shape
+		// is ambiguous — a replay dir and a device id both live in
+		// frame_source.dir — so the answer is the 400 that names the rule,
+		// never a guess at which kind the caller meant.
+		s.writeProblem(w, r, http.StatusBadRequest, "incomplete-frame-source",
+			"Bad Request", "frame_source.dir or frame_source.clip_id names an input but the kind that reads it is missing: name the kind (replay, v4l2, test_pattern or dolphin)")
+	case errors.Is(err, runtime.ErrNoFrameSource):
+		// The default frame source resolved to nothing (ADR-0119, issue #28):
+		// the request named no frame source, no usable capture device is
+		// attached and developer mode is off. A 409, not a 503: the request
+		// is valid and the box's state is what refuses it, and the detail
+		// names the operator action — connect the capture card — not a log.
+		s.writeCodeProblem(w, r, http.StatusConflict, "no-frame-source", "NO_FRAME_SOURCE", "Conflict",
+			"no frame source to start with: no usable capture device is attached and this process is not in developer mode — connect your capture card and start again, or name the frame source explicitly (a v4l2 device, a replay dir or clip)")
 	case errors.Is(err, runtime.ErrSourceUnsupported):
 		// The live capture kinds that are not wired in this process: v4l2
 		// without a capture wiring (an unwired process refuses rather than

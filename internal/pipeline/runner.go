@@ -497,6 +497,25 @@ func (r *Runner) rankWorker(ctx context.Context, ranks <-chan rankJob, replies c
 				r.cnt.decisions()
 				r.metrics.Decision(r.mLabels)
 				asked := r.cfg.Now()
+				// The escalation shortlist (ADR-0115 §1): the question the model is
+				// offered is the top-k candidates, not the whole retrieval pool —
+				// the bounded options budget the request cap implies. The full
+				// ranking rides back on the reply (rankIn.rank), so the session's
+				// decide still checks the model's choice against everything the
+				// retrieval found: a model may refuse but never supply, and a
+				// choice outside the offered shortlist but inside the pool is still
+				// a narrowing, not an invention.
+				askRank := rank
+				if n := r.cfg.DecisionCandidates; n > 0 && len(rank.Candidates) > n {
+					cands := make([]matcher.Candidate, n)
+					copy(cands, rank.Candidates[:n])
+					askRank = matcher.Ranking{
+						Candidates: cands,
+						Margin:     rank.Margin,
+						Reason:     rank.Reason,
+						Abstain:    rank.Abstain,
+					}
+				}
 				reply = r.cfg.Decider.Decide(ctx, DecisionRequest{
 					SessionID:       r.cfg.SessionID,
 					ProfileRevision: r.cfg.ProfileRevision,
@@ -507,7 +526,7 @@ func (r *Runner) rankWorker(ctx context.Context, ranks <-chan rankJob, replies c
 					Text:            j.req.text,
 					RawText:         j.raw,
 					Confidence:      j.conf,
-					Ranking:         rank,
+					Ranking:         askRank,
 					Speakers:        r.cfg.Speakers,
 					LastMessage:     r.lastCommitted(),
 				})

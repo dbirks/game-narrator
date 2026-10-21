@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -374,6 +375,19 @@ func newServeFlagSet() *flag.FlagSet {
 	return fs
 }
 
+// logStartup records the "game-narrator starting" line with the resolved
+// durable storage: the data directory, the database file and the setting
+// that decided it (issue #31: the line has to say where the data lives so
+// a run that fell back to the default directory is visible on its very
+// first log line, ADR-0126).
+func logStartup(log *slog.Logger, build bootstrap.BuildInfo, cfg bootstrap.Config) {
+	log.Info("game-narrator starting",
+		append(build.Values(),
+			"data_dir", cfg.DataDir,
+			"data_dir_source", string(cfg.DataDirSource),
+			"database", store.DBPath(cfg.DataDir))...)
+}
+
 func runServe(args []string, log *slog.Logger, ring *logbuf.Ring) (int, error) {
 	fs := newServeFlagSet()
 	listen := fs.String("listen", "",
@@ -394,7 +408,7 @@ func runServe(args []string, log *slog.Logger, ring *logbuf.Ring) (int, error) {
 	}
 
 	build := bootstrap.Version()
-	log.Info("game-narrator starting", build.Values()...)
+	logStartup(log, build, cfg)
 
 	// SIGINT/SIGTERM trigger graceful drain (http.Server.Shutdown, 10s budget).
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -894,6 +908,11 @@ func runServe(args []string, log *slog.Logger, ring *logbuf.Ring) (int, error) {
 		api.WithReadiness(storeReadiness(st, readiness, log)),
 		api.WithEvents(hub),
 		api.WithJobs(jobsStore),
+		// The background queue's foreground pause (ADR-0119, issue #27): the
+		// status snapshot and the job list show {paused_by, since,
+		// queued_count} for as long as a live session holds the budget, so
+		// a stalled queue is never a silent one.
+		api.WithJobRunner(runner),
 		api.WithSessions(sessions),
 		// The bound listen address (ADR-0110 §4): the real bind, not the
 		// environment fallback — the settings security section and the
@@ -1263,6 +1282,14 @@ func newVoiceWiring(st *store.Store, assetStore *assets.Local, log *slog.Logger,
 	return svc, func() {}, nil
 }
 
+// envOCR_FALLBACK_CONFIDENCE is the process default for the VLM OCR
+// fallback's confidence threshold (ADR-0115 §4): a primary read at or above
+// it is resolved and no secondary call goes out. A session whose regions set
+// the knob in ocr_settings wins over it, and a v4l2 (analog HDMI capture)
+// session with neither takes the runtime's per-source default (the measured
+// floor of correct crop reads on the board feed).
+const envOCR_FALLBACK_CONFIDENCE = "GAME_NARRATOR_OCR_FALLBACK_CONFIDENCE"
+
 // newOCRFallbackWiring builds the VLM OCR fallback's secondary engine from
 // the vision_ocr_fallback role (docs/spec/05, ADR-0040): the role's
 // OpenAI-compatible client, its timeout and reasoning-effort default applied
@@ -1270,7 +1297,8 @@ func newVoiceWiring(st *store.Store, assetStore *assets.Local, log *slog.Logger,
 // runtime's sessions wrap their OCR engine with. A role that is not
 // configured is the documented degraded mode — nil, not an error — so the
 // sessions keep the single local engine and preflight keeps reporting the
-// missing configuration.
+// missing configuration. A malformed GAME_NARRATOR_* value, by contrast, fails
+// the boot loudly, the same way the other role wirings do.
 func newOCRFallbackWiring(lookupEnv func(string) (string, bool)) (*pipeline.OCRFallback, string, error) {
 	roles, err := providers.LoadRoles(lookupEnv)
 	if err != nil {
@@ -1284,9 +1312,17 @@ func newOCRFallbackWiring(lookupEnv func(string) (string, bool)) (*pipeline.OCRF
 	if err != nil {
 		return nil, "", fmt.Errorf("vision_ocr_fallback client: %w", err)
 	}
-	return &pipeline.OCRFallback{
+	out := &pipeline.OCRFallback{
 		Secondary: ocr.NewVLMEngine(ocr.OpenAIClient{Client: client}),
-	}, cfg.Model, nil
+	}
+	if v, ok := lookupEnv(envOCR_FALLBACK_CONFIDENCE); ok && v != "" {
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil || f <= 0 || f > 1 {
+			return nil, "", fmt.Errorf("%s: %q is not a confidence threshold in (0,1]", envOCR_FALLBACK_CONFIDENCE, v)
+		}
+		out.Policy.ConfidenceThreshold = f
+	}
+	return out, cfg.Model, nil
 }
 
 // newDecisionWiring builds the Clef adjudication wiring from the decision
@@ -1863,7 +1899,7 @@ func runDoctor(args []string, log *slog.Logger) (int, error) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	report := doctor.Run(ctx, doctor.Options{DataDir: cfg.DataDir, Dev: *dev,
+	report := doctor.Run(ctx, doctor.Options{DataDir: cfg.DataDir, DataDirSource: cfg.DataDirSource, Dev: *dev,
 		// The update row shares the serve process's offline cache, so the CLI
 		// and the appliance agree on the last good answer (ADR-0088).
 		Updates: doctor.ProbeFromEnv(os.LookupEnv, filepath.Join(cfg.DataDir, "updates", "latest.json")),

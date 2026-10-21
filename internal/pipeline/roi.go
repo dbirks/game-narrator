@@ -22,6 +22,11 @@ type analysis struct {
 	// empty records that the rect covered nothing at this resolution, which is a
 	// different fact from "a box is there and it is blank".
 	empty bool
+	// pHash is the crop's 64-bit dHash (ADR-0115 §3): the tolerant half of the
+	// unchanged-hash dedupe. havePHash is false for an empty crop, which must
+	// not read as "perceptually equal to" the previous crop's hash.
+	pHash     uint64
+	havePHash bool
 }
 
 // analyze crops, decides textbox presence, preprocesses and hashes. It is pure
@@ -52,7 +57,13 @@ func (r *Runner) analyze(f capture.Frame, reg games.Region) analysis {
 	// Presence is measured on the raw grayscale crop, not on the preprocessed
 	// one: AutoInvert and Otsu deliberately destroy the light/dark relationship
 	// this detector asks about.
-	a.present = darkShare(vision.ToGray(crop), r.cfg.Presence.DarkLuma) >= r.cfg.Presence.MinDarkShare
+	g := vision.ToGray(crop)
+	a.present = vision.DarkShare(g, r.cfg.Presence.DarkLuma) >= r.cfg.Presence.MinDarkShare
+	// The perceptual dedupe key (ADR-0115 §3) is on the raw crop for the same
+	// reason presence is: the question is "did the box the camera sees change",
+	// and the preprocess recipe's binarisation would move the answer with the
+	// recipe rather than with the picture.
+	a.pHash, a.havePHash = vision.PerceptualHash(crop)
 	// The dedupe key is a lossless luma hash of the preprocessed crop. Preprocessed
 	// rather than raw for two reasons: the thing being suppressed is the OCR cost,
 	// so the key must describe exactly what the engine would re-read; and a profile
@@ -64,12 +75,6 @@ func (r *Runner) analyze(f capture.Frame, reg games.Region) analysis {
 	a.hash = vision.ImageHash(in)
 	return a
 }
-
-// darkShare is the fraction of pixels below luma. The walk lives in vision
-// (vision.DarkShare, beside ToGray): the one-shot reader (internal/oneshot)
-// asks the same presence question of its crops, and both call one
-// implementation rather than each carrying a copy.
-func darkShare(g *image.Gray, luma uint8) float64 { return vision.DarkShare(g, luma) }
 
 // ocrJob is one dispatched recognition.
 //
@@ -84,9 +89,11 @@ type ocrJob struct {
 	id     int64
 	region string
 	hash   string
-	// frameSeq is the capture frame this read was started for. The replay
-	// degradation counter needs it: a frame whose read fails after the retry
-	// policy is named in the report by its sequence, not by a wall-clock guess.
+	// pHash is the crop's perceptual hash at dispatch (ADR-0115 §3): the
+	// region's lastPHash is cleared when this read is cancelled or fails, the
+	// same discipline as hash, so "perceptually unchanged" is never claimed
+	// about a read that does not exist.
+	pHash    uint64
 	frameSeq int64
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -132,6 +139,12 @@ type pending struct {
 	reg   games.Region
 	a     analysis
 	job   *ocrJob // nil when the observation needs no recognition
+	// phashSkip marks the perceptual-dedupe skip (ADR-0115 §3): the crop is
+	// within tolerance of the crop the region last OCRed, so no OCR ran and the
+	// observation rides the last successful read's text (see emit). The exact
+	// hash-skip path does not need the flag: its pixels are identical, so the
+	// lastOK-reuse condition in emit matches on the hash alone.
+	phashSkip bool
 	// ready holds the recognition result once the job resolves. It is a copy of
 	// the engine's Result because recognition.Observation carries a pointer that
 	// the reducer reads later, and the worker's stack frame is not a place to

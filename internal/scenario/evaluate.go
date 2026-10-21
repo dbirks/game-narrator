@@ -8,6 +8,7 @@ import (
 
 	"github.com/dbirks/game-narrator/internal/events"
 	"github.com/dbirks/game-narrator/internal/pipeline"
+	"github.com/dbirks/game-narrator/internal/session"
 )
 
 // Report is the verdict of one scenario against one run.
@@ -57,6 +58,14 @@ type EvaluateOpts struct {
 	// message decision; the message_committed_count assertion pins it.
 	// Commits the corpus cannot name keep the OCR text as their anchor.
 	Corpus map[string]string
+	// CatchUp is the session's catch-up narration policy the run applied
+	// (issue #25, ADR-0122): catch_up (the product default) speaks a line
+	// committed while a previous one is still playing — a completed non-last
+	// line is the policy working, not stale speech — while latest_only cuts
+	// the older line on the advance, so a completed non-last line there is
+	// the stale speech docs/spec/12 forbids. The zero value ("") keeps the
+	// historical latest_only reading for harnesses that do not declare it.
+	CatchUp string
 }
 
 func (s *Scenario) Evaluate(evs []events.Envelope, stats pipeline.Stats, truth []Truth) Report {
@@ -140,7 +149,7 @@ func evaluateAssertion(a Assertion, evs []events.Envelope, stats pipeline.Stats,
 	case "events_order":
 		return evalEventsOrder(a, evs)
 	case "no_stale_speech":
-		return evalNoStaleSpeech(a, evs)
+		return evalNoStaleSpeech(a, evs, opts.CatchUp)
 	case "no_duplicate_speech":
 		return evalNoDuplicateSpeech(a, evs)
 	case "late_result_discarded":
@@ -155,6 +164,12 @@ func evaluateAssertion(a Assertion, evs []events.Envelope, stats pipeline.Stats,
 		return evalCommittedOnly(a, evs)
 	case "provider_degraded":
 		return evalProviderDegraded(a, evs)
+	case "speech_spoken_count":
+		return evalSpeechSpokenCount(a, evs)
+	case "speech_merged":
+		return evalSpeechMerged(a, evs)
+	case "speech_skipped":
+		return evalSpeechSkipped(a, evs)
 	default:
 		return false, fmt.Sprintf("internal: assertion type %q has no evaluator", a.Type)
 	}
@@ -500,11 +515,18 @@ func lastCommittedMessageID(evs []events.Envelope) string {
 
 // evalNoStaleSpeech: no completed utterance (speech.ended with the terminal
 // result "ended") for a line the dialogue has moved past. The last committed
-// line legitimately ends; every other line that finished speaking after the
-// advance is the stale speech docs/spec/12 forbids. A line that was cancelled
-// (speech.cancelled) is the correct behaviour, not a failure.
-func evalNoStaleSpeech(a Assertion, evs []events.Envelope) (bool, string) {
+// line legitimately ends; under latest_only every other line that finished
+// speaking after the advance is the stale speech docs/spec/12 forbids — a
+// line that was cancelled (speech.cancelled) is the correct behaviour, not a
+// failure. Under catch_up the policy speaks the non-last line the player
+// tapped while the previous one was still playing (ADR-0122 decision 2: the
+// line that is playing keeps playing to the end), so a completed non-last
+// line is the policy working, not stale speech; a line the batch window
+// fenced never completes (it ends skipped) and is graded by the
+// speech_spoken_count assertions instead.
+func evalNoStaleSpeech(a Assertion, evs []events.Envelope, catchUp string) (bool, string) {
 	last := lastCommittedMessageID(evs)
+	catchUpMode := catchUp == session.CatchUpPolicyCatchUp
 	var offenders []string
 	endedTotal := 0
 	for _, e := range evs {
@@ -516,7 +538,11 @@ func evalNoStaleSpeech(a Assertion, evs []events.Envelope) (bool, string) {
 			continue
 		}
 		endedTotal++
-		if p.Result == "ended" && a.MessageID != last {
+		// A completed non-last line is stale only under latest_only, where the
+		// advance is supposed to have cut it; under catch_up the policy
+		// deliberately spoke it (the line that is playing runs out), so it is
+		// not a violation (ADR-0122 decision 2).
+		if p.Result == "ended" && a.MessageID != last && !catchUpMode {
 			offenders = append(offenders, fmt.Sprintf("speech.ended result=ended for %q (last committed line is %q)", a.MessageID, last))
 		}
 	}
@@ -525,6 +551,9 @@ func evalNoStaleSpeech(a Assertion, evs []events.Envelope) (bool, string) {
 	}
 	if endedTotal == 0 {
 		return true, fmt.Sprintf("no utterance completed for %q (cancelled or never started)", a.MessageID)
+	}
+	if catchUpMode {
+		return true, fmt.Sprintf("no stale utterance for %q (%d speech.ended event(s); catch_up speaks the line it committed, a fenced one ends skipped and is graded by speech_spoken_count)", a.MessageID, endedTotal)
 	}
 	return true, fmt.Sprintf("no stale utterance for %q (%d speech.ended event(s), none a completed stale line)", a.MessageID, endedTotal)
 }
@@ -568,6 +597,136 @@ func evalNoDuplicateSpeech(a Assertion, evs []events.Envelope) (bool, string) {
 		return false, fmt.Sprintf("message %q: %s", a.MessageID, strings.Join(offenders, "; "))
 	}
 	return true, fmt.Sprintf("message %q: at most one utterance per occurrence (%d occurrence(s) started)", a.MessageID, len(started))
+}
+
+// --- Catch-up narration assertions (issue #25, ADR-0122) ---------------------
+//
+// These read the merged timeline the catch-up policy writes into: the
+// session's own speech events (the immediate path's lifecycle) and the
+// harness's catch-up records (the batched line's request, the merged run's
+// request and its started, the fenced line's skipped terminal). A line is
+// "spoken" by exactly the utterances that started with it in their covered
+// ids: its own occurrence for an immediate line, the merged id's id list
+// for a merged line.
+
+// catchUpPayload is the subset of the catch-up policy's event payloads the
+// assertions read: the run's covered ids (the merged cache key's id form,
+// ADR-0122 decision 6) and the policy marker that separates the harness's
+// catch-up records from the session's own speech events.
+type catchUpPayload struct {
+	MessageID  string   `json:"message_id"`
+	MessageIDs []string `json:"message_ids"`
+	Occurrence string   `json:"dialogue_occurrence_id"`
+	CatchUp    string   `json:"catch_up"`
+	Reason     string   `json:"reason"`
+	Result     string   `json:"result"`
+}
+
+func decodeCatchUp(e events.Envelope) (catchUpPayload, bool) {
+	var p catchUpPayload
+	if err := json.Unmarshal(e.Data, &p); err != nil {
+		return catchUpPayload{}, false
+	}
+	return p, true
+}
+
+// coversMessage reports whether one speech record covers the named line:
+// the record's own message id (a bare form, exact match) or one of the
+// merged run's covered ids (whole-segment, the merged form's exact match —
+// the store's whole-segment rule, ADR-0122 decision 6).
+func coversMessage(p catchUpPayload, id string) bool {
+	if p.MessageID == id {
+		return true
+	}
+	for _, seg := range p.MessageIDs {
+		if seg == id {
+			return true
+		}
+	}
+	return false
+}
+
+// evalSpeechSpokenCount: the named line was spoken exactly count times —
+// one started utterance per line the dialogue showed (the issue's "every
+// message is spoken exactly once"): the session's speech.started for an
+// immediate line, the merged run's speech.started for a merged line (the
+// run's started carries its covered ids). A line the batch fenced or the
+// run's end skipped has no started, so it counts zero: the fence is the
+// point.
+func evalSpeechSpokenCount(a Assertion, evs []events.Envelope) (bool, string) {
+	var spoken int
+	var speakers []string
+	for _, e := range evs {
+		if e.Name != events.SpeechStarted {
+			continue
+		}
+		var p catchUpPayload
+		if err := json.Unmarshal(e.Data, &p); err != nil || !coversMessage(p, a.MessageID) {
+			continue
+		}
+		spoken++
+		speakers = append(speakers, fmt.Sprintf("%s (message_id %s)", p.Occurrence, p.MessageID))
+	}
+	if spoken != a.Count {
+		return false, fmt.Sprintf("message %q was spoken %d time(s), want %d: %s", a.MessageID, spoken, a.Count, strings.Join(speakers, ", "))
+	}
+	return true, fmt.Sprintf("message %q was spoken exactly %d time(s)", a.MessageID, spoken)
+}
+
+// evalSpeechMerged: one catch-up request covered exactly the named lines, in
+// the named order — the merge the issue asks for ("merge consecutive
+// same-speaker lines into one TTS request"): the harness's merged request
+// carries the covered ids in commit order, the merged cache key's id form.
+func evalSpeechMerged(a Assertion, evs []events.Envelope) (bool, string) {
+	var found int
+	for _, e := range evs {
+		if e.Name != events.SpeechRequested {
+			continue
+		}
+		p, ok := decodeCatchUp(e)
+		if !ok || p.CatchUp != "merged" || len(p.MessageIDs) != len(a.MessageIDs) {
+			continue
+		}
+		same := true
+		for i := range a.MessageIDs {
+			if p.MessageIDs[i] != a.MessageIDs[i] {
+				same = false
+				break
+			}
+		}
+		if same {
+			found++
+		}
+	}
+	if found == 0 {
+		return false, fmt.Sprintf("no catch-up request merged exactly %v in order", a.MessageIDs)
+	}
+	return true, fmt.Sprintf("catch-up request merged exactly %v in order (%d time(s))", a.MessageIDs, found)
+}
+
+// evalSpeechSkipped: the named line reached its one terminal skipped count
+// times, the fence the issue owes ("Fencing (ADR 0092) still applies to
+// anything older than the batch window", the max-age drop, the run's end):
+// the speech.ended result=skipped the harness emits for the fenced line.
+func evalSpeechSkipped(a Assertion, evs []events.Envelope) (bool, string) {
+	var skipped int
+	for _, e := range evs {
+		if e.Name != events.SpeechEnded {
+			continue
+		}
+		p, ok := decodeCatchUp(e)
+		if !ok || p.Result != "skipped" || p.MessageID != a.MessageID {
+			continue
+		}
+		if a.Reason != "" && p.Reason != a.Reason {
+			continue
+		}
+		skipped++
+	}
+	if skipped != a.Count {
+		return false, fmt.Sprintf("message %q was skipped %d time(s), want %d", a.MessageID, skipped, a.Count)
+	}
+	return true, fmt.Sprintf("message %q was skipped exactly %d time(s)", a.MessageID, skipped)
 }
 
 // staleReasons are the session fence reasons that mark a late provider result

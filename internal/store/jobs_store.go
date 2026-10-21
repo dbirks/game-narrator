@@ -170,6 +170,20 @@ func (j *JobsStore) QueueDepth(ctx context.Context) (int64, error) {
 	return n, err
 }
 
+// CountQueued is the count of jobs waiting in the queue (state queued). It is
+// the read the runner's visible foreground pause (ADR-0119, issue #27) reports
+// beside the pause itself: the database is the authority on job state, so the
+// count is a query at read time — never a counter kept on the enqueue/claim
+// paths, which crash-recovery handoff would drift from the table.
+func (j *JobsStore) CountQueued(ctx context.Context) (int64, error) {
+	var n int64
+	err := j.s.inRead(ctx, func(ctx context.Context, q queryable) error {
+		return q.queryRow(ctx, "queued count",
+			"SELECT COUNT(*) FROM jobs WHERE state = 'queued'").Scan(&n)
+	})
+	return n, err
+}
+
 // jobColumns is every SELECT list in this file, so Get, List and Claim cannot
 // drift onto different column orders (the classic way a list view and a
 // detail view start disagreeing about the same row).

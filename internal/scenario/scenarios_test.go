@@ -46,7 +46,15 @@ func TestScenarios(t *testing.T) {
 		t.Fatalf("no scenario YAMLs under %s", dir)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	// The suite's one shared bound: every scenario in the package runs under
+	// this context, so it is a whole-suite ceiling, not a per-scenario
+	// deadline. Scaled by the race build tag (budgetScale): under -race on a
+	// saturated host the same scenarios take several times longer on the wall
+	// clock, and an unscaled ceiling turns the suite's tail into a load flake
+	// (issue #22: the last three scenarios died with "run: context deadline
+	// exceeded" at host load 12-20). The ceiling stays generous but bounded
+	// so a wedged harness still fails the package instead of hanging it.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute*budgetScale)
 	defer cancel()
 
 	var blocked, failed, passed []string

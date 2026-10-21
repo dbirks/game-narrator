@@ -88,6 +88,14 @@ type Server struct {
 	// an empty list would claim a working appliance with no queue.
 	jobStore *store.JobsStore
 
+	// jobRunner is the seam the status snapshot and the job list read the
+	// background queue's foreground pause through (ADR-0119, issue #27):
+	// *jobs.Runner satisfies it with ForegroundPause, and a test wires a
+	// fake. nil (a process whose runner is not handed to the API) shows
+	// no pause line — the pause exists only on the process whose runner
+	// owns it, and an API that invented the line would be a lie.
+	jobRunner jobPauseReporter
+
 	// authSvc verifies credentials and answers the auth routes. nil means this
 	// process has no credential store wired at all, which is reported as 503 on
 	// every non-public route — an API that simply let requests through because
@@ -343,6 +351,16 @@ func WithEvents(h *events.Hub) Option {
 // is reported as 503, not as an empty queue.
 func WithJobs(js *store.JobsStore) Option {
 	return func(s *Server) { s.jobStore = js }
+}
+
+// WithJobRunner wires the background queue's foreground pause (ADR-0119,
+// issue #27) into the status snapshot and the job list: while a live session
+// holds the appliance's CPU/audio budget (docs/spec/01 invariant 1), both
+// surfaces carry {paused_by: "live_session", since, queued_count}, so a
+// poller can tell "waiting in a normal queue" from "blocked for the
+// lifetime of the session". *jobs.Runner satisfies the seam.
+func WithJobRunner(r jobPauseReporter) Option {
+	return func(s *Server) { s.jobRunner = r }
 }
 
 // WithAuth wires credentials and authorization: the auth service (cookie

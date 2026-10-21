@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -426,6 +427,175 @@ func TestRunDoctorUsageErrors(t *testing.T) {
 				t.Fatalf("exit code = %d, want 2", code)
 			}
 		})
+	}
+}
+
+// --- issue #31: the startup line and the stale-default warning ------------
+
+// capturingLogHandler records structured log records so a test can assert on
+// the content of a specific line (here: "game-narrator starting").
+type capturingLogHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *capturingLogHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *capturingLogHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r.Clone())
+	return nil
+}
+
+func (h *capturingLogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h *capturingLogHandler) WithGroup(string) slog.Handler { return h }
+
+// recordStringAttrs collects the string attributes of one record.
+func recordStringAttrs(r slog.Record) map[string]string {
+	out := map[string]string{}
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Value.Kind() == slog.KindString {
+			out[a.Key] = a.Value.String()
+		}
+		return true
+	})
+	return out
+}
+
+// TestStartingLogNamesDataDirDatabaseAndSource pins the issue #31 startup
+// line: the resolved data directory, the database file and the setting that
+// won the precedence chain (flag, env or default) all appear in
+// "game-narrator starting", so an operator reads the data location from the
+// first line of the journal — t.TempDir plus HOME/XDG overrides resolve the
+// default cases without touching the developer's real data directory.
+func TestStartingLogNamesDataDirDatabaseAndSource(t *testing.T) {
+	home := t.TempDir()
+	xdg := t.TempDir()
+
+	envOf := func(kv map[string]string) func(string) (string, bool) {
+		return func(key string) (string, bool) {
+			v, ok := kv[key]
+			return v, ok
+		}
+	}
+
+	flagDir := filepath.Join(home, "flag-data")
+	envDir := filepath.Join(home, "env-data")
+	xdgDir := filepath.Join(xdg, "game-narrator")
+	homeDir := filepath.Join(home, ".local", "share", "game-narrator")
+	cases := []struct {
+		name       string
+		flag       string
+		env        map[string]string
+		wantDir    string
+		wantSource string
+	}{
+		{"flag wins and is named flag", flagDir, map[string]string{bootstrap.EnvDataDir: "/ignored"}, flagDir, "flag"},
+		{"env wins and is named env", "", map[string]string{bootstrap.EnvDataDir: envDir, bootstrap.EnvHome: home}, envDir, "env"},
+		{"XDG fallback is named default", "", map[string]string{bootstrap.EnvXDGDataHome: xdg, bootstrap.EnvHome: home}, xdgDir, "default"},
+		{"HOME fallback is named default", "", map[string]string{bootstrap.EnvHome: home}, homeDir, "default"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := bootstrap.LoadConfig("127.0.0.1:18080", tc.flag, envOf(tc.env))
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+
+			handler := &capturingLogHandler{}
+			logStartup(slog.New(handler), bootstrap.Version(), cfg)
+
+			var found *slog.Record
+			handler.mu.Lock()
+			for i := range handler.records {
+				if handler.records[i].Message == "game-narrator starting" {
+					r := handler.records[i]
+					found = &r
+				}
+			}
+			handler.mu.Unlock()
+			if found == nil {
+				t.Fatalf("no \"game-narrator starting\" record was logged; got %d records", len(handler.records))
+			}
+			attrs := recordStringAttrs(*found)
+			if attrs["data_dir"] != tc.wantDir {
+				t.Fatalf("data_dir = %q, want %q", attrs["data_dir"], tc.wantDir)
+			}
+			if want := store.DBPath(tc.wantDir); attrs["database"] != want {
+				t.Fatalf("database = %q, want %q", attrs["database"], want)
+			}
+			if attrs["data_dir_source"] != tc.wantSource {
+				t.Fatalf("data_dir_source = %q, want %q", attrs["data_dir_source"], tc.wantSource)
+			}
+		})
+	}
+}
+
+// TestDoctorWarnsOnStaleDefaultDataDir runs the real doctor CLI (issue #31):
+// a flag-provided data directory while the process HOME holds a non-empty
+// default data directory must make storage.data_dir DEGRADED and name the
+// default directory, without changing the exit code (0: a warning, not a
+// fault).
+func TestDoctorWarnsOnStaleDefaultDataDir(t *testing.T) {
+	clearGatewayEnv(t)
+	home := t.TempDir()
+	defaultDir := filepath.Join(home, ".local", "share", "game-narrator")
+	if err := os.MkdirAll(defaultDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(defaultDir, "game-narrator.sqlite"), []byte("stale database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(bootstrap.EnvHome, home)
+
+	configured := t.TempDir()
+	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	out := captureStdout(t, func() int {
+		code, err := run([]string{"doctor", "--data-dir", configured, "--json"}, log, nil)
+		if err != nil {
+			t.Fatalf("doctor: %v", err)
+		}
+		return code
+	})
+	if out.code != 0 {
+		t.Fatalf("exit code = %d, want 0 (a stale default directory degrades, it does not fail):\n%s", out.code, out.output)
+	}
+
+	var report struct {
+		Checks []struct {
+			ID      string `json:"id"`
+			Status  string `json:"status"`
+			Summary string `json:"summary"`
+			Detail  string `json:"detail"`
+		}
+	}
+	if err := json.Unmarshal([]byte(out.output), &report); err != nil {
+		t.Fatalf("--json output is not JSON: %v\n%s", err, out.output)
+	}
+	var row *struct {
+		ID      string `json:"id"`
+		Status  string `json:"status"`
+		Summary string `json:"summary"`
+		Detail  string `json:"detail"`
+	}
+	for i := range report.Checks {
+		if report.Checks[i].ID == "storage.data_dir" {
+			row = &report.Checks[i]
+		}
+	}
+	if row == nil {
+		t.Fatalf("no storage.data_dir row in the report:\n%s", out.output)
+	}
+	if row.Status != "DEGRADED" {
+		t.Fatalf("storage.data_dir = %s (%s), want DEGRADED: %s", row.Status, row.Summary, row.Detail)
+	}
+	if !strings.Contains(row.Detail, defaultDir) {
+		t.Fatalf("detail = %q, want the default data directory named", row.Detail)
+	}
+	if !strings.Contains(row.Detail, bootstrap.EnvDataDir) {
+		t.Fatalf("detail = %q, want the remedy to name %s", row.Detail, bootstrap.EnvDataDir)
 	}
 }
 

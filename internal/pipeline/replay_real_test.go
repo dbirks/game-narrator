@@ -110,7 +110,7 @@ func TestSyntheticFrameReplayRealTesseract(t *testing.T) {
 
 	// The speech sidecar depends only on the matcher and the clip's truth, so
 	// its events are identical for every run and are computed once.
-	speechEvs := runSpeechSidecar(t, idx, truth)
+	speechEvs := runSpeechSidecar(t, idx, truth, sc.CatchUp)
 
 	type runOutcomes struct {
 		commits []commitStamp
@@ -354,10 +354,17 @@ func (p *recPub) Publish(_ context.Context, e events.Envelope) (events.Envelope,
 // ranking of the clip's lines, and the clip's timing. What is scripted: the
 // TTS worker's readiness. The returned speech.* events are the evidence the
 // scenario's speech assertion is evaluated over.
-func runSpeechSidecar(t *testing.T, idx *matcher.Index, truth []scenario.Truth) []events.Envelope {
+func runSpeechSidecar(t *testing.T, idx *matcher.Index, truth []scenario.Truth, catchUp string) []events.Envelope {
 	t.Helper()
 	pub := &recPub{}
-	r, err := session.New("synthsession", "1", pub)
+	// The sidecar's session runs the scenario's own catch-up policy (issue
+	// #25, ADR-0122): a latest_only scenario's advance cancels the
+	// advanced-away page's audio (the speech_cancelled assertion the clip's
+	// scenario grades), while a catch_up scenario's advance leaves the live
+	// line to run out. The default is catch_up, so the policy must be named.
+	cfg := session.DefaultConfig()
+	cfg.CatchUp = catchUp
+	r, err := session.New("synthsession", "1", pub, session.WithConfig(cfg))
 	if err != nil {
 		t.Fatalf("session.New (sidecar): %v", err)
 	}

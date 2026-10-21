@@ -37,6 +37,14 @@ const (
 	// never wires the closure, so the kind answers ErrSourceUnsupported.
 	SourceKindManual = "manual"
 	EnvReplayRoots   = "GAME_NARRATOR_REPLAY_ROOTS"
+	// EnvDeveloperMode is the process-level developer mode (ADR-0119,
+	// issue #28): the family of GAME_NARRATOR_DEV_DOLPHIN and the ADR-0074
+	// fake flags — a dev-host opt-in read at the layer that acts on it, unset
+	// on the appliance. The frame-source default uses it as its fallback
+	// gate: with no usable capture device a developer host still gets the
+	// synthetic test pattern, while the appliance gets the 409 that names the
+	// operator action (connect the card), never a silent synthetic session.
+	EnvDeveloperMode = "GAME_NARRATOR_DEV"
 	// EnvDevDolphin mirrors internal/dolphin.EnvDevDolphin: the runtime admits
 	// the dolphin frame source only on an explicit developer opt-in. The name
 	// is duplicated rather than imported so the core package keeps no
@@ -170,6 +178,14 @@ func isUnder(root, p string) bool {
 // visible in the run's own evidence, not guessed from the request.
 type builtSource struct {
 	src capture.Source
+	// kind is the kind the source runs under when buildFrameSource resolved
+	// one (ADR-0119, issue #28): a request that named no frame source gets
+	// the resolved kind here — v4l2 when a usable capture device won the
+	// default, test_pattern when developer mode took the fallback — so the
+	// session snapshot, the session.started event and the status bar name the
+	// source that actually runs, not the absence the request carried.
+	// Empty for every request that named its own kind.
+	kind string
 	// device is the v4l2 device's stable id actually used; "" for every
 	// other kind.
 	device string
@@ -246,36 +262,80 @@ func buildFrameSource(ctx context.Context, kind, dir string, roots []string, spe
 		}
 		return builtSource{src: src}, nil
 	case SourceKindV4L2:
-		// The UVC HDMI capture dongle (ADR-0078). The resolution is the
-		// capture/stack layer: the stable-id allowlist, the persisted
-		// selection (an empty dir), the operator's pinned mode or the
-		// ADR-0076 policy. The source is the ffmpegpipe V4L2 constructor at
-		// the resolved mode — ADR-0076's low-latency defaults — with the
-		// "v4l2:<node>" ID the no-signal wrapper keys on, so a dongle session
-		// holds across a console power-off with no new wiring.
-		if capOpts == nil || capOpts.Resolve == nil || capOpts.Source == nil {
-			return builtSource{}, fmt.Errorf("runtime: frame source kind %q is not wired in this process: %w", kind, ErrCaptureUnavailable)
-		}
-		res, err := capOpts.Resolve(ctx, dir)
+		bs, absent, err := buildV4L2Source(ctx, dir, capOpts)
 		if err != nil {
+			return builtSource{}, err
+		}
+		if absent {
+			// No dongle attached: the documented 503 answer — the physical
+			// connection is the operator's action (docs/spec/08's
+			// DEVICE_UNAVAILABLE class).
+			return builtSource{}, fmt.Errorf("runtime: %w: no usable capture device is attached: connect the UVC HDMI capture dongle and retry", ErrCaptureDeviceAbsent)
+		}
+		return bs, nil
+	case "":
+		// The default frame source (ADR-0119, issue #28): a request that
+		// named no frame_source runs the usable capture device — the ADR-0078
+		// chain through the process's capture wiring (the persisted selection,
+		// then the first usable device) — and the synthetic test pattern is a
+		// developer-mode fallback, never the appliance default. The resolved
+		// kind rides back in the answer so the session snapshot, the
+		// session.started event and the status bar name the source that
+		// actually runs, not the absence the request carried.
+		if capOpts != nil && capOpts.Resolve != nil && capOpts.Source != nil {
+			bs, absent, err := buildV4L2Source(ctx, "", capOpts)
 			switch {
-			case errors.Is(err, stack.ErrDeviceAbsent):
-				return builtSource{}, fmt.Errorf("runtime: %w: %v", ErrCaptureDeviceAbsent, err)
-			case errors.Is(err, stack.ErrDeviceUnknown):
-				return builtSource{}, fmt.Errorf("runtime: %w: %v", ErrCaptureDeviceUnknown, err)
-			case errors.Is(err, stack.ErrModeUnavailable):
-				return builtSource{}, fmt.Errorf("runtime: %w: %v", ErrCaptureModeUnavailable, err)
+			case err != nil:
+				// A device that is present but offers no policy-fitting mode
+				// keeps its 503 through the default path too: a broken card
+				// is never hidden behind a silent synthetic session.
+				return builtSource{}, err
+			case !absent:
+				bs.kind = SourceKindV4L2
+				return bs, nil
 			}
-			return builtSource{}, fmt.Errorf("runtime: resolving the capture device: %w", err)
 		}
-		src, err := capOpts.Source(ctx, res)
-		if err != nil {
-			return builtSource{}, fmt.Errorf("runtime: opening the capture device %s: %w", res.ID(), err)
+		// No usable device (or no capture wiring): the developer-mode
+		// fallback, or the 409 that names the operator's action.
+		if v, ok := lookupEnv(EnvDeveloperMode); ok && (v == "1" || v == "true") {
+			return builtSource{kind: SourceKindTestPattern, src: ffmpegpipe.TestSource(640, 480, 10), modeFPS: 10}, nil
 		}
-		return builtSource{src: src, device: res.ID(), mode: res.Mode.String(), modeFPS: res.Mode.FPS, modeSource: res.ModeSource}, nil
+		return builtSource{}, fmt.Errorf("runtime: the request named no frame source and no usable capture device is attached: %w — connect your capture card and start again, or name the frame source explicitly (a v4l2 device, a replay dir or clip, or, in developer mode, the test pattern)", ErrNoFrameSource)
 	default:
 		return builtSource{}, fmt.Errorf("runtime: unknown frame source kind %q: %w", kind, ErrUnknownSourceKind)
 	}
+}
+
+// buildV4L2Source is the v4l2 (UVC HDMI capture dongle) half of
+// buildFrameSource (ADR-0078): it resolves the device and mode (the stable-id
+// allowlist, the persisted selection or the operator's pinned mode, the
+// ADR-0076 policy) and builds the live source at the resolved mode —
+// ffmpegpipe.V4L2 with the "v4l2:<node>" ID the no-signal wrapper keys on in
+// production. deviceAbsent reports the no-usable-device refusal
+// (stack.ErrDeviceAbsent) separately so the two callers answer it their own
+// way: the explicit kind v4l2 with the 503 the operator knows, the default
+// resolution with its developer-mode fallback and the 409 (ADR-0119).
+func buildV4L2Source(ctx context.Context, requestedID string, capOpts *CaptureOptions) (builtSource, bool, error) {
+	if capOpts == nil || capOpts.Resolve == nil || capOpts.Source == nil {
+		return builtSource{}, false, fmt.Errorf("runtime: frame source kind %q is not wired in this process: %w", SourceKindV4L2, ErrCaptureUnavailable)
+	}
+	res, err := capOpts.Resolve(ctx, requestedID)
+	if err != nil {
+		switch {
+		case errors.Is(err, stack.ErrDeviceAbsent):
+			return builtSource{}, true, nil
+		case errors.Is(err, stack.ErrDeviceUnknown):
+			return builtSource{}, false, fmt.Errorf("runtime: %w: %v", ErrCaptureDeviceUnknown, err)
+		case errors.Is(err, stack.ErrModeUnavailable):
+			return builtSource{}, false, fmt.Errorf("runtime: %w: %v", ErrCaptureModeUnavailable, err)
+		}
+		return builtSource{}, false, fmt.Errorf("runtime: resolving the capture device: %w", err)
+	}
+	src, err := capOpts.Source(ctx, res)
+	if err != nil {
+		return builtSource{}, false, fmt.Errorf("runtime: opening the capture device %s: %w", res.ID(), err)
+	}
+	return builtSource{src: src, device: res.ID(), mode: res.Mode.String(), modeFPS: res.Mode.FPS, modeSource: res.ModeSource}, false, nil
 }
 
 // observedSource wraps a capture source with the developer-trace observer.

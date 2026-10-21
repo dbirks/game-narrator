@@ -79,6 +79,11 @@ var literalEnums = map[string][]string{
 	"HealthStatus.properties.status": {"ok", "fail"},
 	// The 202 of the one route that enqueues this kind.
 	"ImportAccepted.properties.job_kind": {JobKindImportFile},
+	// The background queue's foreground pause (ADR-0119, issue #27): the
+	// value internal/api/jobs.go writes for the pausing subsystem — today
+	// the live session, the only caller of the runner's foreground-busy
+	// switch (docs/spec/01 invariant 1).
+	"JobPause.properties.paused_by": {jobPauseByLiveSession},
 	// The 202 of the disc-import route (ADR-0066) answers which shape the
 	// job will read: the allowlisted file in place, or the upload's bytes.
 	"DiscImportAccepted.properties.job_kind": {JobKindImportDisc},

@@ -108,6 +108,11 @@ type StatusSnapshot struct {
 	// Setup is the active onboarding runs (usually zero or one), newest
 	// first.
 	Setup []StatusSetupRun `json:"setup_runs,omitempty"`
+	// Jobs is the background queue's foreground pause (ADR-0119, issue
+	// #27): present only while the pause is active, so the bar carries it
+	// for the lifetime of the session that holds it and the stream drops
+	// it when the session ends — the pause is visible, never silent.
+	Jobs *JobPause `json:"jobs,omitempty"`
 	// Health is the component rollup.
 	Health StatusHealth `json:"health"`
 	// Device is the box itself.
@@ -306,6 +311,11 @@ func (s *Server) assembleStatus(ctx context.Context, now time.Time) StatusSnapsh
 
 	// (b) the active setup runs.
 	snap.Setup = s.assembleSetupRuns(ctx, now)
+
+	// (b2) the background queue's foreground pause (ADR-0119, issue #27):
+	// the read is the runner's own state plus one bounded count of the
+	// queue, and the line appears only while the pause is active.
+	snap.Jobs = s.jobPauseView(ctx)
 
 	// (c) the health rollup, and (d) the device.
 	snap.Health = s.assembleHealth(ctx, now, snap.Session, facts)
@@ -624,11 +634,19 @@ func RenderStatus(snap StatusSnapshot) string {
 	default:
 		head = snap.Health.Detail
 	}
-	tail := nonOKHealth(snap.Health)
-	if tail == "" {
-		return head
+	var parts []string
+	parts = append(parts, head)
+	// The queue's foreground pause names itself in the bar for as long as
+	// it holds (ADR-0119, issue #27): a live session that pauses the
+	// background queue is not a detail the structured half alone should
+	// carry.
+	if snap.Jobs != nil {
+		parts = append(parts, "jobs paused")
 	}
-	return head + " · " + tail
+	if tail := nonOKHealth(snap.Health); tail != "" {
+		parts = append(parts, tail)
+	}
+	return strings.Join(parts, " · ")
 }
 
 func renderSessionHead(ss StatusSession) string {
@@ -862,6 +880,11 @@ func statusCompareKey(snap StatusSnapshot) string {
 	var cmp struct {
 		Status  string
 		Version string
+		Jobs    *struct {
+			PausedBy    string
+			Since       string
+			QueuedCount int64
+		}
 		Session *struct {
 			State   string
 			Mode    string
@@ -886,6 +909,14 @@ func statusCompareKey(snap StatusSnapshot) string {
 	}
 	cmp.Status = snap.Status
 	cmp.Version = snap.Device.Version
+	if snap.Jobs != nil {
+		j := snap.Jobs
+		cmp.Jobs = &struct {
+			PausedBy    string
+			Since       string
+			QueuedCount int64
+		}{PausedBy: j.PausedBy, Since: j.Since, QueuedCount: j.QueuedCount}
+	}
 	if snap.Session != nil {
 		ss := snap.Session
 		cmp.Session = &struct {

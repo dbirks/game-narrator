@@ -28,6 +28,22 @@ const (
 	AppName = "game-narrator"
 )
 
+// DataDirSource names where a resolved data directory came from, so the
+// startup log and doctor can say which setting won the precedence chain
+// (issue #31: a restart that silently fell back to the platform default
+// opened a stale database and no error named the file).
+type DataDirSource string
+
+const (
+	// DataDirSourceFlag: the --data-dir flag value.
+	DataDirSourceFlag DataDirSource = "flag"
+	// DataDirSourceEnv: the GAME_NARRATOR_DATA_DIR environment variable.
+	DataDirSourceEnv DataDirSource = "env"
+	// DataDirSourceDefault: the $XDG_DATA_HOME/game-narrator or
+	// $HOME/.local/share/game-narrator fallback.
+	DataDirSourceDefault DataDirSource = "default"
+)
+
 // Config is the validated process configuration. More settings (gateway
 // roles, etc.) are added by later milestones through ADRs.
 type Config struct {
@@ -36,13 +52,17 @@ type Config struct {
 	// DataDir is the absolute durable data directory. The database file is
 	// <DataDir>/game-narrator.sqlite; store.DBPath builds it.
 	DataDir string
+	// DataDirSource records how DataDir was resolved, so the startup log and
+	// doctor report the setting that decided it (ADR-0126).
+	DataDirSource DataDirSource
 }
 
 // DefaultConfig returns configuration with no CLI overrides applied. The data
 // directory still comes from the ambient environment, because there is no
 // meaningful compile-time default for a durable path.
 func DefaultConfig() Config {
-	return Config{Listen: DefaultListen, DataDir: ResolveDataDir("", os.LookupEnv)}
+	dir, source := ResolveDataDirWithSource("", os.LookupEnv)
+	return Config{Listen: DefaultListen, DataDir: dir, DataDirSource: source}
 }
 
 // LoadConfig resolves configuration from CLI overrides and the environment.
@@ -51,9 +71,11 @@ func LoadConfig(listenFlag, dataDirFlag string, lookupEnv func(string) (string, 
 	if lookupEnv == nil {
 		lookupEnv = os.LookupEnv
 	}
+	dir, source := ResolveDataDirWithSource(dataDirFlag, lookupEnv)
 	cfg := Config{
-		Listen:  ResolveListen(listenFlag, lookupEnv),
-		DataDir: ResolveDataDir(dataDirFlag, lookupEnv),
+		Listen:        ResolveListen(listenFlag, lookupEnv),
+		DataDir:       dir,
+		DataDirSource: source,
 	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -67,28 +89,40 @@ func LoadConfig(listenFlag, dataDirFlag string, lookupEnv func(string) (string, 
 // It returns "" when the location cannot be determined at all, which Validate
 // turns into an actionable error rather than a surprise relative path.
 func ResolveDataDir(dataDirFlag string, lookupEnv func(string) (string, bool)) string {
+	dir, _ := ResolveDataDirWithSource(dataDirFlag, lookupEnv)
+	return dir
+}
+
+// ResolveDataDirWithSource is ResolveDataDir plus the origin of the value:
+// flag, env (GAME_NARRATOR_DATA_DIR) or default (the XDG/HOME fallbacks).
+// The CLI records it on the resolved config so the startup log and doctor
+// can say which setting decided where the durable data lives (issue #31,
+// ADR-0126).
+func ResolveDataDirWithSource(dataDirFlag string, lookupEnv func(string) (string, bool)) (string, DataDirSource) {
 	if v := strings.TrimSpace(dataDirFlag); v != "" {
-		return v
+		return v, DataDirSourceFlag
 	}
 	if lookupEnv == nil {
 		lookupEnv = os.LookupEnv
 	}
 	if v, ok := lookupEnv(EnvDataDir); ok {
 		if v = strings.TrimSpace(v); v != "" {
-			return v
+			return v, DataDirSourceEnv
 		}
 	}
 	if v, ok := lookupEnv(EnvXDGDataHome); ok {
 		if v = strings.TrimSpace(v); v != "" {
-			return filepath.Join(v, AppName)
+			return filepath.Join(v, AppName), DataDirSourceDefault
 		}
 	}
 	if v, ok := lookupEnv(EnvHome); ok {
 		if v = strings.TrimSpace(v); v != "" {
-			return filepath.Join(v, ".local", "share", AppName)
+			return filepath.Join(v, ".local", "share", AppName), DataDirSourceDefault
 		}
 	}
-	return ""
+	// Unresolvable: LoadConfig/Validate turns this into an actionable error
+	// before any consumer can read the source.
+	return "", DataDirSourceDefault
 }
 
 // ResolveListen applies the flag > env > default precedence rule.
