@@ -81,6 +81,7 @@ func (s *capturePushSource) push(t *testing.T, f capture.Frame) {
 	s.mu.Lock()
 	s.seq++
 	f.Seq = s.seq
+	f.CaptureTimestampNS = s.seq * 100_000_000
 	s.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -118,38 +119,24 @@ func (s *capturePushSource) Close() error {
 // waitFrameSettled is the push loop's channel synchronisation (issue #22):
 // it waits until the session's live pipeline stats show the frame's
 // observation reached the reducer — `Observations` counts one per processed
-// frame per region (plus the hash-reuse observations that skip a read), so
-// for the session's single region the count reaching n is the frame settled
-// past the single-slot capture bridge and past the OCR stage. Pushing the
-// next frame only then keeps two failure modes out at any host load: the
-// latest-slot bridge overwriting a frame the pipeline has not consumed, and
-// the next observation outrunning the settled frame's rank reply (a reply
-// the next observation beats is fenced stale, and a fenced reply is the
-// wall-clock dependence the held-frame tail is there to recover).
+// frame per region (including absent-box frames and hash-reuse observations),
+// and `OCRStale` counts any pending observation dropped before emit, so for
+// the session's single region `Observations + OCRStale >= n` is the exact mark
+// that frame n has settled past the single-slot capture bridge and past the
+// OCR stage. Pushing the next frame only then keeps two failure modes out at
+// any host load: the latest-slot bridge overwriting a frame the pipeline has
+// not consumed, and the next observation outrunning the settled frame's rank
+// reply (a reply the next observation beats is fenced stale, and a fenced
+// reply is the wall-clock dependence the held-frame tail is there to recover).
 // The bound is the race-scaled patience: a frame that never settles means
 // the pipeline stopped consuming, and the test must say so.
 func waitFrameSettled(t *testing.T, m *runtime.Manager, id string, n int64) {
 	t.Helper()
 	by := time.Now().Add(30 * time.Second * patienceScale)
-	var lastObs int64
-	stableSince := time.Time{}
 	for {
 		if info, ok := m.Get(id); ok && int64(info.Stats.FramesProcessed) >= n {
-			if int64(info.Stats.Observations) >= n {
-				return // every frame observed: settled
-			}
-			// A frame with an absent box emits no observation, so the settled
-			// mark is the observation count going quiet after the frame has
-			// been through the stage.
-			if int64(info.Stats.Observations) == lastObs {
-				if stableSince.IsZero() {
-					stableSince = time.Now()
-				} else if time.Since(stableSince) >= 200*time.Millisecond {
-					return
-				}
-			} else {
-				lastObs = int64(info.Stats.Observations)
-				stableSince = time.Time{}
+			if int64(info.Stats.Observations+info.Stats.OCRStale) >= n {
+				return
 			}
 		}
 		if time.Now().After(by) {
@@ -240,7 +227,8 @@ func TestCaptureSessionCommitsSyntheticText(t *testing.T) {
 	// pipeline to have settled the frame — its observation in the reducer,
 	// the frame ordered past the bridge — before the next one goes in.
 	nFrames := clipFrameCount(t)
-	for n := 1; n <= nFrames; n++ {
+	holdN := lastTextFrameN(t)
+	for n := 1; n <= holdN; n++ {
 		src.push(t, manualClipFrame(t, n))
 		waitFrameSettled(t, e.mgr, info.ID, int64(n))
 	}
@@ -254,19 +242,20 @@ func TestCaptureSessionCommitsSyntheticText(t *testing.T) {
 	// a dongle under load delivers late, never early, and the slower cadence
 	// gives the in-flight rank reply the room to land between two
 	// observations instead of being fenced by the next one.
-	holdN := lastTextFrameN(t)
 	by := time.Now().Add(60 * time.Second * patienceScale)
 	for latestEvent(t, e, info.ID, events.MessageCommitted) == nil {
 		if time.Now().After(by) {
 			t.Fatalf("no line committed within the commit budget of the stream (the capture path must commit the synthetic text the replay path commits)")
 		}
 		src.push(t, manualClipFrame(t, holdN))
-		time.Sleep(500 * time.Millisecond)
+		waitFrameSettled(t, e.mgr, info.ID, src.seq)
+		time.Sleep(100 * time.Millisecond)
 	}
 	// The clip's recorded tail (the empty-text frames), then the source end:
 	// the session stops on source_end, the way the dongle's end does.
 	for n := holdN + 1; n <= nFrames; n++ {
 		src.push(t, manualClipFrame(t, n))
+		waitFrameSettled(t, e.mgr, info.ID, src.seq)
 	}
 	src.Close()
 	info = waitState(t, e.mgr, info.ID, 30*time.Second*patienceScale)
