@@ -382,6 +382,24 @@ func avRegionGeos(t *testing.T, ctx context.Context, st *store.Store, profileID 
 	return geos
 }
 
+// avSpeakerByMessage is the profile's message id → speaker character id map
+// (the speaker link already applied by the import): the attribution the
+// runtime resolves each line's voice from.
+func avSpeakerByMessage(t *testing.T, ctx context.Context, st *store.Store, profileID string) map[string]string {
+	t.Helper()
+	content, err := st.GetProfileContent(ctx, profileID)
+	if err != nil {
+		t.Fatalf("speaker map: GetProfileContent: %v", err)
+	}
+	m := make(map[string]string, len(content.Messages))
+	for _, msg := range content.Messages {
+		if msg.SpeakerID != "" {
+			m[msg.ID] = msg.SpeakerID
+		}
+	}
+	return m
+}
+
 // avWriteManifest writes the run's evidence manifest (AGENTS.md evidence
 // bundle; rule 5: the manifest carries ids, hashes, digests, counts and
 // timings — never dialogue text, speaker key values, frames or tokens).

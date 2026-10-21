@@ -204,7 +204,8 @@ func TestLiveDolphinAVHarness(t *testing.T) {
 	// rule): a commit attributed to a speaker resolves to the character's
 	// voice, every unattributed line to the narrator's (the catch-up
 	// test's same expectation). The region rows give the box positions.
-	expectedVoices := avExpectedVoices{Character: cuV.char.VoiceID, Narrator: cuV.narr.VoiceID}
+	expectedVoices := avExpectedVoices{Character: cuV.char.VoiceID, Narrator: cuV.narr.VoiceID,
+		CharacterID: s.charID, SpeakerByMessage: avSpeakerByMessage(t, ctx, st, s.profileID)}
 	regionGeos := avRegionGeos(t, ctx, st, s.profileID)
 	rep := avBuildTimeline(runID, sessionID, recStart, evs, sessionWAV, expectedVoices, regionGeos)
 	rep.SessionMP4 = filepath.Join(mediaDir, "session.mp4")

@@ -225,6 +225,17 @@ type avSpeechData struct {
 type avExpectedVoices struct {
 	Character string
 	Narrator  string
+	// CharacterID and SpeakerByMessage are the profile's own attribution
+	// (message id → speaker character id, after the speaker link): the map
+	// the runtime's speakerFor resolves voices from. When set, a line whose
+	// message the profile gives to CharacterID expects the character's
+	// voice and every other line the narrator's. The commit's speaker_known
+	// is the decision step's attribution, not the profile's: on the
+	// 2026-10-21 run it was false for lines the profile links to the
+	// character, so every correctly voiced line read as a mismatch. Nil
+	// falls back to the commit's attribution (the synthetic unit tests).
+	CharacterID      string
+	SpeakerByMessage map[string]string
 }
 
 // avBuildTimeline correlates the session's dev event stream onto the
@@ -348,7 +359,11 @@ func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvel
 		// own (speaker_id + speaker_known): a known speaker is a character,
 		// an absent one is the narrator's fallback.
 		expected := expectedVoices.Narrator
-		if c.speakerKnown && c.speaker != "" {
+		if expectedVoices.SpeakerByMessage != nil {
+			if sp := expectedVoices.SpeakerByMessage[c.msg]; sp != "" && sp == expectedVoices.CharacterID {
+				expected = expectedVoices.Character
+			}
+		} else if c.speakerKnown && c.speaker != "" {
 			expected = expectedVoices.Character
 		}
 		centreY, geoKnown := regionGeos[c.region]
