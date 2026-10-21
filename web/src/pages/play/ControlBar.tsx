@@ -17,10 +17,12 @@
  * play-speech-delay, play-stop, play-narrated) stay put (ADR-0093 keeps the
  * e2e selector contract); the mode select becomes the design's segmented
  * toggle (play-mode-segmented) — the 2e/2f merge's control-bar change.
- * The now-speaking bar's Stop is the mock's static control (the 2026-10-20
- * review: it unmounted on a settled session, so only the operator view's
- * correction trio showed one) — it stays in the bar in every state and
- * disables where there is nothing to stop.
+ * The now-speaking bar's Stop is the mock's coral control (2e): it shows
+ * while the session is live and is gone when the session has settled — a
+ * dead coral pill would be the design's one hot accent pointing at nothing
+ * to act on (the P3 review's finding; the operator view's correction trio
+ * keeps its own Stop in the DOM disabled, per the m5 walk). The pill
+ * carries an explicit accessible name ("Stop the session").
  */
 import { Segmented } from "../../components/kit/Segmented";
 import { PillButton } from "../../components/kit/PillButton";
@@ -152,10 +154,11 @@ export function ControlBar({
             Wrong speaker?
           </PillButton>
         ) : null}
-        {view === "now" ? (
+        {view === "now" && !terminal ? (
           <PillButton
             variant="coral"
-            disabled={!operator || terminal}
+            disabled={!operator}
+            aria-label="Stop the session"
             onClick={controls.stop}
             data-testid="play-stop"
           >

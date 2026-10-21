@@ -425,6 +425,19 @@ test("the Traces screen: the line list, the strip, the actions and the UX-05 wal
     await expect(
       page.getByTestId("traces-candidate-rows").getByRole("listitem").first(),
     ).toBeVisible();
+    // P3 regression: the rows are three grid columns (bar | snippet | score)
+    // — the bar's track must stay in its own column and never draw over the
+    // snippet text (its 8rem global width overflowed the 96px cell and hid
+    // the snippet's first characters before the fix).
+    for (const row of await page.getByTestId("traces-candidate-rows").getByRole("listitem").all()) {
+      const barBox = await row.locator("span.bar").boundingBox();
+      const textBox = await row.locator(".traces-candidate-text").boundingBox();
+      if (barBox === null || textBox === null) continue;
+      expect(
+        barBox.x + barBox.width,
+        `the candidate bar draws over the snippet: bar right ${barBox.x + barBox.width} > text left ${textBox.x}`,
+      ).toBeLessThanOrEqual(textBox.x);
+    }
     await shot("05-read-and-why");
 
     // ── 5. the actions: replay audio, save as test, download evidence ──────
