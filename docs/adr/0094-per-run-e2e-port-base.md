@@ -118,3 +118,73 @@ live-play test and must stay untouched.
   in `ports.ts`, the `web/test-results/e2e-runs` manifest dir, and
   `outputDir: "test-results"` — and drop the `GN_E2E_PORT_BASE` handling.
   No data or schema change is involved; runs were always throwaway.
+
+## Amendment 2026-10-21: the unset default now probes and claims (issue #43)
+
+### Context
+
+The original decision kept the **fixed base 18090** for the unset default so
+that CI and the docs were unchanged; only `GN_E2E_PORT_BASE=auto` probed and
+claimed. That default is exactly what issue #43 documents: two concurrent
+`playwright test` runs in the same checkout (no variable set) both bind
+18090-18119 plus the Vite dev port. The second run's webServer health check
+(`/api/v1/health/live`) is answered by the first run's still-live appliance, so
+Playwright proceeds and the second run's specs assert against the first run's
+claimed appliance — misleading failures that look like spec regressions, with
+cross-run state bleed (claims, sessions, profiles). Probe-and-claim existed
+but was opt-in; the runs that collide are the ones that do not opt in.
+
+### Decision
+
+The **unset (and empty) value now takes the `auto` path**: probe candidate
+bases 18090 + k·100 (k = 0..9) and atomically claim the first band whose
+whole port set (band, dev-server port, past-band review ports) answers no
+loopback connection and that no other run's lock dir under `os.tmpdir()`
+claims. An explicit `<number>` remains as-is — an operator choice, validated
+but never probed or claimed (unchanged). Everything else in the ADR stands:
+stable offsets, the 18120-18139 live-play band left untouched, per-run
+manifests, per-run `outputDir`, claim release on process exit with the
+holder-pid liveness + TTL reclamation backstop.
+
+The selection logic moved from `web/e2e/support/ports.ts` to
+`web/e2e/support/portband.ts` (pure functions: no environment read, no
+module-load work, no network I/O at import). `ports.ts` applies the
+resolution once at config load, registers the exit-time release, and writes
+the resolved base back to `process.env.GN_E2E_PORT_BASE` exactly as before,
+so the webServer shells, `serve.mjs` launchers and workers inherit the
+same number. The move exists so the selection is unit-testable in-process:
+`web/src/e2e/portband.test.ts` runs several "runs" through the same claim
+path (real mkdir locks under `os.tmpdir()`) and asserts the bands stay
+disjoint.
+
+### Consequences
+
+- A **lone** run still binds the historical ports: the first candidate is
+  18090, so a checkout with no other e2e run active resolves 18090-18119
+  plus the dev port 5173, and CI, the docs and `make test-ui` behave
+  exactly as before.
+- Concurrent runs in the same checkout now each reserve their own band
+  (18090, 18190, …), so the appliance each test talks to is the one its own
+  run started. The residual probe-then-bind race (a foreign process takes a
+  port between probe and bind) is now a loud webServer bind failure,
+  never a silent cross-run assertion — same as `auto` already had.
+- The band lock under `os.tmpdir()` (`gn-e2e-portband-<base>.lock`) is now
+  taken by every default run, released on process exit; a kill -9'd run
+  leaves it for the holder-pid liveness reclamation.
+- An operator who wants the historical pinned behaviour can still set
+  `GN_E2E_PORT_BASE=18090` explicitly.
+
+### Validation
+
+- `web/src/e2e/portband.test.ts` (vitest, six cases): against the legacy
+  default it fails with two unset runs resolving to the same base 18090
+  (the issue's collision, reproduced); after the change all six pass —
+  disjoint bands for two and three concurrent runs, claim-on-disk,
+  released claims reclaimable, explicit base as-is (never probed or
+  claimed), invalid bases failing loudly, and the loud give-up error when
+  every candidate band is held.
+- `pnpm --dir web test` (28 files, 264 tests), `typecheck`, `lint` and
+  `fmt:check` pass.
+- A lone real Playwright run (one spec, no variable set) resolves base
+  18090 and passes end-to-end; see the task report for the command and
+  result.
