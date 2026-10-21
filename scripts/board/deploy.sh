@@ -204,7 +204,10 @@ set -a
 . ./env
 set +a
 setsid nohup /usr/bin/game-narrator serve >>serve.log 2>&1 </dev/null &
-echo "started (pid $(jobs -p | head -n 1))"
+# setsid forks, so $! is the short-lived setsid wrapper; report the real
+# server process once it exists.
+sleep 1
+echo "started (pid $(pgrep -x -u "$(id -u)" game-narrator | tr '\n' ' '))"
 REMOTE
 else
   # 3. Preflight for the packaged unit.
