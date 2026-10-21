@@ -728,6 +728,19 @@ func TestSpeechPrewarmByteQuotaSkipsBatch(t *testing.T) {
 		}
 		return false
 	})
+	// The prewarm hit is booked inside line b's own speak worker, just before
+	// b's ready event — not in the commit path, so c's ready does not imply
+	// it: under contention c's round trip can settle while b's worker is
+	// still resolving. Wait on b's ready (the state the hit belongs to) before
+	// reading the stats.
+	e.waitEvents(t, "line b ready (its prewarm hit is booked)", 10*time.Second, func(evs []events.Envelope) bool {
+		for _, ev := range evs {
+			if ev.Name == events.SpeechReady && genOfEv(t, ev) == 2 {
+				return evPayload(t, ev)["from_cache"] == true
+			}
+		}
+		return false
+	})
 	if st := e.w.audioInfo().Prewarm; st.Skipped != 1 || st.Hit != 1 {
 		t.Fatalf("after line c: prewarm = %+v, want skipped 1, hit 1 (b was the prewarmed hit; c paid the round trip)", st)
 	}

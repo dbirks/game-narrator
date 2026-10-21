@@ -135,10 +135,29 @@ func TestReplayPauseMutesSpeech(t *testing.T) {
 	if got := countBetween(evs, events.SpeechRequested, pauseSeq, 1<<62); got != 1 {
 		t.Fatalf("speech.requested after the pause = %d, want 1 (the resumed line, once)", got)
 	}
-	// The sink saw the fence: the first playback was interrupted, the second
-	// ran.
-	if sink.Starts() < 2 {
-		t.Fatalf("the sink started %d playbacks, want the two lines", sink.Starts())
+	// The sink saw the fence, asserted on the records' states, not on
+	// sink.Starts(): the first playback was interrupted — the pause may land
+	// inside the sink's spin-up window (the delay the dummy models, and a
+	// real device has too), stopping the line before its first sample: the
+	// "zero stale audio starts" case. Counting starts would bind the first
+	// line to surviving that 1 ms window before the pause's stop arrives —
+	// a scheduling race, not a product state. The second playback ran: it got
+	// past its own spin-up and produced samples before the source end cut it.
+	recs := sink.Records()
+	var first, second *dummy.Record
+	for i := range recs {
+		switch recs[i].Generation {
+		case 1:
+			first = &recs[i]
+		case 2:
+			second = &recs[i]
+		}
+	}
+	if first == nil || !first.Interrupted {
+		t.Fatalf("the first playback record = %+v, want interrupted by the pause", first)
+	}
+	if second == nil || second.Started.IsZero() {
+		t.Fatalf("the second playback record = %+v, want started (it ran)", second)
 	}
 
 	// Terminal sessions refuse the control: the pause is not dropped.
