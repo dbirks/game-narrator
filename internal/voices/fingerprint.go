@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/dbirks/game-narrator/internal/providers/tts"
@@ -46,9 +47,80 @@ func ProfileIdentity8(profileID string) string {
 	return hex.EncodeToString(sum[:])[:8]
 }
 
-// CharacterSlug renders a character id for a voice name: lowercase, so the
-// ULID's base32 letters fit tts's name grammar ([a-z0-9_-]).
-func CharacterSlug(characterID string) string { return strings.ToLower(characterID) }
+// CharacterSlug renders a character's roster name (the voice's character
+// column, verbatim from the roster — natural names like "Killer Bees", not
+// ULIDs) as the character field of a voice name (tts.MakeName's grammar:
+// [a-z0-9][a-z0-9_-]{0,31}).
+//
+// The slug is slugified (issue #29): lowercase, every run of characters
+// outside [a-z0-9] folded to a single '-', leading/trailing '-' trimmed, and
+// capped at 32 chars by stable prefix. Before this rule the slug was the raw
+// name lowercased, so any name with a space (or any character outside
+// [a-z0-9_-]) failed the registry grammar at approval and the revision was
+// left unapprovable — "Killer Bees" is a valid roster row and must yield a
+// valid slug.
+//
+// Uniqueness within a profile: two DIFFERENT roster names must never fold to
+// the same slug, or two characters could name the same voice at the same
+// revision and reference content ("Killer Bees" vs "Killer-Bees" would both
+// fold to "killer-bees"). A name that is already its own slug (canonical:
+// lowercase, [a-z0-9-] only, no edge dashes, at most 32 chars) is returned
+// unchanged — that is the byte-for-byte form every pre-existing stored name
+// was built from — while a name that needed folding gets the 8-hex identity
+// of its OWN raw string appended ("Killer Bees" -> "killer-bees-<d8>").
+// Distinct raw strings therefore fold to distinct slugs (SHA-256 aside), and
+// the name-to-slug mapping is injective within a profile's roster. A name
+// that carries no ASCII alphanumeric at all ("…", "???") has no base to
+// fold, so it gets the deterministic fallback "char-" + the same identity:
+// stable per name, distinct per name, and valid under the grammar.
+//
+// The identity framing is versioned the way Fingerprint's is (ADR-0023's
+// key-space rule): a future change to the fold rule is a disjoint slug space
+// instead of a collision.
+func CharacterSlug(characterID string) string {
+	base := foldCharacterSlug(characterID)
+	if base == "" {
+		return characterSlugFallback + "-" + characterSlugDigest8(characterID)
+	}
+	if base == characterID {
+		return base // canonical: the stored form, byte-for-byte
+	}
+	base = strings.TrimRight(base[:min(len(base), characterSlugCapBase)], "-")
+	return base + "-" + characterSlugDigest8(characterID)
+}
+
+// foldCharacterSlug is the pure fold: lowercase, runs of non-[a-z0-9] to a
+// single '-', edge dashes trimmed, capped at the grammar's 32 chars by stable
+// prefix. The output is [a-z0-9-]* (ASCII only: the fold has already mapped
+// every non-ASCII character away), so byte length is the rune length.
+func foldCharacterSlug(name string) string {
+	s := slugNonAlnumRe.ReplaceAllString(strings.ToLower(name), "-")
+	s = strings.Trim(s, "-")
+	if len(s) > characterSlugCap {
+		s = strings.Trim(s[:characterSlugCap], "-")
+	}
+	return s
+}
+
+// characterSlugDigest8 is the 8-hex identity appended for a name that needed
+// folding (or carried by the fallback): the first 8 hex chars of SHA-256
+// over the versioned framing of the RAW roster name, so two spellings of the
+// same folded base ("Killer Bees", "Killer-Bees", "KILLER-BEES") keep
+// distinct identities exactly as the roster keeps them (roster names are
+// case-sensitive; CastProfile.HasCharacter matches verbatim).
+func characterSlugDigest8(characterID string) string {
+	sum := sha256.Sum256([]byte(characterSlugFraming + characterID))
+	return hex.EncodeToString(sum[:])[:8]
+}
+
+var slugNonAlnumRe = regexp.MustCompile(`[^a-z0-9]+`)
+
+const (
+	characterSlugCap      = 32 // tts grammar: [a-z0-9][a-z0-9_-]{0,31}
+	characterSlugCapBase  = 23 // 32 - len("-") - 8: room for the digest suffix
+	characterSlugFallback = "char"
+	characterSlugFraming  = "gn-voice-character-slug/1\n"
+)
 
 // RegistryName derives the immutable namespaced voice name for an approved
 // revision: gn_<profile8>_<character>_v<rev>_<digest8> (tts.MakeName). It is
