@@ -40,6 +40,17 @@ Polling the id fixes the first half of the race only. The id file is written the
 - The reproduction is the 2026-10-20 `--workers=2` run: the deep-linkers' "the walk's run id never appeared" failure (the empty fast path), and the mid-walk deep link's five-second `data-stage` miss under load.
 - After the barrier landed: `GN_E2E_PORT_BASE=auto playwright test e2e/setup-board.spec.ts --workers=2` — 3 passed in 32.0 s, with the walk (13.8 s) and the reduced-motion test (15.2 s) running concurrently on two workers: the second waited on the walk's lock, then deep-linked the settled run.
 
+## Addendum (2026-10-21): the same barrier for the cast walk's widths test
+
+The first full-suite `--workers=2` gate run (2026-10-21) found the same hazard in `web/e2e/cast.spec.ts`: the walk and its "screenshots and axe at the three widths" test share the voices server, and the widths test runs on the walk's game **and approved take** — a state that exists only once the walk's audition has been approved. `fullyParallel` let the widths test start on a sibling worker mid-walk: its page loaded with "no voice for Boy yet" (the walk's take still generating), and the take player never rendered, so the visibility wait failed after its 60 s budget — a scheduling artefact, not a product fault (the error-context snapshot names the state).
+
+- The walk now holds the scenario lock (`scenario: "cast-walk"`) from before its appliance claim to its end, released in a `finally` (the same shape as setup-board test (a)).
+- The widths test acquires and immediately releases the lock before it signs in (the completion barrier; it is read-only over the walk's state, so a barrier, not a claim), with a wait of the walk's 600 s test timeout plus a 30 s margin; its own timeout covers the barrier plus its work.
+- No new mechanism, no product change: the ADR-0120 primitive, this ADR's decision.
+- Validated by the 2026-10-21 full-suite gate re-run (this commit).
+
+The same run also found the health walk's appliance claim asserted the first claim's 201 strictly, while its two sibling tests on the same server already accepted the already-claimed 409: at two workers a sibling's claim can land first. The walk now accepts `[201, 409]` like its siblings (ADR-0016 §7: the claim is once per appliance; either way the admin exists for the sign-in).
+
 ## Reversal plan
 
 Remove the `acquireScenarioLock`/`finally` from test (a), the two-stage barrier from (b)/(c) and the `timeoutMs` parameter from `acquireScenarioLock`; restore the deep-linkers' original timeouts. The suite at `workers: 1` (the config default) makes the handoff serial again, so nothing else reverts.
