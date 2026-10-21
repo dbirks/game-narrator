@@ -71,11 +71,12 @@ test-unit:
 ## secret scan in tree mode (the history-including run is the dedicated
 ## `secret-scan` gate target below and the CI step).
 lint:
-	@unformatted="$$(gofmt -l .)"; \
+	@unformatted="$$(git ls-files -z --cached --others --exclude-standard -- '*.go' | xargs -0 -r gofmt -l)"; \
 	if [ -n "$$unformatted" ]; then \
 		echo "gofmt needed on:"; echo "$$unformatted"; exit 1; \
 	fi
 	go vet ./...
+	pnpm --dir web check:api
 	pnpm --dir web lint
 	pnpm --dir web fmt:check
 	scripts/gates/secret-scan.sh
