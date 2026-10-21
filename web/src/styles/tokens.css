@@ -518,30 +518,87 @@ textarea:focus-visible,
   color: var(--muted);
 }
 
-/* Narrow screens (phone width): the bar keeps wordmark + live string and
-   wraps the nav into a second 28px row. */
+/* Narrow screens (phone width): the bar keeps the wordmark, the live string
+   and the menu button — the nav, the developer entry and the principal
+   collapse into the button's panel below (Phase 2 shell fix; the old wrap
+   made the 28px bar three lines at 390). The bar itself stays one 28px
+   row, so the sticky fade's top offset still holds. */
 @media (max-width: 640px) {
-  .status-bar {
-    flex-wrap: wrap;
-    height: auto;
-    min-height: 28px;
-    gap: var(--sp-8) var(--sp-16);
-    padding: 4px var(--sp-16);
-  }
-
   /* The live string is the bar's only dynamic text. Give it a stable width
      band so its updates (the status feed rewrites it in place) never change
-     how many rows the wrapped bar takes: a variable-height sticky bar would
-     jump the page under it and can swallow a pointer click aimed at the
-     chrome a row lower. */
+     the bar's height: a variable-height sticky bar would jump the page under
+     it and can swallow a pointer click aimed at the chrome a row lower. */
   .status-live {
-    flex: 0 1 34vw;
+    flex: 0 1 44vw;
     white-space: nowrap;
   }
 
-  .status-fade {
-    top: auto;
-    position: relative;
+  /* The menu button: a paper-ghost pill on the ink bar, the bar's own
+     mono 12px type. */
+  .status-menu {
+    margin-left: var(--sp-8);
+    font: inherit;
+    font-size: 12px;
+    line-height: 1;
+    padding: 3px var(--sp-8);
+    border: 1px solid color-mix(in srgb, var(--paper) 40%, transparent);
+    border-radius: var(--radius-pill);
+    background: transparent;
+    color: var(--paper);
+    cursor: pointer;
+  }
+
+  .status-menu:hover {
+    border-color: var(--paper);
+  }
+
+  /* The menu's panel: an ink sheet under the bar (the bar's own surface
+     language), full width, its content stacked. The badge, the logout and
+     the nav's current-page peach read the same rules the bar's inline
+     copies use (those are scoped to .status-bar, so the panel carries its
+     own). */
+  .status-menu-panel {
+    position: fixed;
+    left: 0;
+    right: 0;
+    top: 40px;
+    z-index: 41;
+    display: grid;
+    gap: var(--sp-16);
+    padding: var(--sp-16);
+    background: var(--ink);
+    color: var(--paper);
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  .status-menu-panel a {
+    color: inherit;
+    text-decoration: none;
+    padding: 2px 0;
+  }
+
+  .status-menu-panel .status-nav {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--sp-10);
+  }
+
+  .status-menu-panel .status-dev {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--sp-8);
+  }
+
+  .status-menu-panel .badge {
+    border-color: color-mix(in srgb, var(--paper) 40%, transparent);
+    color: var(--paper);
+  }
+
+  .status-menu-panel .nav-user {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--sp-8);
   }
 }
 
