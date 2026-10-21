@@ -1093,6 +1093,20 @@ textarea:focus-visible,
   color: var(--ink);
 }
 
+/* Phone width: the line id column (full ULIDs) squeezes the titles, so it
+   drops out below ~640px and the titles take the whole row (the 2026-10-20
+   review's ⌘K finding). The id is still on the row's data-id attribute
+   (the spec's contract) and the trace's own detail names it. */
+@media (max-width: 640px) {
+  .palette-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .palette-row-id {
+    display: none;
+  }
+}
+
 /* The footnote bar: the keyboard contract, spelled out. */
 .palette-footnote {
   margin: 0;
