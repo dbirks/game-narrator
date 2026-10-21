@@ -1377,15 +1377,30 @@ pre.muted {
   opacity: 0.75;
 }
 
-/* The shelf: the design's 5-column grid; the column floor keeps the tiles
- * honest on narrow screens (two at 390) instead of scrolling sideways. */
+/* The shelf: the design's 5-column grid, filling the content width (the
+ * 2026-10-20 review: the auto-fill column floor made narrow fixed-width
+ * tiles). The column count steps down with the review's widths — five at
+ * the design's 1440, three at 1024, two at 390 — so the tiles always fill
+ * the row instead of leaving a gap at the right. */
 .lib-shelf {
   list-style: none;
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: var(--sp-16);
+}
+
+@media (max-width: 1100px) {
+  .lib-shelf {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .lib-shelf {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .lib-shelf-tile {

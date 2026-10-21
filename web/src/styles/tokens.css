@@ -1152,6 +1152,11 @@ textarea:focus-visible,
   line-height: 1.2;
   cursor: pointer;
   box-sizing: border-box;
+  /* The kit's pills also render as links (the Library's Cast/Dialogue):
+     the browser's default link underline is not the design's line
+     language — the pill's border is the line, and the global 2px coral
+     focus ring stays (the 2026-10-20 review's underline finding). */
+  text-decoration: none;
 }
 
 .kit-pill-ink {
