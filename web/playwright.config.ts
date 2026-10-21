@@ -46,6 +46,7 @@ const tracesUrl = `http://127.0.0.1:${ports.traces}`;
 const fakeAssistantUrl = `http://127.0.0.1:${ports.fakeAssistant}`;
 const playControlsUrl = `http://127.0.0.1:${ports.playControls}`;
 const playPcUrl = `http://127.0.0.1:${ports.playPc}`;
+const secondGameUrl = `http://127.0.0.1:${ports.secondGame}`;
 const audioUrl = `http://127.0.0.1:${ports.audio}`;
 const setupBoardUrl = `http://127.0.0.1:${ports.setupBoard}`;
 const captureUrl = `http://127.0.0.1:${ports.capture}`;
@@ -114,7 +115,7 @@ export default defineConfig({
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
       testIgnore:
-        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|voices-qa\.spec\.ts|cast\.spec\.ts|m5-part1\.spec\.ts|m5-graph-regions\.spec\.ts|corrections-fixtures\.spec\.ts|live-play\.spec\.ts|play-controls\.spec\.ts|audio-output\.spec\.ts|bluetooth-output\.spec\.ts|capture-device\.spec\.ts|restore-walk\.spec\.ts|a11y\.spec\.ts|setup-wizard\.spec\.ts|redesign-shell\.spec\.ts|library\.spec\.ts|ksearch\.spec\.ts|agent-dock\.spec\.ts|setup-board\.spec\.ts|traces\.spec\.ts|health\.spec\.ts|settings-theme\.spec\.ts|play-pc\.spec\.ts/,
+        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|voices-qa\.spec\.ts|cast\.spec\.ts|m5-part1\.spec\.ts|m5-graph-regions\.spec\.ts|corrections-fixtures\.spec\.ts|live-play\.spec\.ts|play-controls\.spec\.ts|audio-output\.spec\.ts|bluetooth-output\.spec\.ts|capture-device\.spec\.ts|restore-walk\.spec\.ts|a11y\.spec\.ts|setup-wizard\.spec\.ts|redesign-shell\.spec\.ts|library\.spec\.ts|ksearch\.spec\.ts|agent-dock\.spec\.ts|setup-board\.spec\.ts|traces\.spec\.ts|health\.spec\.ts|settings-theme\.spec\.ts|play-pc\.spec\.ts|second-game\.spec\.ts/,
     },
     {
       // The first-run wizard (G9, ADR-0087) on its own packaged-binary
@@ -441,6 +442,19 @@ export default defineConfig({
       name: "settings-theme",
       testMatch: /settings-theme\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: themeUrl },
+    },
+    {
+      // The G12 second-game walk (ADR-0079, issue #33): the committed
+      // bench-synthetic-002 profile imported through the API and opened on the
+      // Library / Regions / developer-inspector pages, with the committed
+      // black-water-001 clip replayed through the real pipeline (the replay
+      // allowlist admits the repo's testdata, as the developer project does).
+      // No speech roles: the leg asserts the committed lines and the region,
+      // not a voice — the walk's speech rows stay skipped, exactly as the
+      // developer project's seeded walk does.
+      name: "second-game",
+      testMatch: /second-game\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: secondGameUrl },
     },
     {
       // The live play path (task browser-live-play, AGENTS.md rule 3 class
@@ -1163,6 +1177,21 @@ export default defineConfig({
         GAME_NARRATOR_ROLE_AGENT_REASONING_MODEL: "fake/assistant",
         GAME_NARRATOR_ROLE_AGENT_REASONING_URL: `http://127.0.0.1:${ports.fakeModel}/v1`,
       },
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The G12 second-game walk server (ADR-0079, issue #33): the packaged
+      // binary with the repo's testdata on the replay allowlist (the
+      // black-water-001 clip's root), no speech roles and no capture seam —
+      // the replay session runs the local OCR/matcher/commit chain on real
+      // Tesseract, the way the developer project's server does.
+      command: `node web/e2e/serve.mjs second-game 127.0.0.1:${ports.secondGame} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${secondGameUrl}/api/v1/health/live`,
+      env: { GAME_NARRATOR_REPLAY_ROOTS: replayRoots },
       reuseExistingServer: false,
       timeout: 60_000,
       stdout: "ignore",

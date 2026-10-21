@@ -107,14 +107,22 @@ bootstrap:
 	fi
 
 ## test-full: run every gate in order, continue past failures, then print a
-## final table (gate | result | detail). Result PASS comes from exit 0; a
-## go gate's recorded exit 2 (artifacts/gates/<gate>.rc) or a legacy gate's
-## own "NOT RUN: <gate> ..." output is NOT RUN; anything else is FAIL.
+## final table (gate | result | detail) and write the machine-readable
+## evidence manifest (scripts/gates/test-full-manifest.sh: the per-gate rows
+## plus the bench second set's report, ADR-0079, for the second game's
+## holdout leg — the AGENTS.md evidence bundle's machine half). Result PASS
+## comes from exit 0; a go gate's recorded exit 2 (artifacts/gates/<gate>.rc)
+## or a legacy gate's own "NOT RUN: <gate> ..." output is NOT RUN; anything
+## else is FAIL.
 ## Exits 1 if any gate FAILed, 2 if nothing failed but at least one gate is
 ## NOT RUN, and 0 only if every gate passed. Per-gate logs:
-## artifacts/gates/full-<gate>.log (gitignored).
+## artifacts/gates/full-<gate>.log (gitignored); the manifest:
+## artifacts/gates/test-full-manifest.json (gitignored, like the rest of
+## artifacts/).
 test-full:
 	@mkdir -p artifacts/gates ; \
+	tsv=artifacts/gates/test-full-gates.tsv ; \
+	rm -f "$$tsv" ; \
 	fail=0; notrun=0; table="" ; \
 	for target in $(RUN_GATES); do \
 		out=artifacts/gates/full-$$target.log ; \
@@ -133,10 +141,16 @@ test-full:
 		[ -n "$$detail" ] || detail="exit $$rc" ; \
 		detail=$$(printf '%s' "$$detail" | head -c 140) ; \
 		table="$$table$$target | $$res | $$detail\n" ; \
+		printf '%s\t%s\t%s\n' "$$target" "$$res" "$$detail" >>"$$tsv" ; \
 	done ; \
 	printf '\n=== test-full summary ===\n'; \
 	printf 'gate | result | detail\n'; \
 	printf '%b' "$$table" ; \
+	if bash scripts/gates/test-full-manifest.sh artifacts/gates/test-full-manifest.json ; then \
+		printf 'evidence manifest: artifacts/gates/test-full-manifest.json\n' ; \
+	else \
+		printf 'test-full: WARNING: the evidence manifest was not written (the gate results above stand)\n' >&2 ; \
+	fi ; \
 	rc=0 ; \
 	if [ $$fail -ne 0 ] ; then rc=1 ; elif [ $$notrun -ne 0 ] ; then rc=2 ; fi ; \
 	printf '%s' "$$rc" > artifacts/gates/test-full.rc ; \
