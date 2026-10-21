@@ -120,10 +120,32 @@ type ranker struct {
 	// ranking over 40 candidates does not allocate 40 key slices per query.
 	triScratch []uint32
 
-	obsKey     string
-	obsRunes   []rune
-	qKeys      []uint32
-	qToks      []uint32
+	// intScratch is the same buffer for the interior-trigram keys the fragment
+	// containment reads (fragment.go): per-candidate, reused, never retained.
+	intScratch []uint32
+
+	// winCount is the fragment window counter (fragment.go), dense over
+	// obsIntKeys: winCount[i] is how often the observation's i-th interior
+	// trigram occurs in the window being slid, and winPresent counts the
+	// entries with a nonzero count. Sized on first use to len(obsIntKeys) and
+	// zeroed per candidate; winStep touches only the entry a trigram hashes
+	// to, so a slide costs one binary search, not a pass over the set.
+	winCount   []int16
+	winPresent int
+
+	obsKey   string
+	obsRunes []rune
+	qKeys    []uint32
+	qToks    []uint32
+	// obsIntKeys is the observation's interior trigram keys, computed once per
+	// reading in rankText. Empty for a reading shorter than three runes: such a
+	// read cannot carry containment evidence (fragment.go).
+	obsIntKeys []uint32
+	// fragN counts the pool candidates whose containment of the reading clears
+	// fragmentCoverageFloor (scoreOne), reset per reading. The acceptance policy
+	// reads it: one covering line is a unique fragment, several is an ambiguity
+	// no per-candidate score can settle (fragment.go).
+	fragN      int
 	visibility float64
 }
 
@@ -135,10 +157,17 @@ type candidate struct {
 	edgePrior float64
 	graph     bool
 	fallback  bool
-	raw       float64
-	prob      float64 // calibrated temperature (RankOptions.Temperature)
-	gateProb  float64 // revision-1 (T = 1) softmax; the acceptance-gate scale
-	comps     [componentCount]float64
+	// frag is this candidate's windowed containment of the reading
+	// (fragment.go): the fraction of the reading's interior trigrams a single
+	// window of the candidate contains, when the candidate is strictly longer
+	// than the reading and the fraction clears fragmentCoverageFloor; 0
+	// otherwise. It floors the text component, and the count of such
+	// candidates (the ranker's fragN) is the policy's ambiguity gate.
+	frag     float64
+	raw      float64
+	prob     float64 // calibrated temperature (RankOptions.Temperature)
+	gateProb float64 // revision-1 (T = 1) softmax; the acceptance-gate scale
+	comps    [componentCount]float64
 }
 
 func (r *ranker) run(obs Observation) Ranking {
@@ -199,6 +228,8 @@ func (r *ranker) rankText(text string) Ranking {
 	r.obsRunes = []rune(r.obsKey)
 	r.qKeys = sortUniqueKeys(trigramKeys(r.obsRunes, make([]uint32, 0, 3*len(r.obsRunes))))
 	r.qToks = tokenHashes(r.obsKey, nil)
+	r.obsIntKeys = interiorTrigramKeys(r.obsRunes, nil)
+	r.fragN = 0
 	r.pool = make(map[int32]*candidate, r.opts.RetrievalK+r.opts.MaxRecent+8)
 
 	r.retrieve()

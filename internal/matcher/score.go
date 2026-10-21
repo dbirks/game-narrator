@@ -56,15 +56,44 @@ func (r *ranker) scoreOne(c *candidate) {
 	// is what makes this set identical to the one the inverted index was populated
 	// from: intersecting a differently-sized set against a stored trigram count
 	// would quietly depress the score of every long line.
-	obsTris := len(r.qKeys)
-	candKeys := sortUniqueKeys(trigramKeys([]rune(key), r.triScratch))
+	candRunes := []rune(key)
+	candKeys := sortUniqueKeys(trigramKeys(candRunes, r.triScratch))
 	r.triScratch = candKeys[:0]
 	shared := intersectCount(r.qKeys, candKeys)
-	diceScore := dice(shared, obsTris, int(idx.triCount[c.ord]))
+	diceScore := dice(shared, len(r.qKeys), int(idx.triCount[c.ord]))
 	candToks := idx.tokensOf(c.ord)
 	tokens := dice(intersectCount(r.qToks, candToks), len(r.qToks), len(candToks))
 	lev := levenshteinSimilarity(r.obsRunes, levRunes(key))
 	text := unit(trigramWeight*diceScore + tokenWeight*tokens + levenshteinWeight*lev)
+
+	// Fragment containment (fragment.go): the shared-trigram evidence read as
+	// containment instead of similarity — the fraction of the reading's
+	// interior trigrams that lie in a single contiguous window of the
+	// candidate, not its whole bag. It applies only when the candidate is
+	// strictly longer than the reading — a line as short as the read is a
+	// similarity case, not a containment one — and only over the reading's
+	// interior trigrams, which a perfect window of a line contains in full
+	// while the boundary pads never do. The set bound over the candidate's
+	// whole interior is the cheap necessary condition (a window is a subset
+	// of the line), and the sliding passes run only for candidates it clears.
+	// It floors the text score, never ceilings it: a full-box read
+	// (candidate not longer) scores exactly as it did before, and a damaged
+	// reading whose containment clears the floor keeps the higher of the two
+	// readings of the same evidence.
+	c.frag = 0
+	if len(r.obsIntKeys) > 0 && int(idx.keyLens[c.ord]) > len(r.obsRunes) {
+		candInt := interiorTrigramKeys(candRunes, r.intScratch)
+		r.intScratch = candInt[:0]
+		if fragmentFloor(r.obsIntKeys, candInt) >= fragmentCoverageFloor {
+			if cov := r.fragmentWindowCoverage(candRunes); cov >= fragmentCoverageFloor {
+				c.frag = cov
+				r.fragN++
+			}
+		}
+	}
+	if c.frag > text {
+		text = c.frag
+	}
 
 	prefix := 0.0
 	if c.prefix {
@@ -373,7 +402,16 @@ func (r *ranker) policy(top *candidate, rest []*candidate) (string, bool) {
 	lowSpecificity := nonSpaceLen(r.obsKey) < r.opts.MinSpecificChars ||
 		!revealedEnough ||
 		r.exactN > r.opts.ExactAmbiguityMax ||
-		(r.obs.IsPrefix && r.prefixN > r.opts.ExactAmbiguityMax)
+		(r.obs.IsPrefix && r.prefixN > r.opts.ExactAmbiguityMax) ||
+		// Fragment ambiguity (fragment.go): more than one line in the pool covers
+		// the reading at or above fragmentCoverageFloor. The per-candidate scores
+		// of those lines are near-identical by construction — they all contain the
+		// reading — so no text evidence distinguishes them, and the margin gate is
+		// not a safe backstop: scene or graph context could tilt one past
+		// MinMargin while the text evidence says "several lines, equally well". The
+		// same escape hatches apply as for every other low-specificity case: real
+		// graph or deciding-scene evidence may still resolve it.
+		r.fragN > 1
 	graphDecides := top.edgePrior >= r.opts.GraphEvidenceFloor
 	runnerUpTextClose := len(rest) > 0 && top.comps[compIndex(ComponentText)]-rest[0].comps[compIndex(ComponentText)] < 0.05
 	sceneDecides := top.comps[compIndex(ComponentScene)] >= 1 &&
