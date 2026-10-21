@@ -487,10 +487,14 @@ textarea:focus-visible,
 }
 
 /* The page container every route renders inside: full width, the design's
-   page padding, a top offset that clears the sticky chrome. */
+   page padding, a top offset that clears the sticky chrome. The bottom
+   gutter (64px) clears the floating agent pill (Phase 2 global fix): the
+   pill is fixed to the viewport, so a short page's last row would otherwise
+   sit under it at the bottom-right (the theme token grid's HAIR column, the
+   cast panel's "3 more takes" — the review's overlaps). */
 .page-container {
   min-height: 100vh;
-  padding: var(--sp-22) var(--sp-24) var(--sp-32);
+  padding: var(--sp-22) var(--sp-24) 64px;
   box-sizing: border-box;
 }
 
@@ -514,30 +518,87 @@ textarea:focus-visible,
   color: var(--muted);
 }
 
-/* Narrow screens (phone width): the bar keeps wordmark + live string and
-   wraps the nav into a second 28px row. */
+/* Narrow screens (phone width): the bar keeps the wordmark, the live string
+   and the menu button — the nav, the developer entry and the principal
+   collapse into the button's panel below (Phase 2 shell fix; the old wrap
+   made the 28px bar three lines at 390). The bar itself stays one 28px
+   row, so the sticky fade's top offset still holds. */
 @media (max-width: 640px) {
-  .status-bar {
-    flex-wrap: wrap;
-    height: auto;
-    min-height: 28px;
-    gap: var(--sp-8) var(--sp-16);
-    padding: 4px var(--sp-16);
-  }
-
   /* The live string is the bar's only dynamic text. Give it a stable width
      band so its updates (the status feed rewrites it in place) never change
-     how many rows the wrapped bar takes: a variable-height sticky bar would
-     jump the page under it and can swallow a pointer click aimed at the
-     chrome a row lower. */
+     the bar's height: a variable-height sticky bar would jump the page under
+     it and can swallow a pointer click aimed at the chrome a row lower. */
   .status-live {
-    flex: 0 1 34vw;
+    flex: 0 1 44vw;
     white-space: nowrap;
   }
 
-  .status-fade {
-    top: auto;
-    position: relative;
+  /* The menu button: a paper-ghost pill on the ink bar, the bar's own
+     mono 12px type. */
+  .status-menu {
+    margin-left: var(--sp-8);
+    font: inherit;
+    font-size: 12px;
+    line-height: 1;
+    padding: 3px var(--sp-8);
+    border: 1px solid color-mix(in srgb, var(--paper) 40%, transparent);
+    border-radius: var(--radius-pill);
+    background: transparent;
+    color: var(--paper);
+    cursor: pointer;
+  }
+
+  .status-menu:hover {
+    border-color: var(--paper);
+  }
+
+  /* The menu's panel: an ink sheet under the bar (the bar's own surface
+     language), full width, its content stacked. The badge, the logout and
+     the nav's current-page peach read the same rules the bar's inline
+     copies use (those are scoped to .status-bar, so the panel carries its
+     own). */
+  .status-menu-panel {
+    position: fixed;
+    left: 0;
+    right: 0;
+    top: 40px;
+    z-index: 41;
+    display: grid;
+    gap: var(--sp-16);
+    padding: var(--sp-16);
+    background: var(--ink);
+    color: var(--paper);
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  .status-menu-panel a {
+    color: inherit;
+    text-decoration: none;
+    padding: 2px 0;
+  }
+
+  .status-menu-panel .status-nav {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--sp-10);
+  }
+
+  .status-menu-panel .status-dev {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--sp-8);
+  }
+
+  .status-menu-panel .badge {
+    border-color: color-mix(in srgb, var(--paper) 40%, transparent);
+    color: var(--paper);
+  }
+
+  .status-menu-panel .nav-user {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--sp-8);
   }
 }
 
@@ -591,6 +652,30 @@ textarea:focus-visible,
   border: 1px solid color-mix(in srgb, var(--paper) 40%, transparent);
   border-radius: var(--radius-tag);
   padding: 0 4px;
+}
+
+/* The floating pill's phone-width docking (the Phase 2 global fix): below
+   ~640px it is a full-width bottom bar and the page's bottom gutter clears
+   it, so it never sits over the page's last row (the Library's headings at
+   390, the theme token grid's HAIR column, the cast panel's "3 more
+   takes"). */
+@media (max-width: 640px) {
+  .agent-pill {
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: auto;
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+    border-bottom: none;
+    justify-content: center;
+    padding: var(--sp-10) var(--sp-16);
+  }
+
+  .page-container {
+    padding-bottom: calc(44px + var(--sp-16));
+  }
 }
 
 .agent-dock {
@@ -778,6 +863,41 @@ textarea:focus-visible,
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--muted);
+}
+
+/* The empty dock's "try asking…" hints (the 2026-10-20 review): a short,
+   screen-tied list of dashed suggestion pills under the empty line. Dashed
+   1.5px ink is the design's "affordance" line language; a pick is a
+   pre-fill, not a send, so the pills stay quiet (never the coral hot
+   accent). */
+.dock-suggestions {
+  list-style: none;
+  margin: var(--sp-4) 0 0;
+  padding: 0;
+  display: grid;
+  gap: var(--sp-6);
+}
+
+.dock-suggestion {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.3;
+  /* --fg, not --ink: the dock's ground is the theme's card, and Lilac
+     Night's --ink is the page background (issue #30). */
+  color: var(--fg);
+  background: transparent;
+  border: 1.5px dashed var(--ink);
+  border-radius: var(--radius-pill);
+  padding: var(--sp-4) var(--sp-10);
+  cursor: pointer;
+  text-align: left;
+  overflow-wrap: anywhere;
+  box-sizing: border-box;
+  max-width: 100%;
+}
+
+.dock-suggestion:hover {
+  border-style: solid;
 }
 
 /* The problem card: the design's error state (coral border, the problem,
@@ -1005,7 +1125,32 @@ textarea:focus-visible,
 
 .palette-row:focus-visible .palette-row-subtitle,
 .palette-row:focus-visible .palette-row-id {
+  /* --fg, not --ink: the palette's ground is the theme's card (issue #30). */
+  color: var(--fg);
+}
+
+/* Lilac Night (issue #30 family): the focus row's fill is the light --peach
+   and its text is the light --paper — 1.7:1. Title, subtitle and id take
+   ink (8.4:1), the same rule every other --peach fill applies there; the
+   light themes are untouched (their --fg is already ink). */
+[data-theme="lilac-night"] .palette-row:focus-visible,
+[data-theme="lilac-night"] .palette-row:focus-visible .palette-row-subtitle,
+[data-theme="lilac-night"] .palette-row:focus-visible .palette-row-id {
   color: var(--ink);
+}
+
+/* Phone width: the line id column (full ULIDs) squeezes the titles, so it
+   drops out below ~640px and the titles take the whole row (the 2026-10-20
+   review's ⌘K finding). The id is still on the row's data-id attribute
+   (the spec's contract) and the trace's own detail names it. */
+@media (max-width: 640px) {
+  .palette-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .palette-row-id {
+    display: none;
+  }
 }
 
 /* The footnote bar: the keyboard contract, spelled out. */
@@ -1067,6 +1212,11 @@ textarea:focus-visible,
   line-height: 1.2;
   cursor: pointer;
   box-sizing: border-box;
+  /* The kit's pills also render as links (the Library's Cast/Dialogue):
+     the browser's default link underline is not the design's line
+     language — the pill's border is the line, and the global 2px coral
+     focus ring stays (the 2026-10-20 review's underline finding). */
+  text-decoration: none;
 }
 
 .kit-pill-ink {
@@ -1134,6 +1284,17 @@ textarea:focus-visible,
   font-weight: 700;
 }
 
+/* Lilac Night (issue #30): the theme's coral is a light pink, so the 40%
+   fill lands mid-tone and the light themes' ink text only holds 3.0:1 on
+   it. The dark-theme fill goes darker (more card) and the paper does the
+   work — the same re-point the legacy remap makes for every --ink-named
+   text slot in the dark theme. 5.9:1 on the darker fill, above the chip's
+   4.5:1 small-text bound. */
+[data-theme="lilac-night"] .kit-chip-bad {
+  background: color-mix(in srgb, var(--coral) 30%, var(--card));
+  color: var(--paper);
+}
+
 /* Name tabs: mono 700 uppercase on ink, letter-spacing 0.1em. */
 .kit-name-tab {
   display: inline-block;
@@ -1154,7 +1315,13 @@ textarea:focus-visible,
    (arrow keys move, the selection persists per user). */
 .kit-segmented {
   display: inline-flex;
-  border: 1.5px solid var(--ink);
+  /* --fg for the strip's line and the segments' fills: the light themes'
+     ink strip on the card and the ink-filled active segment are the
+     design; Lilac Night re-points --fg to paper, so the strip and the
+     active segment invert with the theme instead of vanishing into the
+     page (issue #30: the inactive tab's ink text read 1.1:1 on the
+     dark strip). */
+  border: 1.5px solid var(--fg);
   border-radius: var(--radius-pill);
   overflow: hidden;
   background: var(--card);
@@ -1164,7 +1331,7 @@ textarea:focus-visible,
   appearance: none;
   border: none;
   background: transparent;
-  color: var(--ink);
+  color: var(--fg);
   font-family: var(--font-display);
   font-weight: 600;
   font-size: 0.9rem;
@@ -1174,8 +1341,8 @@ textarea:focus-visible,
 }
 
 .kit-segmented [role="tab"][aria-selected="true"] {
-  background: var(--ink);
-  color: var(--paper);
+  background: var(--fg);
+  color: var(--bg);
 }
 
 .kit-segmented [role="tab"]:focus-visible {
@@ -1468,10 +1635,14 @@ textarea:focus-visible,
 
 .kit-select {
   background: var(--card);
-  border: 1.5px solid var(--ink);
+  /* --fg for the line and the text: the light themes' ink is the design;
+     Lilac Night's --ink is the page background, and the select's ground is
+     the dark card — ink text on it read 1.05:1 (issue #30, the settings
+     audio-device select). */
+  border: 1.5px solid var(--fg);
   border-radius: var(--radius-card);
   padding: var(--sp-8) var(--sp-12);
-  color: var(--ink);
+  color: var(--fg);
   font-family: var(--font-mono);
   font-size: 0.9rem;
   /* Native selects size to their longest option — width:100% keeps them
@@ -1547,6 +1718,15 @@ textarea:focus-visible,
   gap: var(--sp-16);
 }
 
+/* The board is the page's centrepiece (mock 2c spans it to the page width):
+   the shared 76rem main cap left the board at ~2/3 of the content width
+   with its 360px panel beside it (the 2026-10-20 review's "empty space").
+   The setup page runs to the container's full width so the board's four
+   columns — and the cards that fill them — take the room the page has. */
+.page-container > main.setup-page {
+  max-width: none;
+}
+
 .setup-header h1 {
   font-size: 36px;
   font-weight: 600;
@@ -1603,6 +1783,13 @@ textarea:focus-visible,
    peach, below the AA floor — the active cell reads its mono in ink. */
 .setup-rail-cell[data-state="active"] .setup-rail-num,
 .setup-rail-cell[data-state="active"] .setup-rail-value {
+  color: var(--ink);
+}
+
+/* Lilac Night (issue #30): the cell's 15px label inherits the theme's text
+   (--paper) and would read 1.6:1 on the active cell's light --peach fill —
+   the whole active cell takes ink, the way the cast selected row does. */
+[data-theme="lilac-night"] .setup-rail-cell[data-state="active"] {
   color: var(--ink);
 }
 
@@ -1787,6 +1974,15 @@ textarea:focus-visible,
   margin: 0;
 }
 
+/* Lilac Night (issue #30 family): the handoff is a --peach fill and the
+   dark theme's page text is the light --paper — 1.7:1 on the fill. The
+   container takes ink (8.4:1); the <strong> inherits it, and the coral pill
+   keeps its own ink-on-coral colour. Light themes are untouched: their page
+   text is already ink. */
+[data-theme="lilac-night"] .setup-complete {
+  color: var(--ink);
+}
+
 /* The right agent panel (the docked ⌘J form): context chip, NEEDS YOU,
    narrative, tool cards, chat, input. */
 .setup-agent {
@@ -1827,7 +2023,9 @@ textarea:focus-visible,
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.12em;
-  color: var(--ink);
+  /* --fg, not --ink: the block's ground is the near-card mix, so the
+     caption must hold on the theme's text side (issue #30). */
+  color: var(--fg);
 }
 
 .setup-review-items {

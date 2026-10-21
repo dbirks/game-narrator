@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router";
 
 import { fetchSystemInfo } from "../api/system";
@@ -52,11 +52,37 @@ const NAV_ITEMS = [
 
 /** Which nav item a route belongs to (the active item is --peach 700). */
 function activeNavId(pathname: string): (typeof NAV_ITEMS)[number]["id"] | null {
-  if (pathname.startsWith("/library")) return "library";
+  if (pathname.startsWith("/library") || pathname === "/") return "library";
   if (pathname.startsWith("/play")) return "play";
   if (pathname.startsWith("/traces") || pathname.startsWith("/developer")) return "traces";
   if (pathname.startsWith("/settings")) return "settings";
   return null;
+}
+
+/** The narrow-viewport seam (the Phase 2 shell fix): the CSS breakpoint is
+ *  640px (tokens.css's own wrap point); the hook mirrors it so the markup
+ *  carries exactly one copy of the nav's elements — the e2e testids stay
+ *  single in the DOM whichever layout renders. */
+const NARROW_QUERY = "(max-width: 639px)";
+
+/** The narrow read, defensive: environments without matchMedia (the unit
+ *  tests' jsdom) read the wide layout. */
+function narrowWidth(): boolean {
+  return typeof window !== "undefined" && typeof window.matchMedia === "function"
+    ? window.matchMedia(NARROW_QUERY).matches
+    : false;
+}
+
+function useIsNarrow(): boolean {
+  const [narrow, setNarrow] = useState<boolean>(narrowWidth);
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia(NARROW_QUERY);
+    const onChange = (event: MediaQueryListEvent) => setNarrow(event.matches);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+  return narrow;
 }
 
 interface ShellProps {
@@ -89,6 +115,34 @@ export function Shell({ children }: ShellProps) {
   const [agentDraft, setAgentDraft] = useState("");
   const [footerLine, setFooterLine] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
+
+  // The narrow bar's menu (Phase 2 shell fix): below 640px the nav, the
+  // developer entry and the principal collapse into one button. The contract
+  // the review asked for: aria-expanded on the button, Escape closes, and
+  // the focus returns to the button when it does (a click navigation closes
+  // the panel by unmounting, the new page owns focus).
+  const narrow = useIsNarrow();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!narrow) setMenuOpen(false);
+  }, [narrow]);
+  // A navigation through the panel closes it (the route changed; the panel
+  // would otherwise re-open on the next narrow render).
+  useEffect(() => {
+    setMenuOpen(false);
+  }, [location.pathname]);
+  useEffect(() => {
+    if (!narrow || !menuOpen) return;
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMenuOpen(false);
+        menuButtonRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [narrow, menuOpen]);
 
   // Sign-out ends the session on the server, then lands on the sign-in form
   // (the remembered-target behaviour of /login?next= is the page's, not the
@@ -157,62 +211,21 @@ export function Shell({ children }: ShellProps) {
         <span className="status-bar-wordmark" data-testid="status-wordmark">
           GAME·NARRATOR
         </span>
-        <nav aria-label="Status" className="status-nav" data-testid="status-nav">
-          {NAV_ITEMS.map((item) => (
-            <Link
-              key={item.id}
-              to={item.to}
-              data-testid={`status-nav-${item.id}`}
-              aria-current={active === item.id ? "page" : undefined}
-            >
-              {item.label}
-            </Link>
-          ))}
-        </nav>
-        {/* The developer entry (ADR-0093 §4 IA): the two developer-scoped
-            destinations — the harness and the clip store — grouped under one
-            label, visible to developer-and-up only (the API 403s the rest;
-            the bar hides what the role cannot use). The links keep the
-            pre-redesign nav testids. */}
-        {atLeast("developer") ? (
-          <span className="status-dev" data-testid="status-dev">
-            <span className="status-dev-label">developer</span>
-            <Link to="/tests" data-testid="nav-tests">
-              tests
-            </Link>
-            <Link to="/replay-clips" data-testid="nav-replay-clips">
-              replay clips
-            </Link>
-          </span>
-        ) : null}
-        {/* The principal, moved from the legacy second nav row into the bar's
-            right side (the design has one nav): name, role chip, sign-out.
-            Unclaimed appliance offers the claim link; anonymous, sign-in —
-            the legacy row's three states, in the bar. */}
-        {authState === "authenticated" && user ? (
-          <span className="nav-user" data-testid="nav-user">
-            <span className="nav-username">{user.username}</span>
-            <span className="badge" data-testid="nav-role">
-              {role}
-            </span>
-            <button
-              type="button"
-              className="status-logout"
-              onClick={() => void onLogout()}
-              disabled={signingOut}
-              data-testid="nav-logout"
-            >
-              {signingOut ? "signing out…" : "sign out"}
-            </button>
-          </span>
-        ) : authState === "setup" ? (
-          <Link to="/setup" data-testid="nav-setup">
-            claim this appliance
-          </Link>
-        ) : (
-          <Link to="/login" data-testid="nav-login">
-            sign in
-          </Link>
+        {/* The bar's content halves: the nav / developer entry / principal sit
+            inline at the design's widths, and inside the menu's panel below
+            640px (the Phase 2 shell fix — the old wrap made the 28px bar
+            three lines at 390). One copy of the elements at a time, so the
+            pre-redesign testids stay single in the DOM. */}
+        {narrow ? null : (
+          <BarContents
+            active={active}
+            canDevelop={atLeast("developer")}
+            authState={authState}
+            user={user}
+            role={role}
+            signingOut={signingOut}
+            onLogout={onLogout}
+          />
         )}
         {/* The live status string: the server's canonical text (ADR-0100).
             Not an aria-live region: it ticks every second and would make
@@ -220,8 +233,39 @@ export function Shell({ children }: ShellProps) {
         <span className="status-live" data-testid="status-live">
           {statusText}
         </span>
+        {narrow ? (
+          <button
+            type="button"
+            ref={menuButtonRef}
+            className="status-menu"
+            data-testid="status-menu"
+            aria-haspopup="true"
+            aria-expanded={menuOpen}
+            aria-controls="status-menu-panel"
+            onClick={() => setMenuOpen((open) => !open)}
+          >
+            menu
+          </button>
+        ) : null}
       </header>
       <div className="status-fade" data-testid="status-fade" aria-hidden="true" />
+      {narrow && menuOpen ? (
+        <div
+          className="status-menu-panel offset-shadow"
+          id="status-menu-panel"
+          data-testid="status-menu-panel"
+        >
+          <BarContents
+            active={active}
+            canDevelop={atLeast("developer")}
+            authState={authState}
+            user={user}
+            role={role}
+            signingOut={signingOut}
+            onLogout={onLogout}
+          />
+        </div>
+      ) : null}
 
       <div className="page-container">{children}</div>
 
@@ -263,6 +307,88 @@ export function Shell({ children }: ShellProps) {
       ) : null}
 
       {paletteOpen ? <KSearchPalette onClose={() => setPaletteOpen(false)} /> : null}
+    </>
+  );
+}
+
+/**
+ * The bar's content halves — the primary nav, the developer entry and the
+ * principal (the legacy row's three states: signed in, unclaimed, anonymous)
+ * — rendered inline at the design's widths and inside the menu's panel below
+ * 640px. One copy at a time, so the pre-redesign testids stay single in the
+ * DOM. (The developer entry, ADR-0093 §4 IA: the two developer-scoped
+ * destinations under one label, visible to developer-and-up only — the API
+ * 403s the rest, and the bar hides what the role cannot use. The principal:
+ * name, role chip, sign-out; unclaimed appliance offers the claim link;
+ * anonymous, sign-in.)
+ */
+function BarContents({
+  active,
+  canDevelop,
+  authState,
+  user,
+  role,
+  signingOut,
+  onLogout,
+}: {
+  active: (typeof NAV_ITEMS)[number]["id"] | null;
+  canDevelop: boolean;
+  authState: string;
+  user: { username: string } | null;
+  role: string | null;
+  signingOut: boolean;
+  onLogout: () => void;
+}) {
+  return (
+    <>
+      <nav aria-label="Status" className="status-nav" data-testid="status-nav">
+        {NAV_ITEMS.map((item) => (
+          <Link
+            key={item.id}
+            to={item.to}
+            data-testid={`status-nav-${item.id}`}
+            aria-current={active === item.id ? "page" : undefined}
+          >
+            {item.label}
+          </Link>
+        ))}
+      </nav>
+      {canDevelop ? (
+        <span className="status-dev" data-testid="status-dev">
+          <span className="status-dev-label">developer</span>
+          <Link to="/tests" data-testid="nav-tests">
+            tests
+          </Link>
+          <Link to="/replay-clips" data-testid="nav-replay-clips">
+            replay clips
+          </Link>
+        </span>
+      ) : null}
+      {authState === "authenticated" && user ? (
+        <span className="nav-user" data-testid="nav-user">
+          <span className="nav-username">{user.username}</span>
+          <span className="badge" data-testid="nav-role">
+            {role}
+          </span>
+          <button
+            type="button"
+            className="status-logout"
+            onClick={onLogout}
+            disabled={signingOut}
+            data-testid="nav-logout"
+          >
+            {signingOut ? "signing out…" : "sign out"}
+          </button>
+        </span>
+      ) : authState === "setup" ? (
+        <Link to="/setup" data-testid="nav-setup">
+          claim this appliance
+        </Link>
+      ) : (
+        <Link to="/login" data-testid="nav-login">
+          sign in
+        </Link>
+      )}
     </>
   );
 }

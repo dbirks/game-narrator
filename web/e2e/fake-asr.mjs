@@ -177,7 +177,7 @@ const server = createServer((req, res) => {
 
 server.listen(port, "127.0.0.1", () => {
   process.stdout.write(
-    `fake-asr listening on 127.0.0.1:${port} (brief ${JSON.stringify(brief)}, failing line ${failLine})\n`,
+    `fake-asr listening on 127.0.0.1:${port} (briefs ${JSON.stringify(BRIEFS)}, failing line ${failLine})\n`,
   );
 });
 // A handler fault is a test failure at the assertion, not a crashed fixture.

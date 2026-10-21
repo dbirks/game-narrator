@@ -66,13 +66,16 @@ interface LockRecord {
  * Acquires the scenario lock and returns the release function. The release
  * must run in a `finally` so a failing walk does not pin the gateway for
  * the rest of the run. Throws if the lock is still held by a live, unexpired
- * holder after WAIT_MS — the caller's test then fails with the lock's path
- * (whose JSON names the holder's pid, scenario and test title) instead of a
- * wrong-scenario agent walk.
+ * holder after `timeoutMs` (default WAIT_MS) — the caller's test then fails
+ * with the lock's path (whose JSON names the holder's pid, scenario and test
+ * title) instead of a wrong-scenario agent walk. A caller whose barrier is
+ * another worker's whole test pass (the setup-board deep-linkers waiting on
+ * the walk, ADR-0130) passes a wait that covers that pass's test timeout.
  */
 export async function acquireScenarioLock(
   testInfo: TestInfo,
   scenario: string,
+  timeoutMs: number = WAIT_MS,
 ): Promise<() => void> {
   const path = lockPath();
 
@@ -84,7 +87,7 @@ export async function acquireScenarioLock(
     expiresAt: 0,
   };
 
-  const deadline = Date.now() + WAIT_MS;
+  const deadline = Date.now() + timeoutMs;
   for (;;) {
     const existing = readLock(path);
     if (!existing || Date.now() > existing.expiresAt) {
@@ -107,7 +110,7 @@ export async function acquireScenarioLock(
     if (Date.now() > deadline) {
       const holder = readLock(path);
       throw new Error(
-        `scenario lock: waited ${WAIT_MS} ms for the scenario walk held by ` +
+        `scenario lock: waited ${timeoutMs} ms for the scenario walk held by ` +
           `${holder ? `pid ${holder.pid} (scenario "${holder.scenario}", test "${holder.test}", expires ${new Date(holder.expiresAt).toISOString()})` : "another worker"}; ` +
           `see ${path}. The shared fake-model gateway's global scenario is ` +
           `only safe while the scenario-dependent walks are serial (ADR-0120).`,

@@ -21,8 +21,8 @@ import { expectDefaultDataDirUntouched, serverRun } from "./support/servers";
  *      details and the 12-bar spark per tile, the build facts and the
  *      preserved sections full-width under the grid (two columns at the
  *      desktop width); the page's title is the rollup's own summary —
- *      "Health" before the first frame, "N unprobed" on this unprobed idle
- *      box, "2 need attention" on the scripted non-ok rollup;
+ *      "Health" before the first frame, "N checks not run yet" on this
+ *      unprobed idle box, "2 need attention" on the scripted non-ok rollup;
  *   2. the capture tile's UX-11 block reads a real feed: "signal present"
  *      with the JPEG preview (the tracker's bar-framed-window judgment is
  *      honestly "no active picture" on the full-frame test pattern),
@@ -187,10 +187,19 @@ test("health page: redirect, live 3×2 grid, UX-11 signal/preview, screenshots a
   await expect(page.getByTestId("health-tiles-waiting")).toBeVisible();
 
   // ── 2. claim the appliance and sign the browser in, through the page ────
+  // One appliance per run: the walk's three tests share this server and its
+  // data dir, and the gate's workers=2 + fullyParallel lets a sibling test's
+  // claim land before this walk's (the 2026-10-21 full-suite run's 409). The
+  // claim is once per appliance (ADR-0016 §7), so like the sibling tests this
+  // walk accepts the first claim's 201 or the already-claimed 409 — either
+  // way the admin exists for the page's sign-in.
   const setup = await request.post(`${origin}/api/v1/auth/setup`, {
     data: { username: ADMIN.username, password: ADMIN.password },
   });
-  expect(setup.status(), `auth setup: ${await setup.text()}`).toBe(201);
+  expect(
+    [201, 409].includes(setup.status()),
+    `auth setup: ${setup.status()} ${await setup.text()}`,
+  ).toBe(true);
   // The setup answers the claim, not a session: the login gives THIS API
   // context the cookie the device-selection PUT needs (the page signs in
   // separately, through the form below).
@@ -236,9 +245,10 @@ test("health page: redirect, live 3×2 grid, UX-11 signal/preview, screenshots a
   await expect(page.getByTestId("health-tile-capture-detail")).toContainText("no active capture");
 
   // The page's title is the rollup's own summary: one ok tile (storage) and
-  // the five nobody has probed on this fresh appliance — its honest word,
-  // never a restyled "all fine" (the run-3715836 review fix 4).
-  await expect(page.getByRole("heading", { name: "5 unprobed", level: 1 })).toBeVisible();
+  // the five nobody has probed on this fresh appliance — its honest word, in
+  // the human phrasing the 2026-10-20 review asked for ("N checks not run
+  // yet", never a restyled "all fine") (the run-3715836 review fix 4).
+  await expect(page.getByRole("heading", { name: "5 checks not run yet", level: 1 })).toBeVisible();
 
   // The sparklines are fed from the one stream on the page's fixed
   // one-second cadence (the run-3715836 review fix 3): the storage tile's

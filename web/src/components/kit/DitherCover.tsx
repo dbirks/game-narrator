@@ -6,9 +6,10 @@
  *
  * `tone="peach"` runs the bands on the --peach base: the README names
  * --peach the "portrait base", so character portraits (avatars, strips,
- * the detail panel's cover) use it; non-portrait covers keep the paper
- * base. Static recipe, static bands: no dynamic geometry, no inline
- * styles.
+ * the detail panel's cover) use it, and the design's 2a game covers run
+ * the stacked bands over the same peach ground (the 2026-10-20 review:
+ * the mock's covers start on the peach top band and fade to ink). Static
+ * recipe, static bands: no dynamic geometry, no inline styles.
  */
 export interface DitherCoverProps {
   testid?: string;

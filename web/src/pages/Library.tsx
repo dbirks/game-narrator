@@ -314,6 +314,7 @@ function HeroCard({
       <DitherCover
         className="lib-hero-cover"
         label={`${game.title} cover`}
+        tone="peach"
         testid="lib-hero-cover"
       />
       <div className="lib-hero-body">
@@ -448,6 +449,7 @@ function ShelfTile({
       <DitherCover
         className="lib-tile-cover"
         label={`${game.title} cover`}
+        tone="peach"
         testid={`lib-tile-cover-${game.slug}`}
       />
       <div className="lib-tile-body">
@@ -545,6 +547,7 @@ function ListView({
         <DitherCover
           className="lib-list-cover"
           label={`${game.title} cover`}
+          tone="peach"
           testid={`lib-list-cover-${game.slug}`}
         />
       ),

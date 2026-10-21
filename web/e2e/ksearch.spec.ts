@@ -189,12 +189,17 @@ test("⌘K opens the overlay (role=dialog) from any page without navigation", as
   const stops: Array<{ path: string; settled: (page: Page) => Promise<void> }> = [
     {
       path: "/library",
-      settled: (page) => expect(page.getByTestId("game-list")).toBeVisible({ timeout: 20_000 }),
+      // Thirty seconds: on a full-suite run (every project's servers live
+      // at once) the list's catalogue read has been observed to outrun
+      // twenty (the 2026-10-20 workers=2 run's flake).
+      settled: (page) => expect(page.getByTestId("game-list")).toBeVisible({ timeout: 30_000 }),
     },
     {
       path: "/play",
       settled: (page) =>
-        expect(page.getByTestId("play-start-form")).toBeVisible({ timeout: 20_000 }),
+        // Thirty seconds, as the /library settle above (the 2026-10-20
+        // workers=2 run's flake hit this page's start form too).
+        expect(page.getByTestId("play-start-form")).toBeVisible({ timeout: 30_000 }),
     },
     {
       // /traces is the Traces screen itself now (the ADR-0109 rename landed):

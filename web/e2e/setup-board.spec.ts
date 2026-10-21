@@ -1,5 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Page, type TestInfo } from "@playwright/test";
 import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { get as httpGet } from "node:http";
 import { dirname, join, resolve } from "node:path";
@@ -11,6 +11,7 @@ import {
   serverNameForProject,
   serverRun,
 } from "./support/servers";
+import { acquireScenarioLock } from "./support/scenario-lock";
 import { trackConsoleErrors } from "./support/console";
 
 /**
@@ -42,8 +43,15 @@ import { trackConsoleErrors } from "./support/console";
  * The three tests share one run: (a) starts it and records its id, (b) and
  * (c) deep-link to it (?run=<id>) — the deep link is the snapshot-rebuild
  * path ADR-0108 names (a fresh load cannot trust a stream it never saw).
- * The suite runs serially (workers: 1), so the shared run id is a module
- * variable, the same convention the onboarding spec's scenario setter uses.
+ * The suite may run at more than one worker (the Phase 2 gate runs
+ * `--workers=2`, and `fullyParallel` lets tests of this file interleave
+ * across workers), so the handoff is a two-stage barrier (ADR-0130): the
+ * shared run id (the module variable's fast path, the file under the run
+ * root the cross-worker contract) proves the walk STARTED, and the run's
+ * scenario lock (the same ADR-0120 primitive the shared-gateway walks use,
+ * held by (a) from its start to its end) proves the walk FINISHED — a deep
+ * link into a half-run would rebuild the board from a snapshot that is
+ * still moving.
  */
 
 const TESTDATA = resolve(
@@ -60,6 +68,14 @@ const ADVENTURE_CSV = resolve(TESTDATA, "synthetic-adventure.csv");
 
 const ADMIN = { username: "setup-board-admin", password: "steady as the tide" };
 const WAIT_MS = 120_000; // job queue + scripted model + the audition job
+/** The (a) walk's test timeout: the deep-linkers' barrier wait must cover a
+ *  walk that legitimately runs the full length (ADR-0130). */
+const WALK_TEST_TIMEOUT_MS = 420_000;
+/** The deep-linkers' barrier wait: the walk's test timeout plus margin
+ *  (the release is synchronous, so the margin only covers scheduling). */
+const DEEP_LINK_WAIT_MS = WALK_TEST_TIMEOUT_MS + 30_000;
+/** The barrier's lock name: one lock per run's walk, held by (a). */
+const SETUP_BOARD_LOCK = "setup-board-run";
 const MARLA_BRIEF =
   "A calm harbor voice, unhurried, with a slight salt air in it. Late thirties, " +
   "low and steady, slightly hoarse; measured cadence, pauses before the important word.";
@@ -93,6 +109,39 @@ function loadSharedRunId(): string {
     sharedRunId = "";
   }
   return sharedRunId;
+}
+
+/** Wait, bounded, for the walk's run id to appear — stage one of the
+ *  deep-linkers' barrier (ADR-0130). The 2026-10-20 full-suite run at
+ *  workers=2 exposed the handoff's race: under fullyParallel + more than
+ *  one worker, the deep-linking tests can start before the walk writes the
+ *  id, and id-existence alone is not enough (the walk is still running), so
+ *  stage two takes the walk's run lock — the file is the shared contract
+ *  for the id, the lock the shared contract for completion. */
+async function awaitSharedRunId(timeoutMs = WAIT_MS): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (loadSharedRunId() !== "") return;
+    if (Date.now() > deadline) {
+      throw new Error(
+        "the walk's run id never appeared — the walk's test must have failed to start the run",
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+}
+
+async function awaitCompletedRun(testInfo: TestInfo): Promise<void> {
+  // Stage one: the run id — the walk writes it the moment the run exists
+  // (before its first board read), so its presence proves the walk started.
+  await awaitSharedRunId(DEEP_LINK_WAIT_MS);
+  // Stage two: the walk's run lock — (a) holds it from its start to its end
+  // (releasing in a finally, so a failed walk cannot pin the barrier past
+  // its lease), so acquiring it here proves the walk's walk half is done: Marla's card is where the deep link's snapshot read will
+  // find her. The release is immediate: the lock is a barrier here, not a
+  // claim (the deep-link views are read-only and (b)/(c) may run together).
+  const release = await acquireScenarioLock(testInfo, SETUP_BOARD_LOCK, DEEP_LINK_WAIT_MS);
+  release();
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
@@ -230,254 +279,265 @@ test("setup board: the cards glide on the stream, no polling, coral while voicin
   page,
   request,
 }, testInfo) => {
-  test.setTimeout(420_000);
+  test.setTimeout(WALK_TEST_TIMEOUT_MS);
   test.skip(
     testInfo.project.name !== "setup-board",
     "runs on the setup-board project's fresh appliance",
   );
   await expectIsolatedDataDir(serverNameForProject("setup-board"));
-  const consoleErrors = trackConsoleErrors(page, [401]);
+  // The run lock (ADR-0130): the deep-linkers' completion barrier. Held for
+  // the whole walk (released in the finally, so a failed walk cannot pin the
+  // barrier past its lease), so a sibling worker's (b)/(c) cannot deep-link
+  // into a run that is still moving.
+  const releaseRunLock = await acquireScenarioLock(testInfo, SETUP_BOARD_LOCK);
+  try {
+    const consoleErrors = trackConsoleErrors(page, [401]);
 
-  const boardGets: number[] = [];
-  page.on("request", (req) => {
-    if (req.method() === "GET" && /\/api\/v1\/onboarding\/runs\/[^/]+\/board$/.test(req.url())) {
-      boardGets.push(Date.now());
+    const boardGets: number[] = [];
+    page.on("request", (req) => {
+      if (req.method() === "GET" && /\/api\/v1\/onboarding\/runs\/[^/]+\/board$/.test(req.url())) {
+        boardGets.push(Date.now());
+      }
+    });
+
+    await signIn(page);
+    await page.goto("/games/new");
+
+    // ── the setup form: title, platform, web off, staged script ─────────────
+    await expect(page.getByTestId("onb-setup-form")).toBeVisible();
+    await page.getByTestId("onb-title").fill("Harbour Lights");
+    await page.getByTestId("onb-platform").fill("GameCube");
+    await expect(page.getByTestId("onb-web-toggle")).toBeChecked();
+    await page.getByTestId("onb-web-toggle").uncheck();
+    await page.getByTestId("onb-file").setInputFiles(ADVENTURE_CSV);
+    await page.getByTestId("onb-start").click();
+
+    // The board owns the run's identity in the URL (the deep link (b) and (c)
+    // reuse).
+    await expect(page).toHaveURL(/\/games\/new\?run=[a-z0-9_-]+/, { timeout: WAIT_MS });
+    sharedRunId = new URL(page.url()).searchParams.get("run") ?? "";
+    expect(sharedRunId, "the board's URL carries the run id").not.toBe("");
+    rememberRunId(sharedRunId);
+
+    // ── the board's structure: rail, tiles, four columns ─────────────────────
+    await expect(page.getByTestId("setup-board"), "the live board is the page").toBeVisible();
+    for (const cell of ["find_game", "dialogue", "characters", "briefs", "voices", "publish"]) {
+      await expect(page.getByTestId(`setup-rail-cell-${cell}`)).toBeVisible();
     }
-  });
+    for (const tile of ["onb-tile-lines", "onb-tile-characters", "onb-tile-voiced"]) {
+      await expect(page.getByTestId(tile)).toBeVisible();
+    }
+    for (const stage of ["finding", "brief", "voicing", "done"]) {
+      await expect(page.getByTestId(`setup-column-${stage}`)).toBeVisible();
+    }
 
-  await signIn(page);
-  await page.goto("/games/new");
+    // ── the roster lands as the agent stages it (snapshot + stream) ─────────
+    const marla = boardCard(page, "Marla");
+    const corvin = boardCard(page, "Corvin");
+    await expect(marla, "Marla's card is on the board").toBeVisible({ timeout: WAIT_MS });
+    await expect(corvin, "Corvin's card is on the board").toBeVisible({ timeout: WAIT_MS });
+    // Both stage_character calls landed in the tool timeline (the run's own
+    // record of what staged the roster).
+    await expect(page.getByTestId("onb-tool-stage_character")).toHaveCount(2, {
+      timeout: WAIT_MS,
+    });
 
-  // ── the setup form: title, platform, web off, staged script ─────────────
-  await expect(page.getByTestId("onb-setup-form")).toBeVisible();
-  await page.getByTestId("onb-title").fill("Harbour Lights");
-  await page.getByTestId("onb-platform").fill("GameCube");
-  await expect(page.getByTestId("onb-web-toggle")).toBeChecked();
-  await page.getByTestId("onb-web-toggle").uncheck();
-  await page.getByTestId("onb-file").setInputFiles(ADVENTURE_CSV);
-  await page.getByTestId("onb-start").click();
+    // Marla moves FINDING → BRIEF on analyze_character's success — the card's
+    // data-stage is the assertion the stream made it.
+    await expect(marla).toHaveAttribute("data-stage", "brief", { timeout: WAIT_MS });
+    const tBrief = Date.now();
 
-  // The board owns the run's identity in the URL (the deep link (b) and (c)
-  // reuse).
-  await expect(page).toHaveURL(/\/games\/new\?run=[a-z0-9_-]+/, { timeout: WAIT_MS });
-  sharedRunId = new URL(page.url()).searchParams.get("run") ?? "";
-  expect(sharedRunId, "the board's URL carries the run id").not.toBe("");
-  rememberRunId(sharedRunId);
+    // ── the voicing half: the real audition job drives the real observer ────
+    // The design job is queue-backed (the response carries the job id), so the
+    // spec reads the voice back until the durable row has the take.
+    const origin = new URL(page.url()).origin;
+    const headers = await apiHeaders(request, origin);
+    const createResponse = await request.post("/api/v1/voices/auditions", {
+      data: { character: "Marla", brief: MARLA_BRIEF },
+      headers,
+    });
+    expect(
+      createResponse.status(),
+      "the audition was accepted (queue-backed: the job does the design)",
+    ).toBe(202);
+    const created = (await createResponse.json()) as { voice_id: string };
+    expect(created.voice_id, "the audition names its voice").not.toBe("");
 
-  // ── the board's structure: rail, tiles, four columns ─────────────────────
-  await expect(page.getByTestId("setup-board"), "the live board is the page").toBeVisible();
-  for (const cell of ["find_game", "dialogue", "characters", "briefs", "voices", "publish"]) {
-    await expect(page.getByTestId(`setup-rail-cell-${cell}`)).toBeVisible();
-  }
-  for (const tile of ["onb-tile-lines", "onb-tile-characters", "onb-tile-voiced"]) {
-    await expect(page.getByTestId(tile)).toBeVisible();
-  }
-  for (const stage of ["finding", "brief", "voicing", "done"]) {
-    await expect(page.getByTestId(`setup-column-${stage}`)).toBeVisible();
-  }
+    await expect
+      .poll(
+        async () => {
+          const detail = (await (
+            await request.get(`/api/v1/voices/${created.voice_id}`)
+          ).json()) as {
+            auditions?: unknown[];
+          };
+          return Array.isArray(detail.auditions) ? detail.auditions.length : -1;
+        },
+        { timeout: WAIT_MS },
+      )
+      .toBeGreaterThan(0);
 
-  // ── the roster lands as the agent stages it (snapshot + stream) ─────────
-  const marla = boardCard(page, "Marla");
-  const corvin = boardCard(page, "Corvin");
-  await expect(marla, "Marla's card is on the board").toBeVisible({ timeout: WAIT_MS });
-  await expect(corvin, "Corvin's card is on the board").toBeVisible({ timeout: WAIT_MS });
-  // Both stage_character calls landed in the tool timeline (the run's own
-  // record of what staged the roster).
-  await expect(page.getByTestId("onb-tool-stage_character")).toHaveCount(2, {
-    timeout: WAIT_MS,
-  });
+    const detail = (await (await request.get(`/api/v1/voices/${created.voice_id}`)).json()) as {
+      auditions: { id: string }[];
+    };
+    expect(detail.auditions, "the take is durably recorded").toHaveLength(detail.auditions.length);
+    expect(detail.auditions.length).toBeGreaterThan(0);
 
-  // Marla moves FINDING → BRIEF on analyze_character's success — the card's
-  // data-stage is the assertion the stream made it.
-  await expect(marla).toHaveAttribute("data-stage", "brief", { timeout: WAIT_MS });
-  const tBrief = Date.now();
-
-  // ── the voicing half: the real audition job drives the real observer ────
-  // The design job is queue-backed (the response carries the job id), so the
-  // spec reads the voice back until the durable row has the take.
-  const origin = new URL(page.url()).origin;
-  const headers = await apiHeaders(request, origin);
-  const createResponse = await request.post("/api/v1/voices/auditions", {
-    data: { character: "Marla", brief: MARLA_BRIEF },
-    headers,
-  });
-  expect(
-    createResponse.status(),
-    "the audition was accepted (queue-backed: the job does the design)",
-  ).toBe(202);
-  const created = (await createResponse.json()) as { voice_id: string };
-  expect(created.voice_id, "the audition names its voice").not.toBe("");
-
-  await expect
-    .poll(
-      async () => {
-        const detail = (await (await request.get(`/api/v1/voices/${created.voice_id}`)).json()) as {
-          auditions?: unknown[];
-        };
-        return Array.isArray(detail.auditions) ? detail.auditions.length : -1;
-      },
+    // The card moves into VOICING on the SSE event the StageObserver emitted
+    // (AuditionsReady), and the VOICING card carries the coral border — the
+    // one hot column of the design (ADR-0093 2c).
+    await expect(marla, "the voicing card is the stream's move").toHaveAttribute(
+      "data-stage",
+      "voicing",
       { timeout: WAIT_MS },
-    )
-    .toBeGreaterThan(0);
-
-  const detail = (await (await request.get(`/api/v1/voices/${created.voice_id}`)).json()) as {
-    auditions: { id: string }[];
-  };
-  expect(detail.auditions, "the take is durably recorded").toHaveLength(detail.auditions.length);
-  expect(detail.auditions.length).toBeGreaterThan(0);
-
-  // The card moves into VOICING on the SSE event the StageObserver emitted
-  // (AuditionsReady), and the VOICING card carries the coral border — the
-  // one hot column of the design (ADR-0093 2c).
-  await expect(marla, "the voicing card is the stream's move").toHaveAttribute(
-    "data-stage",
-    "voicing",
-    { timeout: WAIT_MS },
-  );
-  const coralProbe = await page.evaluate(() => {
-    // The e2e tsconfig has no DOM lib, so the page's style API is reached
-    // through a typed globalThis cast (the redesign spec's pattern). A probe
-    // element styled var(--coral) resolves the design's token exactly the way
-    // the stylesheet resolves it for the card — theme included — so the
-    // assertion reads the sheet's value instead of hard-coding a hex.
-    const g = globalThis as unknown as {
-      document: {
-        createElement(tag: string): { style: { borderTopColor: string } };
-        body: { appendChild(el: unknown): void; removeChild(el: unknown): void };
+    );
+    const coralProbe = await page.evaluate(() => {
+      // The e2e tsconfig has no DOM lib, so the page's style API is reached
+      // through a typed globalThis cast (the redesign spec's pattern). A probe
+      // element styled var(--coral) resolves the design's token exactly the way
+      // the stylesheet resolves it for the card — theme included — so the
+      // assertion reads the sheet's value instead of hard-coding a hex.
+      const g = globalThis as unknown as {
+        document: {
+          createElement(tag: string): { style: { borderTopColor: string } };
+          body: { appendChild(el: unknown): void; removeChild(el: unknown): void };
+        };
+        getComputedStyle: (el: unknown) => { borderTopColor: string };
       };
-      getComputedStyle: (el: unknown) => { borderTopColor: string };
-    };
-    const probe = g.document.createElement("i");
-    probe.style.borderTopColor = "var(--coral)";
-    g.document.body.appendChild(probe);
-    const color = g.getComputedStyle(probe).borderTopColor;
-    g.document.body.removeChild(probe);
-    return color;
-  });
-  expect(coralProbe, "the design's coral token resolves to a color").not.toBe("");
-  const borders = await marla.evaluate((el) => {
-    const g = globalThis as unknown as {
-      getComputedStyle: (el: unknown) => { borderTopColor: string; borderLeftColor: string };
-    };
-    const style = g.getComputedStyle(el);
-    return { top: style.borderTopColor, left: style.borderLeftColor };
-  });
-  expect(borders.top, "the voicing card's border is the design's coral").toBe(coralProbe);
-  expect(borders.left).toBe(coralProbe);
+      const probe = g.document.createElement("i");
+      probe.style.borderTopColor = "var(--coral)";
+      g.document.body.appendChild(probe);
+      const color = g.getComputedStyle(probe).borderTopColor;
+      g.document.body.removeChild(probe);
+      return color;
+    });
+    expect(coralProbe, "the design's coral token resolves to a color").not.toBe("");
+    const borders = await marla.evaluate((el) => {
+      const g = globalThis as unknown as {
+        getComputedStyle: (el: unknown) => { borderTopColor: string; borderLeftColor: string };
+      };
+      const style = g.getComputedStyle(el);
+      return { top: style.borderTopColor, left: style.borderLeftColor };
+    });
+    expect(borders.top, "the voicing card's border is the design's coral").toBe(coralProbe);
+    expect(borders.left).toBe(coralProbe);
 
-  // Approve the take (the consent-gated freeze, docs/spec/14): the card then
-  // moves VOICING → DONE on VoiceApproved's event.
-  const approveResponse = await request.post(`/api/v1/voices/${created.voice_id}/approve`, {
-    data: {
-      audition_id: detail.auditions[0].id,
-      consent:
-        "e2e consent: the recorded takes are synthetic, generated by the scripted TTS instance",
-    },
-    headers,
-  });
-  expect(approveResponse.status(), "the take was approved").toBe(200);
-  await expect(marla, "the done card is the approval's move").toHaveAttribute(
-    "data-stage",
-    "done",
-    { timeout: WAIT_MS },
-  );
+    // Approve the take (the consent-gated freeze, docs/spec/14): the card then
+    // moves VOICING → DONE on VoiceApproved's event.
+    const approveResponse = await request.post(`/api/v1/voices/${created.voice_id}/approve`, {
+      data: {
+        audition_id: detail.auditions[0].id,
+        consent:
+          "e2e consent: the recorded takes are synthetic, generated by the scripted TTS instance",
+      },
+      headers,
+    });
+    expect(approveResponse.status(), "the take was approved").toBe(200);
+    await expect(marla, "the done card is the approval's move").toHaveAttribute(
+      "data-stage",
+      "done",
+      { timeout: WAIT_MS },
+    );
 
-  // And the board the page shows equals what the log will say (ADR-0108's
-  // snapshot ≡ replay, at the end of the board's walk): Marla done, Corvin
-  // still finding. The page still mounts the board here — after the Cast
-  // navigation below it is gone, so this is where the DOM half of the check
-  // can live.
-  await expect(marla).toHaveAttribute("data-stage", "done");
-  await expect(corvin, "the second character stayed on finding").toHaveAttribute(
-    "data-stage",
-    "finding",
-  );
+    // And the board the page shows equals what the log will say (ADR-0108's
+    // snapshot ≡ replay, at the end of the board's walk): Marla done, Corvin
+    // still finding. The page still mounts the board here — after the Cast
+    // navigation below it is gone, so this is where the DOM half of the check
+    // can live.
+    await expect(marla).toHaveAttribute("data-stage", "done");
+    await expect(corvin, "the second character stayed on finding").toHaveAttribute(
+      "data-stage",
+      "finding",
+    );
 
-  // ── the no-polling assertion (UX-06) ─────────────────────────────────────
-  // The board snapshot was fetched at load and at most once per roster tool
-  // completion (event-triggered sync); it was NOT polled: from the moment
-  // Marla reached BRIEF — while VOICING and DONE still moved her — a single
-  // extra GET /board would be the poll. The cards moved on events.
-  const getsAfterBrief = boardGets.filter((t) => t >= tBrief);
-  expect(
-    getsAfterBrief,
-    `the board endpoint was polled ${getsAfterBrief.length} time(s) after Marla reached brief (the moves are the stream's)`,
-  ).toEqual([]);
-  expect(
-    boardGets.length,
-    "the snapshot fetches stay bounded by the roster tool completions",
-  ).toBeLessThanOrEqual(4);
+    // ── the no-polling assertion (UX-06) ─────────────────────────────────────
+    // The board snapshot was fetched at load and at most once per roster tool
+    // completion (event-triggered sync); it was NOT polled: from the moment
+    // Marla reached BRIEF — while VOICING and DONE still moved her — a single
+    // extra GET /board would be the poll. The cards moved on events.
+    const getsAfterBrief = boardGets.filter((t) => t >= tBrief);
+    expect(
+      getsAfterBrief,
+      `the board endpoint was polled ${getsAfterBrief.length} time(s) after Marla reached brief (the moves are the stream's)`,
+    ).toEqual([]);
+    expect(
+      boardGets.length,
+      "the snapshot fetches stay bounded by the roster tool completions",
+    ).toBeLessThanOrEqual(4);
 
-  // ── the publish boundary: the token is the only path to publication ─────
-  await expect(page.getByTestId("onb-review-item-publish")).toBeVisible({ timeout: WAIT_MS });
-  await expect(page.getByTestId("onb-draft-status")).toHaveText("draft");
-  await page.getByTestId("onb-review-approve-publish").click();
-  await expect(page.getByTestId("onb-draft-status")).toHaveText("published", {
-    timeout: WAIT_MS,
-  });
-  const publishCall = page.getByTestId("onb-tool-publish_profile");
-  await expect(publishCall, "the publish went through the tool").toBeVisible({
-    timeout: WAIT_MS,
-  });
-  await expect(page.getByTestId("onb-tool-status-publish_profile")).toHaveText("succeeded");
+    // ── the publish boundary: the token is the only path to publication ─────
+    await expect(page.getByTestId("onb-review-item-publish")).toBeVisible({ timeout: WAIT_MS });
+    await expect(page.getByTestId("onb-draft-status")).toHaveText("draft");
+    await page.getByTestId("onb-review-approve-publish").click();
+    await expect(page.getByTestId("onb-draft-status")).toHaveText("published", {
+      timeout: WAIT_MS,
+    });
+    const publishCall = page.getByTestId("onb-tool-publish_profile");
+    await expect(publishCall, "the publish went through the tool").toBeVisible({
+      timeout: WAIT_MS,
+    });
+    await expect(page.getByTestId("onb-tool-status-publish_profile")).toHaveText("succeeded");
 
-  // ── the completion handoff (ADR-0093 (a)) ────────────────────────────────
-  // The run's work is done; the prominent Start narrating is the way to the
-  // Cast seam, where the voices are reviewed and the narration starts.
-  await expect(page.getByTestId("setup-complete"), "the completion panel").toBeVisible({
-    timeout: WAIT_MS,
-  });
-  await page.getByTestId("onb-start-narrating").click();
-  await expect(page).toHaveURL(/\/cast$/, { timeout: WAIT_MS });
-  await expect(page.getByTestId("cast-start-narrating")).toBeVisible();
-  await expect(page.getByTestId("cast-start-narrating")).toHaveText("▶ Start narrating");
+    // ── the completion handoff (ADR-0093 (a)) ────────────────────────────────
+    // The run's work is done; the prominent Start narrating is the way to the
+    // Cast seam, where the voices are reviewed and the narration starts.
+    await expect(page.getByTestId("setup-complete"), "the completion panel").toBeVisible({
+      timeout: WAIT_MS,
+    });
+    await page.getByTestId("onb-start-narrating").click();
+    await expect(page).toHaveURL(/\/cast$/, { timeout: WAIT_MS });
+    await expect(page.getByTestId("cast-start-narrating")).toBeVisible();
+    await expect(page.getByTestId("cast-start-narrating")).toHaveText("▶ Start narrating");
 
-  // ── the wire read: the stream the UI claims to be driven by ─────────────
-  // The durable log replayed from the start (AGENTS.md evidence): Marla's
-  // moves are finding → brief → voicing → done, in order, and the progress
-  // frames fed the tiles and the rail.
-  const frames = await readSetupFrames(page, origin, 10_000);
-  const stagesByCharacter: Record<string, string[]> = {};
-  let progressCount = 0;
-  let maxVoiced = 0;
-  for (const frame of frames) {
-    if (frame.event === "setup.character_stage") {
-      const data = frame.data as { name?: string; stage?: string };
-      if (typeof data.name === "string" && typeof data.stage === "string") {
-        (stagesByCharacter[data.name] ??= []).push(data.stage);
-      }
-    } else if (frame.event === "setup.progress") {
-      progressCount += 1;
-      const data = frame.data as { voiced?: number };
-      if (typeof data.voiced === "number" && data.voiced > maxVoiced) {
-        maxVoiced = data.voiced;
+    // ── the wire read: the stream the UI claims to be driven by ─────────────
+    // The durable log replayed from the start (AGENTS.md evidence): Marla's
+    // moves are finding → brief → voicing → done, in order, and the progress
+    // frames fed the tiles and the rail.
+    const frames = await readSetupFrames(page, origin, 10_000);
+    const stagesByCharacter: Record<string, string[]> = {};
+    let progressCount = 0;
+    let maxVoiced = 0;
+    for (const frame of frames) {
+      if (frame.event === "setup.character_stage") {
+        const data = frame.data as { name?: string; stage?: string };
+        if (typeof data.name === "string" && typeof data.stage === "string") {
+          (stagesByCharacter[data.name] ??= []).push(data.stage);
+        }
+      } else if (frame.event === "setup.progress") {
+        progressCount += 1;
+        const data = frame.data as { voiced?: number };
+        if (typeof data.voiced === "number" && data.voiced > maxVoiced) {
+          maxVoiced = data.voiced;
+        }
       }
     }
-  }
-  const marlaStages = stagesByCharacter["Marla"] ?? [];
-  const marlaOrder = ["finding", "brief", "voicing", "done"];
-  let cursor = 0;
-  for (const stage of marlaStages) {
-    if (stage === marlaOrder[cursor]) cursor += 1;
-    else if (marlaOrder.indexOf(stage) < cursor) {
-      throw new Error(`Marla's card moved backwards on the wire (${stage})`);
+    const marlaStages = stagesByCharacter["Marla"] ?? [];
+    const marlaOrder = ["finding", "brief", "voicing", "done"];
+    let cursor = 0;
+    for (const stage of marlaStages) {
+      if (stage === marlaOrder[cursor]) cursor += 1;
+      else if (marlaOrder.indexOf(stage) < cursor) {
+        throw new Error(`Marla's card moved backwards on the wire (${stage})`);
+      }
     }
-  }
-  expect(
-    cursor,
-    `the wire carried Marla's full walk (finding → brief → voicing → done); saw: ${marlaStages.join(
-      " → ",
-    )}`,
-  ).toBe(marlaOrder.length);
-  expect(stagesByCharacter["Corvin"] ?? [], "Corvin was staged too").toContain("finding");
-  expect(progressCount, "the tiles' progress frames were streamed").toBeGreaterThan(0);
-  expect(maxVoiced, "the progress counted the voiced character").toBeGreaterThanOrEqual(1);
+    expect(
+      cursor,
+      `the wire carried Marla's full walk (finding → brief → voicing → done); saw: ${marlaStages.join(
+        " → ",
+      )}`,
+    ).toBe(marlaOrder.length);
+    expect(stagesByCharacter["Corvin"] ?? [], "Corvin was staged too").toContain("finding");
+    expect(progressCount, "the tiles' progress frames were streamed").toBeGreaterThan(0);
+    expect(maxVoiced, "the progress counted the voiced character").toBeGreaterThanOrEqual(1);
 
-  expect(
-    consoleErrors,
-    `the browser saw faults it did not cause: ${consoleErrors.join(" | ")}`,
-  ).toEqual([]);
-  expectDefaultDataDirUntouched(serverRun("setup-board"));
+    expect(
+      consoleErrors,
+      `the browser saw faults it did not cause: ${consoleErrors.join(" | ")}`,
+    ).toEqual([]);
+    expectDefaultDataDirUntouched(serverRun("setup-board"));
+  } finally {
+    releaseRunLock();
+  }
 });
 
 // ── (b) prefers-reduced-motion ──────────────────────────────────────────────
@@ -485,12 +545,12 @@ test("setup board: the cards glide on the stream, no polling, coral while voicin
 test("setup board: prefers-reduced-motion settles the glide instantly", async ({
   browser,
 }, testInfo) => {
-  test.setTimeout(240_000);
+  test.setTimeout(DEEP_LINK_WAIT_MS + 90_000);
   test.skip(
     testInfo.project.name !== "setup-board",
     "runs on the setup-board project's fresh appliance",
   );
-  expect(loadSharedRunId(), "the reduced-motion test deep-links the walk's run").not.toBe("");
+  await awaitCompletedRun(testInfo); // the reduced-motion test deep-links the walk's run
 
   const context = await browser.newContext({ reducedMotion: "reduce" });
   const page = await context.newPage();
@@ -538,12 +598,12 @@ test("setup board: prefers-reduced-motion settles the glide instantly", async ({
 const WCAG_21_A_AA = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] as const;
 
 test("setup board: screenshots and axe at the three design widths", async ({ page }, testInfo) => {
-  test.setTimeout(300_000);
+  test.setTimeout(DEEP_LINK_WAIT_MS + 120_000);
   test.skip(
     testInfo.project.name !== "setup-board",
     "runs on the setup-board project's fresh appliance",
   );
-  expect(loadSharedRunId(), "the width test deep-links the walk's run").not.toBe("");
+  await awaitCompletedRun(testInfo); // the width test deep-links the walk's run
   const consoleErrors = trackConsoleErrors(page, [401]);
 
   await signIn(page);

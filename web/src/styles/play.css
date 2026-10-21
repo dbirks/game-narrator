@@ -452,7 +452,11 @@
 .pp-candidate-snippet {
   font-family: var(--font-display);
   font-size: 0.9rem;
-  color: var(--ink);
+  /* --fg, not --ink: in the light themes the two agree (the design's ink
+     text), but Lilac Night inverts the token roles (--ink is the page
+     background there), so the primary-text slot is the only one that holds
+     on every theme (issue #30: ink-on-ink read 1.1:1 on the dark page). */
+  color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

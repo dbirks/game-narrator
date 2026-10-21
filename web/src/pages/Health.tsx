@@ -26,10 +26,11 @@ import { ReadinessSection, SystemLogsSection } from "./health/logs";
  * bytes. The capture tile alone carries the UX-11 signal/preview block.
  *
  * The page's title is the rollup's own summary (README 2i's 36/600 page
- * title; the run-3715836 review fix 4): "2 need attention" when the
- * rollup's tail names slow or fail tiles (the same word the bar carries),
- * "5 unprobed" for a box nobody has probed yet (its honest word, never a
- * restyled "all fine"), the mock's "Everything's mostly fine" when every
+ * title; the run-3715836 review fix 4, re-worded to human by the
+ * 2026-10-20 review): "2 need attention" when the rollup's tail names slow
+ * or fail tiles (the same word the bar carries), "N checks not run yet" for
+ * a box nobody has probed yet (its honest word, never a restyled "all
+ * fine"), the mock's "Everything's mostly fine" when every
  * tile is ok — and
  * the page's own name while the one stream has not delivered a rollup. The
  * tab row sits to the title's right, on one line when it fits.
@@ -63,16 +64,24 @@ type HealthTab = (typeof TABS)[number]["value"];
  * No rollup at all (the one stream has not delivered a frame) is the page's
  * own name, never a guess.
  */
+/** The human word for the rollup (the 2026-10-20 review: "N unprobed" was
+ *  developer-speak for the headline): something that needs attention says
+ *  how much; an all-ok box with unrun checks says it's mostly fine and
+ *  how many checks have not run yet; a clean box says it's fine. */
 export function healthSummaryText(
   health: { slow: number; fail: number; unknown: number } | undefined,
 ): string {
   if (health === undefined) return "Health";
   const attention = health.slow + health.fail;
+  const notRunYet =
+    health.unknown > 0
+      ? ` · ${health.unknown} check${health.unknown === 1 ? "" : "s"} not run yet`
+      : "";
   if (attention > 0) {
-    const unprobed = health.unknown > 0 ? ` · ${health.unknown} unprobed` : "";
-    return `${attention} need${attention === 1 ? "s" : ""} attention${unprobed}`;
+    return `${attention} need${attention === 1 ? "s" : ""} attention${notRunYet}`;
   }
-  if (health.unknown > 0) return `${health.unknown} unprobed`;
+  if (health.unknown > 0)
+    return `${health.unknown} check${health.unknown === 1 ? "" : "s"} not run yet`;
   return "Everything's mostly fine";
 }
 
