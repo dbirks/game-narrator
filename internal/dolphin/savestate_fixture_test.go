@@ -202,6 +202,24 @@ func recordSavestates(ctx context.Context, t *testing.T, root string) (string, s
 	}
 	deadline := time.Now().Add(15 * time.Minute)
 	var lastClass ScreenClass
+	// The first_dialogue state must land on the HELD box — the first NPC
+	// dialogue box that A-HOLDS unchanged for 10+ minutes (the 64 s no-input
+	// sample: steady at boxband 46/0.031) — not on the first ClassBox sample
+	// the 2 s cadence happens to catch. The measured flow carries two
+	// transients that match the class and do not persist: the legend's
+	// sparse storybook pages in the between-subtitle gaps (the 2026-10-20
+	// gate run: boxband mean=57 edges=0.095) and the pre-box scene's BRIEF
+	// box that auto-advances within 1-2 s (runs 1-3: boxband mean=62/59).
+	// A state saved on either one restores to a screen whose box is gone in
+	// seconds, and the first-dialogue fixture's recording (which needs the
+	// box's typewriters to settle for the press pace) fails with "no press
+	// landed". The hold requirement — the classifier's dark form
+	// (RealBoxForm, the drive's own success gate) stable for
+	// heldBoxSamples consecutive 2 s samples — separates the measured
+	// families: 3 samples is 4+ s of hold, past both transients, a
+	// blink of the held box's measured minutes.
+	heldBoxSamples := 3
+	heldStreak := 0
 	for {
 		if ctx.Err() != nil {
 			return "", "", ctx.Err()
@@ -216,12 +234,18 @@ func recordSavestates(ctx context.Context, t *testing.T, root string) (string, s
 		sig := ScreenSigOf(img)
 		c, _ := sig.ClassOf()
 		lastClass = c
-		if c == ClassBox {
-			break
+		if c == ClassBox && sig.RealBoxForm() {
+			heldStreak++
+			t.Logf("savestates: first-dialogue anchor: class=box real-form (streak %d/%d): boxband[mean=%.0f edges=%.3f]", heldStreak, heldBoxSamples, sig.Regions["boxband"].mean, sig.Regions["boxband"].edges)
+			if heldStreak >= heldBoxSamples {
+				break
+			}
+		} else {
+			heldStreak = 0
 		}
 		time.Sleep(2 * time.Second)
 	}
-	t.Logf("savestates: the first dialogue box appeared — saving first_dialogue (slot 1 again — the checkpoint files are the stable copies)")
+	t.Logf("savestates: the held first dialogue box is stable — saving first_dialogue (slot 1 again — the checkpoint files are the stable copies)")
 	slot2, err := b.SaveState(ctx, stateSaveSlot)
 	if err != nil {
 		return "", "", fmt.Errorf("save %s (first_dialogue): %v", StateRelFirstDialogue, err)

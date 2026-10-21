@@ -128,7 +128,12 @@ func fastOpts(maxIter int) DriveOptions {
 // name confirm -> the dialogue box) and terminates on the box class. The
 // action sequence is the MEASURED one: START on the title, the main stick
 // left on the cursor-on-No prompt, A on Yes, A on the notice, START-then-A
-// (never A alone) on the name entry, A on the confirm.
+// (never A alone) on the name entry, A on the confirm. The box is the LAST
+// frame of the sequence and the confirmation hold (ADR-0123) needs the NEXT
+// sample to also measure the real form — the fake bridge repeats the last
+// queued frame, so the run logs one CANDIDATE box transition
+// (dialogue_box --(done)--> dialogue_box, the no-op action, no inject) before
+// the confirmation closes it (8 transitions, not 7).
 func TestDriveLoopReachesBox(t *testing.T) {
 	b := &fakeBridge{shots: []image.Image{
 		synthTitleDim(320, 240),
@@ -146,8 +151,11 @@ func TestDriveLoopReachesBox(t *testing.T) {
 	if drv.Reason != "dialogue_box" {
 		t.Errorf("reason = %q, want dialogue_box", drv.Reason)
 	}
+	// 8 screens: the box appears TWICE — the ADR-0123 candidate sample
+	// (the no-op, recorded in the transition log) and the confirmation that
+	// closes the run.
 	want := []DriveScreen{DriveScreenTitle, DriveScreenPrompt, DriveScreenPrompt,
-		DriveScreenSaveNotice, DriveScreenNameEntry, DriveScreenNameConfirm, DriveScreenDialogueBox}
+		DriveScreenSaveNotice, DriveScreenNameEntry, DriveScreenNameConfirm, DriveScreenDialogueBox, DriveScreenDialogueBox}
 	if len(drv.Transitions) != len(want) {
 		t.Fatalf("transitions = %d, want %d:\n%s", len(drv.Transitions), len(want), drv.TransitionLog())
 	}
@@ -190,7 +198,7 @@ func TestDriveLoopReachesBox(t *testing.T) {
 	}
 	// The transition log carries the (screen, action) -> next screen lines.
 	log := drv.TransitionLog()
-	for _, want := range []string{"title:- --(START)--> prompt:no", "prompt:no --(STICK(-1,0)x900ms)--> prompt:yes", "name_entry:- --(A+START+A(name))--> name_confirm:yes", "name_confirm:yes --(A)--> dialogue_box", "dialogue_box:- --(done)--> <end>"} {
+	for _, want := range []string{"title:- --(START)--> prompt:no", "prompt:no --(STICK(-1,0)x900ms)--> prompt:yes", "name_entry:- --(A+START+A(name))--> name_confirm:yes", "name_confirm:yes --(A)--> dialogue_box", "dialogue_box:- --(done)--> dialogue_box", "dialogue_box:- --(done)--> <end>"} {
 		if !strings.Contains(log, want) {
 			t.Errorf("transition log missing %q:\n%s", want, log)
 		}
@@ -558,9 +566,12 @@ func TestNameConfirmLostARecovery(t *testing.T) {
 	if drv.Reason != "dialogue_box" {
 		t.Errorf("reason = %q, want dialogue_box", drv.Reason)
 	}
+	// 10 screens: the box appears TWICE — the ADR-0123 candidate sample
+	// (the no-op, recorded in the transition log) and the confirmation that
+	// closes the run.
 	want := []DriveScreen{DriveScreenTitle, DriveScreenNameEntry, DriveScreenTitle,
 		DriveScreenNameConfirm, DriveScreenNameConfirm, DriveScreenNameConfirm,
-		DriveScreenNameConfirm, DriveScreenSaveNotice, DriveScreenDialogueBox}
+		DriveScreenNameConfirm, DriveScreenSaveNotice, DriveScreenDialogueBox, DriveScreenDialogueBox}
 	if len(drv.Transitions) != len(want) {
 		t.Fatalf("transitions = %d, want %d:\n%s", len(drv.Transitions), len(want), drv.TransitionLog())
 	}
@@ -633,10 +644,13 @@ func TestNameConfirmLostAThenNoRead(t *testing.T) {
 	if drv.Reason != "dialogue_box" {
 		t.Errorf("reason = %q, want dialogue_box", drv.Reason)
 	}
+	// 11 screens: the box appears TWICE — the ADR-0123 candidate sample
+	// (the no-op, recorded in the transition log) and the confirmation that
+	// closes the run.
 	want := []DriveScreen{DriveScreenTitle, DriveScreenNameEntry,
 		DriveScreenNameConfirm, DriveScreenNameConfirm, DriveScreenNameConfirm,
 		DriveScreenNameConfirm, DriveScreenNameConfirm, DriveScreenNameConfirm,
-		DriveScreenSaveNotice, DriveScreenDialogueBox}
+		DriveScreenSaveNotice, DriveScreenDialogueBox, DriveScreenDialogueBox}
 	if len(drv.Transitions) != len(want) {
 		t.Fatalf("transitions = %d, want %d:\n%s", len(drv.Transitions), len(want), drv.TransitionLog())
 	}

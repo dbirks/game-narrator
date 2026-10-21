@@ -109,6 +109,31 @@ func chainEventJSON(t *testing.T, evs []devEnvelope, name, trace string, out any
 	return e, true
 }
 
+// chainEventSeq finds the event of name on the trace whose payload's
+// (observation_seq, generation) pair equals the join keys — the product's
+// documented join (the same keys decision.requested is joined on). Returns
+// nil when no event on the trace carries them.
+func chainEventSeq(t *testing.T, evs []devEnvelope, name, trace string, obsSeq, gen int64) *devEnvelope {
+	t.Helper()
+	for i := range evs {
+		e := &evs[i]
+		if e.Name != name || e.TraceID != trace {
+			continue
+		}
+		var d struct {
+			ObservationSeq int64 `json:"observation_seq"`
+			Generation     int64 `json:"generation"`
+		}
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			continue
+		}
+		if d.ObservationSeq == obsSeq && d.Generation == gen {
+			return e
+		}
+	}
+	return nil
+}
+
 // dolphinChainEvidence gathers the correlated set for the commit the poll
 // loop found. The poll loop (findDolphinChain) already proved the trace-level
 // links exist, so a nil here is a race with a late page read, not a missing
@@ -117,11 +142,23 @@ func dolphinChainEvidence(t *testing.T, a *dolphinAsserts) *dolphinChain {
 	t.Helper()
 	trace := a.commit.TraceID
 	ch := &dolphinChain{trace: trace, commit: &a.commit}
-	if e, _ := chainEventJSON(t, a.evidenceEvents, "text.observed", trace, &ch.textData); e != nil {
-		ch.text = e
-	}
 	if e, _ := chainEventJSON(t, a.evidenceEvents, "message.candidates", trace, &ch.candData); e != nil {
 		ch.candidates = e
+	}
+	// The text link is the observation the candidates' join key names: the
+	// trace spans the occurrence's whole text_state lifecycle (appearing ->
+	// revealing -> stabilizing -> ready -> committed) and the FIRST
+	// text.observed on it is the region-detection frame, which legally
+	// carries no text (the subtitle's typewriter is still filling — the
+	// 2026-10-21 liveui run measured 15 s between the empty "appearing"
+	// frame and the "revealing" reading on the same trace).
+	if e := chainEventSeq(t, a.evidenceEvents, "text.observed", trace, ch.candData.ObservationSeq, ch.candData.Generation); e != nil {
+		if err := json.Unmarshal(e.Data, &ch.textData); err != nil {
+			t.Fatalf("text.observed payload decode: %v", err)
+		}
+		ch.text = e
+	} else if e, _ := chainEventJSON(t, a.evidenceEvents, "text.observed", trace, &ch.textData); e != nil {
+		ch.text = e // no join-key match (late page read): the trace's first observation
 	}
 	if e, _ := chainEventJSON(t, a.evidenceEvents, "decision.resolved", trace, &ch.decResData); e != nil {
 		ch.decResolved = e

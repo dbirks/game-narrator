@@ -274,11 +274,26 @@ test-ui:
 ## AFTER the real-drive phase: one Dolphin at a time, and this phase boots
 ## the only emulator of its phase. 60 m: the voice auditions and the
 ## screen-driven walk to the opening legend take minutes each.
+## The liveui phase needs the packaged SPA go:embedded into the test
+## binary (webassets.Built()); the recipe builds it between the scenario
+## and liveui phases (make web-build) so the phase RUNS on a host with pnpm
+## instead of reporting NOT RUN. Without pnpm the build is skipped and the
+## phase stays NOT RUN (a host without it never turns this gate red); a
+## failed build removes the staged dist so the phase reports NOT RUN
+## instead of walking a half-built UI. NOTE: no comment lines inside the
+## recipe body — a `#` line mid-recipe splits the recipe into separate shell
+## invocations (measured, GNU Make 4.4.1), so the rc1/rc2/rc3 assignments
+## would not reach the final rc aggregation line (2026-10-20, dolphin-gate).
 test-dolphin:
 	@GN_GATE=test-dolphin scripts/gates/run-go-gate.sh test-dolphin -count=1 -p 1 -timeout 45m -run Real -skip 'TestRealReOCRFixture$$' ./internal/dolphin/... ; \
 	rc1=$$?; \
 	GN_GATE=test-dolphin scripts/gates/run-go-gate.sh test-dolphin-scenarios -count=1 -timeout 30m -run TestDolphinScenarios ./internal/scenario/... ; \
 	rc2=$$?; \
+	if command -v pnpm >/dev/null 2>&1; then \
+		$(MAKE) --no-print-directory web-build || { echo "web-build failed: the live play UI phase will report NOT RUN (the staged SPA was removed)" >&2; rm -rf internal/webassets/dist; } ; \
+	else \
+		echo "(web-build skipped: pnpm not on PATH - the live play UI phase reports NOT RUN)" >&2; \
+	fi ; \
 	GN_GATE=test-dolphin scripts/gates/run-go-gate.sh test-dolphin-liveui -count=1 -p 1 -timeout 60m -run 'TestLivePlayUI$$' ./internal/e2e/... ; \
 	rc3=$$?; \
 	if [ $$rc1 -eq 1 ] || [ $$rc2 -eq 1 ] || [ $$rc3 -eq 1 ]; then rc=1; elif [ $$rc1 -eq 2 ] || [ $$rc2 -eq 2 ] || [ $$rc3 -eq 2 ]; then rc=2; else rc=0; fi; \
