@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/assets"
@@ -397,6 +398,22 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 		}
 	}
 
+	// The speculative TTS prewarm seam (docs/spec/07, the overlap of the
+	// Clef round trip with the synthesis): the pipeline's OnAdjudicating hook
+	// fires on the rank worker just before the adjudication goes out, when the
+	// top local candidate is already known. It prewarms that line's synthesis
+	// in the background so the commit resolves from the singleflighted cache.
+	// The speech wiring is not built until after the runner below, so the hook
+	// reads it through an atomic pointer the wiring stores once it exists; the
+	// run goroutine starts only after the store, so the hook never sees a
+	// half-built wiring. nil (no speech in this process) is a no-op.
+	specSpeech := new(atomic.Pointer[speechWiring])
+	cfg.OnAdjudicating = func(messageID string) {
+		if sw := specSpeech.Load(); sw != nil {
+			sw.speculativePrewarm(messageID)
+		}
+	}
+
 	runner, err := pipeline.New(cfg)
 	if err != nil {
 		cancel()
@@ -554,6 +571,10 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 		if w := m.newSpeechWiring(id, speakers, published.NarratorFallback, runCtx, runner, idx, prewarmTexts, sess.voiceLat); w != nil {
 			w.speakerAliasByID = speakerAliasByID
 			sess.speech = w
+			// The OnAdjudicating hook above reads the wiring through this
+			// pointer; storing it here (before the run starts) is what lets a
+			// Clef in flight find the prewarm to trigger.
+			specSpeech.Store(w)
 			pub = &commitWatcher{w: w, inner: tracePub}
 		}
 	}

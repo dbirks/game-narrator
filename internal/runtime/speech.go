@@ -2563,6 +2563,35 @@ func (w *speechWiring) prewarm(messageID string) {
 	}
 }
 
+// speculativePrewarm is the pipeline's OnAdjudicating hook (docs/spec/07,
+// the overlap of the Clef round trip with the synthesis): while the
+// adjudication is in flight, the top local candidate's line is synthesised
+// in the background under the SAME versioned cache key a later commit of the
+// line would use, so when the verdict lands and the commit confirms the same
+// message, the speech cache's singleflighted GetOrGenerate either joins the
+// in-flight generation or resolves from the cache instead of paying the TTS
+// round trip.
+//
+// It runs on the pipeline's rank worker, so it must stay fast: it spawns one
+// background worker (the same prewarmWorker the successor prewarming uses —
+// one synthesis per key, fenced by the session's end) and returns. No audio
+// is scheduled or played here: the commitment and the speech fences are
+// untouched, so a verdict that narrows away from the prewarmed line costs at
+// most one wasted synthesis, never a stale playback. An empty message id (no
+// local candidate) and a stopped wiring are no-ops.
+func (w *speechWiring) speculativePrewarm(messageID string) {
+	if messageID == "" {
+		return
+	}
+	w.mu.Lock()
+	if w.closed || w.endCtx == nil {
+		w.mu.Unlock()
+		return
+	}
+	w.mu.Unlock()
+	go w.prewarmWorker(w.endCtx, messageID)
+}
+
 // cancelPrewarmBatch cancels the in-flight prewarm batch (fence move, scene
 // change). Jobs in flight stop at the source through the batch context; jobs
 // that have already committed their audio stay in the cache — a hit later is

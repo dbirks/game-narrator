@@ -516,6 +516,20 @@ func (r *Runner) rankWorker(ctx context.Context, ranks <-chan rankJob, replies c
 						Abstain:    rank.Abstain,
 					}
 				}
+				// Speculative TTS prewarming (docs/spec/07, the overlap of the
+				// adjudication's round trip with the synthesis): the top local
+				// candidate is known before the Clef call goes out, so the runtime's
+				// hook starts its background synthesis now. When the verdict lands
+				// and the commit confirms the same line, the speech cache's
+				// singleflighted GetOrGenerate either joins the in-flight
+				// generation or resolves from the cache. The commitment and the
+				// speech fences are untouched: nothing is scheduled or played until
+				// the commit occurs, so a Clef verdict that narrows away from the
+				// prewarmed line costs at most one wasted synthesis, never a stale
+				// playback.
+				if r.cfg.OnAdjudicating != nil && len(rank.Candidates) > 0 && rank.Candidates[0].MessageID != "" {
+					r.cfg.OnAdjudicating(rank.Candidates[0].MessageID)
+				}
 				reply = r.cfg.Decider.Decide(ctx, DecisionRequest{
 					SessionID:       r.cfg.SessionID,
 					ProfileRevision: r.cfg.ProfileRevision,

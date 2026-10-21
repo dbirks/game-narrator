@@ -175,7 +175,14 @@ func cuDecisionOpts(t *testing.T, roles map[providers.Role]providers.RoleConfig)
 	roleReg := providers.NewRegistry(roles)
 	chatRouter := router.New(roleReg, router.Options{})
 	t.Logf("catchup e2e: Clef decision role configured (model %s, protocol %s)", cfg.Model, cfg.Protocol)
-	return &rt.DecisionOptions{Router: chatRouter, Role: cfg, Timeout: dolphinClefTimeout, Margin: dolphinClefMargin}
+	// Production margin (cmd/game-narrator/main.go runs Margin 0): a confident
+	// local match commits on the local evidence and skips Clef entirely — only
+	// an abstained or fuzzy-below-bar ranking consults Clef. This is the shape
+	// the catch-up scenario asserts against (the multi-box lines are read and
+	// committed, not every one held for a Clef round trip). dolphin_live_test.go
+	// keeps dolphinClefMargin on purpose: it asserts a Clef request on the
+	// opening line.
+	return &rt.DecisionOptions{Router: chatRouter, Role: cfg, Timeout: dolphinClefTimeout, Margin: 0}
 }
 
 // cuSetSettings applies the session's catch-up policy through the settings

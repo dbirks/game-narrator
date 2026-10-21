@@ -294,6 +294,14 @@ type Config struct {
 	// provider client (the same rule as OCRFallback.Secondary).
 	Decider Decider
 
+	// OnAdjudicating is an optional hook called on the rank worker just before
+	// Decider.Decide is invoked for an ambiguous ranking that has at least one
+	// local candidate (Candidates[0].MessageID). The runtime wires it to
+	// speculatively prewarm TTS for the top candidate in the background while
+	// the Clef request is in flight; the commitment and speech fences remain
+	// unchanged (no audio is scheduled or played until the commit occurs).
+	OnAdjudicating func(messageID string)
+
 	// Speakers are the declared speaker options the adjudication's speaker
 	// question is rendered with (in profile order, newest attribution
 	// first is the runtime's business). Only meaningful when Decider is set;
