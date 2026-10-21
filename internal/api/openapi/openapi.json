@@ -7260,6 +7260,56 @@
         }
       }
     },
+    "/api/v1/profiles/{id}/presynthesize": {
+      "post": {
+        "operationId": "presynthesizeProfile",
+        "tags": [
+          "profiles"
+        ],
+        "summary": "Queue a background pre-synthesis of the profile's lines into the TTS cache (curator).",
+        "description": "ADR-0153. Queues a speech.presynth_profile job that synthesizes every line whose speaker resolves to an approved voice (or to the narrator voice) into the shared TTS cache, under the exact key a live commit computes, so play hits the cache. Idempotent and resumable: cached lines cost one lookup. Stops after 5 consecutive provider failures (retryable) or when the projected cache growth would cut into a 500 MB disk reserve (permanent). Live sessions pause the job queue. 409 when a pre-synthesis of the same profile is already queued or running. Audited as catalog.profile.presynthesize.",
+        "x-required-role": "curator",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProfileId"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PresynthRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "The job was queued; follow /api/v1/jobs/{job_id}.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PresynthAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "409": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
     "/api/v1/profiles/{id}/purge": {
       "post": {
         "operationId": "purgeProfile",
@@ -7725,6 +7775,50 @@
       }
     },
     "schemas": {
+      "PresynthRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Cap on the lines considered, in profile order; 0 or absent = all."
+          },
+          "concurrency": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4,
+            "description": "Parallel syntheses; 0 or absent = 1."
+          }
+        }
+      },
+      "PresynthAccepted": {
+        "type": "object",
+        "required": [
+          "job_id",
+          "job_kind",
+          "profile_id",
+          "state",
+          "detail"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "job_kind": {
+            "type": "string"
+          },
+          "profile_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          }
+        }
+      },
       "MetricsSnapshot": {
         "type": "object",
         "description": "The GET /api/v1/dev/metrics body (docs/spec/13 \"Metrics\", internal/telemetry): the process's telemetry registry as a structured view — the same data the Prometheus exposition at GET /metrics renders, shaped for the diagnostics and health surfaces to read. generated_at is the process wall clock (the freshness of the reading, not a metric).",

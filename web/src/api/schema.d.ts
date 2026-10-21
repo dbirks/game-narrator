@@ -2479,6 +2479,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/profiles/{id}/presynthesize": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Queue a background pre-synthesis of the profile's lines into the TTS cache (curator).
+     * @description ADR-0153. Queues a speech.presynth_profile job that synthesizes every line whose speaker resolves to an approved voice (or to the narrator voice) into the shared TTS cache, under the exact key a live commit computes, so play hits the cache. Idempotent and resumable: cached lines cost one lookup. Stops after 5 consecutive provider failures (retryable) or when the projected cache growth would cut into a 500 MB disk reserve (permanent). Live sessions pause the job queue. 409 when a pre-synthesis of the same profile is already queued or running. Audited as catalog.profile.presynthesize.
+     */
+    post: operations["presynthesizeProfile"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/profiles/{id}/purge": {
     parameters: {
       query?: never;
@@ -2583,6 +2603,19 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
   schemas: {
+    PresynthRequest: {
+      /** @description Cap on the lines considered, in profile order; 0 or absent = all. */
+      limit?: number;
+      /** @description Parallel syntheses; 0 or absent = 1. */
+      concurrency?: number;
+    };
+    PresynthAccepted: {
+      job_id: string;
+      job_kind: string;
+      profile_id: string;
+      state: string;
+      detail: string;
+    };
     /** @description The GET /api/v1/dev/metrics body (docs/spec/13 "Metrics", internal/telemetry): the process's telemetry registry as a structured view — the same data the Prometheus exposition at GET /metrics renders, shaped for the diagnostics and health surfaces to read. generated_at is the process wall clock (the freshness of the reading, not a metric). */
     MetricsSnapshot: {
       /** Format: date-time */
@@ -9653,6 +9686,36 @@ export interface operations {
           "application/json": components["schemas"]["CloneResponse"];
         };
       };
+      404: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  presynthesizeProfile: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: components["parameters"]["ProfileId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["PresynthRequest"];
+      };
+    };
+    responses: {
+      /** @description The job was queued; follow /api/v1/jobs/{job_id}. */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PresynthAccepted"];
+        };
+      };
+      400: components["responses"]["Problem"];
       404: components["responses"]["Problem"];
       409: components["responses"]["Problem"];
       default: components["responses"]["Problem"];

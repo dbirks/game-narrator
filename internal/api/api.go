@@ -873,6 +873,7 @@ func (s *Server) Handler() http.Handler {
 	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/clone", s.handleProfileClone)
 	routes.register(mux, http.MethodDelete, "/api/v1/profiles/{id}", s.handleProfileDelete)
 	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/purge", s.handleProfilePurge)
+	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/presynthesize", s.handleProfilePresynthesize)
 	routes.register(mux, http.MethodPost, "/api/v1/games/{id}/disable", s.handleGameDisableRoute)
 	routes.register(mux, http.MethodPost, "/api/v1/games/{id}/enable", s.handleGameEnableRoute)
 	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/messages", s.handleMessagesList)

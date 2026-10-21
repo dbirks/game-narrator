@@ -740,6 +740,19 @@ func runServe(args []string, log *slog.Logger, ring *logbuf.Ring) (int, error) {
 	if err != nil {
 		return 1, fmt.Errorf("creating the session runtime: %w", err)
 	}
+	// Profile pre-synthesis (ADR 0153): fills the TTS cache with a profile's
+	// lines under the live key identity. Registered here, after the runtime
+	// exists and before the runner starts; live sessions pause the queue, so
+	// it never competes with play for the TTS. Resumable: a rerun skips the
+	// lines already cached.
+	if err := runner.Register(api.JobKindPresynthProfile,
+		api.PresynthProfileJobHandler(sessions, cfg.DataDir), jobs.RegisterOpts{
+			Concurrency: 1,
+			Resumable:   true,
+			Timeout:     6 * time.Hour,
+		}); err != nil {
+		return 1, fmt.Errorf("registering %s job kind: %w", api.JobKindPresynthProfile, err)
+	}
 	// Settle the process-shared OCR pool at startup, before any session
 	// (issue #13, ADR-0100): its warm Tesseract slots and the startup probe
 	// spawn in the background, so a session's first frame no longer pays

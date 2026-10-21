@@ -28,7 +28,7 @@ Nothing let an operator fill the cache for a whole profile before play. The Wind
    - a disk guard (`FreeBytes`; production uses `FreeBytesAt(dataDir)` via `statfs`) projects the remaining bytes from the first 20 syntheses and refuses to eat into a 500 MB reserve;
    - progress reports total, done, cache hits, synthesized, failed, skipped (no approved voice) and bytes.
 4. **Idempotent, so resumable.** A cached line costs one lookup, so a restarted run continues where it stopped.
-5. **Operator entry point.** A background job kind with a `POST /api/v1/profiles/{id}/presynthesize` route (operator+) starts it. Live sessions pause the job queue, as they do for every job.
+5. **Entry point.** `POST /api/v1/profiles/{id}/presynthesize` (curator, through the `/api/v1/profiles` wildcard grant; body `{limit?, concurrency? 0..4}`) queues one `speech.presynth_profile` job per profile. A second request while one is queued or running gets 409 naming that job. The handler (`internal/api/presynth.go`) reports progress as done/total and returns the final count as the job result. A gateway-outage stop is retryable (the rerun resumes from the cache), while a disk-budget refusal, an unknown profile or a bad payload is permanent. `cmd/game-narrator` registers the kind after the runtime exists and before the runner starts. Live sessions pause the job queue, as they do for every job. Start it with `curl -X POST -H 'Authorization: Bearer gn_…' http://<host>:8080/api/v1/profiles/<published id>/presynthesize -d '{}'`, then follow `/api/v1/jobs/<id>`.
 
 ## Options considered
 
@@ -45,6 +45,7 @@ Nothing let an operator fill the cache for a whole profile before play. The Wind
 
 - `TestPresynthOneThenCommitHitsTheCache`: the first pass synthesizes, the second makes no provider call, and a live commit of the line is `from_cache: true` with no new provider request.
 - `TestPresynthOneSkipsAVoicelessSpeaker`.
+- `TestPresynthesizeRouteQueuesOnePerProfile` (202 with the payload, 409 on a second request, 404, 403 for a viewer, 400 for concurrency 9) and `TestPresynthJobHandlerOutcomes` (progress percentage and result; disk budget, unknown profile and bad payload are permanent; a gateway outage is retryable).
 - The whole `internal/runtime` suite passes under `-race`, which includes the commit and prewarm paths that now share `lineCacheKey`.
 - Live: run the job on the board's published profile, then confirm the TTS cache-hit rate in the A/V harness and on Traces.
 
