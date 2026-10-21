@@ -244,3 +244,43 @@ func TestSpeakerLinkResolver(t *testing.T) {
 		t.Errorf("a placeholder with no target resolves to %q, want itself (no invented link)", got)
 	}
 }
+
+// TestResolveVoiceByCharacterNameAlias verifies that a voice profile stored
+// under the character's display Name (as created by the Cast UI / auto-cast,
+// ADR-0109/ADR-0135) is resolved when speakerByMessage maps the message to the
+// character's row ID and speakerAliasByID maps the row ID to the display Name.
+func TestResolveVoiceByCharacterNameAlias(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, store.DBPath(t.TempDir()))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	a, err := assets.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatalf("assets: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	const charID = "01M5BHWSNQR26YAGNMVXG00001"
+	const charName = "Aryll"
+	const lineID = "line-aryll-1"
+
+	// Auto-cast / Cast UI creates the voice keyed by character display Name.
+	aryllVoiceID := seedFallbackVoice(t, st, a, charName)
+	_ = seedFallbackVoice(t, st, a, narratorCharacter)
+
+	w := newFallbackWiring(t, st, a, map[string]string{lineID: charID}, true)
+	w.speakerAliasByID = map[string]string{charID: charName}
+
+	rv, why := w.resolveVoice(ctx, lineID)
+	if why != "" {
+		t.Fatalf("resolveVoice reported skip reason %q, want none", why)
+	}
+	if rv.profile.ID != aryllVoiceID {
+		t.Fatalf("resolved voice ID = %s (character %q), want Aryll's voice %s (not narrator fallback)",
+			rv.profile.ID, rv.profile.Character, aryllVoiceID)
+	}
+}

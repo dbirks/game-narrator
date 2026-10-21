@@ -152,7 +152,7 @@ func (s *Store) ProfileCharacterVoiceCounts(ctx context.Context, profileID strin
 		}
 		return q.queryRow(ctx, op,
 			`SELECT COUNT(DISTINCT c.id) FROM characters c
-			 JOIN voice_profiles vp ON vp.character = c.name
+			 JOIN voice_profiles vp ON (vp.character = c.name OR vp.character = c.id)
 			 WHERE c.profile_id = ? AND c.status <> 'retired' AND vp.state <> 'retired' AND `+speaking, profileID,
 		).Scan(&voiced)
 	})

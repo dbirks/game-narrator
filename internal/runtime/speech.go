@@ -412,6 +412,10 @@ type speechWiring struct {
 	// speaker character id (the curator's roster from the published
 	// profile); empty means the line is the narrator's.
 	speakerByMessage map[string]string
+	// speakerAliasByID maps a character row id to its display name so
+	// approvedVoice resolves voices keyed by character name (Cast UI /
+	// auto-cast, ADR-0109/ADR-0135) as well as character ID (ADR-0101).
+	speakerAliasByID map[string]string
 
 	// narratorFallback is the profile's narrator fallback (ADR-0101): a line
 	// whose speaker has no approved voice is spoken by the narrator voice
@@ -2731,6 +2735,16 @@ func (w *speechWiring) speakerFor(messageID string) string {
 // a specific fault (the approved reference is unreadable, the name could
 // not be derived).
 func (w *speechWiring) approvedVoice(ctx context.Context, character string) (resolvedVoice, string) {
+	if rv, why := w.approvedVoiceForKey(ctx, character); rv.profile.ID != "" || why != "" {
+		return rv, why
+	}
+	if alias := w.speakerAliasByID[character]; alias != "" && alias != character {
+		return w.approvedVoiceForKey(ctx, alias)
+	}
+	return resolvedVoice{}, ""
+}
+
+func (w *speechWiring) approvedVoiceForKey(ctx context.Context, character string) (resolvedVoice, string) {
 	profiles, err := w.voices.Store.ListVoiceProfiles(ctx, character)
 	if err != nil {
 		// The store is the appliance's own database: a read failure is a

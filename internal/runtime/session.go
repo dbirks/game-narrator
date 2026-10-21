@@ -513,6 +513,17 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 	// misconfiguration must not take the capture down with it.
 	if m.opts.Speech != nil {
 		speakers := make(map[string]string, len(content.Messages))
+		// speakerAliasByID maps each character ID to its display name so that
+		// approvedVoice can resolve voices created via the Cast UI or auto-cast
+		// (where voice_profiles.character stores c.Name per ADR-0109/ADR-0135)
+		// as well as voices imported via profileio (where voice_profiles.character
+		// stores c.ID per ADR-0101).
+		speakerAliasByID := make(map[string]string, len(content.Characters))
+		for _, ch := range content.Characters {
+			if ch.ID != "" && ch.Name != "" && ch.Name != ch.ID {
+				speakerAliasByID[ch.ID] = ch.Name
+			}
+		}
 		// prewarmTexts is the canonical TTS text of every profile message —
 		// the best prediction of what a later commit of the line will read,
 		// the same precedence the decision wiring renders its texts with.
@@ -539,6 +550,7 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 			}
 		}
 		if w := m.newSpeechWiring(id, speakers, published.NarratorFallback, runCtx, runner, idx, prewarmTexts, sess.voiceLat); w != nil {
+			w.speakerAliasByID = speakerAliasByID
 			sess.speech = w
 			pub = &commitWatcher{w: w, inner: tracePub}
 		}
