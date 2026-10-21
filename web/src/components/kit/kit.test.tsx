@@ -59,15 +59,17 @@ describe("PillButton", () => {
 });
 
 describe("Chip / NameTab", () => {
-  it("renders the peach default and the neutral tone", () => {
+  it("renders the peach default, the neutral and the bad (slow/fail) tones", () => {
     render(
       <>
         <Chip>selected</Chip>
         <Chip tone="neutral">voiced 34/1204</Chip>
+        <Chip tone="bad">no active picture</Chip>
       </>,
     );
     expect(screen.getByText("selected").className).toBe("kit-chip");
     expect(screen.getByText("voiced 34/1204").className).toContain("kit-chip-neutral");
+    expect(screen.getByText("no active picture").className).toContain("kit-chip-bad");
   });
 
   it("renders the name tab with the peach tick", () => {

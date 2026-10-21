@@ -107,6 +107,7 @@ function KitGallery() {
         <div className="actions">
           <Chip>selected</Chip>
           <Chip tone="neutral">voiced 34/1204</Chip>
+          <Chip tone="bad">no active picture</Chip>
           <NameTab>Mira</NameTab>
           <NameTab testid="kit-gallery-name-tab-2">The Ferryman</NameTab>
         </div>

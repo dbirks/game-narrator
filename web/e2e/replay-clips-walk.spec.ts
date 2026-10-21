@@ -8,6 +8,7 @@ import { expect, test } from "@playwright/test";
 
 import { trackConsoleErrors } from "./support/console";
 import { buildManifest, type SeedProfile } from "./support/manifest";
+import { setPlayView } from "./support/play";
 import { expectDefaultDataDirUntouched, serverRun } from "./support/servers";
 
 /**
@@ -85,7 +86,17 @@ test("upload the synthetic clip, play it by id with no replay allowlist, delete 
   );
   const run = serverRun("clips");
   const origin = new URL(baseURL as string).origin;
-  const consoleErrors = trackConsoleErrors(page, [401, 503]);
+  const consoleErrors = trackConsoleErrors(
+    page,
+    [
+      // 401: the unauthenticated probe before sign-in. 409/429: the
+      // operator view's frame poller on a replay/one-shot server —
+      // "capture signal unavailable" and the preview throttle are the
+      // designed transient answers the frame card renders as "unknown".
+      // 503: unwired surfaces (Bluetooth, unconfigured voices).
+      401, 409, 429, 503,
+    ],
+  );
   const shot = (step: string) =>
     page.screenshot({ path: `test-results/replay-clips-walk-${step}.png`, fullPage: true });
 
@@ -212,11 +223,16 @@ test("upload the synthetic clip, play it by id with no replay allowlist, delete 
   await expect(page.getByTestId("play-state")).toHaveText("running", { timeout: 60_000 });
   // This server admits no replay roots at all (no GAME_NARRATOR_REPLAY_ROOTS
   // env on the webServer entry): the clip could only have run because the
-  // managed store is a replay root by default (ADR-0073).
+  // managed store is a replay root by default (ADR-0073). The facts read
+  // from the operator view (the 2026-10-20 review moved them out of the
+  // caption view); the caption view's committed-line rows read straight
+  // after, so the walk toggles back before the polls.
+  await setPlayView(page, "operator");
   await expect(page.getByTestId("play-source")).toContainText("replay · running", {
     timeout: 30_000,
   });
   await expect(page.getByTestId("play-source-error")).toHaveCount(0);
+  await setPlayView(page, "now"); // back to now-speaking
   // The clip commits its two pages in order; wait for both before stopping,
   // so the stop (or the source exhaustion that may end it first) settles on a
   // complete run rather than a partial one.

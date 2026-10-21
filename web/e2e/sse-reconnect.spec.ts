@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 
 import { trackConsoleErrors } from "./support/console";
 import { buildManifest, type SeedProfile } from "./support/manifest";
+import { setPlayView } from "./support/play";
 import { expectDefaultDataDirUntouched, serverRun } from "./support/servers";
 
 /**
@@ -88,7 +89,17 @@ test("SSE reconnect resumes from the cursor and the state matches the server", a
   test.skip(testInfo.project.name !== "sse", "runs on the sse project's own backend");
   const run = serverRun("sse");
   const origin = new URL(baseURL as string).origin;
-  const consoleErrors = trackConsoleErrors(page, [401, 503]);
+  const consoleErrors = trackConsoleErrors(
+    page,
+    [
+      // 401: the unauthenticated probe before sign-in. 409/429: the
+      // operator view's frame poller on a replay/one-shot server —
+      // "capture signal unavailable" and the preview throttle are the
+      // designed transient answers the frame card renders as "unknown".
+      // 503: unwired surfaces (Bluetooth, unconfigured voices).
+      401, 409, 429, 503,
+    ],
+  );
 
   // ── 1. seed + publish the synthetic profile through the API ───────────────
   const setup = await request.post(`${origin}/api/v1/auth/setup`, {
@@ -245,9 +256,14 @@ test("SSE reconnect resumes from the cursor and the state matches the server", a
   expect(final.stats.commits, "the synthetic clip commits its two pages").toBe(2);
   expect(final.stats.ocr_calls).toBeGreaterThan(0);
 
-  // The page, from the other side of the broken wire: the same numbers.
+  // The page, from the other side of the broken wire: the same numbers. The
+  // commit counter is a session fact (the operator view since the 2026-10-20
+  // review), so the read goes through "show workings"; the caption view's
+  // rows read straight after, so the walk toggles back.
   await expect(page.getByTestId("play-state")).toHaveText("stopped", { timeout: 30_000 });
+  await setPlayView(page, "operator");
   await expect(page.getByTestId("play-commits")).toHaveText(String(final.stats.commits));
+  await setPlayView(page, "now"); // back to now-speaking
   const linesAfter = page.locator('[data-testid="recent-lines"] li');
   await expect(linesAfter).toHaveCount(2, { timeout: 30_000 });
   await expect(linesAfter.first()).toContainText(

@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 
 import { trackConsoleErrors } from "./support/console";
 import { buildManifest, type SeedProfile } from "./support/manifest";
+import { setPlayView } from "./support/play";
 import { ports } from "./support/ports";
 import { expectDefaultDataDirUntouched, serverRun } from "./support/servers";
 
@@ -251,7 +252,9 @@ test("the capture surface lists, previews, probes and runs a v4l2 session", asyn
 
   // The live view says what the session runs: the kind, the source's own
   // state, and the device + mode the resolution settled on (the snapshot's
-  // fields, not the click).
+  // fields, not the click). The facts read from the operator view (the
+  // 2026-10-20 review moved the session's stats out of the caption view).
+  await setPlayView(page, "operator");
   await expect(page.getByTestId("play-source")).toContainText("v4l2");
   await expect(page.getByTestId("play-capture-device-info")).toContainText(FAKE_ID);
   await expect(page.getByTestId("play-capture-device-info")).toContainText("640x480");

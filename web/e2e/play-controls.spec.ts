@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 
 import { trackConsoleErrors } from "./support/console";
 import { buildManifest, type SeedProfile } from "./support/manifest";
+import { setPlayView } from "./support/play";
 import { apiAsUser, expectDefaultDataDirUntouched, serverRun } from "./support/servers";
 
 /**
@@ -22,9 +23,10 @@ import { apiAsUser, expectDefaultDataDirUntouched, serverRun } from "./support/s
  *      to speak and the pause has real audio to fence;
  *   2. /play: start the replay session, then the decision mode and the
  *      narrated classes move through the controls: the checkboxes and the
- *      select post the partial settings, the 200 snapshot re-syncs the page
- *      (the "Narrating: …" line reads back the applied state), and the
- *      server's snapshot agrees;
+ *      careful/eager segmented toggle (ADR-0093's 2e control bar: the mode
+ *      select became the design's segment) post the partial settings, the
+ *      200 snapshot re-syncs the page (the "Narrating: …" line reads back
+ *      the applied state), and the server's snapshot agrees;
  *   3. the keyboard shortcuts (s/i/m) drive the same controls from the
  *      window, not the forms;
  *   4. pause at the head of the session — the button follows the server's
@@ -107,7 +109,17 @@ test("play controls: pause/resume, narrated classes, decision mode (synthetic re
   const run = serverRun("play-controls");
   const origin = new URL(baseURL as string).origin;
   const api = apiAsUser(request, origin);
-  const consoleErrors = trackConsoleErrors(page, [401, 503]);
+  const consoleErrors = trackConsoleErrors(
+    page,
+    [
+      // 401: the unauthenticated probe before sign-in. 409/429: the
+      // operator view's frame poller on a replay/one-shot server —
+      // "capture signal unavailable" and the preview throttle are the
+      // designed transient answers the frame card renders as "unknown".
+      // 503: unwired surfaces (Bluetooth, unconfigured voices).
+      401, 409, 429, 503,
+    ],
+  );
 
   // ── 1. claim, seed + publish the synthetic profile through the API ────────
   const setup = await request.post(`${origin}/api/v1/auth/setup`, {
@@ -243,7 +255,11 @@ test("play controls: pause/resume, narrated classes, decision mode (synthetic re
     (await (await request.get(`${origin}/api/v1/sessions/${sessionId}`)).json()) as SessionSnapshot;
 
   // The voice pipeline is wired on this server: the audio section reports a
-  // sink, not the 503 note.
+  // sink, not the 503 note. The audio card lives in the operator view (the
+  // 2026-10-20 review moved the session's facts out of the caption view),
+  // so the walk reads it from "show workings" — the bottom control bar is
+  // the same bar in both views, so every control below still reaches it.
+  await setPlayView(page, "operator");
   await expect(page.getByTestId("play-audio-sink")).toBeVisible({ timeout: 30_000 });
 
   await expect(page.getByTestId("play-state")).toHaveText("running", { timeout: 60_000 });
@@ -256,11 +272,16 @@ test("play controls: pause/resume, narrated classes, decision mode (synthetic re
   const pauseButton = page.getByTestId("play-pause");
   await expect(pauseButton).toBeEnabled();
 
-  // ── 4. the decision mode, through the select ──────────────────────────────
-  const modeSelect = page.getByTestId("play-mode-select");
-  await expect(modeSelect).toHaveValue("conservative");
-  await modeSelect.selectOption("predictive");
-  await expect(modeSelect).toHaveValue("predictive", { timeout: 15_000 });
+  // ── 4. the decision mode, through the segmented toggle ───────────────────
+  // ADR-0093 (Plum & Peach 2e): the pre-redesign mode select is the
+  // careful/eager segment (play-mode-segmented) — the server's own
+  // conservative/predictive values, the design's friendly labels.
+  const modeTablist = page.getByTestId("play-mode-segmented");
+  const carefulTab = modeTablist.getByRole("tab", { name: "careful" });
+  const eagerTab = modeTablist.getByRole("tab", { name: "eager" });
+  await expect(carefulTab).toHaveAttribute("aria-selected", "true");
+  await eagerTab.click();
+  await expect(eagerTab).toHaveAttribute("aria-selected", "true", { timeout: 15_000 });
   let settingsSnapshot = await snapshot();
   expect(settingsSnapshot.mode, "the server holds the applied mode").toBe("predictive");
   // The partial body left the classes at the session's value.
@@ -330,7 +351,7 @@ test("play controls: pause/resume, narrated classes, decision mode (synthetic re
   await expect(items).not.toBeChecked({ timeout: 15_000 });
   await blur();
   await page.keyboard.press("m"); // the mode toggles through the same control
-  await expect(modeSelect).toHaveValue("conservative", { timeout: 15_000 });
+  await expect(carefulTab).toHaveAttribute("aria-selected", "true", { timeout: 15_000 });
   await expect(page.getByTestId("play-narrated")).toHaveText("dialogue", {
     timeout: 15_000,
   });
@@ -411,9 +432,14 @@ test("play controls: pause/resume, narrated classes, decision mode (synthetic re
     Math.max(commitsAtPause, 2),
   );
 
-  // The page, from the other side of the wire: the same numbers.
+  // The page, from the other side of the wire: the same numbers. The commit
+  // counter is one of the session's facts (the operator view since the
+  // 2026-10-20 review), so the read goes through "show workings".
   await expect(page.getByTestId("play-state")).toHaveText("stopped", { timeout: 30_000 });
+  await setPlayView(page, "operator");
   await expect(page.getByTestId("play-commits")).toHaveText("2");
+  // The committed lines themselves are the caption view's: back across.
+  await setPlayView(page, "now");
   // The committed line's speaker and order, from the other side of the wire:
   // Marina's two lines, newest first (the same order the sse walk asserts) —
   // demo-page-2 committed second and tops the list, demo-page-1 is below it.
@@ -432,8 +458,11 @@ test("play controls: pause/resume, narrated classes, decision mode (synthetic re
   // `started` counter is the authoritative server-side signal that the voice
   // resolved and audio actually began — a line the pipeline skipped (no voice)
   // ends without ever starting, so `started >= 1` proves the committed lines
-  // were spoken by the approved voice, not dropped. The counters are driven by
-  // the session snapshot, so poll to ride out the settle.
+  // were spoken by the approved voice, not dropped. The counters are the
+  // audio card's (the operator view), so the reads go through "show
+  // workings"; they are driven by the session snapshot, so poll to ride out
+  // the settle.
+  await setPlayView(page, "operator");
   const spoken = async (testId: string) =>
     Number((await page.getByTestId(testId).textContent()) ?? "0");
   await expect
@@ -446,6 +475,8 @@ test("play controls: pause/resume, narrated classes, decision mode (synthetic re
   expect(await spoken("play-speech-ended")).toBeGreaterThanOrEqual(1);
 
   // ── 9. the live region and the accessibility pass ─────────────────────────
+  // The live region is the caption view's; the axe pass runs over it.
+  await setPlayView(page, "now");
   const liveRegion = page.getByLabel("Current committed line");
   await expect(liveRegion).toHaveAttribute("aria-live", "polite");
 

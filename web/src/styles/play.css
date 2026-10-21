@@ -1,0 +1,649 @@
+/*
+ * `src/styles/play.css` — the /play page (docs/design/plum-peach 2e/2f/2g,
+ * ADR-0093): the now-speaking view, the operator ("show workings") view and
+ * the kid/tablet mode. Tokens only — every colour resolves to a custom
+ * property from the theme blocks (tokens.css); the file loads after
+ * tokens.css (src/main.tsx), so at equal specificity it wins over index.css.
+ *
+ * The 2026-10-20 visual review (against mocks 2e/2f) shaped three things:
+ * the caption view is portrait + line + waveform + last three lines + the
+ * bar (the session stats and the audio card live in the operator view),
+ * the control bar is a horizontal strip along the bottom of the page over
+ * both views, and the candidate rows name the line, not its store id.
+ */
+
+/* ── the live-session header (state, session id, view toggle, close) ────── */
+
+.pp-session-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-12);
+  flex-wrap: wrap;
+}
+
+.pp-head-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-8);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 0;
+}
+
+.pp-head-meta code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 26ch;
+}
+
+/* The header's trailing action group: the "show workings" pill and the
+   "Close this watch" link, kept apart (the review's fix for the two links
+   running together) — a real gap between a pill and a quiet link, right
+   aligned, at every width. */
+.pp-head-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-16);
+  min-width: 0;
+}
+
+.pp-head-actions a {
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+
+/* ── 2e now speaking (default) ─────────────────────────────────────────────
+ * The clean caption view (mock 2e): portrait arch + name tab, the current
+ * line at 52px (the caption), the big waveform, the last three lines at
+ * 75% — and nothing else; the control bar is the page's bottom strip. */
+
+.pp-now {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: var(--sp-22);
+  align-items: start;
+}
+
+.pp-portrait {
+  display: grid;
+  gap: var(--sp-8);
+  justify-items: center;
+}
+
+/* The arch frame (README: 260×300, radius 999/999/24/24); the cover fills it. */
+.pp-portrait-frame {
+  width: 260px;
+  height: 300px;
+  max-width: 100%;
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-arch);
+  overflow: hidden;
+}
+
+.pp-portrait-frame .dither-cover {
+  width: 100%;
+  height: 100%;
+}
+
+.pp-name-tab-row {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-8);
+  max-width: 100%;
+}
+
+.pp-name-tab-row .kit-name-tab {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Phone widths: the 260px portrait column can't share a 390px page — the
+   arch stacks above the line, centred. */
+@media (max-width: 639px) {
+  .pp-now {
+    grid-template-columns: 1fr;
+  }
+
+  .pp-portrait {
+    justify-self: center;
+  }
+
+  .pp-now-main {
+    width: 100%;
+  }
+}
+
+/* The current line doubles as the caption: 52px Fredoka 500, line-height 1.1. */
+.pp-line {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 52px;
+  line-height: 1.1;
+  margin: 0 0 var(--sp-12);
+  overflow-wrap: anywhere;
+}
+
+.pp-line-empty {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 52px;
+  line-height: 1.1;
+  color: var(--muted);
+  margin: 0 0 var(--sp-12);
+}
+
+.pp-line-wave {
+  margin: 0 0 var(--sp-12);
+  max-width: 560px;
+}
+
+/* The last three lines — the design's 75% demotion as true opacity (mock
+   2e): ink at 75% over the card holds 5.2:1 (plum, the default theme), so
+   the caption's demotion stays WCAG 1.4.3 without a tint. The 11px mono
+   meta keeps full contrast: at 75% its 5.5:1 muted would fall under the
+   4.5:1 floor small text needs. */
+.pp-last-lines {
+  display: grid;
+  gap: var(--sp-8);
+  margin: var(--sp-12) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pp-last-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--sp-4) var(--sp-12);
+  align-items: baseline;
+  padding: var(--sp-8) var(--sp-12);
+  border: 1px dashed var(--hair);
+  border-radius: var(--radius-tag);
+}
+
+.pp-last-line-text {
+  font-size: 0.98rem;
+  color: var(--ink);
+  opacity: 0.75;
+  overflow-wrap: anywhere;
+}
+
+.pp-last-line-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.pp-last-line-meta code {
+  overflow-wrap: anywhere;
+}
+
+/* ── the bottom control bar (pause · mute · volume · delay · mode · stop) ──
+ * One horizontal strip along the bottom of the page, rendered over both
+ * views (the parent places it beneath the now-speaking grid and the
+ * operator grid alike): at ≥1024 it is a single left-aligned row, and at
+ * phone width the slices stack — one control per row — inside the same
+ * card. Not a card under the portrait (the 2026-10-20 review). */
+
+.pp-controls {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-card);
+  background: var(--card);
+  padding: var(--sp-12) var(--sp-16);
+  display: grid;
+  gap: var(--sp-10);
+}
+
+.pp-controls-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-12);
+  flex-wrap: wrap;
+}
+
+.pp-controls-note {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.pp-slice {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-8);
+  min-width: 0;
+}
+
+/* Volume: the dithered bar over the range input (the track's fill is the
+   50% checker on sand; the input itself stays a native, keyboard-usable
+   range). The fill width is CSS-only: the input's own value styles the
+   thumb position, the bar mirrors the percentage as a static texture. */
+.pp-volume {
+  position: relative;
+  width: 140px;
+  display: inline-grid;
+}
+
+.pp-volume-bar {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--ink);
+  border-radius: var(--radius-pill);
+  background: repeating-conic-gradient(var(--ink) 0 25%, var(--sand) 0 50%) 0 0 / 2px 2px;
+  image-rendering: pixelated;
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+.pp-volume input[type="range"] {
+  position: relative;
+  width: 100%;
+  margin: 0;
+  background: transparent;
+  accent-color: var(--coral);
+}
+
+.pp-pct {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  min-width: 3ch;
+}
+
+.pp-delay input[type="number"] {
+  width: 6ch;
+}
+
+/* ── 2f operator ("show workings") ─────────────────────────────────────────
+ * The 4:3 live frame with its ROI overlays, the committed line beneath it
+ * and the corrections; right side: the session's facts (the stats block the
+ * review moved out of the caption view: mode, frame source, counters, end
+ * reason, and the audio output card), the event stream and the match
+ * candidates. The bottom control bar belongs to the parent, under this
+ * grid. */
+
+.pp-operator {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: var(--sp-16);
+  align-items: start;
+}
+
+/* The 4:3 frame (600px at desktop; the aspect holds at every width). */
+.pp-frame {
+  position: relative;
+  width: 100%;
+  max-width: 600px;
+  aspect-ratio: 4 / 3;
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-portrait);
+  overflow: hidden;
+  background: var(--sand);
+}
+
+.pp-frame-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  background: var(--ink);
+}
+
+/* ROI overlays: an absolutely-positioned SVG over the frame whose geometry
+   is SVG attributes (viewBox 0 0 100 75 == the 4:3 box in frame percent),
+   the kit's established pattern ("geometry is SVG attributes, colour is
+   the stylesheet's"). No inline styles (ADR-0011): the crop's x/y/w/h are
+   <rect> attributes, its colours and fonts come from here. */
+.pp-frame-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.pp-frame-roi {
+  fill: none;
+  stroke: var(--coral);
+  stroke-width: 0.8;
+}
+
+.pp-frame-roi-label-bg {
+  fill: var(--coral);
+  stroke: var(--ink);
+  stroke-width: 0.25;
+}
+
+.pp-frame-roi-label {
+  fill: var(--paper);
+  font-family: var(--font-mono);
+  font-size: 3.2px;
+  font-weight: 700;
+  letter-spacing: 0.1px;
+}
+
+/* The name-plate ROI: the design's dashed hint box (the operator's second
+   region of interest, lower left). */
+.pp-frame-nameplate {
+  fill: none;
+  stroke: var(--paper);
+  stroke-width: 0.5;
+  stroke-dasharray: 1.4 1;
+}
+
+.pp-frame-nameplate-label {
+  fill: var(--paper);
+  font-family: var(--font-mono);
+  font-size: 2.6px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+/* The no-frame state: the dither empty surface with the operator's reason. */
+.pp-frame-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  gap: var(--sp-8);
+  padding: var(--sp-16);
+  text-align: center;
+  background:
+    radial-gradient(var(--ink) 0.9px, transparent 1.3px) 0 0 / 4px 4px,
+    var(--sand);
+  image-rendering: pixelated;
+}
+
+.pp-frame-empty p {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+/* The frame's status chips (UX-11): signal present/absent, active picture,
+   fps, frame age — the "is the picture there" half, visible at a glance. */
+.pp-frame-status {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  flex-wrap: wrap;
+  margin: var(--sp-8) 0 0;
+}
+
+.pp-frame-completed {
+  display: grid;
+  gap: var(--sp-4);
+  margin: var(--sp-8) 0 0;
+}
+
+/* The facts the review moved from the caption view: the notes beneath the
+   stats table (end reason, the stream's failure note) keep the table's
+   rhythm instead of floating free. */
+.pp-terminal-note {
+  margin: var(--sp-8) 0 0;
+}
+
+/* The event stream: mono time · kind, detail; the newest row is --peach. */
+.pp-events {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  table-layout: fixed;
+}
+
+.pp-events th,
+.pp-events td {
+  text-align: left;
+  vertical-align: top;
+  padding: var(--sp-6) var(--sp-8);
+  border-bottom: 1px dashed var(--hair);
+  overflow-wrap: anywhere;
+}
+
+.pp-events th {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.pp-events td {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.pp-events tr.is-latest td {
+  background: var(--peach);
+  color: var(--ink);
+}
+
+.pp-events-name {
+  word-break: break-all;
+}
+
+/* The match candidates: the row names the line (the review's fix for the
+   raw-ULID rows) — the text snippet ellipsises in the first cell, the
+   ink + coral checker bar carries the probability, the value ends the
+   row. The message id lives in the row's title/tooltip and the bar's
+   accessible label, never as the row's visible lead. */
+.pp-candidates {
+  display: grid;
+  gap: var(--sp-8);
+}
+
+.pp-candidate {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(60px, 110px) auto;
+  gap: var(--sp-8);
+  align-items: center;
+}
+
+.pp-candidate-snippet {
+  font-family: var(--font-display);
+  font-size: 0.9rem;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.pp-candidate-prob {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  min-width: 4ch;
+  text-align: right;
+}
+
+/* The operator's correction buttons and their outcome. */
+.pp-corrections {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  flex-wrap: wrap;
+}
+
+.pp-correction-result {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* ── 2g kid / tablet mode ──────────────────────────────────────────────────
+ * Three huge buttons and nothing else: − / pause / +, the 260px circular
+ * portrait, the name at 48px and the line at 24px. */
+
+.pp-kid {
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-22);
+  padding-top: var(--sp-32);
+  text-align: center;
+}
+
+.pp-kid-portrait {
+  width: 260px;
+  height: 260px;
+  max-width: 70vw;
+  border-radius: 50%;
+  border: 1.5px solid var(--ink);
+  overflow: hidden;
+}
+
+.pp-kid-portrait .dither-cover {
+  width: 100%;
+  height: 100%;
+}
+
+.pp-kid-name {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 48px;
+  line-height: 1.1;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.pp-kid-line {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 24px;
+  line-height: 1.3;
+  margin: 0;
+  max-width: 34ch;
+  overflow-wrap: anywhere;
+}
+
+.pp-kid-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-22);
+}
+
+.pp-kid-btn {
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  border: 1.5px solid var(--ink);
+  background: var(--card);
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 40px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+
+.pp-kid-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.pp-kid-btn--pause {
+  background: var(--peach);
+}
+
+/* ── responsive: tablet (1024) and phone (390) widths ──────────────────────
+ * Play is viewed beside the TV (ADR-0093 (c)): the operator grid folds to
+ * one column, the now-speaking grid stacks the portrait above the line, the
+ * line steps down so 52px text still wraps, and the bottom bar stacks its
+ * slices one control per row. */
+
+@media (max-width: 1080px) {
+  .pp-operator {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Tablet width (1024): the bottom bar keeps one horizontal row — the
+   volume bar and the delay field shed a little and the gaps tighten so the
+   whole strip fits the page's content width. */
+@media (max-width: 1080px) and (min-width: 640px) {
+  .pp-controls-row {
+    gap: var(--sp-8);
+  }
+
+  .pp-volume {
+    width: 104px;
+  }
+
+  .pp-delay input[type="number"] {
+    width: 5ch;
+  }
+}
+
+@media (max-width: 639px) {
+  .pp-now {
+    grid-template-columns: 1fr;
+    justify-items: center;
+  }
+
+  .pp-now-main {
+    width: 100%;
+  }
+
+  .pp-line,
+  .pp-line-empty {
+    font-size: 32px;
+  }
+
+  /* The bar's slices stack: one control per row, the bar stays the page's
+     bottom strip (the review's "stack it neatly at 390"). */
+  .pp-controls {
+    padding: var(--sp-12);
+    gap: var(--sp-8);
+  }
+
+  .pp-controls-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--sp-8);
+  }
+
+  .pp-controls-row > .kit-pill {
+    justify-content: center;
+    width: 100%;
+  }
+
+  .pp-slice {
+    width: 100%;
+  }
+
+  .pp-volume {
+    width: auto;
+    flex: 1;
+  }
+
+  .kit-segmented {
+    width: 100%;
+  }
+
+  .kit-segmented [role="tab"] {
+    flex: 1;
+  }
+
+  .pp-candidate {
+    grid-template-columns: minmax(0, 1fr) minmax(48px, 80px) auto;
+  }
+
+  .pp-kid-name {
+    font-size: 34px;
+  }
+}

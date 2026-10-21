@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { trackConsoleErrors } from "./support/console";
+import { setPlayView } from "./support/play";
 
 /**
  * The live play path through the real UI (task browser-live-play, AGENTS.md
@@ -119,6 +120,9 @@ test("live play: dolphin frames through the real UI to speech and the inspector 
   await shot("03-play-committed");
 
   // ── 5. the audio indicator: speech started, then ended ─────────────────
+  // The audio counters are the audio card's (the operator view since the
+  // 2026-10-20 review), so the reads go through "show workings".
+  await setPlayView(page, "operator");
   await expect
     .poll(async () => await counter("play-speech-started"), {
       timeout: 15 * 60 * 1000,

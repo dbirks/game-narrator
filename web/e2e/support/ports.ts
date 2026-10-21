@@ -93,7 +93,8 @@ async function bandFree(base: number): Promise<boolean> {
     base + 37,
     base + 38,
     base + 39,
-  ); // the dev port and the redesign/library/ksearch/agent-dock/setup-board-model/setup-board/traces/fake-assistant/theme/theme-notcfg review ports
+    base + 40,
+  ); // the dev port and the redesign/library/ksearch/agent-dock/setup-board-model/setup-board/traces/fake-assistant/theme/theme-notcfg/play-pc review ports
   return (await Promise.all(ports.map(isPortFree))).every(Boolean);
 }
 
@@ -398,4 +399,13 @@ export const ports = {
    *  not-configured-state assertion must hold whether or not the host has a
    *  running tailscaled. */
   themeNotCfg: base + 39,
+  /** the packaged binary the Plum & Peach Play page walk drives
+   *  (play-pc.spec.ts, docs/design/plum-peach 2e/2f/2g, ADR-0093): the replay
+   *  allowlist admits the repo's testdata, the speech roles point at the
+   *  scripted TTS instance and the capture seam stands in for the dongle, so
+   *  the now-speaking / operator / kid views all run against a live session.
+   *  Lives past the redesign port, the way the Vite dev port does. Same
+   *  "just past the band" placement as the review ports above, one step
+   *  further out so the review ports stay unique per project. */
+  playPc: base + 40,
 } as const;

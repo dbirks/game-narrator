@@ -525,6 +525,16 @@ textarea:focus-visible,
     padding: 4px var(--sp-16);
   }
 
+  /* The live string is the bar's only dynamic text. Give it a stable width
+     band so its updates (the status feed rewrites it in place) never change
+     how many rows the wrapped bar takes: a variable-height sticky bar would
+     jump the page under it and can swallow a pointer click aimed at the
+     chrome a row lower. */
+  .status-live {
+    flex: 0 1 34vw;
+    white-space: nowrap;
+  }
+
   .status-fade {
     top: auto;
     position: relative;
@@ -1112,6 +1122,16 @@ textarea:focus-visible,
   background: transparent;
   color: var(--muted);
   border-color: var(--hair);
+}
+
+/* The slow/fail status tag (design "2i": --coral = slow/fail). Ink text on
+   a coral-mixed fill: ink on solid coral holds only 3.6:1 (large-text
+   territory), but at the chip's 11px the tag needs the 4.5:1 of WCAG 1.4.3,
+   so the fill is the coral mixed toward the card and the ink does the work. */
+.kit-chip-bad {
+  background: color-mix(in srgb, var(--coral) 40%, var(--card));
+  color: var(--ink);
+  font-weight: 700;
 }
 
 /* Name tabs: mono 700 uppercase on ink, letter-spacing 0.1em. */

@@ -45,6 +45,7 @@ const agentDockUrl = `http://127.0.0.1:${ports.agentDock}`;
 const tracesUrl = `http://127.0.0.1:${ports.traces}`;
 const fakeAssistantUrl = `http://127.0.0.1:${ports.fakeAssistant}`;
 const playControlsUrl = `http://127.0.0.1:${ports.playControls}`;
+const playPcUrl = `http://127.0.0.1:${ports.playPc}`;
 const audioUrl = `http://127.0.0.1:${ports.audio}`;
 const setupBoardUrl = `http://127.0.0.1:${ports.setupBoard}`;
 const captureUrl = `http://127.0.0.1:${ports.capture}`;
@@ -113,7 +114,7 @@ export default defineConfig({
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
       testIgnore:
-        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|voices-qa\.spec\.ts|cast\.spec\.ts|m5-part1\.spec\.ts|m5-graph-regions\.spec\.ts|corrections-fixtures\.spec\.ts|live-play\.spec\.ts|play-controls\.spec\.ts|audio-output\.spec\.ts|bluetooth-output\.spec\.ts|capture-device\.spec\.ts|restore-walk\.spec\.ts|a11y\.spec\.ts|setup-wizard\.spec\.ts|redesign-shell\.spec\.ts|library\.spec\.ts|ksearch\.spec\.ts|agent-dock\.spec\.ts|setup-board\.spec\.ts|traces\.spec\.ts|health\.spec\.ts|settings-theme\.spec\.ts/,
+        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|voices-qa\.spec\.ts|cast\.spec\.ts|m5-part1\.spec\.ts|m5-graph-regions\.spec\.ts|corrections-fixtures\.spec\.ts|live-play\.spec\.ts|play-controls\.spec\.ts|audio-output\.spec\.ts|bluetooth-output\.spec\.ts|capture-device\.spec\.ts|restore-walk\.spec\.ts|a11y\.spec\.ts|setup-wizard\.spec\.ts|redesign-shell\.spec\.ts|library\.spec\.ts|ksearch\.spec\.ts|agent-dock\.spec\.ts|setup-board\.spec\.ts|traces\.spec\.ts|health\.spec\.ts|settings-theme\.spec\.ts|play-pc\.spec\.ts/,
     },
     {
       // The first-run wizard (G9, ADR-0087) on its own packaged-binary
@@ -364,6 +365,19 @@ export default defineConfig({
       name: "developer-actions",
       testMatch: /developer-actions\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: developerActionsUrl },
+    },
+    {
+      // The Plum & Peach Play page (docs/design/plum-peach 2e/2f/2g, ADR-0093):
+      // the packaged binary with the repo's testdata on the replay allowlist
+      // (a replay session with commits), the scripted TTS roles (the audio
+      // pipeline wired; the walk's roster has no approved narrator, so the
+      // utterances end skipped, as m5-part1 walks) and the labelled-synthetic
+      // capture seam (GAME_NARRATOR_CAPTURE_FAKE) standing in for the HDMI
+      // dongle — the operator frame's signal/preview half (ADR-0110's
+      // one-shot path) runs the production consumer without hardware.
+      name: "play-pc",
+      testMatch: /play-pc\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: playPcUrl },
     },
     {
       // The backup → mutate → restore walk (ADR-0090) and the update
@@ -1007,6 +1021,29 @@ export default defineConfig({
       cwd: "..",
       url: `${healthUrl}/api/v1/health/live`,
       env: { GAME_NARRATOR_CAPTURE_FAKE: "1" },
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    {
+      // The Plum & Peach Play page server: the same wiring as the play
+      // server (testdata replay + scripted TTS roles) plus the capture seam
+      // standing in for the dongle (ADR-0078), so the operator view's frame
+      // and signal state run without the hardware (ADR-0110's one-shot path
+      // answers the replay session from the seam's testsrc2 pipe).
+      command: `node web/e2e/serve.mjs play-pc 127.0.0.1:${ports.playPc} ${embeddedBinary} serve`,
+      cwd: "..",
+      url: `${playPcUrl}/api/v1/health/live`,
+      env: {
+        GAME_NARRATOR_REPLAY_ROOTS: replayRoots,
+        GAME_NARRATOR_GATEWAY_URL: `http://127.0.0.1:${ports.fakeTTS}/v1`,
+        GAME_NARRATOR_GATEWAY_TOKEN: "fake-e2e-token",
+        GAME_NARRATOR_ROLE_VOICE_DESIGN_MODEL: "fake-voicedesign",
+        GAME_NARRATOR_ROLE_VOICE_CLONE_MODEL: "fake-base",
+        GAME_NARRATOR_TTS_BASE_DIRECT_URL: `http://127.0.0.1:${ports.fakeTTS}/v1`,
+        GAME_NARRATOR_CAPTURE_FAKE: "1",
+      },
       reuseExistingServer: false,
       timeout: 60_000,
       stdout: "ignore",

@@ -26,12 +26,14 @@ export type CaptureChosen = components["schemas"]["CaptureChosen"];
 export type CaptureSelection = components["schemas"]["CaptureSelection"];
 export type CaptureSelectionRequest = components["schemas"]["CaptureSelectionRequest"];
 export type CaptureBox = components["schemas"]["CaptureBox"];
+export type CaptureSignal = components["schemas"]["CaptureSignal"];
 export type CaptureProbeRequest = components["schemas"]["CaptureProbeRequest"];
 export type CaptureProbe = components["schemas"]["CaptureProbe"];
 
 const devicesPath = "/api/v1/capture/devices" as const;
 const devicePath = "/api/v1/capture/devices/{id}" as const;
 const previewPath = "/api/v1/capture/preview" as const;
+const signalPath = "/api/v1/capture/signal" as const;
 const probePath = "/api/v1/capture/probe" as const;
 
 /** The enumerated capture devices, the current selection and the synthetic flag. */
@@ -58,6 +60,19 @@ export function selectCaptureDevice(
 ): Promise<CaptureSelection> {
   const body: CaptureSelectionRequest = mode ? { mode } : {};
   return api.put(devicePath, { params: { id }, body, signal }) as Promise<CaptureSelection>;
+}
+
+/**
+ * The HDMI signal state (ADR-0110 §1, UX-11): the JSON sibling of the
+ * preview. A running v4l2 session answers from the session's live state
+ * (measured fps, the active-picture window, the last dialogue crop, the
+ * newest frame's age); without one, a one-shot frame grab answers through
+ * the throwaway path. When neither is possible the route is the 409
+ * `capture-signal-unavailable` the page renders as its honest state. It
+ * shares the preview's global throttle (429 + Retry-After on the overrun).
+ */
+export function fetchCaptureSignal(signal?: AbortSignal): Promise<CaptureSignal> {
+  return api.get(signalPath, { signal }) as Promise<CaptureSignal>;
 }
 
 /**

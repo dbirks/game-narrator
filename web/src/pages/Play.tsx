@@ -1,446 +1,82 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+/**
+ * `src/pages/Play.tsx` — the operator's Play page (ADR-0093 / IA): the
+ * session-start form, then one session with three views over it —
+ * now-speaking (2e, the default), the operator "show workings" view (2f,
+ * frame + event stream + candidates + corrections) and the kid/tablet mode
+ * (2g, `?mode=kid`: −/pause/+ and nothing else).
+ *
+ * ADR-0093's single-session rework lives here, not in a new page: the
+ * session's state, its event fold (playReducer for the lines, playEvents
+ * for the stream) and its controls (useSessionControls) are owned once,
+ * so toggling the "show workings" view swaps what is rendered without
+ * restarting or duplicating speech (plan.md Phase 1 item 6, acceptance).
+ * The event stream is the session's SSE with the hub's Last-Event-ID replay
+ * (docs/spec/09: the session survives a refresh), and the old page's
+ * keyboard contract survives: p = pause, s = signs, i = items, m = mode.
+ */
+import { useEffect, useMemo, useReducer, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router";
 
-import {
-  api,
-  apiStatus,
-  catalogApi,
-  type Schemas,
-  type Edition,
-  type Game,
-  type Profile,
-  type Character,
-} from "../api/client";
+import { api, type Character } from "../api/client";
 import { fetchReadiness } from "../api/system";
-import { fetchCaptureDevices } from "../api/capture";
 import { fetchAllMessages } from "../api/profiles";
-import { clipsApi } from "../api/clips";
-import {
-  openEventStream,
-  sessionsApi,
-  type Session,
-  type SessionAudioSettings,
-  type SessionSettings,
-  type UtteranceState,
-} from "../api/sessions";
+import { openEventStream, sessionsApi } from "../api/sessions";
 import { useAuth } from "../auth/auth-context";
-import { EmptyState, ErrorState, Loading } from "../components/states";
-import {
-  currentLine,
-  displaySpeaker,
-  initialPlayState,
-  reducePlayEvent,
-  type CommittedLine,
-} from "../lib/playReducer";
-
-/**
- * `/play` — docs/spec/09: the active session view with its live state, the
- * committed lines, the session controls and the live audio controls (mute,
- * volume, speech delay) over `POST /api/v1/sessions/{id}/audio` (docs/spec/07,
- * ADR-0039). The session id lives in the URL (`?session=`), so a refresh
- * reopens the same watch: the snapshot refetches and the event stream resumes
- * from the session's own `event_cursor`, which is the docs/spec/09 "session
- * survives a refresh" contract with the hub's Last-Event-ID replay doing the
- * history half.
- */
-
-const DEFAULT_REPLAY_DIR = "testdata/synthetic/replay/dialogue-advance-001";
-
-type SessionMode = "conservative" | "predictive";
-type SourceKind = "replay" | "test_pattern" | "dolphin" | "v4l2";
+import { ErrorState, Loading } from "../components/states";
+import { PillButton } from "../components/kit/PillButton";
+import { currentLine, displaySpeaker, initialPlayState, reducePlayEvent } from "../lib/playReducer";
+import { initialPlayEventStream, reducePlayEventStream } from "../lib/playEvents";
+import { KidMode } from "./play/KidMode";
+import { NowSpeaking } from "./play/NowSpeaking";
+import { OperatorView } from "./play/OperatorView";
+import { ControlBar } from "./play/ControlBar";
+import { SetupForm } from "./play/SetupForm";
+import { useSessionControls } from "./play/useSessionControls";
 
 export function PlayPage() {
   const [params] = useSearchParams();
   const sessionId = params.get("session");
-  return (
-    <main>
-      <h1 data-testid="play-title">Play</h1>
-      {sessionId ? <LiveSession sessionId={sessionId} /> : <SetupForm />}
-    </main>
-  );
+  const kid = params.get("mode") === "kid";
+  if (!sessionId) return <SetupForm />;
+  return <LiveSession sessionId={sessionId} kid={kid} />;
 }
 
-/** One runnable profile: a game, its edition, the revision it published. */
-interface RunOption {
-  game: Game;
-  edition: Edition;
-  profile: Profile;
-}
-
-function runLabel(option: RunOption): string {
-  const { game, edition, profile } = option;
-  return `${game.title} · ${edition.region}/${edition.language} · r${profile.revision_num}`;
-}
-
-/** Every published revision the appliance could run, for the start form. */
-async function fetchRunOptions(signal?: AbortSignal): Promise<RunOption[]> {
-  const gamesPage = (await catalogApi.listGames({ limit: 200 }, signal)) as unknown as {
-    games: Game[];
-  };
-  const options: RunOption[] = [];
-  for (const game of gamesPage.games ?? []) {
-    const editionsPage = (await catalogApi.listEditions(game.id, signal)) as unknown as {
-      editions: Edition[];
-    };
-    for (const edition of editionsPage.editions ?? []) {
-      let profile: Profile | null = null;
-      try {
-        profile = (await api.get("/api/v1/editions/{id}/published", {
-          params: { id: edition.id },
-          signal,
-        })) as unknown as Profile;
-      } catch (error) {
-        // Only a 404 means "nothing published for this edition" — the normal
-        // shelf state the empty option list renders. Any other failure
-        // (transient 5xx, an aborted in-flight read, a network drop) must
-        // not be swallowed into a false "Nothing is published": rethrow it so
-        // the query errors and the page offers the retryable error state.
-        if (apiStatus(error) !== 404) throw error;
-        continue;
-      }
-      if (profile) options.push({ game, edition, profile });
-    }
-  }
-  return options;
-}
-
-function SetupForm() {
-  const { atLeast } = useAuth();
-  const [, setParams] = useSearchParams();
-  const runs = useQuery({
-    queryKey: ["play", "run-options"],
-    queryFn: ({ signal }) => fetchRunOptions(signal),
-  });
-  const [profileId, setProfileId] = useState("");
-  const [sourceKind, setSourceKind] = useState<SourceKind>("replay");
-  // Developer trace stores the sampled frames and ROI crops a developer can
-  // pin in the inspector (docs/spec/13). The server requires the developer
-  // role for it (the route is operator), so the control is developer-only.
-  const [devTrace, setDevTrace] = useState(false);
-  const [replayDir, setReplayDir] = useState(DEFAULT_REPLAY_DIR);
-  // A managed-store clip id (ADR-0073) outranks the directory: the store is a
-  // replay root by default, so an uploaded clip needs no allowlist entry. The
-  // list is developer-scoped, so the picker only exists for developer and up.
-  const [replayClip, setReplayClip] = useState("");
-  // The capture device a kind v4l2 session runs on (ADR-0078): the stable id
-  // from the device list — never a path; empty means the persisted selection
-  // (then the first usable device), which the server answers in the session
-  // snapshot's capture_device.
-  const [captureDevice, setCaptureDevice] = useState("");
-  const [mode, setMode] = useState<SessionMode>("conservative");
-  const [startError, setStartError] = useState<unknown>(null);
-
-  const operator = atLeast("operator");
-  const developer = atLeast("developer");
-
-  // The selected revision's script, listed in the setup panel: after a publish,
-  // "the play page lists the messages" is visible state — the count and the
-  // first lines of the very revision a session would run — not an HTTP 200
-  // (ADR-0066). Only the head is rendered: a 10k-line profile is a count, not a
-  // DOM.
-  const selectedMessages = useQuery({
-    queryKey: ["play", "setup-messages", profileId],
-    queryFn: ({ signal }) => fetchAllMessages(profileId, signal),
-    enabled: Boolean(profileId),
-  });
-
-  // The managed clip store (ADR-0073), listed for the source picker. The
-  // route is developer-scoped, so a lower role never asks (the picker is
-  // hidden) and a list failure is shown, not swallowed into a silent
-  // directory-only form.
-  const clipList = useQuery({
-    queryKey: ["play", "replay-clips"],
-    queryFn: ({ signal }) => clipsApi.list(signal),
-    enabled: sourceKind === "replay" && developer,
-  });
-
-  // The capture device list (ADR-0078), listed for the source picker while a
-  // capture session is being set up: the picker offers the ready devices by
-  // stable id, and the answer's selected_id preselects the persisted choice.
-  const captureList = useQuery({
-    queryKey: ["play", "capture-devices"],
-    queryFn: ({ signal }) => fetchCaptureDevices(signal),
-    enabled: sourceKind === "v4l2" && operator,
-    retry: false,
-  });
-  useEffect(() => {
-    if (!captureList.data || captureDevice) return;
-    const ready = captureList.data.devices.filter((device) => device.state === "ready");
-    setCaptureDevice(captureList.data.selected_id ?? ready[0]?.id ?? "");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [captureList.data]);
-  const captureReady = (captureList.data?.devices ?? []).filter(
-    (device) => device.state === "ready",
-  );
-  // A v4l2 session without a ready device cannot start: say so instead of
-  // letting the server's 503 be the only answer.
-  const captureBlocked =
-    sourceKind === "v4l2" &&
-    (captureList.isLoading || captureList.isError || captureReady.length === 0);
-
-  const start = useMutation({
-    mutationFn: () =>
-      sessionsApi.start({
-        profile_id: profileId,
-        frame_source:
-          sourceKind === "replay"
-            ? replayClip !== ""
-              ? { kind: "replay", clip_id: replayClip }
-              : { kind: "replay", dir: replayDir }
-            : sourceKind === "dolphin"
-              ? { kind: "dolphin" }
-              : sourceKind === "v4l2"
-                ? { kind: "v4l2", ...(captureDevice !== "" ? { dir: captureDevice } : {}) }
-                : { kind: "test_pattern" },
-        mode,
-        dev_trace: devTrace,
-      }),
-    onSuccess: (session) => setParams({ session: session.session_id }),
-    onError: (error) => setStartError(error),
-  });
-
-  return (
-    <section className="panel" data-testid="play-setup">
-      <p className="muted">
-        Pick the published revision to run and where the frames come from. One session at a time is
-        a runtime invariant, not a UI limit.
-      </p>
-      {runs.isPending ? <Loading label="Finding published profiles…" /> : null}
-      {runs.isError ? (
-        <ErrorState
-          error={runs.error}
-          action="Cannot list published profiles"
-          onRetry={() => void runs.refetch()}
-        />
-      ) : null}
-      {runs.data && runs.data.length === 0 ? (
-        <EmptyState title="Nothing is published">
-          <p>
-            A session runs an edition&apos;s published revision. Curate a profile and publish it
-            from <Link to="/library">the library</Link> first.
-          </p>
-        </EmptyState>
-      ) : null}
-      {runs.data && runs.data.length > 0 ? (
-        <form
-          className="stack"
-          onSubmit={(event) => {
-            event.preventDefault();
-            start.mutate();
-          }}
-          data-testid="play-start-form"
-        >
-          <label>
-            Published profile
-            <select
-              value={profileId}
-              onChange={(event) => setProfileId(event.target.value)}
-              data-testid="play-profile"
-            >
-              <option value="">choose a published revision…</option>
-              {runs.data.map((option) => (
-                <option key={option.profile.id} value={option.profile.id}>
-                  {runLabel(option)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Frame source
-            <select
-              value={sourceKind}
-              onChange={(event) => setSourceKind(event.target.value as SourceKind)}
-              data-testid="play-source-kind"
-            >
-              <option value="replay">replay clip</option>
-              <option value="test_pattern">test pattern</option>
-              <option value="dolphin">dolphin emulator (dev host)</option>
-              <option value="v4l2">capture device (HDMI dongle)</option>
-            </select>
-          </label>
-          {sourceKind === "v4l2" ? (
-            <div data-testid="play-capture-picker">
-              {captureList.isError ? (
-                <p className="error" role="alert" data-testid="play-capture-error">
-                  The capture device list could not be read:
-                  {captureList.error instanceof Error ? captureList.error.message : ""} — the device
-                  is configured on the Settings page (Capture section).
-                </p>
-              ) : captureReady.length === 0 ? (
-                <p className="muted" data-testid="play-capture-none">
-                  No ready capture device is attached: connect the UVC HDMI dongle (the Settings
-                  page's Capture section shows its state and runs the capture test).
-                </p>
-              ) : (
-                <label>
-                  Capture device
-                  <select
-                    value={captureDevice}
-                    onChange={(event) => setCaptureDevice(event.target.value)}
-                    data-testid="play-capture-device"
-                  >
-                    {captureReady.map((device) => (
-                      <option key={device.id} value={device.id}>
-                        {device.name} ({device.id})
-                        {captureList.data?.selected_id === device.id ? " — selected" : ""}
-                      </option>
-                    ))}
-                  </select>
-                  <span className="muted" data-testid="play-capture-note">
-                    {captureList.data?.synthetic
-                      ? "Synthetic device list (test seam): this is not the hardware of this machine. "
-                      : ""}
-                    Empty selection runs the persisted selection, then the first ready device; the
-                    session snapshot names the device actually used.
-                  </span>
-                </label>
-              )}
-            </div>
-          ) : null}
-          {sourceKind === "replay" ? (
-            <>
-              {developer ? (
-                <label>
-                  Clip from the managed store
-                  <select
-                    value={replayClip}
-                    onChange={(event) => setReplayClip(event.target.value)}
-                    data-testid="play-replay-clip"
-                  >
-                    <option value="">(replay directory instead)</option>
-                    {clipList.data?.clips.map((clip) => (
-                      <option key={clip.id} value={clip.id} disabled={Boolean(clip.missing)}>
-                        {clip.id} · {clip.missing ? "missing" : `${clip.frames} frames`}
-                      </option>
-                    ))}
-                  </select>
-                  <span className="muted">
-                    {clipList.isPending
-                      ? "Listing clips…"
-                      : clipList.isError
-                        ? "The clip store could not be listed; a replay directory still works."
-                        : (clipList.data?.clips.length ?? 0) === 0
-                          ? "No clips installed yet: upload one from the Replay clips page."
-                          : "A selected clip outranks the directory below (the store is a replay root)."}
-                  </span>
-                </label>
-              ) : null}
-              <label>
-                Replay directory
-                <input
-                  type="text"
-                  value={replayDir}
-                  disabled={replayClip !== ""}
-                  onChange={(event) => setReplayDir(event.target.value)}
-                  data-testid="play-replay-dir"
-                />
-                <span className="muted">
-                  Must sit under the configured replay allowlist; the dev checkout admits its
-                  testdata. Ignored while a managed-store clip is selected.
-                </span>
-              </label>
-            </>
-          ) : null}
-          <label>
-            Mode
-            <select
-              value={mode}
-              onChange={(event) => setMode(event.target.value as SessionMode)}
-              data-testid="play-mode"
-            >
-              <option value="conservative">conservative</option>
-              <option value="predictive">predictive</option>
-            </select>
-          </label>
-          {developer ? (
-            <label className="row">
-              <input
-                type="checkbox"
-                data-testid="play-dev-trace"
-                checked={devTrace}
-                onChange={(event) => setDevTrace(event.target.checked)}
-              />
-              <span>Developer trace (store sampled frames and ROI crops)</span>
-            </label>
-          ) : null}
-          {startError ? <ErrorState error={startError} action="Cannot start the session" /> : null}
-          <p>
-            <button
-              type="submit"
-              disabled={!operator || start.isPending || !profileId || captureBlocked}
-              data-testid="play-start"
-            >
-              {start.isPending ? "Starting…" : "Start session"}
-            </button>
-            {!operator ? (
-              <span className="muted" data-testid="play-role-note">
-                Starting or stopping a session needs the operator role (the server enforces it).
-              </span>
-            ) : null}
-          </p>
-          {profileId ? (
-            <div data-testid="play-profile-messages">
-              {selectedMessages.isLoading ? <p className="muted">Loading the script…</p> : null}
-              {selectedMessages.data ? (
-                <>
-                  <p>
-                    <strong data-testid="play-message-count">{selectedMessages.data.length}</strong>{" "}
-                    messages in this revision
-                  </p>
-                  <ol className="recent-lines" data-testid="play-message-list">
-                    {selectedMessages.data.slice(0, 8).map((message) => (
-                      <li
-                        key={message.id}
-                        data-testid={`play-message-${message.source_message_id}`}
-                      >
-                        {/* original_text: the human-readable line the API lists
-                            ("exactly what the source said"). normalized_text is the
-                            store's matching key (textnorm lowercasing), not a display
-                            field — the list shows the line a user would recognise. */}
-                        {message.original_text}
-                      </li>
-                    ))}
-                  </ol>
-                  {selectedMessages.data.length > 8 ? (
-                    <p className="muted">
-                      … and {selectedMessages.data.length - 8} more; the dialogue page lists all of
-                      them.
-                    </p>
-                  ) : null}
-                </>
-              ) : null}
-            </div>
-          ) : null}
-        </form>
-      ) : null}
-    </section>
-  );
-}
-
-function LiveSession({ sessionId }: { sessionId: string }) {
+function LiveSession({ sessionId, kid }: { sessionId: string; kid: boolean }) {
   const { atLeast } = useAuth();
   const operator = atLeast("operator");
   const queryClient = useQueryClient();
+
   const sessionQuery = useQuery({
     queryKey: ["session", sessionId],
     queryFn: ({ signal }) => sessionsApi.get(sessionId, signal),
+    // Starting sessions move fast; poll the snapshot while one is in flight.
     refetchInterval: (query) => {
       const state = query.state.data?.state;
       return state === "starting" || state === "running" ? 1000 : false;
     },
+    refetchOnWindowFocus: true,
   });
   const session = sessionQuery.data;
   const terminal = session?.state === "stopped" || session?.state === "failed";
 
-  const [events, dispatch] = useReducer(reducePlayEvent, undefined, initialPlayState);
+  // Two folds over one event feed: the lines (the now-speaking view) and
+  // the recent-event stream (the operator view). One SSE subscription feeds
+  // both; the view swap therefore cannot duplicate speech.
+  const [lines, dispatch] = useReducer(reducePlayEvent, undefined, initialPlayState);
+  const [stream, streamDispatch] = useReducer(
+    reducePlayEventStream,
+    undefined,
+    initialPlayEventStream,
+  );
   const [streamFailed, setStreamFailed] = useState(false);
+  const [workings, setWorkings] = useState(false);
 
   // The event stream resumes from the session's own cursor, so a refresh sees
-  // its own history — including a session that already settled: the hub replays
-  // the run's events from the cursor, and a finished session simply stops
-  // producing new ones. (A terminal state must not gate the open, or the
-  // refresh case of an ended run would show no committed lines at all.)
+  // its own history — including a session that already settled: the hub
+  // replays the run's events from the cursor, and a finished session simply
+  // stops producing new ones. (A terminal state must not gate the open, or
+  // the refresh case of an ended run would show no committed lines at all.)
   const cursor = session?.event_cursor;
   useEffect(() => {
     if (cursor === undefined) return;
@@ -448,7 +84,19 @@ function LiveSession({ sessionId }: { sessionId: string }) {
     const close = openEventStream(
       `/api/v1/events?session_id=${encodeURIComponent(sessionId)}`,
       {
-        onEvent: (envelope) => dispatch(envelope),
+        onEvent: (envelope) => {
+          dispatch(envelope);
+          streamDispatch(envelope);
+          // A session-level event (paused / resumed / stopped) refreshes the
+          // session snapshot straight away: the header's state chip and the
+          // view's terminal block read the snapshot's state, and the 1s poll
+          // alone can lag the run's tail. The high-rate frame and commit
+          // events are not invalidated for — they change the line folds, not
+          // the snapshot — so the bar does not re-render on every event.
+          if (envelope.name.startsWith("session.")) {
+            void queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
+          }
+        },
         onGiveUp: () => setStreamFailed(true),
       },
       controller.signal,
@@ -461,20 +109,20 @@ function LiveSession({ sessionId }: { sessionId: string }) {
   }, [sessionId, cursor]);
 
   // A resync notice means the replay could not cover our cursor: the snapshot
-  // is the reconciliation truth, so refetch it.
+  // is the reconciliation truth, so refetch it (a fresh event_cursor restarts
+  // the stream at the hub's head).
   useEffect(() => {
-    if (!events.resyncRequired) return;
+    if (!lines.resyncRequired) return;
     void sessionQuery.refetch();
-  }, [events.resyncRequired, sessionQuery]);
+  }, [lines.resyncRequired, sessionQuery]);
 
-  // The applied audio snapshot: the /audio 200 body is the fresh session
-  // snapshot, and installing it keeps the polling query from racing the
-  // control that just landed (docs/spec/09: the snapshot is the truth).
-  const setSessionSnapshot = (id: string, next: Session) => {
-    queryClient.setQueryData(["session", id], next);
+  // The applied snapshot re-sync: the 200 bodies are the fresh session, and
+  // installing them keeps the polling query from racing the control.
+  const onApplied = (snapshot: NonNullable<typeof session>) => {
+    queryClient.setQueryData(["session", sessionId], snapshot);
   };
-
-  // The committed line's assigned speaker: message → speaker_id → character name.
+  // The revision's speakers: committed lines address the profile's message
+  // ids, and the speaker chip shows the roster's name, not the id.
   const profileId = session?.profile_id;
   const messagesQuery = useQuery({
     queryKey: ["play", "messages", profileId],
@@ -505,565 +153,145 @@ function LiveSession({ sessionId }: { sessionId: string }) {
     refetchInterval: 10_000,
   });
 
-  const stop = useMutation({
-    mutationFn: () => sessionsApi.stop(sessionId),
-    onSuccess: () => void sessionQuery.refetch(),
+  const line = currentLine(lines);
+  const speakerLabel = line ? displaySpeaker(line, messageSpeaker) : "…";
+  // The operator view's candidate rows name the line, not its store ULID
+  // (the 2026-10-20 review): the snippet map is the profile's own messages
+  // (the same read the speaker chips use), keyed by the store's message id.
+  const messageText = useMemo(() => {
+    const byId = new Map<string, string>();
+    for (const message of messagesQuery.data ?? []) {
+      byId.set(message.id, message.speech_text || message.normalized_text || message.original_text);
+    }
+    return byId;
+  }, [messagesQuery.data]);
+  // The correction labels the line as it is on screen — a curation act the
+  // API owns (POST /corrections is session-agnostic: the label targets the
+  // line's message row, and UX-05 reaches labels "from Play or a trace",
+  // settled runs included). The views gate the button on the line itself
+  // (nothing to label, nothing offered); the API answers otherwise.
+  const canCorrect = operator;
+
+  const controls = useSessionControls({
+    sessionId,
+    session,
+    line,
+    speakerLabel,
+    profileId: profileId as string | undefined,
+    onApplied,
   });
 
-  if (sessionQuery.isPending) return <Loading label="Opening the session…" />;
-  if (sessionQuery.isError) {
-    return (
-      <ErrorState
-        error={sessionQuery.error}
-        action="Cannot open this session"
-        onRetry={() => void sessionQuery.refetch()}
-      />
-    );
-  }
-  if (!session) return <Loading label="Opening the session…" />;
+  // Keyboard: p = pause, s = signs, i = items, m = decision mode. Guarded
+  // against typing in a control and against the terminal (the old contract).
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (target instanceof HTMLElement && ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName))
+        return;
+      if (terminal) return;
+      if (event.key === "p") controls.togglePause();
+      else if (event.key === "s") controls.toggleClass("sign");
+      else if (event.key === "i") controls.toggleClass("item");
+      else if (event.key === "m")
+        controls.setMode(controls.mode === "predictive" ? "conservative" : "predictive");
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [controls, terminal]);
 
-  const line = currentLine(events);
-  const stats = session.stats;
+  if (sessionQuery.isPending || !session)
+    return (
+      <main data-testid="play-page">
+        <Loading label="Opening the session…" />
+      </main>
+    );
+
   return (
-    <section className="panel" data-testid="play-live">
-      <header className="play-head">
+    <main data-testid="play-page">
+      {sessionQuery.isError ? (
+        <ErrorState
+          error={sessionQuery.error}
+          action="Cannot open this session"
+          onRetry={() => void sessionQuery.refetch()}
+        />
+      ) : null}
+
+      <header className="pp-session-head" data-testid="play-session-head">
         <span className={`badge badge-${session.state}`} data-testid="play-state">
           {session.state}
         </span>
-        <span className="muted">
+        <span className="muted pp-head-meta">
           session <code data-testid="play-session-id">{session.session_id}</code>
         </span>
-        {terminal ? (
-          <span className="muted">
-            {session.reason ? `reason: ${session.reason}` : null}
-            {session.ended_at ? ` · ended ${session.ended_at}` : null}
-          </span>
-        ) : (
-          <button
-            type="button"
-            onClick={() => stop.mutate()}
-            disabled={!operator || stop.isPending}
-            data-testid="play-stop"
-          >
-            {stop.isPending ? "Stopping…" : "Stop"}
-          </button>
-        )}
-        <Link to="/play" className="muted">
-          Close this watch
-        </Link>
+        {/* The view toggle and the watch's exit sit as one spaced action
+            group (the review's fix for the run-together links): the toggle
+            is a pill, the exit stays a quiet link, and the group's gap and
+            right alignment keep them apart at every width. */}
+        <span className="pp-head-actions">
+          {!kid ? (
+            <PillButton
+              variant="outline"
+              aria-pressed={workings}
+              onClick={() => setWorkings((value) => !value)}
+              data-testid="play-show-workings"
+            >
+              {workings ? "hide workings" : "show workings"}
+            </PillButton>
+          ) : null}
+          <Link to="/play" className="muted" data-testid="play-close-watch">
+            Close this watch
+          </Link>
+        </span>
       </header>
 
-      <dl className="facts" data-testid="play-status">
-        <div>
-          <dt>Mode</dt>
-          <dd>{session.mode}</dd>
-        </div>
-        <div>
-          <dt>Frame source</dt>
-          <dd data-testid="play-source">
-            {session.frame_source}
-            {session.capture_device ? (
-              <span data-testid="play-capture-device-info">
-                {" "}
-                · device {session.capture_device}
-                {session.capture_mode
-                  ? ` (${session.capture_mode} — ${session.capture_mode_source})`
-                  : ""}
-              </span>
-            ) : null}
-            {session.source ? (
-              <span data-testid="play-source-state"> · {session.source.state}</span>
-            ) : null}
-            {session.source?.last_error ? (
-              <span className="error" data-testid="play-source-error" role="alert">
-                {" · "}
-                {session.source.last_error}
-              </span>
-            ) : null}
-          </dd>
-        </div>
-        <div>
-          <dt>Frames</dt>
-          <dd data-testid="play-frames">
-            {stats.frames_delivered} delivered · {stats.frames_processed} processed ·{" "}
-            {stats.frames_dropped} dropped
-          </dd>
-        </div>
-        <div>
-          <dt>OCR calls</dt>
-          <dd data-testid="play-ocr">{stats.ocr_calls}</dd>
-        </div>
-        <div>
-          <dt>Commits</dt>
-          <dd data-testid="play-commits">{stats.commits}</dd>
-        </div>
-        <div>
-          <dt>Appliance readiness</dt>
-          <dd data-testid="play-health">
-            {readiness.data ? `${readiness.data.status}` : "checking…"}
-            {readiness.data?.checks?.database
-              ? ` (database ${readiness.data.checks.database.status ?? "unknown"})`
-              : ""}
-            <span className="muted"> · model-role health is not exposed by this build</span>
-          </dd>
-        </div>
-      </dl>
-
-      <SessionControls
-        sessionId={sessionId}
-        session={session}
-        operator={operator}
-        terminal={terminal}
-        onApplied={(next) => setSessionSnapshot(sessionId, next)}
-      />
-      {streamFailed ? (
-        <p className="error" data-testid="play-stream-failed" role="alert">
-          The live event stream is down; the counters above keep polling and the committed lines
-          resume when the stream does.
-        </p>
-      ) : null}
-      {stop.isError ? <ErrorState error={stop.error} action="Cannot stop the session" /> : null}
-
-      <section className="play-line" aria-label="Current committed line" aria-live="polite">
-        <h2>Current line</h2>
-        {line ? (
-          <div data-testid="current-line">
-            <p data-testid="current-line-text">{line.text}</p>
-            <p className="muted">
-              speaker:{" "}
-              <span data-testid="current-line-speaker">{displaySpeaker(line, messageSpeaker)}</span>
-              {" · "}message: <code data-testid="current-line-message-id">{line.messageId}</code>
-              {line.speechEligible ? "" : " · not speech-eligible"}
-            </p>
-          </div>
+      <section className="panel pp-live" data-testid="play-live">
+        {kid ? (
+          <KidMode speakerLabel={speakerLabel} line={line} controls={controls} />
         ) : (
-          <p className="muted">Nothing committed yet.</p>
-        )}
-      </section>
-
-      <section className="play-lines" aria-label="Recently committed lines">
-        <h2>Recent lines</h2>
-        {events.lines.length === 0 ? (
-          <p className="muted">No commits yet.</p>
-        ) : (
-          <ol
-            data-testid="recent-lines"
-            className="recent-lines"
-            aria-live="polite"
-            aria-relevant="additions"
-          >
-            {events.lines.map((committed, index) => (
-              <LineRow
-                key={committed.occurrenceId}
-                line={committed}
-                index={index}
-                speaker={displaySpeaker(committed, messageSpeaker)}
+          <>
+            {workings ? (
+              <OperatorView
+                line={line}
+                speakerLabel={speakerLabel}
+                stream={stream}
+                controls={controls}
+                operator={operator}
+                terminal={terminal}
+                canCorrect={canCorrect}
+                session={session}
+                readiness={readiness.data}
+                streamFailed={streamFailed}
+                messageText={messageText}
               />
-            ))}
-          </ol>
+            ) : (
+              <NowSpeaking
+                line={line}
+                speakerLabel={speakerLabel}
+                lines={lines.lines}
+                speakerOf={(committed) => displaySpeaker(committed, messageSpeaker)}
+              />
+            )}
+            {/* The bottom control bar: one bar along the bottom of the page
+                over both views (the design's 2e/2f merge — pause · mute ·
+                volume · delay · careful/eager · wrong speaker? · stop),
+                so the operator calibrating in "show workings" reaches the
+                same session's controls as the caption view. */}
+            <ControlBar
+              controls={controls}
+              operator={operator}
+              terminal={terminal}
+              canCorrect={canCorrect}
+              hasLine={line !== null && line.messageId !== "unknown"}
+              speakerUnknown={line !== null && !line.speakerKnown && speakerLabel === "unknown"}
+              view={workings ? "operator" : "now"}
+            />
+          </>
         )}
       </section>
 
-      <AudioPanel
-        sessionId={sessionId}
-        audio={session.audio}
-        onApplied={(next) => setSessionSnapshot(sessionId, next)}
-      />
-    </section>
-  );
-}
-
-function LineRow({
-  line,
-  index,
-  speaker,
-}: {
-  line: CommittedLine;
-  index: number;
-  speaker: string;
-}) {
-  return (
-    <li className="recent-line" data-testid={`recent-line-${index}`}>
-      <span className="recent-line-text">{line.text}</span>
-      <span className="muted">
-        {speaker} · <code>{line.messageId}</code> · {line.occurredAt}
-      </span>
-    </li>
-  );
-}
-
-/**
- * The live audio controls (docs/spec/07, ADR-0039): mute, volume and the
- * speech delay over `POST /api/v1/sessions/{id}/audio`. The body is partial,
- * so each control posts only its own field; the 200 body is the fresh session
- * snapshot, which the parent installs as the query data — the snapshot is the
- * source of truth, and the local state re-syncs from it (a refresh or a
- * second operator may have moved the controls). A session the process cannot
- * give a voice pipeline renders the honest degraded note and inert controls:
- * the API answers 503 and a control that would do nothing is not a control.
- */
-function AudioPanel({
-  sessionId,
-  audio,
-  onApplied,
-}: {
-  sessionId: string;
-  audio: Session["audio"];
-  onApplied: (next: Session) => void;
-}) {
-  const { atLeast } = useAuth();
-  const operator = atLeast("operator");
-  const [muted, setMuted] = useState(audio?.muted ?? false);
-  const [volumePct, setVolumePct] = useState(Math.round((audio?.volume ?? 1) * 100));
-  const [delayMS, setDelayMS] = useState(audio?.speech_delay_ms ?? 0);
-
-  // The apply sequence: each POST is tagged with the sequence it was issued
-  // under, and only the most recently issued apply may install its snapshot.
-  // A late acknowledgement of an earlier apply is by definition older than
-  // the state the operator set in the meantime, and installing it would
-  // show the control a value the server no longer holds (read-your-writes).
-  const applySeq = useRef(0);
-
-  const apply = useMutation({
-    mutationFn: (body: SessionAudioSettings) => {
-      applySeq.current += 1;
-      const seq = applySeq.current;
-      return sessionsApi.audio(sessionId, body).then((next) => ({ seq, next }));
-    },
-    onSuccess: ({ seq, next }) => {
-      if (seq === applySeq.current) onApplied(next);
-    },
-  });
-
-  // Re-sync from the snapshot — except while an apply is in flight. The 1s
-  // snapshot poll can still be carrying a response the server built before
-  // the apply landed; during that window the local value is the honest one,
-  // and the apply's own fresh snapshot is what the controls re-sync from
-  // when it is acknowledged. A refresh or a second operator is a different
-  // story: their change is the server's truth, whatever the local state did.
-  useEffect(() => {
-    if (!audio || apply.isPending) return;
-    setMuted(audio.muted);
-    setVolumePct(Math.round(audio.volume * 100));
-    setDelayMS(audio.speech_delay_ms);
-  }, [audio, apply.isPending]);
-
-  // The sliders fire on every detent; the server sees one apply per rest,
-  // not one per pixel (the debounce is the operator's "short fade" half).
-  // Changed fields accumulate into the window's body, so a rest between two
-  // different controls posts both — the last field alone would swallow the
-  // earlier one.
-  const pending = useRef<SessionAudioSettings>({});
-  const commitTimer = useRef<number | undefined>(undefined);
-  const commit = (body: SessionAudioSettings) => {
-    Object.assign(pending.current, body);
-    window.clearTimeout(commitTimer.current);
-    commitTimer.current = window.setTimeout(() => {
-      const settled = pending.current;
-      pending.current = {};
-      apply.mutate(settled);
-    }, 250);
-  };
-  useEffect(() => () => window.clearTimeout(commitTimer.current), []);
-
-  // The controls stay operable while an apply is in flight — disabling the
-  // slider mid-gesture would drop the detents the operator just pressed. The
-  // in-flight window is shown instead ("Applying…") and the debounce carries
-  // the pressed value to the next apply, so nothing is lost while it runs.
-  const disabled = !operator || audio === undefined;
-  const current = audio?.current_utterance;
-
-  return (
-    <section className="play-audio" aria-label="Audio output">
-      <h2>Audio output</h2>
-      {audio === undefined ? (
-        <p className="muted" data-testid="play-audio-note">
-          This process has no voice workflow wired (the audio API answers 503 audio_unavailable):
-          the session runs silent, and the controls below stay inert until a voice is configured.
-        </p>
-      ) : (
-        <p className="muted" data-testid="play-audio-note">
-          Sink <code data-testid="play-audio-sink">{audio.sink}</code> — the controls apply live.
-          Muting still speaks the events: the utterance ends with result&nbsp;“muted” instead of
-          starting.
-        </p>
-      )}
-      {apply.isPending ? (
-        <p className="muted" aria-live="polite" data-testid="play-audio-pending">
-          Applying the audio controls…
-        </p>
+      {controls.stopError ? (
+        <ErrorState error={controls.stopError} action="Stop did not complete" />
       ) : null}
-      <div className="audio-controls" data-testid="play-audio-controls">
-        <button
-          type="button"
-          role="switch"
-          aria-checked={muted}
-          disabled={disabled}
-          onClick={() => {
-            const next = !muted;
-            setMuted(next);
-            apply.mutate({ muted: next });
-          }}
-          data-testid="play-mute"
-        >
-          {muted ? "Unmute" : "Mute"}
-        </button>
-        <label className="muted">
-          Volume {volumePct}%
-          <input
-            type="range"
-            min={0}
-            max={100}
-            value={volumePct}
-            disabled={disabled}
-            onChange={(event) => {
-              const pct = Number(event.target.value);
-              setVolumePct(pct);
-              commit({ volume: pct / 100 });
-            }}
-            data-testid="play-volume"
-          />
-        </label>
-        <label className="muted">
-          Speech delay (ms)
-          <input
-            type="number"
-            min={0}
-            max={2000}
-            value={delayMS}
-            disabled={disabled}
-            onChange={(event) => {
-              const ms = Number(event.target.value);
-              setDelayMS(ms);
-              if (Number.isFinite(ms) && ms >= 0 && ms <= 2000) {
-                commit({ speech_delay_ms: ms });
-              }
-            }}
-            data-testid="play-speech-delay"
-          />
-        </label>
-      </div>
-      {apply.isError ? (
-        <ErrorState error={apply.error} action="Cannot apply the audio controls" />
-      ) : null}
-      {audio ? (
-        <dl className="facts" data-testid="play-audio-counters">
-          <div>
-            <dt>Requested</dt>
-            <dd data-testid="play-speech-requested">{audio.speech.requested}</dd>
-          </div>
-          <div>
-            <dt>Ready</dt>
-            <dd data-testid="play-speech-ready">{audio.speech.ready}</dd>
-          </div>
-          <div>
-            <dt>Started</dt>
-            <dd data-testid="play-speech-started">{audio.speech.started}</dd>
-          </div>
-          <div>
-            <dt>Cancelled</dt>
-            <dd data-testid="play-speech-cancelled">{audio.speech.cancelled}</dd>
-          </div>
-          <div>
-            <dt>Ended</dt>
-            <dd data-testid="play-speech-ended">{audio.speech.ended}</dd>
-          </div>
-          <div>
-            <dt>Cache hits</dt>
-            <dd data-testid="play-speech-cache-hits">{audio.speech.cache_hits}</dd>
-          </div>
-          <div>
-            <dt>Current utterance</dt>
-            <dd data-testid="play-utterance-state">
-              {current ? `${describeUtterance(current)}` : "none yet"}
-            </dd>
-          </div>
-        </dl>
-      ) : null}
-    </section>
+    </main>
   );
-}
-
-/**
- * The operator's live controls (docs/spec/08 "…/pause, …/resume, …/settings",
- * docs/spec/09 "/play": pause/mute, narrated classes, the
- * conservative/predictive toggle). Every control lands on the session's
- * single writer, and the 200 body is the fresh session snapshot — installed
- * the same way the audio controls install theirs: the snapshot is the source
- * of truth, so the button shows what the server holds, not the click the
- * operator made.
- *
- * Keyboard access (docs/spec/09: "Keyboard accessible"): `p` pause/resume,
- * `s` signs, `i` items, `m` mode — only while the operator is not typing in a
- * form control, so a shortcut never swallows input.
- */
-export function SessionControls({
-  sessionId,
-  session,
-  operator,
-  terminal,
-  onApplied,
-}: {
-  sessionId: string;
-  session: Session;
-  operator: boolean;
-  terminal: boolean;
-  onApplied: (next: Session) => void;
-}) {
-  const paused = session.paused ?? false;
-  const classes = session.narrated_classes ?? [];
-  const signsOn = classes.includes("sign");
-  const itemsOn = classes.includes("item");
-
-  // Apply sequencing, the audio controls' rule: each apply is tagged with the
-  // sequence it was issued under, and only the most recently issued one may
-  // install its snapshot — a late acknowledgement of an earlier apply is by
-  // definition older than the state the operator set in the meantime.
-  const applySeq = useRef(0);
-
-  const pauseResume = useMutation({
-    mutationFn: () => (paused ? sessionsApi.resume(sessionId) : sessionsApi.pause(sessionId)),
-    onSuccess: (next) => onApplied(next),
-  });
-
-  const settings = useMutation({
-    mutationFn: (body: SessionSettings) => {
-      applySeq.current += 1;
-      const seq = applySeq.current;
-      return sessionsApi.settings(sessionId, body).then((next) => ({ seq, next }));
-    },
-    onSuccess: ({ seq, next }) => {
-      if (seq === applySeq.current) onApplied(next);
-    },
-  });
-
-  // The narrated-class set a toggle posts: the complete set, dialogue first —
-  // the server force-includes dialogue (the product), so "signs only" applies
-  // as "dialogue and signs", and the page says so (the locked checkbox).
-  const classSet = (signs: boolean, items: boolean): Schemas["TextKind"][] => {
-    const set: Schemas["TextKind"][] = ["dialogue"];
-    if (signs) set.push("sign");
-    if (items) set.push("item");
-    return set;
-  };
-
-  // The keyboard shortcuts read the latest closure through a ref, so the
-  // listener subscribes once and never acts on a stale snapshot.
-  const keyAction = useRef<(event: KeyboardEvent) => void>(() => {});
-  keyAction.current = (event: KeyboardEvent) => {
-    if (!operator || terminal || event.ctrlKey || event.metaKey || event.altKey) return;
-    const target = event.target as HTMLElement | null;
-    const tag = target?.tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable) {
-      return; // typing belongs to the operator, not to the shortcuts
-    }
-    switch (event.key.toLowerCase()) {
-      case "p":
-        event.preventDefault();
-        pauseResume.mutate();
-        break;
-      case "s":
-        event.preventDefault();
-        settings.mutate({ narrated_classes: classSet(!signsOn, itemsOn) });
-        break;
-      case "i":
-        event.preventDefault();
-        settings.mutate({ narrated_classes: classSet(signsOn, !itemsOn) });
-        break;
-      case "m":
-        event.preventDefault();
-        settings.mutate({
-          mode: session.mode === "predictive" ? "conservative" : "predictive",
-        });
-        break;
-      default:
-        break;
-    }
-  };
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => keyAction.current(event);
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-
-  const disabled = !operator || terminal;
-  const error = pauseResume.error ?? settings.error;
-
-  return (
-    <section className="play-controls" aria-label="Session controls">
-      <h2>Session controls</h2>
-      <p className="muted" data-testid="play-controls-note">
-        Pause stops new speech and fences the line still playing; resume continues from the next
-        commit — the paused window&apos;s lines are not replayed. Shortcuts: <kbd>p</kbd>{" "}
-        pause/resume
-        {" · "}
-        <kbd>s</kbd> signs · <kbd>i</kbd> items · <kbd>m</kbd> mode.
-      </p>
-      <div className="audio-controls" data-testid="play-session-controls">
-        <button
-          type="button"
-          aria-pressed={paused}
-          disabled={disabled || pauseResume.isPending}
-          onClick={() => pauseResume.mutate()}
-          data-testid="play-pause"
-        >
-          {pauseResume.isPending ? "Applying…" : paused ? "Resume" : "Pause"}
-        </button>
-        <label className="row">
-          <input type="checkbox" checked disabled data-testid="play-class-dialogue" /> Dialogue
-          <span className="muted">(always on)</span>
-        </label>
-        <label className="row">
-          <input
-            type="checkbox"
-            checked={signsOn}
-            disabled={disabled}
-            onChange={() => settings.mutate({ narrated_classes: classSet(!signsOn, itemsOn) })}
-            data-testid="play-class-signs"
-          />{" "}
-          Signs
-        </label>
-        <label className="row">
-          <input
-            type="checkbox"
-            checked={itemsOn}
-            disabled={disabled}
-            onChange={() => settings.mutate({ narrated_classes: classSet(signsOn, !itemsOn) })}
-            data-testid="play-class-items"
-          />{" "}
-          Items
-        </label>
-        <label className="row">
-          Mode
-          <select
-            value={session.mode}
-            disabled={disabled}
-            onChange={(event) =>
-              settings.mutate({ mode: event.target.value as SessionSettings["mode"] })
-            }
-            data-testid="play-mode-select"
-          >
-            <option value="conservative">conservative</option>
-            <option value="predictive">predictive</option>
-          </select>
-        </label>
-      </div>
-      {pauseResume.isPending || settings.isPending ? (
-        <p className="muted" aria-live="polite" data-testid="play-controls-pending">
-          Applying the session controls…
-        </p>
-      ) : null}
-      <p className="muted">
-        Narrating: <span data-testid="play-narrated">{classes.join(", ") || "dialogue"}</span> in{" "}
-        {session.mode} mode
-      </p>
-      {error ? <ErrorState error={error} action="Cannot apply the session controls" /> : null}
-    </section>
-  );
-}
-
-/** The current-utterance state in one human line (the snapshot's shape). */
-function describeUtterance(state: UtteranceState): string {
-  const result = state.result ? ` (${state.result})` : "";
-  return `${state.phase}${result} · generation ${state.generation}`;
 }

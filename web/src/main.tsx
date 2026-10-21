@@ -7,6 +7,7 @@ import { LiveStatusProvider } from "./lib/liveStatus";
 import { applyTheme, readStoredTheme } from "./lib/theme";
 import "./index.css";
 import "./styles/tokens.css";
+import "./styles/play.css";
 
 // The persisted theme (UX-09): applied before the first paint so a reload
 // keeps the choice without a flash. The attribute selects a token set in

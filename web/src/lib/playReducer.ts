@@ -30,6 +30,8 @@ export interface CommittedPayload {
   message_id?: string;
   speech_eligible?: boolean;
   reason?: string;
+  /** The OCR engine's confidence in the read (internal/session committedData). */
+  confidence?: number;
   text?: string;
   normalized_text?: string;
   speaker_id?: string;
@@ -47,6 +49,8 @@ export interface CommittedLine {
   messageId: string;
   /** What the OCR read, not the profile text: this is the evidence. */
   text: string;
+  /** The OCR engine's confidence in the read (0–1), the operator's ROI label. */
+  confidence: number | null;
   /** The decision's speaker ("" when none), separate from the assigned one. */
   speakerId: string;
   speakerKnown: boolean;
@@ -109,6 +113,7 @@ export function reducePlayEvent(state: PlayEventState, envelope: EventEnvelope):
     occurredAt: envelope.occurred_at,
     messageId: data.message_id,
     text: typeof data.text === "string" ? data.text : (data.normalized_text ?? ""),
+    confidence: typeof data.confidence === "number" ? data.confidence : null,
     speakerId: typeof data.speaker_id === "string" ? data.speaker_id : "",
     speakerKnown: Boolean(data.speaker_known),
     speechEligible: Boolean(data.speech_eligible),

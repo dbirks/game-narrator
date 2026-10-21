@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 
 import { trackConsoleErrors } from "./support/console";
 import { buildManifest, type SeedProfile } from "./support/manifest";
+import { setPlayView } from "./support/play";
 import { expectDefaultDataDirUntouched, serverRun } from "./support/servers";
 
 /**
@@ -99,6 +100,9 @@ test("m5 part 1: play, characters, publish review, diagnostics", async ({
     page,
     [
       // 401: the unauthenticated probe the auth context makes before signing in.
+      // 409/429: the operator view's frame poller on the synthetic-replay server —
+      // "capture signal unavailable" and the preview throttle are the designed
+      // transient answers the frame card renders as "unknown", not faults.
       // 503: /api/v1/voices on a build whose voice models are not configured —
       // the pages answer it with their honest "not available" panels, which is
       // the documented behaviour this walk is checking, not a fault.
@@ -107,11 +111,14 @@ test("m5 part 1: play, characters, publish review, diagnostics", async ({
       // layer — ADR-0110 §1's 409 carries the layer's own reason, and the
       // tile renders it as its own state, so it is the machine's answer,
       // not a fault.
-      401, 409, 503,
+      401, 409, 429, 503,
     ],
   );
   const shot = (step: string) =>
-    page.screenshot({ path: `test-results/m5-part1-${step}.png`, fullPage: true });
+    page.screenshot({
+      path: `test-results/m5-part1-${step}.png`,
+      fullPage: true,
+    });
 
   // ── 1. seed + publish the synthetic profile through the API ───────────────
   const setup = await request.post(`${origin}/api/v1/auth/setup`, {
@@ -188,7 +195,13 @@ test("m5 part 1: play, characters, publish review, diagnostics", async ({
   // friendly names are read back the way the pages read them.
   const messagesPage = (await (
     await request.get(`${origin}/api/v1/profiles/${r1}/messages?limit=200`)
-  ).json()) as { messages: { id: string; source_message_id?: string; speech_text?: string }[] };
+  ).json()) as {
+    messages: {
+      id: string;
+      source_message_id?: string;
+      speech_text?: string;
+    }[];
+  };
   const storeIds: Record<string, string> = {};
   for (const row of messagesPage.messages ?? []) {
     if (row.source_message_id) storeIds[row.source_message_id] = row.id;
@@ -213,16 +226,23 @@ test("m5 part 1: play, characters, publish review, diagnostics", async ({
   const sessionId = new URL(page.url()).searchParams.get("session") as string;
   expect(sessionId).toBeTruthy();
 
-  await expect(page.getByTestId("play-state")).toHaveText("running", { timeout: 60_000 });
+  await expect(page.getByTestId("play-state")).toHaveText("running", {
+    timeout: 60_000,
+  });
   // The session's capture source self-report (the API view of capture.Stats):
   // the replay source names its kind and is running with no failure text —
   // the field that makes a silently dead capture child visible (the 2026-10-19
   // live-play run: a dolphin source delivered zero frames for 25 minutes and
-  // nothing in the snapshot said why).
+  // nothing in the snapshot said why). The facts read from the operator view
+  // (the 2026-10-20 review moved them out of the caption view); the caption
+  // view's committed-line rows read straight after, so the walk toggles back
+  // before the polls.
+  await setPlayView(page, "operator");
   await expect(page.getByTestId("play-source")).toContainText("replay · running", {
     timeout: 30_000,
   });
   await expect(page.getByTestId("play-source-error")).toHaveCount(0);
+  await setPlayView(page, "now"); // back to now-speaking
   const committedLines = page.locator('[data-testid="recent-lines"] li');
   // Anchor on the narratable demo line specifically, not on any committed
   // line: an abstained box (unclear whether the text should be spoken)
@@ -234,7 +254,9 @@ test("m5 part 1: play, characters, publish review, diagnostics", async ({
   // line still queued, the counter sat at zero for the whole window).
   // The id in the row is the store's ULID, so the anchor holds regardless
   // of how the OCR engine rendered the case of the line's text.
-  const narratableLine = committedLines.filter({ hasText: storeIds["demo-page-1"] });
+  const narratableLine = committedLines.filter({
+    hasText: storeIds["demo-page-1"],
+  });
   await expect
     .poll(() => narratableLine.count(), {
       timeout: 120_000,
@@ -247,10 +269,16 @@ test("m5 part 1: play, characters, publish review, diagnostics", async ({
   // instance, so this session has an audio pipeline. The walk's roster has
   // no approved voice (no narrator is configured), so the committed lines
   // end skipped with the reason — the counters have to say so, not fake a
-  // playback (docs/spec/13 "did it speak, and why not").
+  // playback (docs/spec/13 "did it speak, and why not"). The audio card and
+  // its counters live in the operator view (the 2026-10-20 review), so the
+  // reads go through "show workings"; the control bar is the same bar in
+  // both views, so the applies below reach the same controls.
+  await setPlayView(page, "operator");
   await expect(page.getByTestId("play-audio-sink")).toHaveText("filesink");
   await expect(page.getByTestId("play-audio-counters")).toBeVisible();
-  await expect(page.getByTestId("play-speech-requested")).toHaveText(/^[1-9]/, { timeout: 30_000 });
+  await expect(page.getByTestId("play-speech-requested")).toHaveText(/^[1-9]/, {
+    timeout: 30_000,
+  });
   await expect(page.getByTestId("play-utterance-state")).toContainText("skipped", {
     timeout: 30_000,
   });
@@ -342,19 +370,45 @@ test("m5 part 1: play, characters, publish review, diagnostics", async ({
   await expect(linesAfterReload.last()).toContainText(storeIds["demo-page-1"]);
   await expect(page.getByTestId("current-line-message-id")).toHaveText(storeIds["demo-page-2"]);
   await expect(page.getByTestId("current-line-speaker")).toHaveText("Marina");
+  // The commit counter is a session fact (the operator view since the
+  // 2026-10-20 review); the lines above are the caption view's.
+  await setPlayView(page, "operator");
   await expect(page.getByTestId("play-commits")).toHaveText("2");
   await shot("02-after-reload");
 
   // Stop the session (it may also end on its own on source exhaustion; either
   // terminal state is the documented outcome of this clip).
+  const mark = (step: string) => console.log(`M5TRACE ${new Date().toISOString()} ${step}`);
+  mark("before-stop-button");
   const stop = page.getByTestId("play-stop");
-  if (await stop.isVisible()) {
-    await stop.click();
+  const stopUsable = await stop.isEnabled();
+  mark(`stop-enabled=${stopUsable}`);
+  if (stopUsable) {
+    // The clip may settle on its own between the check and the click (a fast
+    // engine finishes the short run seconds after its last commit, and the
+    // button then disables — the operator view's Stop stays in the DOM
+    // disabled rather than unmounting, so an unconditional click would wait
+    // on the enabled state forever): the click is best-effort — the settled
+    // state is what the walk asserts next, not which of the two ended the
+    // run.
+    const clicked = await stop.click({ timeout: 5_000 }).then(
+      () => true,
+      () => false,
+    );
+    mark(`stop-clicked=${clicked}`);
   }
-  await expect(page.getByTestId("play-state")).toHaveText("stopped", { timeout: 180_000 });
+  mark("before-stopped-expect");
+  await expect(page.getByTestId("play-state")).toHaveText("stopped", {
+    timeout: 180_000,
+  });
+  mark("stopped-expect-passed");
   const finalSession = (await (
     await request.get(`${origin}/api/v1/sessions/${sessionId}`)
-  ).json()) as { state: string; reason?: string; stats: { commits: number; ocr_calls: number } };
+  ).json()) as {
+    state: string;
+    reason?: string;
+    stats: { commits: number; ocr_calls: number };
+  };
   expect(finalSession.state).toBe("stopped");
   expect(finalSession.reason).toBeTruthy();
   expect(finalSession.stats.commits, "the synthetic clip commits its two pages").toBe(2);
@@ -363,7 +417,9 @@ test("m5 part 1: play, characters, publish review, diagnostics", async ({
 
   // ── 3. /characters: the roster with counts and attribution badges ────────
   await page.goto(`/games/${gameId.id}/characters?profile=${encodeURIComponent(r1)}`);
-  await expect(page.getByTestId("character-table")).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByTestId("character-table")).toBeVisible({
+    timeout: 20_000,
+  });
   const marina = page.getByTestId("character-row-Marina");
   await expect(marina).toBeVisible();
   await expect(page.getByTestId("character-lines-Marina")).toHaveText("2");
@@ -396,7 +452,9 @@ test("m5 part 1: play, characters, publish review, diagnostics", async ({
   const edited = await request.patch(
     `${origin}/api/v1/profiles/${r2}/messages/${page1Message.id}`,
     {
-      data: { speech_text: "The harbour bell rang twice, and no one looked up." },
+      data: {
+        speech_text: "The harbour bell rang twice, and no one looked up.",
+      },
       headers: {
         "content-type": "application/json",
         "x-csrf-token": await csrf(),
@@ -420,13 +478,17 @@ test("m5 part 1: play, characters, publish review, diagnostics", async ({
 
   // draft → review → publish: the page's own transaction, every refusal shown.
   await page.getByTestId("publish-to-review").click();
-  await expect(page.getByTestId("publish-button")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("publish-button")).toBeVisible({
+    timeout: 15_000,
+  });
   await page.getByTestId("publish-button").click();
   const historyRow = page.getByTestId("publish-action-row").first();
   // The newest entry is this publish, named by the revision it shipped (the
   // row's result_row_version is only a secondary detail — the audit row has
   // no revision number of its own), and its result badge is the success one.
-  await expect(historyRow).toContainText("published revision 2", { timeout: 30_000 });
+  await expect(historyRow).toContainText("published revision 2", {
+    timeout: 30_000,
+  });
   await expect(historyRow).toContainText("row version");
   await expect(historyRow.locator(".badge-succeeded")).toBeVisible();
   // The pointer swapped: the draft now equals the published revision, so the
