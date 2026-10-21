@@ -230,13 +230,15 @@ bench:
 ## plus the pipeline replay tests (real Tesseract, deterministic
 ## three-identical-runs), race-enabled. BLOCKED and NOT RUN (e.g. tesseract
 ## missing) results are reported per test and never counted as a pass.
-## TestDolphinScenarios lives in internal/scenario but belongs to the
-## test-dolphin gate (it needs the recorded Dolphin fixture under
-## $GAME_NARRATOR_FIXTURE_DIR and is NOT RUN without it); -skip keeps it out
-## of this gate so a fixture-less host (CI) sees a clean 0 instead of a
-## NOT RUN exit 2.
+## TestDolphinScenarios lives in internal/scenario and the private-capture
+## placement replays (TestPlacementOnLiveCapture, TestPlacementOnDolphinProbe,
+## TestPlacementOCRBeforeAfterFix) live in internal/pipeline; they need
+## external gitignored captures under $GAME_NARRATOR_FIXTURE_DIR or
+## artifacts/catch-up-live and report NOT RUN without them, so -skip keeps
+## them out of this gate and a fixture-less host (CI) sees a clean 0 instead
+## of a NOT RUN exit 2.
 test-replay:
-	@scripts/gates/run-go-gate.sh test-replay -race -count=1 -skip TestDolphinScenarios ./internal/scenario/... ./internal/pipeline/... ; \
+	@scripts/gates/run-go-gate.sh test-replay -race -count=1 -skip 'TestDolphinScenarios|TestPlacementOnLiveCapture|TestPlacementOnDolphinProbe|TestPlacementOCRBeforeAfterFix' ./internal/scenario/... ./internal/pipeline/... ; \
 	rc=$$?; echo $$rc > artifacts/gates/test-replay.rc ; exit $$rc
 
 ## test-ui: the real UI gate (docs/spec/09, docs/spec/12 "UI") — frontend
