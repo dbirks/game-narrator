@@ -1,0 +1,37 @@
+{
+  "id": "catch-up-001",
+  "origin": "generated_synthetic",
+  "description": "Synthetic dialogue profile for the generated 20-frame rapid-dialogue replay clip testdata/synthetic/replay/catch-up-001 (issue #25, ADR-0122; docs/spec/11 'Fixture origins'). The four real lines are the clip's invented sentences, four boxes from two speakers; the rest are invented distractors so ranking a half-revealed line is a real decision (docs/spec/05 'Short strings and overlapping prefixes require more evidence'). No real game text. The speaker attribution is deliberately NOT here: it lives in the scenario (testdata/scenarios/synthetic/gn-t025-catch-up.yaml), because a profile has no speaker column and the synthetic scenario declares it.",
+  "text_kind": "dialogue",
+  "messages": [
+    { "id": "cu-01", "original_text": "The bell rang twice before the fog lifted off the quay." },
+    { "id": "cu-02", "original_text": "Nobody in the village had seen a boat like that before." },
+    { "id": "cu-03", "original_text": "The harbourmaster will want to hear what we saw tonight." },
+    { "id": "cu-04", "original_text": "Then we row out before the tide turns against us." },
+    { "id": "cu-x01", "original_text": "The harbour bell was silent when the last ship left." },
+    { "id": "cu-x02", "original_text": "Fog rolled in from the open water by midday." },
+    { "id": "cu-x03", "original_text": "The village kept its distance from the old breakwater." },
+    { "id": "cu-x04", "original_text": "A stranger's hull sat low in the channel at dawn." },
+    { "id": "cu-x05", "original_text": "The harbourmaster logged the weather in a red book." },
+    { "id": "cu-x06", "original_text": "We counted the lanterns along the mole before dark." },
+    { "id": "cu-x07", "original_text": "The tide gave us a wide margin to cross the bar." },
+    { "id": "cu-x08", "original_text": "Rowing home we let the current carry the boat." },
+    { "id": "cu-x09", "original_text": "The quay was empty but for the gulls at first light." },
+    { "id": "cu-x10", "original_text": "Somebody had left a rope coil by the mooring ring." }
+  ],
+  "edges": [
+    { "from": "cu-01", "to": "cu-02", "type": "next", "confidence": 0.9 },
+    { "from": "cu-02", "to": "cu-03", "type": "next", "confidence": 0.9 },
+    { "from": "cu-03", "to": "cu-04", "type": "next", "confidence": 0.9 }
+  ],
+  "regions": [
+    {
+      "id": "bottom",
+      "type": "textbox",
+      "x": 0.096875,
+      "y": 0.75625,
+      "w": 0.80625,
+      "h": 0.158333
+    }
+  ]
+}

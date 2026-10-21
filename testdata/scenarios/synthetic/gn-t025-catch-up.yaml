@@ -1,0 +1,130 @@
+# GN-T025 (issue #25, ADR-0122) — rapid dialogue, catch-up narration.
+# Catalog: docs/test-plan/scenario-catalog.md GN-T025 "Four rapid boxes,
+# two speakers — every message spoken exactly once, merged per speaker,
+# nothing stale".
+#
+# The clip (testdata/synthetic/replay/catch-up-001) shows four textboxes at
+# a 400 ms cadence — the pace of a player tapping A through a conversation.
+# Speaker attribution (two speakers; boxes 2 and 3 the same speaker) is
+# declared here, in the scenario: a profile has no speaker column, and the
+# synthetic scenario is where the attribution lives (docs/spec/11 "Fixture
+# origins"). With the session running the product's catch_up default:
+#
+#   box 1 commits while nothing plays            -> spoken at once;
+#   boxes 2 and 3 commit while a line is playing  -> batched, merged into
+#                                                    ONE TTS request (one
+#                                                    speaker, consecutive);
+#   box 4 commits while the merged run plays     -> batched, spoken after.
+#
+# The tone outlasts the 400 ms commit cadence (inference.tts_tone_ms), so a
+# line committed while the previous utterance is still playing is batched,
+# not cut — the issue's "the line that is playing keeps playing to the end,
+# and the new line joins it". Fencing still applies: a line the batch
+# window outlives is skipped with a reason, and the scenario's
+# speech_spoken_count assertions are the "every message exactly once" that
+# must hold with or without a fence. Every frame and sentence is generated
+# (docs/spec/11); the origin field carries that claim.
+schema_version: 1
+catalog: GN-T025
+id: synthetic/gn-t025-catch-up
+origin: generated_synthetic
+profile: catch-up-001
+mode: frame_replay
+input:
+  frames_dir: testdata/synthetic/replay/catch-up-001
+  timestamps: timestamps.json
+inference:
+  # The local chain (OCR, matcher, session) with no model endpoints, the way
+  # the dialogue-advance scenario runs; the TTS endpoint is the fake gateway
+  # (recorded) because the assertions read the requests it answers.
+  decision: none
+  tts: recorded
+  voice: synthetic-narrator
+  # The tone outlasts the 400 ms commit cadence: a line committed while the
+  # previous utterance is still playing is the batched line the policy joins
+  # (issue #25), never a cut one.
+  tts_tone_ms: 1000
+# The session's catch-up policy. The product's default is catch_up (ADR-0122
+# decision 4: the runtime's product default); this scenario states it
+# explicitly because the harness defaults a scenario's policy to latest_only
+# for the graded shape of every pre-existing scenario — a scenario that runs
+# the product's default must name it.
+catch_up: catch_up
+# The synthetic speaker attribution: two speakers, and the consecutive
+# same-speaker pair (boxes 2 and 3) is what the catch-up merge merges into
+# one TTS request. The attribution is the scenario's, not the profile's.
+speakers:
+  cu-01: townsman
+  cu-02: elder
+  cu-03: elder
+  cu-04: townsman
+assertions:
+  # All four lines commit, once each (repeated observations of the held box
+  # must not re-commit).
+  - type: message_committed_count
+    message_id: cu-01
+    count: 1
+  - type: message_committed_count
+    message_id: cu-02
+    count: 1
+  - type: message_committed_count
+    message_id: cu-03
+    count: 1
+  - type: message_committed_count
+    message_id: cu-04
+    count: 1
+  - type: no_duplicate_commit
+  # Every message spoken exactly once: the issue's "every message is spoken
+  # exactly once" — an immediate line by its own started utterance, a merged
+  # line by the run that carries it. A line the fence skipped would count
+  # zero and fail this.
+  - type: speech_spoken_count
+    message_id: cu-01
+    count: 1
+  - type: speech_spoken_count
+    message_id: cu-02
+    count: 1
+  - type: speech_spoken_count
+    message_id: cu-03
+    count: 1
+  - type: speech_spoken_count
+    message_id: cu-04
+    count: 1
+  # Merged per speaker: ONE catch-up request carries the consecutive
+  # same-speaker pair, in commit order — the "merge consecutive same-speaker
+  # lines into one TTS request" the issue asks for (ADR-0122 decision 5: the
+  # merge is per consecutive same-speaker RUN, the runs that differ go
+  # separate).
+  - type: speech_merged
+    message_ids:
+      - cu-02
+      - cu-03
+  # Nothing stale: a fenced or never-started line may not complete, and no
+  # line speaks more than once (docs/spec/01 invariant 2, the session fence).
+  - type: no_stale_speech
+    message_id: cu-01
+  - type: no_stale_speech
+    message_id: cu-02
+  - type: no_stale_speech
+    message_id: cu-03
+  - type: no_stale_speech
+    message_id: cu-04
+  - type: no_duplicate_speech
+    message_id: cu-01
+  - type: no_duplicate_speech
+    message_id: cu-02
+  - type: no_duplicate_speech
+    message_id: cu-03
+  - type: no_duplicate_speech
+    message_id: cu-04
+  - type: no_stale_generation_applied
+  # No invented line: every commit names one of the four real lines.
+  - type: committed_only
+    names:
+      - cu-01
+      - cu-02
+      - cu-03
+      - cu-04
+  # Never a different voice: every speech event names synthetic-narrator.
+  - type: no_voice_substitution
+    voice: synthetic-narrator

@@ -100,8 +100,32 @@ type Runner struct {
 	drain    chan struct{} // closed by Stop
 	wake     chan struct{} // pokes sleeping workers on foreground-busy=false
 	fgBusy   atomic.Bool
+	fgSince  time.Time // set under mu: when the current foreground pause began
 	wg       sync.WaitGroup
 	stopOnce sync.Once
+}
+
+// ForegroundPause is the visible state of the foreground pause (ADR-0119,
+// issue #27): whether the live session holds the appliance's CPU/audio budget
+// (docs/spec/01 invariant 1), when that pause began, and how many queued jobs
+// it is holding. The count is a read of the queue at the call (the database is
+// the authority on job state, so it is a query, never a counter the worker
+// pool keeps), and it is reported only while the pause is active: outside it a
+// zero count would be indistinguishable from a query the caller should not pay
+// for a box that is not pausing anything.
+type ForegroundPause struct {
+	// Paused is true while a live session holds the foreground and
+	// background kinds wait between jobs.
+	Paused bool
+	// Since is when the current pause began (zero when not paused). It is
+	// stamped on the first SetForegroundBusy(true) and never moved by a
+	// repeated true: a second session started after the first ends stamps a
+	// fresh pause, not an extension of the old one.
+	Since time.Time
+	// Queued is the count of queued jobs held by the pause; zero when the
+	// pause is inactive (or the count read failed — a pause the count cannot
+	// name is still named, with zero).
+	Queued int64
 }
 
 // Option tweaks Runner internals that tests need to shrink (a 30 s lease is
@@ -298,16 +322,51 @@ func (r *Runner) Stop(ctx context.Context) error {
 // resources"). Background work pauses between jobs while set; in-flight
 // jobs are *not* killed — a half-written import that is force-cancelled
 // costs more to resume than a few seconds of shared CPU. The milestone that
-// owns the session runtime calls true at session start and false at stop;
-// until then this is the switch and its test.
+// owns the session runtime calls true at session start and false at stop.
+//
+// The pause is also visible (ADR-0119, issue #27): the first true stamps
+// ForegroundPause.Since and a repeated true does not move the clock (a
+// session that starts while one is already live holds the same pause), while
+// false clears both the flag and the stamp.
 func (r *Runner) SetForegroundBusy(busy bool) {
+	r.mu.Lock()
+	switch {
+	case busy && !r.fgBusy.Load():
+		r.fgSince = time.Now().UTC()
+	case !busy:
+		r.fgSince = time.Time{}
+	}
 	r.fgBusy.Store(busy)
+	r.mu.Unlock()
 	if !busy {
 		select {
 		case r.wake <- struct{}{}:
 		default:
 		}
 	}
+}
+
+// ForegroundPause reports the visible foreground-pause state (ADR-0119,
+// issue #27): whether a live session is holding the appliance's budget, when
+// the pause began, and how many queued jobs it holds (a read of the queue at
+// the call, per ForegroundPause's contract). It is the read the status
+// snapshot and the job list serve, so "queued" can no longer mean either
+// "waiting in a normal queue" or "blocked for the lifetime of a session":
+// the pause names the second of those in both places an operator or an agent
+// polls it.
+func (r *Runner) ForegroundPause(ctx context.Context) ForegroundPause {
+	r.mu.Lock()
+	paused := r.fgBusy.Load()
+	since := r.fgSince
+	r.mu.Unlock()
+	if !paused {
+		return ForegroundPause{}
+	}
+	var queued int64
+	if n, err := r.js.CountQueued(ctx); err == nil {
+		queued = n
+	}
+	return ForegroundPause{Paused: true, Since: since, Queued: queued}
 }
 
 // Enqueue queues work through the runner so the `job.queued` event carries

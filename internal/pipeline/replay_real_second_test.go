@@ -88,7 +88,7 @@ func TestSyntheticFrameReplaySecondGameRealTesseract(t *testing.T) {
 		},
 	}
 
-	speechEvs := runSpeechSidecar(t, idx, truth)
+	speechEvs := runSpeechSidecar(t, idx, truth, sc.CatchUp)
 
 	type secondRunOutcomes struct {
 		commits []commitStamp

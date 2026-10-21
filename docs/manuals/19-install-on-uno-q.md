@@ -245,6 +245,21 @@ environment — the service process never opens the file itself. Never print
 its contents into logs, tickets or screenshots (the lifecycle runner
 verifies the env file by mode, owner and line count only, for this reason).
 
+**User-level runs must carry `GAME_NARRATOR_DATA_DIR`.** The systemd unit
+pins the data directory itself (`Environment=GAME_NARRATOR_DATA_DIR=/var/lib/game-narrator`),
+so the unit never needs the variable in the env file. A run **outside** the
+unit (env file plus `setsid nohup game-narrator serve`) resolves the data
+directory from the environment it was started with, and without
+`GAME_NARRATOR_DATA_DIR=<data-dir>` in that env file it silently falls back
+to the platform default (`$XDG_DATA_HOME/game-narrator`, else
+`~/.local/share/game-narrator`) — where a stale database from an older build
+may sit, which is how an upgrade dies on a checksum mismatch naming a
+database nobody meant to open (issue #31). `game-narrator starting` now
+logs the resolved data directory, the database path and the setting that
+won (flag, env or default), and `doctor` reports `DEGRADED` on the
+`storage.data_dir` row when a non-empty default data directory exists next
+to a different, explicitly configured one (two databases on one host).
+
 ## Step 6 — Start the service and run doctor
 
 ```sh

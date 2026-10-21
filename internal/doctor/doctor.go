@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/audio"
+	"github.com/dbirks/game-narrator/internal/bootstrap"
 	"github.com/dbirks/game-narrator/internal/capture/usb"
 	"github.com/dbirks/game-narrator/internal/dolphin"
 	"github.com/dbirks/game-narrator/internal/providers"
@@ -155,6 +156,12 @@ type ChatResult struct {
 type Options struct {
 	// DataDir is the durable data directory to probe.
 	DataDir string
+	// DataDirSource is how DataDir was resolved (bootstrap.DataDirSource:
+	// flag, env or default). The storage.data_dir row reports it so the
+	// operator sees which setting won (issue #31, ADR-0126); an empty value
+	// leaves the row's reporting unchanged and disables the stale-default
+	// warning, because "explicitly configured" cannot be assumed.
+	DataDirSource bootstrap.DataDirSource
 	// Dev adds developer-host checks (Dolphin, game image) that have no
 	// meaning on a production UNO Q install.
 	Dev bool

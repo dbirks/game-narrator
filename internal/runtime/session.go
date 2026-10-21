@@ -45,7 +45,14 @@ type Info struct {
 	// dialogue first, always present. The default (dialogue alone) is what a
 	// session started without a settings call carries.
 	NarratedClasses []games.TextKind `json:"narrated_classes"`
-	SourceKind      string           `json:"frame_source"`
+	// CatchUp is the operator's catch-up narration policy (issue #25,
+	// ADR-0122): the speech side's handling of the lines committed while an
+	// utterance is playing. The default (catch_up) batches and merges them
+	// per speaker; latest_only cancels the older audio and speaks the newest
+	// line at once. The snapshot carries the applied word so the UI's toggle
+	// reads the server's state, not the form's last click.
+	CatchUp    string `json:"catch_up"`
+	SourceKind string `json:"frame_source"`
 	// ClipID is the managed-store clip this run replays (ADR-0073): the id a
 	// session was started with, so the UI's source line can say which clip is
 	// running rather than only which kind. Empty for dir- and device-sourced
@@ -311,6 +318,14 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 	if err != nil {
 		return Info{}, err
 	}
+	if kind == "" {
+		// The request named no frame source and the resolution settled one
+		// (ADR-0119, issue #28): the resolved kind is what the snapshot, the
+		// session.started event and the status bar name — v4l2 with the
+		// device it settled on, or the developer-mode test pattern — never
+		// the absence the request carried.
+		kind = srcB.kind
+	}
 	src := srcB.src
 
 	id := games.NewID()
@@ -403,8 +418,11 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 		// The narrated classes start at the documented default (dialogue
 		// alone); a mid-session settings call is what moves them, and the
 		// snapshot carries the current set so the UI's toggles read the
-		// server's state, not the form's last click.
+		// server's state, not the form's last click. CatchUp starts at the
+		// documented default (catch_up, issue #25): the same snapshot
+		// discipline — the settings call is what moves it.
 		NarratedClasses:   []games.TextKind{games.TextDialogue},
+		CatchUp:           ses.CatchUpPolicyCatchUp,
 		SourceKind:        kind,
 		ClipID:            req.FrameSource.ClipID,
 		DevTrace:          req.DevTrace,
@@ -627,9 +645,17 @@ func (m *Manager) checkRequest(ctx context.Context, req StartRequest) error {
 	default:
 		return fmt.Errorf("%w: %q", ErrInvalidMode, req.Mode)
 	}
-	// Clip ids select a managed-store clip rather than a path (ADR-0073);
-	// the id is validated here, where the request's shape is the only input.
-	if req.FrameSource.ClipID != "" {
+	// The default frame source (ADR-0119, issue #28): a request may name no
+	// kind at all — buildFrameSource then resolves the usable capture device
+	// (or the developer-mode test pattern). A dir or a clip id without a kind
+	// is ambiguous (a replay dir and a device id both live in frame_source.dir),
+	// so the answer is the 400 that names the rule, never a guess.
+	if req.FrameSource.Kind == "" && (req.FrameSource.Dir != "" || req.FrameSource.ClipID != "") {
+		return fmt.Errorf("%w: frame_source.dir or frame_source.clip_id names an input but the kind that reads it is missing", ErrIncompleteFrameSource)
+	}
+	// A clip id with a named kind is a replay selection (ADR-0073); the id is
+	// validated here, where the request's shape is the only input.
+	if req.FrameSource.ClipID != "" && req.FrameSource.Kind != "" {
 		if req.FrameSource.Kind != SourceKindReplay {
 			return fmt.Errorf("%w: clip_id selects a replay clip and is not used with frame source kind %q", ErrInvalidClipID, req.FrameSource.Kind)
 		}
@@ -639,7 +665,7 @@ func (m *Manager) checkRequest(ctx context.Context, req StartRequest) error {
 		}
 	}
 	switch req.FrameSource.Kind {
-	case SourceKindReplay, SourceKindTestPattern, SourceKindV4L2, SourceKindDolphin, SourceKindManual:
+	case "", SourceKindReplay, SourceKindTestPattern, SourceKindV4L2, SourceKindDolphin, SourceKindManual:
 	default:
 		return fmt.Errorf("%w: %q", ErrUnknownSourceKind, req.FrameSource.Kind)
 	}
@@ -674,6 +700,16 @@ func (m *Manager) pipelineConfig(req StartRequest, published games.Profile, sess
 	// of the pipeline's regions share, so the pool's one-read-at-a-time
 	// serialisation (ADR-0100 decision 2) is the session's OCR pacing.
 	engine := m.ocrEngine()
+	// One active-picture tracker per session (ADR-0082): the region crops map
+	// through the tracked window once it has settled and the whole frame until
+	// it has; a borderless source (Dolphin) never settles, so its crops keep
+	// mapping the whole frame. The base recipe (letterbox detection plus the
+	// ADR-0115 §2 inset that cuts the textbox's decorative border and speaker
+	// icon out of the OCR input) is DefaultCropOptions — one source of the crop
+	// recipe the pipeline and the test harness's truth script both cut with —
+	// and the tracker is the session-state half added here.
+	baseCrop := DefaultCropOptions()
+	baseCrop.Tracker = vision.NewTracker(vision.TrackerConfig{})
 	cfg := pipeline.Config{
 		Mode:            mode,
 		SessionID:       sessionID,
@@ -681,18 +717,11 @@ func (m *Manager) pipelineConfig(req StartRequest, published games.Profile, sess
 		Regions:         regions,
 		OCR:             engine,
 		Index:           idx,
-		Reducer:         ses.Config{PredictiveMode: predictive},
+		Reducer:         ses.Config{PredictiveMode: predictive, CatchUp: ses.CatchUpPolicyCatchUp},
 		Tracker:         m.trackerConfig(kind, predictive),
 		Controls:        controls,
 		Preprocess:      vision.DefaultSteps(),
-		// One active-picture tracker per session (ADR-0082): the region crops
-		// map through the tracked window once it has settled and the whole
-		// frame until it has; a borderless source (Dolphin) never settles, so
-		// its crops keep mapping the whole frame.
-		Crop: vision.CropOptions{
-			Letterbox: vision.LetterboxDetect,
-			Tracker:   vision.NewTracker(vision.TrackerConfig{}),
-		},
+		Crop:            baseCrop,
 		// The fallback text-kind hint for regions whose on-screen role names no
 		// class of its own: the dialogue box is the documented default. A region
 		// whose role does name a class (sign, item, menu, tutorial) ranks its
@@ -709,6 +738,18 @@ func (m *Manager) pipelineConfig(req StartRequest, published games.Profile, sess
 		policy := fb.Policy
 		if difficultFontIn(regions) {
 			policy.DifficultFont = true
+		}
+		// The confidence threshold precedence (ADR-0115 §4): a region's
+		// ocr_settings value wins (the profile's call about its own font),
+		// then the process env default newOCRFallbackWiring merged into the
+		// policy, then a per-source default — the analog HDMI capture (v4l2)
+		// takes the measured floor of its correct crop reads, so a correct read
+		// at 0.85+ no longer spends a VLM call, while a clean emulator crop
+		// keeps the ocr package's 0.6 bar.
+		if thr := fallbackConfThresholdIn(regions); thr > 0 {
+			policy.ConfidenceThreshold = thr
+		} else if policy.ConfidenceThreshold <= 0 && kind == SourceKindV4L2 {
+			policy.ConfidenceThreshold = v4l2FallbackConfThreshold
 		}
 		cfg.OCRFallback = &pipeline.OCRFallback{Secondary: fb.Secondary, Policy: policy}
 		// The ocr.fallback field is recorded in the pipeline's bounded
@@ -735,6 +776,43 @@ func (m *Manager) pipelineConfig(req StartRequest, published games.Profile, sess
 	}
 	return cfg
 }
+
+// cropInsetPx is the per-side crop inset the runtime sets on its textbox
+// regions (ADR-0115 §2): the textbox's decorative border and speaker icon sit
+// inside the profile-calibrated rect on a captured feed, and the OCR engine
+// reads them as noise glyphs ("4 ", "$o?") that poison the match. Two pixels is
+// the border width measured on the board feed. It is read through
+// DefaultCropOptions, the one source of the crop recipe: a drift between the
+// pipeline's crop and the test harness's truth script is a miss on every crop
+// hash (the recipe-drift failure helpers_test.go's truthScript comment names),
+// so the number and the recipe it sits in live in one place and both sides read
+// it.
+const cropInsetPx = 2
+
+// DefaultCropOptions is the runtime's base crop recipe for a session's textbox
+// regions: letterbox detection (a 4:3 picture inside a 16:9 capture maps its
+// rect onto the picture, not the bars) and the per-side inset (ADR-0115 §2)
+// that cuts the textbox's decorative border out of the OCR input. The
+// per-session tracker (the active-picture window, ADR-0082) is session state
+// the caller adds; it is not part of the recipe. This is the single source of
+// the crop recipe: the pipeline's crop and the test harness's truth script
+// must cut with the same options or the crop hashes drift and every read
+// misses.
+func DefaultCropOptions() vision.CropOptions {
+	return vision.CropOptions{
+		Letterbox: vision.LetterboxDetect,
+		Inset:     cropInsetPx,
+	}
+}
+
+// v4l2FallbackConfThreshold is the per-source OCR fallback confidence default
+// for the analog HDMI capture (ADR-0115 §4): the measured floor of correct crop
+// reads on the board feed (Tesseract 0.82–0.95 on the box). A primary read at
+// or above it is resolved locally and the VLM is not called; below it the read
+// is genuinely uncertain and the secondary is worth its call. Other source
+// kinds (the clean emulator crop, a replay clip) keep the ocr package's 0.6
+// default, which is the right bar for pixels that do not carry analog noise.
+const v4l2FallbackConfThreshold = 0.85
 
 // difficultFontIn reports whether one of the session's regions flags
 // difficult_font in its ocr_settings — the profile-level flag ADR-0040
@@ -765,6 +843,32 @@ func difficultFontIn(regions []games.Region) bool {
 		}
 	}
 	return false
+}
+
+// fallbackConfThresholdIn reports the confidence threshold a region names in
+// its ocr_settings — the profile-level override ADR-0115 §4 stores as the
+// {"fallback_confidence_threshold": <float>} member of the regions.ocr_settings
+// JSON object, the same home as ADR-0040's difficult_font. It wins over the
+// process env default and the per-source default. The first region that names a
+// value in (0,1] is returned; malformed ocr_settings reads as "no value" (0),
+// the same discipline difficultFontIn applies, so the recognition path must not
+// fail a session over a store-shape surprise it did not cause.
+func fallbackConfThresholdIn(regions []games.Region) float64 {
+	for _, r := range regions {
+		if len(r.OCRSettings) == 0 {
+			continue
+		}
+		var s struct {
+			FallbackConfidenceThreshold float64 `json:"fallback_confidence_threshold"`
+		}
+		if err := json.Unmarshal(r.OCRSettings, &s); err != nil {
+			continue
+		}
+		if s.FallbackConfidenceThreshold > 0 && s.FallbackConfidenceThreshold <= 1 {
+			return s.FallbackConfidenceThreshold
+		}
+	}
+	return 0
 }
 
 // trackerConfig takes the caller's explicit settings when given, otherwise
@@ -1147,14 +1251,16 @@ func (m *Manager) Resume(id string) (Info, error) {
 }
 
 // SetSettings applies the operator's mid-session policy (docs/spec/08
-// "…/settings", docs/spec/09 "/play"): the decision mode and the narrated
-// classes. The body is partial (a nil field keeps its current value); the
-// merged request is validated against the documented vocabulary (mode is the
-// Mode* constants, the classes are games.TextKind words), and a request that
-// names the state the session already has is a no-op — no control message, no
-// event — because a settings message is an operator-visible change, and one
-// that changed nothing would be a lie in the event log. The answer is the
-// session's fresh snapshot, which carries the applied mode and classes.
+// "…/settings", docs/spec/09 "/play"): the decision mode, the narrated
+// classes and the speech side's catch-up narration policy (issue #25).
+// The body is partial (a nil field keeps its current value); the merged
+// request is validated against the documented vocabulary (mode is the
+// Mode* constants, the classes are games.TextKind words, catch_up is the
+// session policy's word), and a request that names the state the session
+// already has is a no-op — no control message, no event — because a
+// settings message is an operator-visible change, and one that changed
+// nothing would be a lie in the event log. The answer is the session's
+// fresh snapshot, which carries the applied mode, classes and policy.
 func (m *Manager) SetSettings(id string, body SessionSettings) (Info, error) {
 	sess, err := m.runningSession(id)
 	if err != nil {
@@ -1185,10 +1291,19 @@ func (m *Manager) SetSettings(id string, body SessionSettings) (Info, error) {
 		}
 	}
 
+	catchUp := cur.CatchUp
+	if body.CatchUp != nil && *body.CatchUp != "" {
+		if _, err := ses.ValidateCatchUpPolicy(*body.CatchUp); err != nil {
+			return Info{}, fmt.Errorf("%w: %v", ErrInvalidSessionSettings, err)
+		}
+		catchUp = *body.CatchUp
+	}
+
 	norm := normalizeKinds(kinds)
 	sameMode := mode == cur.Mode
 	sameKinds := sameKinds(norm, cur.NarratedClasses)
-	if sameMode && sameKinds {
+	sameCatchUp := catchUp == cur.CatchUp
+	if sameMode && sameKinds && sameCatchUp {
 		return sess.Snapshot(), nil // the session already has this policy
 	}
 
@@ -1199,6 +1314,7 @@ func (m *Manager) SetSettings(id string, body SessionSettings) (Info, error) {
 		Settings: ses.Settings{
 			Predictive:    predictive,
 			NarratedKinds: norm,
+			CatchUp:       catchUp,
 		},
 	}) {
 		return Info{}, fmt.Errorf("%w: the session's writer is not accepting controls", ErrSessionNotRunning)
@@ -1207,6 +1323,7 @@ func (m *Manager) SetSettings(id string, body SessionSettings) (Info, error) {
 	if sess.info.State == StateRunning || sess.info.State == StateStarting {
 		sess.info.Mode = mode
 		sess.info.NarratedClasses = norm
+		sess.info.CatchUp = catchUp
 	}
 	sess.mu.Unlock()
 	return sess.Snapshot(), nil

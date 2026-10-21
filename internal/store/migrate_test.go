@@ -157,6 +157,58 @@ func TestMigrateRefusesUnknownRecordedVersion(t *testing.T) {
 	}
 }
 
+// TestMigrateErrorsNameTheDatabaseFile is the issue #31 gate: every migration
+// failure Migrate returns — the checksum mismatch, the recorded version the
+// build has no file for, and the embedded-loader failure (a gap) — names the
+// database file it was run against, so a process that opened the wrong data
+// directory says which one it was. The checksum error must still wrap the
+// sentinel for errors.Is (doctor's storage.database row matches on it).
+func TestMigrateErrorsNameTheDatabaseFile(t *testing.T) {
+	s := migratedStore(t)
+	ctx := testCtx(t)
+
+	// 1. The tamper path: an applied migration whose embedded file drifted.
+	mustExec(t, s.db, `UPDATE schema_migrations SET checksum = ? WHERE version = 1`, strings.Repeat("0", 64))
+	_, err := s.Migrate(ctx)
+	if err == nil {
+		t.Fatal("Migrate accepted a checksum mismatch")
+	}
+	if !errors.Is(err, ErrChecksumMismatch) {
+		t.Fatalf("Migrate error = %v, want errors.Is(ErrChecksumMismatch)", err)
+	}
+	if !strings.Contains(err.Error(), s.Path()) {
+		t.Fatalf("checksum error does not name the database file %s: %v", s.Path(), err)
+	}
+
+	// 2. The rollback path: a recorded version this build has no file for.
+	mustExec(t, s.db,
+		`INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (99, '0099_future.sql', ?, ?)`,
+		strings.Repeat("f", 64), nowRFC3339())
+	_, err = s.Migrate(ctx)
+	if err == nil {
+		t.Fatal("Migrate accepted a version this build has no file for")
+	}
+	if !strings.Contains(err.Error(), s.Path()) {
+		t.Fatalf("unknown-version error does not name the database file %s: %v", s.Path(), err)
+	}
+
+	// 3. The embedded-loader path (a gap) through the loadMigrations seam:
+	// the shipped sequence is dense by construction, so this is the only way
+	// to exercise the wrapped error without corrupting the build's own files.
+	orig := loadMigrations
+	loadMigrations = func() ([]Migration, error) {
+		return nil, errors.New("embedded migration sequence has a gap: 0002_a.sql (version 2) follows version 1")
+	}
+	t.Cleanup(func() { loadMigrations = orig })
+	_, err = s.Migrate(ctx)
+	if err == nil {
+		t.Fatal("Migrate accepted a failing embedded loader")
+	}
+	if !strings.Contains(err.Error(), s.Path()) {
+		t.Fatalf("loader error does not name the database file %s: %v", s.Path(), err)
+	}
+}
+
 // TestApplyMigrationRollsBackCompletely is the interrupted-migration case from
 // docs/spec/02 "Migration and backup acceptance": a file that fails halfway
 // must leave neither objects nor a bookkeeping row behind.

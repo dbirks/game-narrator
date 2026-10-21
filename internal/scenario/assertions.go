@@ -21,7 +21,7 @@ func parseAssertions(items []*ynode) ([]Assertion, error) {
 			return nil, fmt.Errorf("line %d: assertion %d: type is required (string)", item.line, i+1)
 		}
 		if !knownAssertionTypes[typ] {
-			return nil, fmt.Errorf("line %d: unknown assertion type %q (known: message_detected, message_committed_count, speech_cancelled, no_duplicate_commit, no_stale_generation_applied, events_order, no_stale_speech, no_duplicate_speech, late_result_discarded, duplicate_result_discarded, no_voice_substitution, fault_count, committed_only, committed_kind, provider_degraded)", line, typ)
+			return nil, fmt.Errorf("line %d: unknown assertion type %q (known: message_detected, message_committed_count, speech_cancelled, no_duplicate_commit, no_stale_generation_applied, events_order, no_stale_speech, no_duplicate_speech, late_result_discarded, duplicate_result_discarded, no_voice_substitution, fault_count, committed_only, committed_kind, provider_degraded, speech_spoken_count, speech_merged, speech_skipped)", line, typ)
 		}
 		a := Assertion{Type: typ, Line: line}
 		allowed := allowedFields[typ]
@@ -78,6 +78,17 @@ func parseAssertions(items []*ynode) ([]Assertion, error) {
 					}
 					a.Names = append(a.Names, n.str)
 				}
+			case "message_ids":
+				v, l, ok := item.listAt(k)
+				if !ok || len(v) == 0 {
+					return nil, fmt.Errorf("line %d: message_ids must be a non-empty list of message ids", l)
+				}
+				for j, n := range v {
+					if n.kind != yscalar || n.str == "" {
+						return nil, fmt.Errorf("line %d: message_ids[%d] must be a non-empty message id", n.line, j)
+					}
+					a.MessageIDs = append(a.MessageIDs, n.str)
+				}
 			case "voice":
 				v, l, ok := item.scalarStr(k)
 				if !ok || v == "" {
@@ -114,9 +125,14 @@ func parseAssertions(items []*ynode) ([]Assertion, error) {
 			if !item.hasKey("max_delay_ms") {
 				return nil, fmt.Errorf("line %d: max_delay_ms is required for message_detected", line)
 			}
-		case "message_committed_count", "speech_cancelled":
+		case "message_committed_count", "speech_cancelled", "speech_spoken_count", "speech_skipped":
 			if !item.hasKey("count") {
 				return nil, fmt.Errorf("line %d: count is required for %s", line, typ)
+			}
+			if typ == "speech_spoken_count" || typ == "speech_skipped" {
+				if a.MessageID == "" {
+					return nil, fmt.Errorf("line %d: message_id is required for %s", line, typ)
+				}
 			}
 		case "events_order":
 			if len(a.Names) == 0 {
@@ -151,6 +167,10 @@ func parseAssertions(items []*ynode) ([]Assertion, error) {
 		case "provider_degraded":
 			if a.Role == "" {
 				return nil, fmt.Errorf("line %d: role is required for %s", line, typ)
+			}
+		case "speech_merged":
+			if len(a.MessageIDs) == 0 {
+				return nil, fmt.Errorf("line %d: message_ids is required for %s", line, typ)
 			}
 		}
 		out = append(out, a)

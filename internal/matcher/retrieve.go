@@ -1,6 +1,7 @@
 package matcher
 
 import (
+	"math"
 	"sort"
 	"strings"
 
@@ -157,7 +158,40 @@ func (r *ranker) run(obs Observation) Ranking {
 		return Ranking{Reason: ReasonAbstained, Abstain: true}
 	}
 
-	r.obsKey = r.idx.fold.Normalize(r.obs.Text)
+	// The box-edge trim (ADR-0115 §2): rank the trimmed reading as well when it
+	// differs from the raw one, and keep the ranking whose top candidate's raw
+	// score is higher. Ties keep the raw reading — the trim is evidence that may
+	// help (border noise off the line), never a rewrite that may hurt (a line
+	// that legitimately begins with a one-letter word still wins on its exact
+	// raw match).
+	rawRank := r.rankText(r.obs.Text)
+	if trimmed := TrimEdgeNoise(r.obs.Text); trimmed != r.obs.Text {
+		if trimRank := r.rankText(trimmed); topRaw(trimRank) > topRaw(rawRank) {
+			return trimRank
+		}
+	}
+	return rawRank
+}
+
+// topRaw is a ranking's top candidate's raw (pre-softmax) score, or -Inf when
+// the ranking found no candidates at all, so a candidate-bearing ranking always
+// beats an abstention on the raw-versus-trimmed comparison.
+func topRaw(rank Ranking) float64 {
+	if len(rank.Candidates) == 0 {
+		return math.Inf(-1)
+	}
+	return rank.Candidates[0].Score
+}
+
+// rankText folds and ranks one reading. run calls it with the raw text and, when
+// the box-edge trim changes the reading, with the trimmed text; it owns the
+// per-reading query state (the folded key, its runes and hashes, and the
+// candidate pool) that retrieve and decide read.
+func (r *ranker) rankText(text string) Ranking {
+	if text == "" || nonSpaceLen(text) == 0 {
+		return Ranking{Reason: ReasonAbstained, Abstain: true}
+	}
+	r.obsKey = r.idx.fold.Normalize(text)
 	if r.obsKey == "" {
 		// The whole observation was punctuation or an artifact the folder removed.
 		return Ranking{Reason: ReasonAbstained, Abstain: true}

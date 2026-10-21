@@ -120,10 +120,11 @@ func (r *Runner) reduceLoop(ctx context.Context, red *session.Reducer, in <-chan
 	next := func() int64 { seq++; return seq }
 
 	head := &reducerState{
-		ranked:   map[string]string{},
-		lifetime: map[string]uint64{},
-		byRegion: map[string]int64{},
-		anchors:  map[string]*anchor{},
+		ranked:     map[string]string{},
+		lifetime:   map[string]uint64{},
+		byRegion:   map[string]int64{},
+		anchors:    map[string]*anchor{},
+		escalation: map[string]*escalationState{},
 	}
 
 	var (
@@ -291,6 +292,24 @@ type reducerState struct {
 	lifetime map[string]uint64
 	byRegion map[string]int64 // region → last applied ObservationMsg.Seq
 	anchors  map[string]*anchor
+	// escalation is the per-region retry state for uncertain rankings
+	// (ADR-0115 §1): the key being escalated, the occurrence's box lifetime,
+	// how many rankings have gone out for it, and when the previous attempt's
+	// reply landed (the retry's cadence is measured from there).
+	escalation map[string]*escalationState
+}
+
+// escalationState is one occurrence's (box lifetime + normalized text) bounded
+// retry budget (ADR-0115 §1): the first ranking is attempt one, and while the
+// occurrence's ranking keeps coming back uncertain — the session policy's
+// NeedsAdjudication — later stable observations re-rank it once per
+// EscalationRetryAfter of source time until the attempts run out or the box's
+// lifetime or text changes.
+type escalationState struct {
+	key      string
+	lifetime uint64
+	attempts int
+	lastAt   time.Time
 }
 
 // applyObservation applies one observation and, when the box's state says the
@@ -361,14 +380,33 @@ func (r *Runner) maybeRank(ctx context.Context, red *session.Reducer, head *redu
 			// same (docs/spec/12 "repeat NPC after menu"), so the key dedupe resets.
 			head.lifetime[rs.RegionID] = rs.Lifetime
 			head.ranked[rs.RegionID] = ""
+			head.escalation[rs.RegionID] = nil
 		}
 		if head.ranked[rs.RegionID] == rs.NormalizedKey {
-			continue // this exact reading has already been answered
+			// This exact reading has already been answered — unless its answer was
+			// uncertain and the escalation budget still has an attempt (ADR-0115
+			// §1): the retry is the same key re-dispatched on the retry's own
+			// cadence, bounded in attempts.
+			esc := head.escalation[rs.RegionID]
+			if esc == nil || esc.key != rs.NormalizedKey ||
+				esc.attempts >= r.cfg.EscalationMaxAttempts ||
+				r.cfg.Now().Sub(esc.lastAt) < r.cfg.EscalationRetryAfter {
+				continue
+			}
 		}
 		if !gate.close() {
 			continue
 		}
 		head.ranked[rs.RegionID] = rs.NormalizedKey
+		// The attempt bookkeeping (ADR-0115 §1): a re-dispatch of the same key
+		// under the same lifetime consumes the next attempt; anything else — a
+		// fresh occurrence, a changed key after a fenced reply — starts a new
+		// budget at attempt one.
+		if esc := head.escalation[rs.RegionID]; esc != nil && esc.key == rs.NormalizedKey && esc.lifetime == rs.Lifetime {
+			esc.attempts++
+		} else {
+			head.escalation[rs.RegionID] = &escalationState{key: rs.NormalizedKey, lifetime: rs.Lifetime, attempts: 1}
+		}
 
 		req := rankRequest{
 			region:      rs.RegionID,
@@ -432,6 +470,9 @@ func (r *Runner) applyRanking(ctx context.Context, red *session.Reducer, head *r
 			// Without this the pipeline would refuse to re-rank a box whose one
 			// retrieval was refused, and would go silent for the rest of that line.
 			head.ranked[rk.req.region] = ""
+			// The escalation budget goes with the reset: the fenced reply's
+			// occurrence is re-asked as a fresh one, on a fresh budget.
+			head.escalation[rk.req.region] = nil
 		}
 		return res, r.bookRanking(rk, res)
 	}
@@ -440,6 +481,20 @@ func (r *Runner) applyRanking(ctx context.Context, red *session.Reducer, head *r
 	if rk.rank.Abstain {
 		r.cnt.rankingAbstained()
 		r.metrics.RankingAbstained(r.mLabels)
+	}
+	// The escalation bookkeeping (ADR-0115 §1), at the reply — the one place
+	// the attempt's fate is known: a commit settles the occurrence; a
+	// confident ranking settles it the same way the key dedupe always has;
+	// only an uncertain ranking without a commit keeps its budget, stamped
+	// with the reply time so the next attempt's cadence is measured from
+	// here.
+	switch {
+	case countCommits(res.Events) > 0 || !r.cfg.Reducer.NeedsAdjudication(rk.rank):
+		head.escalation[rk.req.region] = nil
+	default:
+		if esc := head.escalation[rk.req.region]; esc != nil {
+			esc.lastAt = r.cfg.Now()
+		}
 	}
 	if !rk.req.ocrAt.IsZero() {
 		r.cnt.ocrRank.observe(rk.at.Sub(rk.req.ocrAt))

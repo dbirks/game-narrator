@@ -14,6 +14,7 @@ package api
 // exact routes.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/games"
+	"github.com/dbirks/game-narrator/internal/jobs"
 	"github.com/dbirks/game-narrator/internal/store"
 )
 
@@ -55,8 +57,65 @@ type jobAttemptDTO struct {
 }
 
 type jobListResponse struct {
-	Jobs       []jobDTO `json:"jobs"`
-	NextCursor string   `json:"next_cursor,omitempty"`
+	Jobs []jobDTO `json:"jobs"`
+	// JobsPaused is the page-level foreground-pause object (ADR-0119,
+	// issue #27): present only while the pause is active, so a poller of
+	// the queue sees in the same round trip the pause that holds the
+	// queued rows it lists. Absent when the box is not pausing anything —
+	// or when this process has no runner wired — and never a zeroed
+	// object, which would read as "paused at the zero instant".
+	JobsPaused *JobPause `json:"jobs_paused,omitempty"`
+	NextCursor string    `json:"next_cursor,omitempty"`
+}
+
+// jobPauseByLiveSession is the paused_by value the API writes for the
+// foreground pause (ADR-0119, issue #27): today the live session is the only
+// caller of the runner's foreground-busy switch, and the enum-shaped value
+// leaves a second pausing subsystem room without a shape change. The OpenAPI
+// enum test pins the document to this constant.
+const jobPauseByLiveSession = "live_session"
+
+// JobPause is the foreground-pause object the job list and the status
+// snapshot expose (ADR-0119, issue #27): the same {paused_by, since,
+// queued_count} in both places an operator or an agent polls the queue,
+// so the pause is never only in the server log.
+type JobPause struct {
+	// PausedBy names the subsystem holding the queue's foreground budget.
+	// Today the live session (docs/spec/01 invariant 1) is the only
+	// caller of the runner's foreground-busy switch; the enum-shaped value
+	// leaves a second pausing subsystem room without a shape change.
+	PausedBy string `json:"paused_by"`
+	// Since is when the pause began (RFC 3339, UTC).
+	Since string `json:"since"`
+	// QueuedCount is the number of queued jobs the pause is holding: a
+	// read of the queue at answer time, the database's count, never a
+	// counter the worker pool keeps.
+	QueuedCount int64 `json:"queued_count"`
+}
+
+// jobPauseReporter is the seam the job list and the status snapshot read
+// the foreground pause through (ADR-0119, issue #27). *jobs.Runner
+// satisfies it with ForegroundPause; a test wires a fake of the same shape.
+type jobPauseReporter interface {
+	ForegroundPause(ctx context.Context) jobs.ForegroundPause
+}
+
+// jobPauseView reads the seam once and shapes it for the wire: nil when the
+// pause is not active (or the seam is unwired), so the callers only attach
+// the object while it is true.
+func (s *Server) jobPauseView(ctx context.Context) *JobPause {
+	if s.jobRunner == nil {
+		return nil
+	}
+	p := s.jobRunner.ForegroundPause(ctx)
+	if !p.Paused {
+		return nil
+	}
+	return &JobPause{
+		PausedBy:    jobPauseByLiveSession,
+		Since:       p.Since.UTC().Format(time.RFC3339),
+		QueuedCount: p.Queued,
+	}
 }
 
 // jobDetailResponse adds the attempt history: the crash evidence
@@ -143,7 +202,7 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	out := jobListResponse{Jobs: make([]jobDTO, 0, len(jobs)), NextCursor: next}
+	out := jobListResponse{Jobs: make([]jobDTO, 0, len(jobs)), NextCursor: next, JobsPaused: s.jobPauseView(r.Context())}
 	for i := range jobs {
 		out.Jobs = append(out.Jobs, toJobDTO(&jobs[i]))
 	}

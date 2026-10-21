@@ -6,12 +6,14 @@ package store
 // is synthetic text typed into the test (AGENTS.md rule 5).
 
 import (
+	"database/sql"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/games"
+	"github.com/dbirks/game-narrator/internal/speech"
 )
 
 func TestSetGameDisabledTogglesTheGameRow(t *testing.T) {
@@ -714,6 +716,78 @@ func TestDeleteSpeechCacheRowsForMessages(t *testing.T) {
 	if n, blobs, err := f.s.DeleteSpeechCacheRowsForMessages(ctx, nil); err != nil || n != 0 || len(blobs) != 0 {
 		t.Errorf("empty deletion = (%d, %v, %v), want a no-op", n, blobs, err)
 	}
+}
+
+// TestDeleteSpeechCacheRowsForMergedMessages is the merged half of the purge's
+// cache addressing (issue #25, ADR-0122): a merged run's row is addressed
+// through its versioned id-list, so the delete must find it by segment — and
+// only by whole segment (an id that is a prefix of a foreign id's segment
+// cannot take that row down), and only when one of its segments is named.
+func TestDeleteSpeechCacheRowsForMergedMessages(t *testing.T) {
+	f := newRepoFixture(t)
+	ctx := f.ctx
+	b := f.bundle(2)
+	b.put(f)
+	past := nowRFC3339()
+	insert := func(key, sha, omid string) {
+		mustExec(t, f.s.db,
+			`INSERT INTO speech_cache (key, sha256, size_bytes, duration_ns, sample_rate, qa_state, key_version, created_at, accessed_at, original_message_id)
+			 VALUES (?, ?, 4096, 100000000, 24000, 1, 1, ?, ?, ?)`,
+			key, sha, past, past, omid)
+	}
+	// A merged row covering both of the bundle's messages (the batch's shape),
+	// a merged row that names a foreign message instead, and a plain row the
+	// exact-match delete alone would take.
+	mergedBoth := speech.MergedOriginalID([]string{b.Messages[0].ID, b.Messages[1].ID})
+	foreign := "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+	insert(strings.Repeat("a", 64), shaC, mergedBoth)
+	insert(strings.Repeat("b", 64), shaD, speech.MergedOriginalID([]string{foreign}))
+	insert(strings.Repeat("c", 64), shaE, b.Messages[0].ID)
+
+	// Naming either of the bundle's messages takes the merged-both row and the
+	// plain row, and leaves the foreign one standing.
+	n, blobs, err := f.s.DeleteSpeechCacheRowsForMessages(ctx, []string{b.Messages[0].ID})
+	if err != nil {
+		t.Fatalf("DeleteSpeechCacheRowsForMessages: %v", err)
+	}
+	if n != 2 || len(blobs) != 2 {
+		t.Fatalf("deletion report = (%d, %v), want (2, [shaC shaE])", n, blobs)
+	}
+	if got := rowsOf(t, f.s.db); len(got) != 1 || got[0] != shaD {
+		t.Errorf("surviving rows = %v, want the foreign merged row alone", got)
+	}
+
+	// The second message names the same merged row: it is gone, and the
+	// deletion reports nothing new.
+	if n, _, err := f.s.DeleteSpeechCacheRowsForMessages(ctx, []string{b.Messages[1].ID}); err != nil || n != 0 {
+		t.Errorf("second deletion = (%d, %v), want a no-op on the taken row", n, err)
+	}
+
+	// A prefix of a segment is not the segment: an id that is a prefix of the
+	// foreign id's segment addresses nothing.
+	if n, blobs, err := f.s.DeleteSpeechCacheRowsForMessages(ctx, []string{foreign[:10]}); err != nil || n != 0 || len(blobs) != 0 {
+		t.Errorf("prefix deletion = (%d, %v, %v), want a no-op (whole-segment match only)", n, blobs, err)
+	}
+}
+
+// rowsOf returns the surviving speech_cache rows' sha256, oldest first, for
+// the purge tests' assertions.
+func rowsOf(t *testing.T, db *sql.DB) []string {
+	t.Helper()
+	rows, err := db.Query(`SELECT sha256 FROM speech_cache ORDER BY created_at, key`)
+	if err != nil {
+		t.Fatalf("rowsOf: %v", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var sha string
+		if err := rows.Scan(&sha); err != nil {
+			t.Fatalf("rowsOf: %v", err)
+		}
+		out = append(out, sha)
+	}
+	return out
 }
 
 var (

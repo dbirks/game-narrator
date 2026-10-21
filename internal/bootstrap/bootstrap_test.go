@@ -99,6 +99,100 @@ func TestResolveDataDirPrecedence(t *testing.T) {
 	}
 }
 
+// TestResolveDataDirWithSourcePrecedence pins the origin half of the same
+// precedence chain: the directory must agree with ResolveDataDir and the
+// source must say which setting won (issue #31: the startup log and doctor
+// report this so a run that fell back to the default is visible, ADR-0126).
+func TestResolveDataDirWithSourcePrecedence(t *testing.T) {
+	cases := []struct {
+		name       string
+		flag       string
+		env        map[string]string
+		wantDir    string
+		wantSource DataDirSource
+	}{
+		{
+			name:       "flag wins over env and is flagged",
+			flag:       "/srv/from-flag",
+			env:        map[string]string{EnvDataDir: "/srv/from-env", EnvXDGDataHome: "/xdg", EnvHome: "/home/tester"},
+			wantDir:    "/srv/from-flag",
+			wantSource: DataDirSourceFlag,
+		},
+		{
+			name:       "env wins over XDG and is env-sourced",
+			flag:       "",
+			env:        map[string]string{EnvDataDir: "/srv/from-env", EnvXDGDataHome: "/xdg", EnvHome: "/home/tester"},
+			wantDir:    "/srv/from-env",
+			wantSource: DataDirSourceEnv,
+		},
+		{
+			name:       "XDG fallback is a default",
+			flag:       "",
+			env:        map[string]string{EnvXDGDataHome: "/xdg", EnvHome: "/home/tester"},
+			wantDir:    "/xdg/game-narrator",
+			wantSource: DataDirSourceDefault,
+		},
+		{
+			name:       "HOME fallback is a default",
+			flag:       "",
+			env:        map[string]string{EnvHome: "/home/tester"},
+			wantDir:    "/home/tester/.local/share/game-narrator",
+			wantSource: DataDirSourceDefault,
+		},
+		{
+			name:       "blank flag falls through to the env",
+			flag:       "   ",
+			env:        map[string]string{EnvDataDir: "/srv/from-env"},
+			wantDir:    "/srv/from-env",
+			wantSource: DataDirSourceEnv,
+		},
+		{
+			name:       "blank env falls through to the XDG default",
+			flag:       "",
+			env:        map[string]string{EnvDataDir: "  ", EnvXDGDataHome: "/xdg"},
+			wantDir:    "/xdg/game-narrator",
+			wantSource: DataDirSourceDefault,
+		},
+		{
+			name:       "unresolvable reports the default source and an empty dir",
+			flag:       "",
+			env:        map[string]string{},
+			wantDir:    "",
+			wantSource: DataDirSourceDefault,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, source := ResolveDataDirWithSource(tc.flag, envMap(tc.env))
+			if dir != tc.wantDir {
+				t.Fatalf("ResolveDataDirWithSource(%q) dir = %q, want %q", tc.flag, dir, tc.wantDir)
+			}
+			if source != tc.wantSource {
+				t.Fatalf("source = %q, want %q", source, tc.wantSource)
+			}
+			// The legacy entry point must keep resolving the same directory.
+			if got := ResolveDataDir(tc.flag, envMap(tc.env)); got != dir {
+				t.Fatalf("ResolveDataDir = %q, want the same directory %q", got, dir)
+			}
+		})
+	}
+
+	// LoadConfig records the source on the config it returns.
+	for flag, want := range map[string]DataDirSource{
+		"/srv/from-flag": DataDirSourceFlag,
+		"":               DataDirSourceEnv,
+	} {
+		cfg, err := LoadConfig("127.0.0.1:18080", flag, envMap(map[string]string{EnvDataDir: "/srv/from-env", EnvHome: "/home/tester"}))
+		if err != nil {
+			t.Fatalf("LoadConfig(%q): %v", flag, err)
+		}
+		if cfg.DataDirSource != want {
+			t.Fatalf("LoadConfig(flag %q).DataDirSource = %q, want %q", flag, cfg.DataDirSource, want)
+		}
+	}
+}
+
 func TestLoadConfigResolvesDataDir(t *testing.T) {
 	cfg, err := LoadConfig("127.0.0.1:18080", "/srv/game-narrator", envMap(map[string]string{EnvDataDir: "/ignored"}))
 	if err != nil {

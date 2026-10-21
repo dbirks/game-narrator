@@ -62,6 +62,33 @@ const (
 	// DefaultInboundQueue bounds the reducer's inbound mailbox (observations and
 	// ranking replies share it, so one sequence space fences them — see Runner).
 	DefaultInboundQueue = 256
+
+	// DefaultEscalationRetryAfter is the source-clock interval between escalation
+	// attempts for one uncertain occurrence (ADR-0115 §1): ten seconds is the
+	// measured settle time of a stable box's reads (a correct line re-OCR'd every
+	// 2–4 s on the 2026-10-20 feed), so the re-ask lands after the noise settles
+	// and never in the middle of it.
+	DefaultEscalationRetryAfter = 10 * time.Second
+	// DefaultEscalationMaxAttempts bounds one occurrence's total rankings
+	// (first attempt included, ADR-0115 §1): three attempts at a ten-second
+	// cadence is the docs/spec/06 budget applied to escalation — enough for a
+	// slow Clef to land twice more, bounded against a line that simply will not
+	// resolve.
+	DefaultEscalationMaxAttempts = 3
+	// DefaultDecisionCandidates is the top-k the escalation's decision request
+	// offers the Decider (ADR-0115 §1): five is the shortlist the bundled
+	// adjudication questions render, and it stays under the provider's own
+	// option cap without crowding the speaker question's options out of it.
+	DefaultDecisionCandidates = 5
+	// DefaultPerceptualSkipSettle is the quiet-run length before the perceptual
+	// skip arms (ADR-0115 §3): the skip requires this many consecutive crops
+	// within tolerance of the region's last read before it stops re-reading.
+	// The settle is the guard a single distance cannot give — on a 9×8 grid a
+	// one-word typewriter growth moves 0–7 bits, inside the noise tolerance,
+	// so "within tolerance" alone cannot tell a noisy stable box from a line
+	// still typing; three quiet crops in a row can, because a line that is
+	// still typing keeps moving.
+	DefaultPerceptualSkipSettle = 3
 )
 
 // ErrNoEngine / ErrNoIndex name the two inputs without which the chain is a
@@ -311,6 +338,45 @@ type Config struct {
 	// superseded text is work the appliance cannot use.
 	MaxRankingJobs int
 
+	// PerceptualSkipTolerance is the Hamming distance, in bits of 64, within
+	// which a new crop counts as perceptually unchanged from the crop the region
+	// last read, so its OCR call is skipped (ADR-0115 §3). The exact-hash skip
+	// stays the zero-tolerance half; this is the tolerant one that an analog
+	// feed — which never delivers two identical crops — needs. Zero takes
+	// vision.DefaultPerceptualTolerance (10: the measured gap between analog
+	// noise and a line change); negative disables the tolerant skip, and the
+	// dedupe key is the exact hash alone.
+	PerceptualSkipTolerance int
+	// PerceptualSkipSettle is the quiet-run length the perceptual skip requires
+	// before it arms (ADR-0115 §3): this many consecutive crops within
+	// PerceptualSkipTolerance of the region's last read, after which further
+	// quiet crops skip. The settle is what keeps the skip from eating a
+	// typewriter: a one-word growth moves 0–7 bits on the 9×8 grid — inside
+	// the tolerance — so tolerance alone cannot tell noise from a line still
+	// typing, while a run of quiet crops can: growth keeps producing changes
+	// beyond the quiet run. Zero takes DefaultPerceptualSkipSettle; 16 (the
+	// clamp) is the most the settle is ever allowed to demand, so a slow
+	// steady-state line cannot spend minutes re-reading itself.
+	PerceptualSkipSettle int
+
+	// EscalationRetryAfter is the source-clock interval between escalation
+	// attempts for one uncertain occurrence (ADR-0115 §1). The first ranking of
+	// an occurrence is attempt one; while the occurrence's ranking stays
+	// uncertain (the session policy's NeedsAdjudication) and attempts remain, a
+	// later stable observation re-ranks it once at least this much source time
+	// has passed since the previous attempt's reply landed. Zero takes
+	// DefaultEscalationRetryAfter.
+	EscalationRetryAfter time.Duration
+	// EscalationMaxAttempts bounds one occurrence's total rankings, first
+	// attempt included. Zero takes DefaultEscalationMaxAttempts; one disables
+	// the retry (one ranking per occurrence, the pre-ADR-0115 behaviour).
+	EscalationMaxAttempts int
+	// DecisionCandidates is the top-k the escalation's decision request offers
+	// the Decider (ADR-0115 §1): the shortlist the model is offered is the
+	// question, and the session's decide still validates the chosen id against
+	// the full local ranking. Zero takes DefaultDecisionCandidates.
+	DecisionCandidates int
+
 	// Presence parameterizes the textbox-present detector.
 	Presence PresenceConfig
 
@@ -548,6 +614,36 @@ func (c Config) normalize() Config {
 	}
 	if c.MaxRankingJobs > 8 {
 		c.MaxRankingJobs = 8
+	}
+	if c.PerceptualSkipTolerance == 0 {
+		c.PerceptualSkipTolerance = vision.DefaultPerceptualTolerance
+	}
+	// Negative disables the tolerant skip (the field says so); anything above
+	// the hash width would skip every crop, which is a misconfiguration with an
+	// obvious intended reading.
+	if c.PerceptualSkipTolerance > 64 {
+		c.PerceptualSkipTolerance = 64
+	}
+	if c.PerceptualSkipSettle <= 0 {
+		c.PerceptualSkipSettle = DefaultPerceptualSkipSettle
+	}
+	if c.PerceptualSkipSettle > 16 {
+		c.PerceptualSkipSettle = 16
+	}
+	if c.EscalationRetryAfter <= 0 {
+		c.EscalationRetryAfter = DefaultEscalationRetryAfter
+	}
+	if c.EscalationMaxAttempts <= 0 {
+		c.EscalationMaxAttempts = DefaultEscalationMaxAttempts
+	}
+	if c.EscalationMaxAttempts > 8 {
+		c.EscalationMaxAttempts = 8
+	}
+	if c.DecisionCandidates <= 0 {
+		c.DecisionCandidates = DefaultDecisionCandidates
+	}
+	if c.DecisionCandidates > 15 {
+		c.DecisionCandidates = 15
 	}
 	c.Presence = c.Presence.normalize()
 	c.Preprocess = c.Preprocess.Clamp()

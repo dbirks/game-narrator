@@ -200,3 +200,35 @@ func TestClampTreatsNonFiniteAsNoEvidence(t *testing.T) {
 		t.Error("truncateBounds split a rune")
 	}
 }
+
+// TestTrimEdgeNoise pins the box-edge trim's bounds (ADR-0115 §2): at most two
+// short tokens per side, unicode-aware, and the trim must never eat the line.
+func TestTrimEdgeNoise(t *testing.T) {
+	cases := []struct{ in, want string }{
+		// The live noise shapes: border glyphs at the head, a digit at the tail.
+		{"4 $o? We sail for the Gull-King's rock on the morning tide.", "We sail for the Gull-King's rock on the morning tide."},
+		{"i We sail for the Gull-King's rock. 5", "sail for the Gull-King's rock."},
+		// Two short tokens per side is the bound, and the two-rune rule covers
+		// real short words too: the raw-versus-trimmed comparison in the
+		// scorer is what protects them, not the trim.
+		{"a b long word here c d", "long word here"},
+		{"ab cd long word here ef", "long word here"},
+		// A three-rune all-letter word is not border noise ("$o?" has its
+		// letters mixed with marks): nothing is dropped.
+		{"The crew argues.", "The crew argues."},
+		// A single-token reading has nothing to trim against.
+		{"Yes.", "Yes."},
+		// The trim must not eat the line: all-noise keeps the original.
+		{"a b", "a b"},
+		{"4 i", "4 i"},
+		// Whitespace is token-boundary only; internal runs fold to single spaces.
+		{"4  i\tWe  sail for the tide.", "We sail for the tide."},
+		// Empty in, empty out.
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := TrimEdgeNoise(c.in); got != c.want {
+			t.Errorf("TrimEdgeNoise(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

@@ -182,7 +182,7 @@ func TestReplayOCRTimeoutRetriesAndCommitsUnchanged(t *testing.T) {
 	}
 
 	sc, truth := clipScenario(t)
-	speechEvs := runSpeechSidecar(t, profileIndex(t), truth)
+	speechEvs := runSpeechSidecar(t, profileIndex(t), truth, sc.CatchUp)
 	rep := sc.Evaluate(append(evs, speechEvs...), st, truth)
 	for _, r := range rep.Results {
 		if !r.Passed {
@@ -232,7 +232,7 @@ func TestReplayOCRAlwaysFailingFrameIsNamedAndFailsTheReport(t *testing.T) {
 	}
 
 	sc, truth := clipScenario(t)
-	speechEvs := runSpeechSidecar(t, profileIndex(t), truth)
+	speechEvs := runSpeechSidecar(t, profileIndex(t), truth, sc.CatchUp)
 	rep := sc.Evaluate(append(evs, speechEvs...), st, truth)
 	if rep.Passed {
 		t.Fatalf("a replay that lost frame %d's OCR read must fail the report: %+v", lost, rep.Results)

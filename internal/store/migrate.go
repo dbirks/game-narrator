@@ -44,6 +44,12 @@ const schemaMigrationsDDL = `CREATE TABLE IF NOT EXISTS ` + schemaMigrationsTabl
 // file no longer hashes to the checksum recorded in the database.
 var ErrChecksumMismatch = errors.New("checksum mismatch")
 
+// loadMigrations is the embedded-migration loader Migrate uses. It is a seam:
+// the embedded set is dense by construction, so the wrapped error path (a
+// loader failure naming the database, issue #31) is exercised through this
+// pointer rather than by corrupting the build's own migrations.
+var loadMigrations = Migrations
+
 // Migration is one embedded, numbered SQL file.
 type Migration struct {
 	Version int
@@ -59,7 +65,7 @@ type Migration struct {
 func Migrations() ([]Migration, error) {
 	entries, err := fs.ReadDir(migrationFS, migrationsDir)
 	if err != nil {
-		return nil, fmt.Errorf("store: read embedded migrations: %w", err)
+		return nil, fmt.Errorf("read embedded migrations: %w", err)
 	}
 	var out []Migration
 	for _, e := range entries {
@@ -68,15 +74,15 @@ func Migrations() ([]Migration, error) {
 		}
 		m := migrationFilePattern.FindStringSubmatch(e.Name())
 		if m == nil {
-			return nil, fmt.Errorf("store: migration file %q does not match NNNN_name.sql", e.Name())
+			return nil, fmt.Errorf("migration file %q does not match NNNN_name.sql", e.Name())
 		}
 		version, err := strconv.Atoi(m[1])
 		if err != nil {
-			return nil, fmt.Errorf("store: migration file %q has an unreadable version: %w", e.Name(), err)
+			return nil, fmt.Errorf("migration file %q has an unreadable version: %w", e.Name(), err)
 		}
 		raw, err := migrationFS.ReadFile(migrationsDir + "/" + e.Name())
 		if err != nil {
-			return nil, fmt.Errorf("store: read %s: %w", e.Name(), err)
+			return nil, fmt.Errorf("read %s: %w", e.Name(), err)
 		}
 		sum := sha256.Sum256(raw)
 		out = append(out, Migration{
@@ -94,9 +100,9 @@ func Migrations() ([]Migration, error) {
 	for i, mig := range out {
 		if mig.Version != i+1 {
 			if i == 0 {
-				return nil, fmt.Errorf("store: first embedded migration is version %d (%s), want 1", mig.Version, mig.Name)
+				return nil, fmt.Errorf("first embedded migration is version %d (%s), want 1", mig.Version, mig.Name)
 			}
-			return nil, fmt.Errorf("store: embedded migration sequence has a gap: %s (version %d) follows version %d",
+			return nil, fmt.Errorf("embedded migration sequence has a gap: %s (version %d) follows version %d",
 				mig.Name, mig.Version, out[i-1].Version)
 		}
 	}
@@ -137,6 +143,14 @@ type appliedMigration struct {
 	checksum string
 }
 
+// migrationError names the database file a migration failure concerns, so a
+// process that opened the wrong data directory says which database it was
+// (issue #31: neither the startup log nor the error named the file). The %w
+// keeps sentinels such as ErrChecksumMismatch matchable with errors.Is.
+func (s *Store) migrationError(err error) error {
+	return fmt.Errorf("store: %s: %w", s.path, err)
+}
+
 // Migrate applies every embedded migration the database has not yet applied,
 // each in its own transaction, and returns their file names in the order they
 // were applied. Running it again is a no-op.
@@ -146,9 +160,9 @@ type appliedMigration struct {
 // no file for): continuing would build assumptions on a schema the code has
 // never seen.
 func (s *Store) Migrate(ctx context.Context) ([]string, error) {
-	migrations, err := Migrations()
+	migrations, err := loadMigrations()
 	if err != nil {
-		return nil, err
+		return nil, s.migrationError(err)
 	}
 
 	if _, err := s.db.ExecContext(ctx, schemaMigrationsDDL); err != nil {
@@ -165,8 +179,8 @@ func (s *Store) Migrate(ctx context.Context) ([]string, error) {
 	}
 	for _, rec := range applied {
 		if _, ok := embedded[rec.version]; !ok {
-			return nil, fmt.Errorf("store: database records schema version %d (%s) but this build has no such migration (max %d); refusing to continue with an older binary",
-				rec.version, rec.name, migrations[len(migrations)-1].Version)
+			return nil, s.migrationError(fmt.Errorf("database records schema version %d (%s) but this build has no such migration (max %d); refusing to continue with an older binary",
+				rec.version, rec.name, migrations[len(migrations)-1].Version))
 		}
 	}
 
@@ -174,13 +188,13 @@ func (s *Store) Migrate(ctx context.Context) ([]string, error) {
 	for _, mig := range migrations {
 		if rec, ok := applied[mig.Version]; ok {
 			if rec.checksum != mig.Checksum {
-				return didApply, fmt.Errorf("store: migration %d (%s): %w: database recorded %s, embedded file hashes %s; applied migrations are immutable, restore a backup or repair the build",
-					mig.Version, mig.Name, ErrChecksumMismatch, rec.checksum, mig.Checksum)
+				return didApply, s.migrationError(fmt.Errorf("migration %d (%s): %w: database recorded %s, embedded file hashes %s; applied migrations are immutable, restore a backup or repair the build",
+					mig.Version, mig.Name, ErrChecksumMismatch, rec.checksum, mig.Checksum))
 			}
 			continue
 		}
 		if err := applyMigration(ctx, s.db, mig); err != nil {
-			return didApply, err
+			return didApply, s.migrationError(err)
 		}
 		didApply = append(didApply, mig.Name)
 	}

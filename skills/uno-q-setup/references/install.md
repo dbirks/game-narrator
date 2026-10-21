@@ -92,6 +92,16 @@ GAME_NARRATOR_REPLAY_ROOTS=/var/lib/game-narrator/replay
 GAME_NARRATOR_CAPTURE_DEVICE=<udev by-id/by-path>       # manual 18 "Choosing the capture mode"
 ```
 
+**Required for user-level runs** (env file plus `setsid nohup game-narrator
+serve`, no systemd unit): `GAME_NARRATOR_DATA_DIR=<data-dir>`. The unit
+pins the data directory itself (`Environment=GAME_NARRATOR_DATA_DIR=/var/lib/game-narrator`),
+so a unit run never needs the line — but outside the unit the run resolves
+the data directory from the environment it was started with, and without
+the line it silently falls back to `$XDG_DATA_HOME/game-narrator` (else
+`~/.local/share/game-narrator`), where a stale database from an older build
+may sit (issue #31: the upgrade died on a checksum mismatch naming a
+database nobody meant to open; the rollback failed the same way).
+
 Protocol notes:
 
 - The **decision role speaks System One** — `systemone` is its default

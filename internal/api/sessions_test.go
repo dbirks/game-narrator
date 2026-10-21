@@ -302,8 +302,14 @@ func newTruthOCR(t *testing.T) *truthOCR {
 		}
 		rgba := image.NewRGBA(img.Bounds())
 		draw.Draw(rgba, rgba.Bounds(), img, img.Bounds().Min, draw.Src)
+		// The crop options must match the session pipeline's recipe (the
+		// letterbox window plus the ADR-0115 §2 inset in particular): a drift
+		// here is a miss on every crop hash and the replay commits nothing —
+		// the options come from runtime.DefaultCropOptions, the one source the
+		// pipeline cuts with (issue #26: the dev-trace replay was cropping
+		// without the inset and answered no script key).
 		for _, reg := range profile.Regions {
-			crop := vision.CropNormalized(rgba, vision.Rect{X: reg.X, Y: reg.Y, W: reg.W, H: reg.H}, vision.CropOptions{})
+			crop := vision.CropNormalized(rgba, vision.Rect{X: reg.X, Y: reg.Y, W: reg.W, H: reg.H}, runtime.DefaultCropOptions())
 			if crop != nil && crop.Bounds().Dx() > 0 {
 				out[vision.ImageHash(vision.Preprocess(crop, vision.DefaultSteps()))] = row.Text
 			}

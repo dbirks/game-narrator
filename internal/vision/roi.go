@@ -38,6 +38,27 @@ type CropOptions struct {
 	// With a nil Tracker the historic stateless behaviour applies, and tests
 	// that call CropNormalized directly are unaffected.
 	Tracker *Tracker
+	// Inset is the number of pixels to cut off the mapped box on every side
+	// (ADR-0115 §2): the textbox's decorative border and speaker icon sit
+	// inside the profile-calibrated rect on a captured feed, and the engine
+	// reads them as noise glyphs ("4 ", "$o?") that poison the match. Zero
+	// (the default) cuts nothing, so every caller that does not name it keeps
+	// the historic cut, and a negative value is read as 0 rather than allowed
+	// to *grow* the box: growing would pull more border into the OCR input,
+	// which is the opposite of the point. The inset is applied to the mapped
+	// box, not to the rect, so a mis-calibrated rect that maps to a sliver
+	// degrades to the empty image the caller already knows how to read as
+	// "no text".
+	Inset int
+}
+
+// insetClamped is the effective inset: never negative (see Inset), which is
+// the one direction a mistyped profile must not be allowed to go.
+func (o CropOptions) insetClamped() int {
+	if o.Inset < 0 {
+		return 0
+	}
+	return o.Inset
 }
 
 // BarLuma is the luma below which a pixel counts as part of a black bar. 16 is
@@ -113,7 +134,7 @@ func CropNormalized(img image.Image, r Rect, opts CropOptions) image.Image {
 		return empty()
 	}
 	active := activeWindowFor(img, bounds, opts)
-	box := MapRect(active, r.clamped())
+	box := MapRect(active, r.clamped()).Inset(opts.insetClamped())
 	if box.Empty() {
 		return empty()
 	}
@@ -136,7 +157,7 @@ func CropRect(img image.Image, r Rect, opts CropOptions) image.Rectangle {
 	if bounds.Dx() <= 0 || bounds.Dy() <= 0 {
 		return image.Rectangle{}
 	}
-	box := MapRect(activeWindowFor(img, bounds, opts), r.clamped())
+	box := MapRect(activeWindowFor(img, bounds, opts), r.clamped()).Inset(opts.insetClamped())
 	if box.Empty() {
 		return image.Rectangle{}
 	}

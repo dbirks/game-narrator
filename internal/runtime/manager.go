@@ -66,6 +66,19 @@ var (
 	ErrProfileNotRunnable  = errors.New("runtime: published profile has no regions to observe")
 	ErrInvalidMode         = errors.New("runtime: mode must be conservative or predictive")
 	ErrUnknownSourceKind   = errors.New("runtime: unknown frame source kind")
+	// ErrIncompleteFrameSource (ADR-0119): a frame_source named a dir or a
+	// clip id without a kind. A path or a clip id alone is ambiguous (a
+	// replay dir and a capture device id both live in frame_source.dir), so
+	// the answer is the 400 that names the rule, never a guess at which kind
+	// the caller meant.
+	ErrIncompleteFrameSource = errors.New("runtime: a frame source dir or clip id requires a kind")
+	// ErrNoFrameSource (ADR-0119, issue #28): the request named no frame
+	// source, no usable capture device is attached (or the process has no
+	// capture wiring), and developer mode is off, so the default has nothing
+	// to resolve to. The answer is a 409 naming the operator action — connect
+	// the capture card — not a 503: the request is valid and the box's state
+	// is what refuses it.
+	ErrNoFrameSource       = errors.New("runtime: no frame source to start with: no usable capture device and developer mode is off")
 	ErrSourceUnsupported   = errors.New("runtime: frame source kind is not implemented in this build")
 	ErrSourceNotAllowed    = errors.New("runtime: frame source path is outside the configured allowlist")
 	ErrSourceMissing       = errors.New("runtime: frame source path does not exist")
@@ -164,6 +177,12 @@ type SessionSettings struct {
 	// words, normalized by the runtime (dialogue first, always present).
 	// nil keeps the session's current value.
 	NarratedClasses *[]string `json:"narrated_classes,omitempty"`
+	// CatchUp is the catch-up narration policy (issue #25, ADR-0122): the
+	// speech side's handling of the lines committed while an utterance is
+	// playing — catch_up (the default) batches and merges them per speaker,
+	// latest_only cancels the older audio and speaks the newest line at once.
+	// nil keeps the session's current value.
+	CatchUp *string `json:"catch_up,omitempty"`
 }
 
 // Options wires the runtime into its neighbours. Store and Hub are mandatory;

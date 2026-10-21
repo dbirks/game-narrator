@@ -168,6 +168,14 @@ type Config struct {
 	// PREDICTIVE_PREFIX reason and a margin, so the switch alone can never speak
 	// a guess.
 	PredictiveMode bool
+	// CatchUp is the session's catch-up narration policy (issue #25,
+	// ADR-0122): the speech side's handling of the lines committed while an
+	// utterance is playing — catch_up (the default) batches and merges them
+	// per speaker, latest_only cancels the older audio and speaks the newest
+	// line at once. The session carries the word (the settings control moves
+	// it, the state snapshot shows it); the audio behaviour is the speech
+	// side's, reached through the commit→speech hand-off's settings event.
+	CatchUp string
 	// MinPredictiveMargin is how much the prefix's winning candidate must beat
 	// the runner-up by, in probability points (docs/spec/05 "normalized observed
 	// prefix has sufficient nontrivial length and margin to runner-up"). It is
@@ -195,6 +203,18 @@ type Config struct {
 	// takes the documented default: the matcher's own acceptance floor, so by
 	// default only locally-abstained rankings are offered to Clef.
 	AdjudicateMargin float64
+	// AdjudicateFuzzyBelow is the calibrated top-candidate probability below
+	// which a non-abstaining MATCH_FUZZY ranking still counts as uncertain
+	// (ADR-0115 §1). The live case it names: a real line the matcher reads
+	// correctly but scores MATCH_FUZZY at p≈0.3 — below any bar worth speaking
+	// yet above the matcher's own acceptance gate, so it never abstained and,
+	// before this field, never escalated and was never re-asked. The probability
+	// is the calibrated scale the operator sees (Candidate.Probability, the
+	// matcher's Temperature-scaled softmax), not the revision-1 scale the
+	// matcher's acceptance gate runs on, so the gate stays untouched. Zero takes
+	// the default (0.5); negative disables the clause, and a value above 1
+	// clamps to 1 (adjudicate every fuzzy read).
+	AdjudicateFuzzyBelow float64
 	// AllowCommitWhilePaused stops observations from committing during a pause.
 	// The default (false) is the conservative reading of docs/spec/05 "belief
 	// decays or resets on … pause": a paused runtime should not be deciding what
@@ -225,6 +245,7 @@ func DefaultConfig() Config {
 		MaxCandidates:          8,
 		AllowCommitWhilePaused: false,
 		NarratedKinds:          []games.TextKind{games.TextDialogue},
+		CatchUp:                CatchUpPolicyCatchUp,
 	}
 }
 
@@ -289,6 +310,15 @@ func (c Config) normalize() Config {
 	}
 	if c.AdjudicateMargin > 1 {
 		c.AdjudicateMargin = 1
+	}
+	// AdjudicateFuzzyBelow: zero is "unset" (the documented default 0.5 on the
+	// calibrated scale), a negative value disables the fuzzy clause, and a
+	// value above 1 clamps to 1 so it cannot demand more than certainty.
+	if c.AdjudicateFuzzyBelow == 0 {
+		c.AdjudicateFuzzyBelow = 0.5
+	}
+	if c.AdjudicateFuzzyBelow > 1 {
+		c.AdjudicateFuzzyBelow = 1
 	}
 	c.NarratedKinds = normalizeNarratedKinds(c.NarratedKinds)
 	return c

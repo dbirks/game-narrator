@@ -18,6 +18,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/assets"
 	"github.com/dbirks/game-narrator/internal/audio"
 	"github.com/dbirks/game-narrator/internal/events"
+	"github.com/dbirks/game-narrator/internal/games"
 	"github.com/dbirks/game-narrator/internal/matcher"
 	"github.com/dbirks/game-narrator/internal/pipeline"
 	"github.com/dbirks/game-narrator/internal/providers/tts"
@@ -148,7 +149,17 @@ type SpeechOptions struct {
 	// no usable outgoing edge from a committed line — no graph evidence, no
 	// prewarming (the "cap by scenes" in practice).
 	Prewarm *PrewarmOptions
+	// CatchUp tunes the session's catch-up narration and no-backlog speech
+	// policy (issue #25, ADR-0122): the catch_up/latest_only policy, the
+	// batch window and the per-utterance max age. nil takes the documented
+	// defaults (catch_up, 600 ms, 3 s).
+	CatchUp *CatchUpOptions
 }
+
+// CatchUpOptions is the session's catch-up narration tuning (issue #25,
+// ADR-0122); it is the speech package's own options shape so the runtime
+// and the scenario harness configure the policy from one vocabulary.
+type CatchUpOptions = speech.CatchUpOptions
 
 // PrewarmOptions tunes one session's successor prewarming. Zero fields take
 // the documented defaults (DefaultPrewarm* above).
@@ -259,6 +270,31 @@ type SpeechCounters struct {
 	CacheHits int64 `json:"cache_hits"`
 }
 
+// CatchUpStats are the session's catch-up policy decision counters
+// (issue #25, ADR-0122): what the policy batched, merged and fenced — the
+// "did it speak, and why not" reading for the catch-up decisions, in the
+// same surface as the speech counters.
+type CatchUpStats struct {
+	// Batched: lines a new commit took into the batch (the rescue) or the
+	// line itself joined the batch on a busy commit.
+	Batched int64 `json:"batched"`
+	// Dropped: lines the batch fenced as stale (the window's fence, the
+	// max age, the pause and stop) — the no-backlog policy's teeth
+	// (issue #25 item 1).
+	Dropped int64 `json:"dropped"`
+	// MergedRuns: merged utterances the batch spoke (one TTS request each,
+	// the merge budget the policy is for, ADR-0122 decision 3).
+	MergedRuns int64 `json:"merged_runs"`
+}
+
+// CatchUpInfo is the session's catch-up narration surface in the API
+// snapshot: the policy word the session runs (the live settings value) and
+// the policy's decision counters.
+type CatchUpInfo struct {
+	Policy string `json:"policy"`
+	CatchUpStats
+}
+
 // UtteranceState is the session's current audio position: the last speech
 // lifecycle step any utterance of this session went through.
 type UtteranceState struct {
@@ -290,6 +326,10 @@ type AudioInfo struct {
 	// failure — the docs/spec/13 "playback underruns" counter for this
 	// session.
 	Underruns int64 `json:"underruns"`
+	// CatchUp is the session's catch-up narration policy and its decision
+	// counters (issue #25, ADR-0122): the policy word the session runs and
+	// what the policy batched, merged and fenced.
+	CatchUp CatchUpInfo `json:"catch_up"`
 	// Prewarm is this session's successor-prewarm decision counters (FR-11).
 	Prewarm PrewarmStats `json:"prewarm"`
 	// OutputLatency is this run's output-latency table (sink accepted the
@@ -428,6 +468,46 @@ type speechWiring struct {
 	// closed marks a stopped wiring so a worker that finalises past the
 	// drain bound emits nothing rather than after the session is done.
 	closed bool
+
+	// Catch-up narration and the no-backlog policy (issue #25, ADR-0122).
+	// w.mu.
+	// catchUp is the session's resolved policy (the defaults when the
+	// options were nil).
+	catchUp speech.CatchUpOptions
+	// catchUpPending is the batch: the committed lines waiting to be merged,
+	// in commit order. A line lives here between its commit and its flush;
+	// the window-drop fences its old prefix at each newer line. The batcher
+	// core's own line type, so the merge decision reads the same data the
+	// runtime's bookkeeping writes.
+	catchUpPending []speech.CatchUpLine
+	// catchUpTimer is the flush timer's cancel (nil while no batch is
+	// pending): the window elapsing since the batch's first line flushes,
+	// the playback terminal flushes, and the box-change hook flushes.
+	catchUpTimer func() bool
+	// playingGen is the generation the session's active playback plays
+	// (0 = nothing playing): the scheduler's started/ended events move it
+	// (noteSchedulerEvent). Under catch_up the commit path leaves the
+	// playing line to run out — that is the behaviour the issue asked for.
+	playingGen int64
+	// catchUpRuns is the in-flight merged runs of the catch-up batches,
+	// by their bookkeeping generation (the batch's newest commit generation
+	// plus the run's index — the fence approves each, the rescue finds each,
+	// and the settle bookkeeping is per run). A run leaves the table when
+	// it settles (its terminal event) or when a rescue takes it over.
+	catchUpRuns map[int64]*utteranceInfo
+	// lineClaim is the owner of a pending or covered line's terminal:
+	// the run generation that speaks the line (the batch's flush claimed it
+	// when it built the run), 0 while the line waits in the batch with no
+	// run yet, and absent once the line's terminal is out. The one-terminal
+	// rule for a line the batch owns (issue #25 + ADR-0092) is this map: a
+	// run's terminal settles the line only under the claim it built, so a
+	// late run that met its line re-batched by a newer commit settles
+	// nothing, and the window's fence and the pause settle the line by
+	// deleting the claim with the terminal.
+	lineClaim map[string]int64
+	// The policy's decision counters (docs/spec/13 "did it speak, and why
+	// not"): w.mu.
+	catchUpBatched, catchUpMerged, catchUpDropped int64
 }
 
 // utteranceInfo is one committed line's audio correlation record.
@@ -443,6 +523,29 @@ type utteranceInfo struct {
 	// skip (no approved voice) names whose voice was missing (issue #6).
 	character string
 	voiceID   string // the voice profile spoken ("" until resolved)
+	// committedAt is the wall clock the line reached the speech side
+	// (issue #25, ADR-0122): the catch-up window and the max age measure
+	// from it.
+	committedAt time.Time
+	// rescued marks a line the catch-up batch took over from its standalone
+	// utterance (ADR-0122 decision 2): the worker that synthesises it skips
+	// its own terminal — the batch's terminal for the line (skipped,
+	// catch_up_batched, or the merged run's outcome) is the one that counts.
+	rescued bool
+	// synthSlot is the utterance's own in-flight synthesis cancel: the
+	// merged runs (several under one batch generation) keep it here rather
+	// than in the per-generation genCancel table, and the rescue cancels it
+	// at the source when a new commit batches the run over.
+	synthSlot *synthSlot
+	// submitted marks the utterance handed to the scheduler (the worker
+	// sets it under w.mu at the submit): the rescue distinguishes a queued
+	// item (the scheduler's cancel is its terminal) from an in-flight
+	// synthesis (the rescue's own terminal).
+	submitted bool
+	// mergedLines is, for a merged run's utterance, the covered lines in
+	// commit order (ADR-0122 decision 3): the run's terminal settles them,
+	// and a rescue of the run re-batches them individually.
+	mergedLines []speech.CatchUpLine
 }
 
 // synthSlot is one in-flight synthesis's cancellable scope, registered
@@ -481,7 +584,26 @@ func (m *Manager) newSpeechWiring(id string, speakerByMessage map[string]string,
 		byGeneration:     map[int64]string{},
 		genCancel:        map[int64]*synthSlot{},
 		settled:          map[int64]bool{},
+		catchUpRuns:      map[int64]*utteranceInfo{},
+		lineClaim:        map[string]int64{},
 		volume:           1.0,
+	}
+	// The catch-up policy's options (issue #25, ADR-0122): nil takes the
+	// documented defaults; a construction that names a foreign policy word
+	// is a wiring bug — the defaults run, and the log says why (the
+	// settings route validates the word live, so this only trips here).
+	var cuOpts speech.CatchUpOptions
+	if opts.CatchUp != nil {
+		cuOpts = *opts.CatchUp
+	}
+	if cu, err := cuOpts.NormalizeCatchUpOptions(); err == nil {
+		w.catchUp = cu
+	} else {
+		m.log.Warn("catch-up options rejected; the session runs the documented defaults",
+			"session_id", id, "error", err)
+		if cu, err := (speech.CatchUpOptions{}).NormalizeCatchUpOptions(); err == nil {
+			w.catchUp = cu
+		}
 	}
 	w.initPrewarm(idx, prewarmTexts, opts.Prewarm)
 	endCtx, endCancel := context.WithCancel(runCtx)
@@ -631,6 +753,48 @@ func (w *speechWiring) stop() {
 	}
 	_ = w.sched.Stop()
 	_ = w.sink.Close()
+	// The catch-up batch the session's end takes down (issue #25, ADR-0122):
+	// the pending lines are skipped with the reason. A run that reached the
+	// scheduler settles here (the scheduler's loop is gone, so nothing else
+	// would event it) — except the one playing, whose terminal the
+	// scheduler's join already delivered. A run still in its TTS call
+	// settles through its own worker: the end's cancellation wakes it (the
+	// drain above) and the worker's own terminal is the one that counts —
+	// the stop only clears the bookkeeping, so the two never double.
+	var terminals []lineTerminal
+	w.mu.Lock()
+	if w.catchUp.Policy == speech.CatchUpPolicyCatchUp {
+		if w.catchUpTimer != nil {
+			t := w.catchUpTimer
+			w.catchUpTimer = nil
+			t()
+		}
+		pending := w.catchUpPending
+		w.catchUpPending = nil
+		for _, l := range pending {
+			delete(w.lineClaim, l.Occurrence)
+			terminals = append(terminals, lineTerminal{w.lineTerminalInfo(l), "skipped", "session_ended"})
+		}
+		for g, run := range w.catchUpRuns {
+			delete(w.catchUpRuns, g)
+			if g == w.playingGen || !run.submitted {
+				continue // the join, or the worker, owns the terminal
+			}
+			w.settled[g] = true
+			delete(w.byGeneration, g)
+			terminals = append(terminals, lineTerminal{run, "failed", "session_ended"})
+		}
+	}
+	w.mu.Unlock()
+	w.fence.clearApproved()
+	for _, t := range terminals {
+		w.finishEnded(t.u, t.result, t.reason)
+		if t.u.mergedLines != nil {
+			for _, l := range t.u.mergedLines {
+				w.finishLineTerminal(l, t.result, t.reason, t.u.generation)
+			}
+		}
+	}
 	// Prewarmed but not consumed by any commit before the session ended is
 	// wasted budget (FR-11 stats): the count lands where the session's audio
 	// work ends. Jobs still in flight count themselves when the end
@@ -655,10 +819,20 @@ func (w *speechWiring) stop() {
 // it again would emit a second terminal for the same generation (issue #6).
 func (w *speechWiring) fenceAndCancel(generation int64) {
 	w.mu.Lock()
+	// Under the catch-up policy the line that is playing keeps being heard:
+	// a new speakable commit batches the new line instead of cutting the
+	// playback (ADR-0122 decision 2). The playing generation is the only
+	// one the fence spares — everything else queued or in its TTS round
+	// trip was already rescued into the batch by onCommit (catch_up) or is
+	// the latest_only cancellation this method exists to emit.
+	skipPlaying := w.catchUp.Policy == speech.CatchUpPolicyCatchUp
 	stale := make([]int64, 0, 4)
 	var staleSynth []*synthSlot
 	for g := range w.byGeneration {
 		if g < generation && !w.settled[g] {
+			if skipPlaying && g == w.playingGen {
+				continue
+			}
 			stale = append(stale, g)
 			// The fence is asking this one to die: settle it now so a later
 			// commit cannot cancel it (and re-emit its terminal) again.
@@ -715,6 +889,13 @@ func (w *speechWiring) settle(g int64) {
 // re-cancelled, so a pause cannot emit a second terminal for it. The
 // generations the pause does cancel are settled here, so a later commit
 // cannot cancel them again.
+// lineTerminal is one terminal the pause/stop path claims under its lock
+// and emits after the lock is down (the wiring's publish-unlocked rule).
+type lineTerminal struct {
+	u              *utteranceInfo
+	result, reason string
+}
+
 func (w *speechWiring) pause() {
 	w.mu.Lock()
 	gens := make([]int64, 0, len(w.byGeneration))
@@ -733,7 +914,51 @@ func (w *speechWiring) pause() {
 		synths = append(synths, s)
 		delete(w.genCancel, g)
 	}
+	var terminals []lineTerminal
+	// The catch-up batch the pause takes down (issue #25, ADR-0122): the
+	// pending lines are skipped with the reason, the in-flight runs are
+	// cancelled at the source (their synthesis's cancellation wakes the
+	// workers, which end the utterance failed) and their generations are
+	// cancelled (the scheduler drops the queued items through its own
+	// terminal), and the approved set empties — a batch the session is not
+	// speaking keeps nothing speakable. The playing run stops through the
+	// fence, like the lines.
+	if w.catchUp.Policy == speech.CatchUpPolicyCatchUp {
+		if w.catchUpTimer != nil {
+			t := w.catchUpTimer
+			w.catchUpTimer = nil
+			t()
+		}
+		pending := w.catchUpPending
+		w.catchUpPending = nil
+		for _, l := range pending {
+			delete(w.lineClaim, l.Occurrence)
+			terminals = append(terminals, lineTerminal{w.lineTerminalInfo(l), "skipped", "paused"})
+		}
+		for g, run := range w.catchUpRuns {
+			if g == w.playingGen {
+				continue
+			}
+			delete(w.catchUpRuns, g)
+			w.settled[g] = true
+			delete(w.byGeneration, g)
+			if run.synthSlot != nil {
+				// The worker wakes on the cancellation and sees the flag: it
+				// emits nothing — the pause owns the run's terminal (and its
+				// lines'), so the worker's own would be a second one.
+				run.rescued = true
+				synths = append(synths, run.synthSlot)
+				run.synthSlot = nil
+			}
+			if run.submitted {
+				gens = append(gens, g)
+			} else {
+				terminals = append(terminals, lineTerminal{run, "failed", "paused"})
+			}
+		}
+	}
 	w.mu.Unlock()
+	w.fence.clearApproved()
 	for _, s := range synths {
 		// The in-flight synthesis of a paused generation stops at the source:
 		// the stream's partial is discarded, the utterance ends failed, and
@@ -742,6 +967,14 @@ func (w *speechWiring) pause() {
 	}
 	for _, g := range gens {
 		w.sched.Cancel(g, "paused")
+	}
+	for _, t := range terminals {
+		w.finishEnded(t.u, t.result, t.reason)
+		if t.u.mergedLines != nil {
+			for _, l := range t.u.mergedLines {
+				w.finishLineTerminal(l, t.result, t.reason, t.u.generation)
+			}
+		}
 	}
 }
 
@@ -774,25 +1007,60 @@ func (w *speechWiring) onCommit(e events.Envelope) {
 	}
 
 	u := &utteranceInfo{
-		occurrence: d.Occurrence,
-		messageID:  d.MessageID,
-		regionID:   d.RegionID,
-		generation: d.Generation,
-		text:       text,
-		traceID:    e.TraceID,
-		character:  w.speakerFor(d.MessageID),
+		occurrence:  d.Occurrence,
+		messageID:   d.MessageID,
+		regionID:    d.RegionID,
+		generation:  d.Generation,
+		text:        text,
+		traceID:     e.TraceID,
+		character:   w.speakerFor(d.MessageID),
+		committedAt: time.Now().UTC(),
 	}
-	// A speakable commit is the advance that makes the previous line's audio
-	// stale: the fence moves to this generation and the superseded
-	// generation(s) stop (docs/spec/01 invariant 2).
-	w.fenceAndCancel(d.Generation)
 	w.register(u)
 	// The status bar's commit half (status.go): this wall clock is the
 	// sample's start, and the occurrence id is what speech.started carries
-	// back to complete it. Booked before the worker is admitted so a
-	// backpressure skip still measures what it skipped from.
+	// back to complete it. Booked before the line is routed so a batched or
+	// backpressure-skipped line still measures what it skipped from.
 	if w.voiceLat != nil {
-		w.voiceLat.noteCommit(u.occurrence, time.Now().UTC())
+		w.voiceLat.noteCommit(u.occurrence, u.committedAt)
+	}
+	// A speakable commit is the advance that makes the previous line's audio
+	// stale: the fence moves to this generation and the superseded
+	// generation(s) stop (docs/spec/01 invariant 2). Under the catch-up
+	// policy the commit first routes the new line and rescues the older
+	// lines the batch takes over (ADR-0122), and the fence then cancels only
+	// what the policy did not batch: under latest_only the older generations
+	// (the historical shape), under catch_up nothing (the rescued generations
+	// are settled and the playing one is spared).
+	batched := w.catchUpBatchCommit(u)
+	w.fenceAndCancel(d.Generation)
+	if batched {
+		// The batched line's commit is still a request (the counter and the
+		// event say the line was asked for), but the line's one terminal is
+		// the batch's outcome, not this commit's: the merged run that speaks
+		// it ends it (the run's result), and the window's fence, the pause
+		// or the max-age drop skips it (their reasons). The generation is
+		// settled with the batch's claim, so the fence never cancels — and
+		// re-emits a terminal for — it again.
+		w.mu.Lock()
+		w.requested++
+		w.current = &UtteranceState{Phase: "requested", Generation: u.generation, UtteranceID: u.occurrence, At: u.committedAt}
+		w.mu.Unlock()
+		w.emitSpeech(events.SpeechRequested, u, map[string]any{
+			"dialogue_occurrence_id": u.occurrence,
+			"message_id":             u.messageID,
+			"generation":             u.generation,
+			"region_id":              u.regionID,
+			"text":                   u.text,
+			"character_id":           u.character,
+			"trace_id":               u.traceID,
+		})
+		// No terminal here: the batch owns the line's one terminal (its
+		// outcome — the merged run's, the window's fence, the pause — emits
+		// it under the claim the batch holds, ADR-0092's one-terminal rule
+		// carried onto the batch's lines by lineClaim).
+		w.prewarm(u.messageID)
+		return
 	}
 
 	select {
@@ -826,6 +1094,387 @@ func (w *speechWiring) onCommit(e events.Envelope) {
 	// backpressure skip above returns earlier: the session's TTS slots are
 	// all busy, and a prewarm would only queue behind them.)
 	w.prewarm(u.messageID)
+}
+
+// catchUpBatchCommit is the catch-up policy's commit-side decision
+// (ADR-0122 decision 2), taken under w.mu: it reports whether u goes into
+// the batch (true) instead of the immediate path (false), and does the
+// bookkeeping of the decision — the rescue of the older generations the
+// batch takes over, the window-drop of the pending batch's old prefix, the
+// line's append and the flush timer's arm.
+//
+// false — the immediate path: the policy is latest_only, or speech is not
+// busy (nothing playing, no batch pending, no immediate utterance in its
+// TTS round trip: the fast path keeps the first line's commit→voice
+// latency). No rescue, no batch, no timer.
+//
+// true — the line joins the batch. The older unsettled generations are
+// rescued first, in the order the player left them: the one that is
+// PLAYING is spared (its lines are being heard; that is the behaviour the
+// issue asked for), and every other one — in its TTS round trip or queued
+// for the scheduler — is taken over: settled here (the batch owns the
+// lines' fate from here, so the fence's cancel list is built around the
+// rescue, not under it), its in-flight synthesis cancelled at the source
+// (the worker, flagged rescued, emits no terminal of its own) and the line
+// appended to the pending batch under its own committed clock. A pending
+// line the new line is more than the batch window after is fenced on the
+// spot (terminal skipped, catch_up_stale) — the issue's "Fencing (ADR 0092)
+// still applies to anything older than the batch window", made local.
+// catchUpBatchCommit is the catch-up policy's commit-side decision
+// (ADR-0122 decision 2), taken under w.mu: it reports whether u goes into
+// the batch (true) instead of the immediate path (false), and does the
+// bookkeeping of the decision — the rescue of the older generations the
+// batch takes over, the window-drop of the pending batch's old prefix, the
+// line's append and the flush timer's arm.
+//
+// false — the immediate path: the policy is latest_only, or speech is not
+// busy (nothing playing, no batch pending, no immediate utterance in its
+// TTS round trip: the fast path keeps the first line's commit→voice
+// latency). No rescue, no batch, no timer.
+//
+// true — the line joins the batch. The older unsettled generations are
+// rescued first, in the order the player left them: the one that is
+// PLAYING is spared (its lines are being heard; that is the behaviour the
+// issue asked for), and every other one — in its TTS round trip or queued
+// for the scheduler — is taken over: settled here (the batch owns the
+// lines' fate from here, so the fence's cancel list is built around the
+// rescue, not under it), its in-flight synthesis cancelled at the source
+// (the worker, flagged rescued, emits no terminal of its own) and the line
+// appended to the pending batch under its own committed clock. A pending
+// line the new line is more than the batch window after is fenced on the
+// spot (terminal skipped, catch_up_stale) — the issue's "Fencing (ADR
+// 0092) still applies to anything older than the batch window", made
+// local.
+// catchUpBatchCommit is the catch-up policy's commit-side decision
+// (ADR-0122 decision 2), taken under w.mu: it reports whether u goes into
+// the batch (true) instead of the immediate path (false), and does the
+// bookkeeping of the decision — the rescue of the older generations the
+// batch takes over, the window-drop of the pending batch's old prefix, the
+// line's append and the flush timer's arm.
+//
+// false — the immediate path: the policy is latest_only, or speech is not
+// busy (nothing playing, no batch pending, no immediate utterance in its
+// TTS round trip: the fast path keeps the first line's commit→voice
+// latency). No rescue, no batch, no timer.
+//
+// true — the line joins the batch. The older unsettled generations are
+// rescued first, in the order the player left them: the one that is
+// PLAYING is spared (its lines are being heard; that is the behaviour the
+// issue asked for), and every other one — in its TTS round trip, queued
+// for the scheduler, or a merged run in flight — is taken over: settled
+// here (the batch owns the lines' fate from here, so the fence's cancel
+// list is built around the rescue, not under it), its in-flight synthesis
+// cancelled at the source (the worker, flagged rescued, emits no terminal
+// of its own) and the covered lines appended to the pending batch under
+// their own committed clocks. A pending line the new line is more than the
+// batch window after is fenced on the spot (terminal skipped, catch_up
+// stale) — the issue's "Fencing (ADR 0092) still applies to anything older
+// than the batch window", made local.
+//
+// The terminal accounting (ADR-0092, one terminal per generation): the
+// rescue emits none — a rescued line's terminal is the batch's outcome
+// (the merged run's settled line event, the window-drop, or the pause and
+// stop), so the line's generation reaches exactly one terminal. What the
+// rescue does emit is only the merged run's own run-level terminal when it
+// takes a merged run over (its requested already went out at the flush).
+func (w *speechWiring) catchUpBatchCommit(u *utteranceInfo) bool {
+	// The terminals the batch claims are emitted only after the commit lock
+	// is down: the hub's publish never takes w.mu, and the wiring's rule
+	// (publish unlocked) is what keeps a synchronous subscriber from
+	// re-entering the wiring on a held lock.
+	type terminal struct {
+		u              *utteranceInfo
+		result, reason string
+	}
+	w.mu.Lock()
+	if w.catchUp.Policy != speech.CatchUpPolicyCatchUp {
+		w.mu.Unlock()
+		return false
+	}
+	busy := w.playingGen != 0 || len(w.catchUpPending) > 0 || len(w.genCancel) > 0
+	if !busy {
+		w.mu.Unlock()
+		return false
+	}
+	// The playing line is the session's active playback, and the commit must
+	// not cut it (issue #25's point: a tap that lands while the player is
+	// listening keeps the line playing to the end, the new line batches). The
+	// scheduler's own fence check would drop the playback the moment the
+	// fence's latest moves past its generation, so the approval is what the
+	// "leave it to run out" is implemented with: the playing generation stays
+	// current for the rest of its playback, and the playback's terminal is
+	// where the approval leaves (noteSchedulerEvent unapproves it).
+	if w.playingGen != 0 {
+		w.fence.approve(w.playingGen, speech.DefaultCatchUpApprovedCap)
+	}
+	// The rescue: every older generation that is not the playing one is
+	// taken over by the batch. Settling here (not in fenceAndCancel) is what
+	// keeps the fence's cancel list from double-cancelling the rescue — the
+	// rescued generations are terminal for the fence's purposes the moment
+	// the batch claims them. The one-terminal-per-generation rule (ADR-0092)
+	// is enforced by the settled map every terminal path consults: a
+	// submitted utterance dies through the scheduler's cancel (which emits
+	// its terminal), an in-flight one through the rescue (which emits it
+	// while the flagged worker stays silent), and a covered line's terminal
+	// is the batch's outcome unless an earlier source already settled it.
+	var terminals []terminal
+	var staleSynth []*synthSlot
+	var staleCancel []int64
+	rescue := func(g int64) {
+		if g >= u.generation || w.settled[g] || g == w.playingGen {
+			return
+		}
+		// A merged run (its table) wins the generation when both tables
+		// name it: the run's utterance is the audio's owner, and a commit
+		// that collided on the generation number registered its line
+		// alongside it, not over it.
+		line := w.catchUpRuns[g]
+		if line == nil {
+			if occ, ok := w.byGeneration[g]; ok {
+				line = w.utterances[occ]
+			}
+		}
+		if line == nil {
+			return
+		}
+		line.rescued = true // the worker skips its own terminal and its submit
+		for _, l := range coveredLines(line) {
+			if !catchUpLinePending(w.catchUpPending, l.Occurrence) {
+				w.catchUpPending = append(w.catchUpPending, l)
+				// The line's terminal is claimed by the batch again: no run
+				// owns it while it waits, and the run it last spoke with (its
+				// late terminal, if any) settles nothing under the new claim.
+				w.lineClaim[l.Occurrence] = 0
+			}
+		}
+		if s, ok := w.genCancel[g]; ok {
+			staleSynth = append(staleSynth, s)
+			delete(w.genCancel, g)
+		}
+		if line.synthSlot != nil {
+			staleSynth = append(staleSynth, line.synthSlot)
+			line.synthSlot = nil
+		}
+		if !line.submitted {
+			// In its TTS round trip (or before it): the rescue owns the
+			// terminal. A merged run's requested already went out at the
+			// flush, so the run's own skipped terminal names the rescue; a
+			// standalone line's terminal stays the batch's outcome.
+			if line.mergedLines != nil {
+				terminals = append(terminals, terminal{line, "skipped", "catch_up_batched"})
+			}
+		} else {
+			// Queued for, or accepted by, the scheduler: the scheduler's
+			// cancel emits its terminal (cancelled: catch_up_batched) — the
+			// rescue must not emit one for the same generation.
+			staleCancel = append(staleCancel, g)
+		}
+		w.settled[g] = true
+		delete(w.byGeneration, g)
+		delete(w.catchUpRuns, g)
+		w.catchUpBatched++
+	}
+	for g := range w.byGeneration {
+		rescue(g)
+	}
+	for g := range w.catchUpRuns {
+		rescue(g)
+	}
+	// The window: the new line fences the pending prefix it is more than the
+	// window after (oldest first — the prefix property, the batcher's own
+	// rule), and the fenced lines' terminal names the fence.
+	if n := speech.BatchWindowDrop(w.catchUpPending, u.committedAt, w.catchUp.BatchWindow); n > 0 {
+		for i := 0; i < n; i++ {
+			w.catchUpDropped++
+			line := w.lineTerminalInfo(w.catchUpPending[i])
+			delete(w.lineClaim, w.catchUpPending[i].Occurrence)
+			terminals = append(terminals, terminal{line, "skipped", "catch_up_stale"})
+		}
+		w.catchUpPending = w.catchUpPending[n:]
+	}
+	w.catchUpPending = append(w.catchUpPending, catchUpLineOf(u))
+	// The batch owns the line's terminal from here: no run claims it yet
+	// (claim 0), and the window's fence, the pause and the flush's drops
+	// all settle it under that claim.
+	w.lineClaim[u.occurrence] = 0
+	w.settled[u.generation] = true // the batch owns the line from here
+	delete(w.byGeneration, u.generation)
+	if w.catchUpTimer == nil {
+		w.armCatchUpTimerLocked(w.catchUp.BatchWindow)
+	}
+	w.mu.Unlock()
+	for _, s := range staleSynth {
+		// The in-flight synthesis of a rescued utterance stops at the source:
+		// the partial is discarded (the worker, flagged, emits nothing) and
+		// the line's content speaks in the merged utterance.
+		s.cancel()
+	}
+	for _, g := range staleCancel {
+		// The scheduler emits the cancelled terminal for the generation it
+		// dropped (the reason travels, ADR-0092's vocabulary).
+		w.sched.Cancel(g, "catch_up_batched")
+	}
+	for _, t := range terminals {
+		w.finishEnded(t.u, t.result, t.reason)
+	}
+	return true
+}
+
+// catchUpLineOf is one committed line's batcher form (the lock is held or
+// the fields are immutable: the utteranceInfo's fields are written once at
+// the commit, before the wiring shares the pointer).
+func (w *speechWiring) catchUpLineOf(u *utteranceInfo) speech.CatchUpLine {
+	return speech.CatchUpLine{
+		Generation:  u.generation,
+		Occurrence:  u.occurrence,
+		MessageID:   u.messageID,
+		RegionID:    u.regionID,
+		Text:        u.text,
+		Speaker:     u.character,
+		CommittedAt: u.committedAt,
+	}
+}
+
+// coveredLines is one utterance's lines the batch takes over: the utterance
+// itself when it is a standalone line, its covered lines when it is a merged
+// run (the run's lines go back into the batch individually, under their own
+// occurrences and committed clocks).
+func coveredLines(u *utteranceInfo) []speech.CatchUpLine {
+	if u.mergedLines != nil {
+		return u.mergedLines
+	}
+	return []speech.CatchUpLine{speech.CatchUpLine{
+		Generation:  u.generation,
+		Occurrence:  u.occurrence,
+		MessageID:   u.messageID,
+		RegionID:    u.regionID,
+		Text:        u.text,
+		Speaker:     u.character,
+		CommittedAt: u.committedAt,
+	}}
+}
+
+// catchUpLinePending reports whether the line (by occurrence) is already in
+// the batch: a rescue that meets the same line twice must not double it.
+func catchUpLinePending(pending []speech.CatchUpLine, occurrence string) bool {
+	for _, l := range pending {
+		if l.Occurrence == occurrence {
+			return true
+		}
+	}
+	return false
+}
+
+// lineTerminalInfo is the correlation record a pending line's terminal
+// carries: its own committed utterance when the table still holds it, a
+// record built from the line otherwise (a table entry evicted by the
+// correlation cap — the ids the event needs all live on the line).
+func (w *speechWiring) lineTerminalInfo(l speech.CatchUpLine) *utteranceInfo {
+	if u := w.utterances[l.Occurrence]; u != nil {
+		return u
+	}
+	return &utteranceInfo{
+		occurrence:  l.Occurrence,
+		messageID:   l.MessageID,
+		regionID:    l.RegionID,
+		generation:  l.Generation,
+		text:        l.Text,
+		character:   l.Speaker,
+		committedAt: l.CommittedAt,
+	}
+}
+
+// lookupUtterance is the correlation table's read (the lock round trip a
+// caller without the lock takes; nil when the table evicted the entry).
+func (w *speechWiring) lookupUtterance(occurrence string) *utteranceInfo {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.utterances[occurrence]
+}
+
+// catchUpLineOf is one committed line's batcher form: the fields the
+// batcher decides on and the terminals carry, read from the line's
+// correlation record (written once at the commit, before the wiring shares
+// the pointer — the read needs no lock beyond the caller's).
+func catchUpLineOf(u *utteranceInfo) speech.CatchUpLine {
+	return speech.CatchUpLine{
+		Generation:  u.generation,
+		Occurrence:  u.occurrence,
+		MessageID:   u.messageID,
+		RegionID:    u.regionID,
+		Text:        u.text,
+		Speaker:     u.character,
+		CommittedAt: u.committedAt,
+	}
+}
+
+// armCatchUpTimerLocked arms the batch's flush timer (the lock is held):
+// the window elapsing since the batch's first line flushes. The timer fires
+// on the runtime's own goroutine (time.AfterFunc), so the session's event
+// loop is never blocked waiting for narration; the timer's Stop is stored
+// as catchUpTimer so a later flush or the session's end can disarm it.
+func (w *speechWiring) armCatchUpTimerLocked(window time.Duration) {
+	if window <= 0 {
+		window = speech.DefaultCatchUpBatchWindow
+	}
+	timer := time.AfterFunc(window, func() { w.flushCatchUp("catch_up_window") })
+	w.catchUpTimer = timer.Stop
+}
+
+// armCatchUpTimerLocked arms the batch's flush timer (the lock is held):
+// the window elapsing since the batch's first line flushes. The timer fires
+// on the runtime's own goroutine (time.AfterFunc), so the session's event
+// loop is never blocked waiting for narration; the timer's Stop is stored
+// as catchUpTimer so a later flush or the session's end can disarm it.
+
+// settleLocked is settle with the lock already held (the batch's commit
+// path settles under the same lock it rescues under).
+func (w *speechWiring) settleLocked(g int64) {
+	w.settled[g] = true
+	delete(w.byGeneration, g)
+}
+
+// finishEndedLocked is finishEnded with the lock already held: the batch's
+// commit path terminalises the rescued and fenced lines under the same lock
+// it claims them, so a concurrent flush cannot read a line between its
+// claim and its terminal. (The emit is outside the lock, as everywhere else
+// in the wiring: the hub's publish never takes w.mu.)
+func (w *speechWiring) finishEndedLocked(u *utteranceInfo, result, reason string) {
+	if w.closed {
+		return
+	}
+	w.localEnded++
+	w.current = &UtteranceState{Phase: result, Result: result, Generation: u.generation, UtteranceID: u.occurrence, At: time.Now().UTC()}
+	w.settleLocked(u.generation)
+	data := map[string]any{
+		"dialogue_occurrence_id": u.occurrence,
+		"message_id":             u.messageID,
+		"generation":             u.generation,
+		"region_id":              u.regionID,
+		"result":                 result,
+		"character_id":           u.character,
+		"trace_id":               u.traceID,
+	}
+	if reason != "" {
+		data["reason"] = reason
+	}
+	b, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	ctx := w.endCtx
+	if w.endCtx.Err() != nil {
+		ctx = context.Background()
+	}
+	if _, err := w.hub.Publish(ctx, events.Envelope{
+		SchemaVersion: 1,
+		SessionID:     w.id,
+		TraceID:       u.traceID,
+		Name:          events.SpeechEnded,
+		Data:          b,
+	}); err != nil {
+		w.log("speech event publish failed", "session_id", w.id, "event", "speech.ended", "error", err)
+	}
 }
 
 // register keeps the correlation tables bounded.
@@ -923,6 +1572,14 @@ func (w *speechWiring) speak(u *utteranceInfo) {
 	res, err := w.voices.Speech.GetOrGenerate(speech.WithKeyInput(synthCtx, u.messageID), key, speech.PriorityCurrent, func(ctx context.Context) (tts.Audio, error) {
 		return rv.generate(ctx, u.text)
 	})
+	if err != nil && w.lineRescued(u) {
+		// The catch-up batch took the line over while its synthesis ran
+		// (ADR-0122 decision 2): the rescue cancelled the synthesis, the
+		// worker emits nothing (the batch's terminal for the line is the one
+		// that counts), and it does not retry — regenerating a key the batch
+		// will merge would only spend the TTS budget.
+		return
+	}
 	if err != nil && ctx.Err() == nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 		// The shared result may be a CANCELLED background prewarm of this very
 		// key: the fence moved while its synthesis ran, and the cache finished
@@ -962,6 +1619,13 @@ func (w *speechWiring) speak(u *utteranceInfo) {
 		w.metrics.TTSResolved(w.mLabels, res.FromCache, time.Since(ttsStart))
 	}
 	if err != nil {
+		if w.lineRescued(u) {
+			// The catch-up batch took the line over mid-synthesis (ADR-0122
+			// decision 2): the synthesis's cancellation error is the rescue's
+			//, the worker emits nothing (the batch's terminal for the line is
+			// the one that counts), and no retry regenerates the key.
+			return
+		}
 		if ctx.Err() != nil {
 			// The session ended while this line was still synthesising: it
 			// was requested, so it ends with the reason, not in silence.
@@ -1050,6 +1714,13 @@ func (w *speechWiring) speak(u *utteranceInfo) {
 		wav = speech.EncodeWAV(scalePCM(pcm.Data, g, pcm.BitsPerSample),
 			pcm.SampleRate, pcm.Channels, pcm.BitsPerSample)
 	}
+	if w.lineRescued(u) {
+		// The catch-up batch took the line over after its synthesis
+		// (ADR-0122 decision 2): the line's content speaks in the merged
+		// utterance, so the standalone submit never happens and the worker
+		// emits no terminal of its own.
+		return
+	}
 	w.sched.Submit(speech.UtteranceReady{
 		SessionID:        w.id,
 		Generation:       u.generation,
@@ -1058,6 +1729,491 @@ func (w *speechWiring) speak(u *utteranceInfo) {
 		WAV:              wav,
 		ExpectedDuration: res.Duration,
 	})
+	w.mu.Lock()
+	u.submitted = true
+	w.mu.Unlock()
+}
+
+// ── catch-up narration (issue #25, ADR-0122) ------------------------------
+
+// setCatchUp live-switches the catch-up policy (issue #25, ADR-0122): the
+// settings control (the session.settings_changed event) moves it mid-session.
+// The switch decides what happens with lines committed *next* — the one
+// transition with in-flight state is catch_up → latest_only while a batch is
+// pending: those lines are committed (their settlements claimed into the
+// batch), so the batch is flushed now and its merged runs speak back-to-back
+// instead of being silently dropped — every committed line still gets spoken
+// and settled, and the subsequent commits run the immediate shape. A switch
+// the other way, or to the same word, is a flag flip alone; an empty word
+// (an event without the field) is a no-op.
+func (w *speechWiring) setCatchUp(policy string) {
+	if policy == "" {
+		return
+	}
+	w.mu.Lock()
+	was := w.catchUp.Policy
+	w.catchUp.Policy = policy
+	pending := len(w.catchUpPending)
+	w.mu.Unlock()
+	if was != policy && policy == speech.CatchUpPolicyLatestOnly && pending > 0 {
+		w.flushCatchUp("policy_switch")
+	}
+}
+
+// lineRescued reports whether the catch-up batch took the utterance over
+// (the flag the rescue sets under w.mu; the worker reads it under the lock
+// so the handoff is data-race free).
+func (w *speechWiring) lineRescued(u *utteranceInfo) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return u.rescued
+}
+
+// NotifyBoxChange implements speech.BoxChangeNotifier: the box-change
+// priority (ADR-0122 decision 7). The capture/pipeline side calls it the
+// moment a dialogue box appears or changes — ahead of the OCR read and the
+// commit that follows — and a pending catch-up batch flushes on the spot so
+// the merged playback starts on the new box instead of at the window's end.
+// Cheap and non-blocking: at most one lock round trip and one goroutine
+// spawn, and a no-op when the policy is latest_only or the batch is empty.
+func (w *speechWiring) NotifyBoxChange() {
+	w.mu.Lock()
+	if w.closed || w.catchUp.Policy != speech.CatchUpPolicyCatchUp || len(w.catchUpPending) == 0 {
+		w.mu.Unlock()
+		return
+	}
+	w.mu.Unlock()
+	w.flushCatchUp("box_change")
+}
+
+// flushCatchUp takes the pending batch (under the lock) and runs the flush
+// on its own goroutine: the merge, the per-run TTS and the submits never
+// touch the session's event loop (docs/spec/07 "audio sink must never block
+// session event loop"). The entry points are the window's elapse (the arm
+// timer), a playback terminal (noteSchedulerEvent: the issue's "when
+// playback ends") and the box change (NotifyBoxChange). Taking the batch
+// and disarming the timer under the lock is what makes two entry points
+// meet on an empty batch instead of double-flushing one.
+func (w *speechWiring) flushCatchUp(trigger string) {
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return
+	}
+	if w.catchUpTimer != nil {
+		t := w.catchUpTimer
+		w.catchUpTimer = nil
+		t()
+	}
+	batch := w.catchUpPending
+	w.catchUpPending = nil
+	w.mu.Unlock()
+	if len(batch) == 0 {
+		return
+	}
+	w.log("catch-up batch flush", "session_id", w.id, "trigger", trigger, "lines", len(batch))
+	go w.runCatchUpBatch(batch, trigger)
+}
+
+// runCatchUpBatch is the flush: the batcher's own decisions (split, max-age
+// drop) on the shared core, then one TTS request per speaker run, in
+// commit order (ADR-0122 decision 3). The runs share the batch's newest
+// committed generation as their bookkeeping base — run i books generation
+// base+i — and the fence approves every one of them (decision 4) BEFORE the
+// first submit, so a commit that lands mid-flush cannot fence a run that
+// the fence already let speak: it batches its own line instead.
+func (w *speechWiring) runCatchUpBatch(batch []speech.CatchUpLine, trigger string) {
+	if len(batch) == 0 {
+		return
+	}
+	// The session ended while the batch was in flight (the playback terminal
+	// or the window met the shutdown): no run is synthesised — the session
+	// is not speaking — and every line the batch holds ends with the reason
+	// (docs/spec/13 "did it speak, and why not" still holds on the way out;
+	// the lines' claims are the flush's own, so nothing else settles them).
+	if w.endCtx.Err() != nil {
+		for _, l := range batch {
+			w.finishLineTerminal(l, "skipped", "session_ended", 0)
+		}
+		return
+	}
+	now := time.Now().UTC()
+	var batchBase int64
+	for _, l := range batch {
+		if l.Generation > batchBase {
+			batchBase = l.Generation
+		}
+	}
+	runs := speech.SplitRuns(batch)
+
+	type mergedRun struct {
+		u   *utteranceInfo
+		run speech.CatchUpRun
+		gen int64
+	}
+	var merged []mergedRun
+	// The per-utterance max age (issue #25 item 1): a run whose audio would
+	// not be ready until after the newest line it covers committed plus the
+	// max age is dropped before it starts (the ready instant is the flush
+	// instant — the TTS latency lands on top of it, which is why the bound
+	// is a bound and not a target). This is the dismiss-without-successor
+	// backstop ADR-0092 deferred: the box is gone, no commit moved the
+	// fence, and only the age bound keeps the late audio off the sink.
+	for i, run := range runs {
+		if now.Sub(run.LatestCommittedAt()) > w.catchUp.MaxUtteranceAge {
+			// The drop's terminal goes out under the claim the batch holds
+			// (claim 0, still held: finishLineTerminal emits and releases it
+			// — deleting it first would leave the line without its terminal,
+			// the one-terminal rule the claim exists to enforce).
+			w.mu.Lock()
+			w.catchUpDropped += int64(len(run.Lines))
+			w.mu.Unlock()
+			for _, l := range run.Lines {
+				w.finishLineTerminal(l, "skipped", "catch_up_stale", 0)
+			}
+			continue
+		}
+		first := run.Lines[0]
+		var traceID string
+		if lu := w.lookupUtterance(first.Occurrence); lu != nil {
+			traceID = lu.traceID
+		}
+		u := &utteranceInfo{
+			occurrence:  games.NewID(),
+			messageID:   speech.MergedOriginalID(run.MessageIDs()),
+			regionID:    first.RegionID,
+			generation:  batchBase + int64(i),
+			text:        run.Text,
+			traceID:     traceID,
+			character:   run.Speaker,
+			committedAt: now,
+			mergedLines: append([]speech.CatchUpLine(nil), run.Lines...),
+		}
+		merged = append(merged, mergedRun{u: u, run: run, gen: u.generation})
+	}
+	if len(merged) == 0 {
+		return
+	}
+	// Register the merged utterances (the correlation tables the speech
+	// events join on) and the bookkeeping generations, and approve the
+	// fence — all before the first submit.
+	w.mu.Lock()
+	for _, m := range merged {
+		if _, ok := w.utterances[m.u.occurrence]; !ok {
+			w.utterances[m.u.occurrence] = m.u
+		}
+		if _, taken := w.catchUpRuns[m.gen]; !taken {
+			w.byGeneration[m.gen] = m.u.occurrence
+			w.catchUpRuns[m.gen] = m.u
+		}
+		// The run claims the terminal of every line it speaks: a run's
+		// terminal settles a line only under the claim this flush wrote, so
+		// a late run whose lines a newer commit re-batched settles nothing.
+		for _, l := range m.run.Lines {
+			w.lineClaim[l.Occurrence] = m.gen
+		}
+		w.catchUpMerged++
+	}
+	w.mu.Unlock()
+	for _, m := range merged {
+		w.fence.approve(m.gen, speech.DefaultCatchUpApprovedCap)
+	}
+	for _, m := range merged {
+		w.emitSpeech(events.SpeechRequested, m.u, map[string]any{
+			"dialogue_occurrence_id": m.u.occurrence,
+			"message_id":             m.u.messageID,
+			"message_ids":            m.run.MessageIDs(),
+			"generation":             m.gen,
+			"region_id":              m.u.regionID,
+			"text":                   m.u.text,
+			"character_id":           m.u.character,
+			"trace_id":               m.u.traceID,
+			"merged":                 len(m.run.Lines) > 1,
+			"trigger":                trigger,
+		})
+		w.wg.Add(1)
+		go w.speakMerged(m.u, m.run)
+	}
+}
+
+// speakMerged is the TTS worker of one merged run: the same stages as speak
+// (voice → key → synthesise (cached) → delay → mute → the scheduler's
+// fence-checked start), with three catch-up differences. The voice is
+// resolved from the run's speaker, not from the message id (the merged id
+// is not in the speaker table). The cache key's original-message form is
+// the versioned merged id (issue #25 item 3: the merged utterance's cache
+// keys include the merged message ids). And the in-flight synthesis's cancel
+// lives on the utterance (synthCancel), not in the per-generation table —
+// several runs share the batch's generation base, and the rescue cancels
+// the flagged worker at the source instead of a table entry.
+func (w *speechWiring) speakMerged(u *utteranceInfo, run speech.CatchUpRun) {
+	defer w.wg.Done()
+	ctx := w.endCtx
+	if ctx.Err() != nil {
+		// The session ended between the flush and the worker's start: the
+		// run never speaks, and its terminal (with the covered lines') lands
+		// here rather than in silence — the stop's own sweep skips a run
+		// that has not reached the scheduler, because the worker owns the
+		// terminal of a run still in its TTS call.
+		w.finishRun(u, "session_ended")
+		return
+	}
+	rv, why := w.resolveVoiceForCharacter(ctx, u.character)
+	if rv.profile.ID == "" {
+		w.log("speech: catch-up run voice skip — no approved voice",
+			"session_id", w.id, "character_id", u.character,
+			"generation", u.generation, "reason", why)
+		w.finishRun(u, why)
+		return
+	}
+	w.mu.Lock()
+	u.voiceID = rv.profile.ID
+	w.mu.Unlock()
+
+	// The merged id form is the key's original-message input (ADR-0122
+	// decision 6): the versioned merged message ids ride in the key, and
+	// the cache row the generation writes persists them as the row's
+	// provenance (the profile purge addresses merged rows through it, via
+	// the store's whole-segment match).
+	key, err := speech.CacheKeyOf(speech.KeyInput{
+		UtteranceText:            u.text,
+		OriginalMessageID:        u.messageID,
+		SpeechRulesRevision:      1,
+		Language:                 rv.profile.Language,
+		VoiceRevisionFingerprint: rv.profile.Fingerprint,
+		TTSModelID:               rv.profile.ModelID,
+		BackendConfigDigest:      w.voices.BackendDigest,
+		Format:                   "wav/pcm16",
+	})
+	if err != nil {
+		w.finishRun(u, fmt.Sprintf("cache_key:%v", err))
+		return
+	}
+
+	pctx, cancel := context.WithTimeout(ctx, speechTTSTimeout)
+	defer cancel()
+	synthCtx, synthCancel := context.WithCancel(pctx)
+	slot := &synthSlot{cancel: synthCancel}
+	w.mu.Lock()
+	u.synthSlot = slot
+	w.mu.Unlock()
+	defer func() {
+		w.mu.Lock()
+		if u.synthSlot == slot {
+			u.synthSlot = nil
+		}
+		w.mu.Unlock()
+		synthCancel()
+	}()
+	ttsStart := time.Now()
+	res, err := w.voices.Speech.GetOrGenerate(speech.WithKeyInput(synthCtx, u.messageID), key, speech.PriorityCurrent, func(ctx context.Context) (tts.Audio, error) {
+		return rv.generate(ctx, u.text)
+	})
+	if err != nil {
+		if w.lineRescued(u) {
+			// The batch took the run over (ADR-0122 decision 2): the rescue
+			// owns the run's terminal, and the worker emits nothing.
+			return
+		}
+		if ctx.Err() != nil {
+			w.finishRun(u, "session_ended")
+			return
+		}
+		w.finishRun(u, providerErrorKind(err))
+		return
+	}
+	w.metrics.TTSResolved(w.mLabels, res.FromCache, time.Since(ttsStart))
+	if res.FromCache {
+		w.mu.Lock()
+		w.cacheHits++
+		w.mu.Unlock()
+	}
+	w.mu.Lock()
+	w.ready++
+	w.current = &UtteranceState{Phase: "ready", Generation: u.generation, UtteranceID: u.occurrence, At: time.Now().UTC()}
+	w.mu.Unlock()
+	w.emitSpeech(events.SpeechReady, u, map[string]any{
+		"dialogue_occurrence_id": u.occurrence,
+		"message_id":             u.messageID,
+		"message_ids":            run.MessageIDs(),
+		"generation":             u.generation,
+		"region_id":              u.regionID,
+		"cache_key":              string(key),
+		"voice_id":               rv.profile.ID,
+		"voice_revision":         rv.profile.Revision,
+		"from_cache":             res.FromCache,
+		"character_id":           u.character,
+		"trace_id":               u.traceID,
+	})
+
+	if d := w.delay(); d > 0 {
+		select {
+		case <-time.After(d):
+		case <-ctx.Done():
+			w.finishRun(u, "session_ended")
+			return
+		}
+	}
+	if w.isMuted() {
+		w.finishRun(u, "muted")
+		return
+	}
+	wav := res.WAV
+	if g := rv.profile.Gain; g != 0 && g != 1 {
+		pcm, derr := speech.DecodeWAV(res.WAV)
+		if derr != nil {
+			w.finishRun(u, "voice_gain:undecodable_wav")
+			return
+		}
+		if g < 0 {
+			g = 0
+		}
+		if g > audio.GainMax {
+			g = audio.GainMax
+		}
+		wav = speech.EncodeWAV(scalePCM(pcm.Data, g, pcm.BitsPerSample),
+			pcm.SampleRate, pcm.Channels, pcm.BitsPerSample)
+	}
+	if w.lineRescued(u) {
+		// The batch took the run over after its synthesis: the covered lines
+		// speak in the new batch's merged utterances, so this submit never
+		// happens and the worker emits no terminal of its own.
+		return
+	}
+	w.sched.Submit(speech.UtteranceReady{
+		SessionID:        w.id,
+		Generation:       u.generation,
+		UtteranceID:      u.occurrence,
+		Priority:         speech.PriorityCurrent,
+		WAV:              wav,
+		ExpectedDuration: res.Duration,
+	})
+	w.mu.Lock()
+	u.submitted = true
+	w.mu.Unlock()
+}
+
+// finishRun is the merged run's own terminal (the run-level skip or
+// failure before the scheduler owns the playback): the run's terminal
+// settles the run's generation and the covered lines' — the lines' own
+// terminals name the run's outcome (issue #25: every message spoken
+// exactly once, and every skipped one named).
+func (w *speechWiring) finishRun(u *utteranceInfo, reason string) {
+	result := "failed"
+	if reason == "muted" {
+		result = "muted"
+	}
+	w.finishEnded(u, result, reason)
+	for _, l := range u.mergedLines {
+		w.finishLineTerminal(l, result, reason, u.generation)
+	}
+}
+
+// settleRunLines settles the lines a merged run's terminal covered (issue
+// #25: every message spoken exactly once — the line's terminal names the
+// run's outcome under the claim the run built, and nothing else settles it).
+// The run's generation leaves the in-flight table and the fence's approved
+// set with the terminal: it is done, and the approval it kept is no longer
+// needed. A generation no run owns (a standalone line's) is a no-op.
+func (w *speechWiring) settleRunLines(gen int64, result, eventReason string) {
+	w.mu.Lock()
+	run, ok := w.catchUpRuns[gen]
+	if !ok {
+		w.mu.Unlock()
+		return
+	}
+	delete(w.catchUpRuns, gen)
+	lines := append([]speech.CatchUpLine(nil), run.mergedLines...)
+	w.mu.Unlock()
+	w.fence.unapprove(gen)
+	reason := eventReason
+	switch {
+	case result == "ended":
+		reason = "catch_up_merged"
+	case reason == "":
+		reason = "catch_up_run_failed"
+	}
+	for _, l := range lines {
+		w.finishLineTerminal(l, result, reason, gen)
+	}
+}
+
+// finishLineTerminal settles one covered line's terminal from the outcome
+// of the utterance that spoke — or did not speak — it. claimGen is the run
+// generation the line's terminal is claimed under (0 for the flush's own
+// drops, which claim nothing): a line whose claim is absent or names another
+// run keeps its own terminal — the drop or the pause that fenced it, or the
+// run it now speaks with — and a line that already settled through an
+// earlier source settles nothing twice. The merged events still name the
+// line's message, so the coverage reads once, not twice.
+func (w *speechWiring) finishLineTerminal(l speech.CatchUpLine, result, reason string, claimGen int64) {
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return
+	}
+	claim, ok := w.lineClaim[l.Occurrence]
+	if !ok || claim != claimGen {
+		w.mu.Unlock()
+		return
+	}
+	delete(w.lineClaim, l.Occurrence)
+	w.mu.Unlock()
+	w.finishEnded(w.lineTerminalInfo(l), result, reason)
+}
+
+// resolveVoiceForCharacter is resolveVoice's body for a known speaker
+// (the catch-up runs resolve their voice from the run's speaker: the merged
+// id is not in the speaker table, and the speaker is the decision's input,
+// not a lookup).
+func (w *speechWiring) resolveVoiceForCharacter(ctx context.Context, character string) (resolvedVoice, string) {
+	if rv, why := w.approvedVoice(ctx, character); rv.profile.ID != "" || why != "" {
+		return rv, why
+	}
+	if character == narratorCharacter {
+		// The narrator's own line has no fallback question to ask: the
+		// speaker and the fallback are the same voice.
+		return resolvedVoice{}, "no_approved_voice"
+	}
+	if w.narratorFallback {
+		if rv, why := w.approvedVoice(ctx, narratorCharacter); rv.profile.ID != "" || why != "" {
+			return rv, why
+		}
+		return resolvedVoice{}, "no_approved_voice"
+	}
+	nr, nwhy := w.approvedVoice(ctx, narratorCharacter)
+	switch {
+	case nr.profile.ID != "":
+		// The narrator could have spoken; the profile opted out. The skip is
+		// the setting's, not the voice roster's.
+		return resolvedVoice{}, "narrator_fallback_disabled"
+	case nwhy != "":
+		// The narrator's approved reference is broken: a specific fault is
+		// reported on its own terms, not folded into the setting's reason.
+		return resolvedVoice{}, nwhy
+	default:
+		// Even the narrator has no approved voice: the roster is what kept
+		// the line silent, on or off the setting.
+		return resolvedVoice{}, "no_approved_voice"
+	}
+}
+
+// resolveVoice finds the speaker character's approved voice and its TTS
+// identity: the registered name when the voice is ready on this instance,
+// else the approved reference carried inline (docs/spec/06 fallback).
+//
+// The speaker is the line's assigned character; a line with no assignment
+// is the narrator's. A character without an approved voice falls back to
+// the narrator voice when one is configured and the profile's narrator
+// fallback is on (ADR-0101) — never to a different character's voice, never
+// to a builtin. A specific fault on the primary voice (its approved
+// reference is missing) is reported, not papered over by the fallback:
+// substituting a voice for a broken voice would hide the fault. The skip
+// reasons split what kept the line silent: narrator_fallback_disabled is a
+// line the setting held back while a narrator voice could speak it, and
+// no_approved_voice is a line even the narrator could not speak.
+func (w *speechWiring) resolveVoice(ctx context.Context, messageID string) (resolvedVoice, string) {
+	return w.resolveVoiceForCharacter(ctx, w.speakerFor(messageID))
 }
 
 // ── successor prewarming (FR-11) -----------------------------------------
@@ -1291,59 +2447,6 @@ func prewarmEntropy(succs []matcher.Successor) float64 {
 	return h
 }
 
-// resolveVoice finds the speaker character's approved voice and its TTS
-// identity: the registered name when the voice is ready on this instance,
-// else the approved reference carried inline (docs/spec/06 fallback).
-//
-// The speaker is the line's assigned character; a line with no assignment
-// is the narrator's. A character without an approved voice falls back to
-// the narrator voice when one is configured and the profile's narrator
-// fallback is on (ADR-0101) — never to a different character's voice, never
-// to a builtin. A specific fault on the primary voice (its approved
-// reference is missing) is reported, not papered over by the fallback:
-// substituting a voice for a broken voice would hide the fault. The skip
-// reasons split what kept the line silent: narrator_fallback_disabled is a
-// line the setting held back while a narrator voice could speak it, and
-// no_approved_voice is a line even the narrator could not speak.
-func (w *speechWiring) resolveVoice(ctx context.Context, messageID string) (resolvedVoice, string) {
-	character := w.speakerFor(messageID)
-	if rv, why := w.approvedVoice(ctx, character); rv.profile.ID != "" || why != "" {
-		return rv, why
-	}
-	if character == narratorCharacter {
-		// The narrator's own line has no fallback question to ask: the
-		// speaker and the fallback are the same voice.
-		return resolvedVoice{}, "no_approved_voice"
-	}
-	// The speaker has no approved voice. Under the profile's setting:
-	// on — the historical behaviour, the narrator speaks the line (or its
-	// own fault is reported, or nobody can and the roster says so);
-	// off — the setting is what keeps the line silent, and the reason
-	// names the setting, unless the narrator's fault or the narrator's
-	// absence is the honest cause.
-	if w.narratorFallback {
-		if rv, why := w.approvedVoice(ctx, narratorCharacter); rv.profile.ID != "" || why != "" {
-			return rv, why
-		}
-		return resolvedVoice{}, "no_approved_voice"
-	}
-	nr, nwhy := w.approvedVoice(ctx, narratorCharacter)
-	switch {
-	case nr.profile.ID != "":
-		// The narrator could have spoken; the profile opted out. The skip is
-		// the setting's, not the voice roster's.
-		return resolvedVoice{}, "narrator_fallback_disabled"
-	case nwhy != "":
-		// The narrator's approved reference is broken: a specific fault is
-		// reported on its own terms, not folded into the setting's reason.
-		return resolvedVoice{}, nwhy
-	default:
-		// Even the narrator has no approved voice: the roster is what kept
-		// the line silent, on or off the setting.
-		return resolvedVoice{}, "no_approved_voice"
-	}
-}
-
 // speakerFor is the line's speaker character: the curator's assigned
 // character for the message, or the narrator when the line is unattributed.
 func (w *speechWiring) speakerFor(messageID string) string {
@@ -1518,6 +2621,14 @@ func (w *speechWiring) audioInfo() *AudioInfo {
 		Volume:        w.volume,
 		SpeechDelayMS: w.delayMS,
 		MasterVolume:  w.masterVolume(),
+		CatchUp: CatchUpInfo{
+			Policy: w.catchUp.Policy,
+			CatchUpStats: CatchUpStats{
+				Batched:    w.catchUpBatched,
+				Dropped:    w.catchUpDropped,
+				MergedRuns: w.catchUpMerged,
+			},
+		},
 		Speech: SpeechCounters{
 			Requested: w.requested,
 			Ready:     w.ready,
@@ -1617,9 +2728,21 @@ func providerErrorKind(err error) string {
 // session has currently committed. Equality, not "≤" — a clip synthesised
 // for generation 11 that arrives after generation 12 is stale and never
 // plays (docs/spec/01 invariant 2).
+//
+// The approved set (issue #25, ADR-0122 decision 4): a catch-up batch's runs
+// are submitted under the batch's generation — the newest committed line's
+// generation at the flush. A commit that lands while the batch's runs are
+// still speaking (they cover the window the player just read) must not fence
+// them: the commit batched the new line instead of superseding them, so the
+// batch's generation stays approved until its runs settle. The set is
+// bounded (DefaultCatchUpApprovedCap): a live batch holds a handful of
+// generations at most, and the cap evicts the oldest on overflow.
 type generationFence struct {
 	mu     sync.Mutex
 	latest int64
+	// approved is the catch-up set of approved batch generations, in
+	// approval order (the cap evicts from the front).
+	approved []int64
 }
 
 func (f *generationFence) set(g int64) {
@@ -1628,11 +2751,58 @@ func (f *generationFence) set(g int64) {
 	f.mu.Unlock()
 }
 
+// approve adds one catch-up batch generation to the approved set (the cap
+// bounds it, evicting the oldest on overflow). A generation already approved
+// is not doubled.
+func (f *generationFence) approve(g int64, cap int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, a := range f.approved {
+		if a == g {
+			return
+		}
+	}
+	f.approved = append(f.approved, g)
+	if cap > 0 && len(f.approved) > cap {
+		f.approved = f.approved[1:]
+	}
+}
+
+// unapprove removes one approved generation (its runs settled, or the
+// session's pause/stop took the batch down).
+func (f *generationFence) unapprove(g int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := f.approved[:0]
+	for _, a := range f.approved {
+		if a != g {
+			out = append(out, a)
+		}
+	}
+	f.approved = out
+}
+
+// clearApproved empties the approved set (pause and stop: the batch the
+// session is not speaking must not keep its generations speakable).
+func (f *generationFence) clearApproved() {
+	f.mu.Lock()
+	f.approved = nil
+	f.mu.Unlock()
+}
+
 // IsCurrent implements speech.Fence.
 func (f *generationFence) IsCurrent(g int64) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.latest == g
+	if f.latest == g {
+		return true
+	}
+	for _, a := range f.approved {
+		if a == g {
+			return true
+		}
+	}
+	return false
 }
 
 // ── publishers -------------------------------------------------------------
@@ -1669,6 +2839,20 @@ func (p *commitWatcher) Publish(ctx context.Context, e events.Envelope) (events.
 		// control: a pause that reached the writer is the pause the audio
 		// takes.
 		p.w.pause()
+	case events.SessionSettings:
+		// The settings control's audio half (issue #25, ADR-0122): the catch-up
+		// narration policy moves live mid-session on the same control that moves
+		// the mode and the narrated classes. The payload carries the applied word
+		// (the session package's vocabulary; the runtime cross-checks it — the
+		// two spellings are the same two words); a payload without one leaves the
+		// policy as it is.
+		var payload struct {
+			CatchUp string `json:"catch_up"`
+		}
+		_ = json.Unmarshal(e.Data, &payload)
+		if payload.CatchUp != "" {
+			p.w.setCatchUp(payload.CatchUp)
+		}
 	}
 	return p.inner.Publish(ctx, e)
 }
@@ -1766,6 +2950,8 @@ func (w *speechWiring) noteSchedulerEvent(e events.Envelope) {
 	}
 	occ, _ := data["utterance_id"].(string)
 	gen, _ := data["generation"].(float64)
+	reason, _ := data["reason"].(string)
+	genI := int64(gen)
 	// The status bar's voice half (status.go): the scheduler has accepted
 	// the playback on the sink, so the line's commit→voice sample completes
 	// now. Only a start measures — a cancel or an end is the line's
@@ -1782,21 +2968,53 @@ func (w *speechWiring) noteSchedulerEvent(e events.Envelope) {
 		w.runner.ObserveFrameToVoice(occ)
 	}
 	w.mu.Lock()
+	if genI > 0 {
+		// The session's active playback (issue #25, ADR-0122 decision 2):
+		// the commit path leaves the playing generation to run out, and the
+		// playback's terminal is the batch's flush trigger ("when playback
+		// ends") — so the start and the terminal move the marker, and a
+		// terminal of another generation leaves it (the playing line keeps
+		// playing under the batched newer one).
+		switch e.Name {
+		case events.SpeechStarted:
+			w.playingGen = genI
+		case events.SpeechEnded, events.SpeechCancelled:
+			if w.playingGen == genI {
+				w.playingGen = 0
+				// The approval the commit path kept the playing generation
+				// current with is done with: the playback is over, and a
+				// generation the fence no longer approves is one the next
+				// commit's cancel list may take (as it may, the line has run
+				// out — its terminal is out or is being settled below).
+				w.fence.unapprove(genI)
+			}
+		}
+	}
 	w.current = &UtteranceState{
 		Phase:       phase,
 		Result:      result,
-		Generation:  int64(gen),
+		Generation:  genI,
 		UtteranceID: occ,
 		At:          time.Now().UTC(),
 	}
+	flushNow := e.Name != events.SpeechStarted && len(w.catchUpPending) > 0 && w.catchUp.Policy == speech.CatchUpPolicyCatchUp
 	w.mu.Unlock()
 	// A scheduler terminal (ended or cancelled) is the generation's final
 	// device-level result: settle it so the fence never cancels — and
 	// re-emits a terminal for — it again (issue #6; terminal results are
 	// idempotent). A start is not a terminal: a started generation is still
-	// cancellable by a newer speakable commit (the stale guarantee).
-	if gen > 0 && e.Name != events.SpeechStarted {
-		w.settle(int64(gen))
+	// cancellable by a newer speakable commit (the stale guarantee). A
+	// merged run's terminal also settles the lines it spoke — under the
+	// claim the run built, so a late run settles nothing else's lines.
+	if genI > 0 && e.Name != events.SpeechStarted {
+		w.settleRunLines(genI, result, reason)
+		w.settle(genI)
+		if flushNow {
+			// The issue's second flush trigger: the playback just ended and
+			// the batch holds lines committed in the meantime — they speak
+			// now, back-to-back, instead of at the window's end.
+			w.flushCatchUp("playback_ended")
+		}
 	}
 	if e.Name != events.SpeechEnded {
 		return

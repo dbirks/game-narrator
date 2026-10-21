@@ -192,7 +192,7 @@ func (r *Reducer) regionLocked(id string) *region {
 	if reg, ok := r.regions[id]; ok {
 		return reg
 	}
-	reg := &region{id: id, tr: recognition.NewTracker(id, r.trackerCfg)}
+	reg := &region{id: id, tr: recognition.NewTracker(id, r.trackerCfg), settling: make(map[string]settlingLine)}
 	r.regions[id] = reg
 	return reg
 }
@@ -257,12 +257,22 @@ func (r *Reducer) applyObservation(ctx context.Context, m ObservationMsg, res *R
 			// inside 200 ms of the advance (docs/spec/12), and the next line's OCR
 			// is not coming that fast. The generation counter still moves with the
 			// commit, so exactly one generation exists per committed occurrence.
+			//
+			// Under the catch_up policy (issue #25, ADR-0122 decision 2) the
+			// playing line is left to run out — the tap batches the new line, it
+			// does not cut the audio the player is hearing. The speech side owns
+			// that line's terminal (it ends when its playback does), so the
+			// session does not cancel it here: it would cut the very line the
+			// policy keeps playing, and the line would reach no terminal of its
+			// own. latest_only keeps the historical immediate cut.
 			reason := CancelDialogueAdvanced
 			if tr.Reason == recognition.ReasonPredictionMisfire {
 				reason = CancelPredictionWrong
 			}
-			if err := r.cancelLocked(ctx, reg, reason, res); err != nil {
-				return err
+			if !(r.cfg.CatchUp == CatchUpPolicyCatchUp && reg.phase.active()) {
+				if err := r.cancelLocked(ctx, reg, reason, res); err != nil {
+					return err
+				}
 			}
 			// The page has turned: a new dialogue occurrence has started inside the
 			// same box lifetime, and docs/spec/01 gives each occurrence its own
@@ -390,7 +400,18 @@ func (r *Reducer) applyDecision(ctx context.Context, m DecisionMsg, res *Result)
 
 func (r *Reducer) applySpeech(ctx context.Context, m SpeechMsg, res *Result) error {
 	reg := r.regionLocked(m.RegionID)
-	if reg.occurrenceID == "" || reg.occurrenceID != m.OccurrenceID {
+	// The clip's occurrence must be one this box committed and still stands
+	// behind: the current occurrence, or — under the catch-up policy (issue
+	// #25, ADR-0122 decision 2/8) — a settling occurrence whose audio outlived
+	// the successor that committed on the region. A settling line keeps its own
+	// phase (the region's single phase is the current occurrence's), so its
+	// terminal is applied here, not refused as an unknown occurrence.
+	settling := false
+	if m.OccurrenceID != "" && reg.occurrenceID == m.OccurrenceID {
+		settling = false
+	} else if _, ok := reg.settling[m.OccurrenceID]; ok {
+		settling = true
+	} else {
 		// The clip claims to belong to an occurrence this box never committed, or
 		// no longer stands behind. Either way there is no state to update, and
 		// emitting the event would put an audio lifecycle on the wire that no
@@ -400,7 +421,16 @@ func (r *Reducer) applySpeech(ctx context.Context, m SpeechMsg, res *Result) err
 		res.Reason = "unknown_occurrence"
 		return nil
 	}
-	next, ok := speechAdvance(reg.phase, m.Kind)
+	var cur SpeechPhase
+	var emitOcc, emitMsg string
+	if settling {
+		cur = reg.settling[m.OccurrenceID].phase
+		emitOcc, emitMsg = m.OccurrenceID, reg.settling[m.OccurrenceID].messageID
+	} else {
+		cur = reg.phase
+		emitOcc, emitMsg = reg.occurrenceID, reg.messageID
+	}
+	next, ok := speechAdvance(cur, m.Kind)
 	if !ok {
 		// The guard behind docs/spec/12's "no stale audio starts": a started for a
 		// cancelled or finished utterance is refused here, so a TTS worker that
@@ -409,7 +439,18 @@ func (r *Reducer) applySpeech(ctx context.Context, m SpeechMsg, res *Result) err
 		res.Reason = "invalid_speech_phase"
 		return nil
 	}
-	reg.phase = next
+	if settling {
+		line := reg.settling[m.OccurrenceID]
+		line.phase = next
+		reg.settling[m.OccurrenceID] = line
+		// A terminal closes the line: it leaves the settling set, the way the
+		// runtime's fence drops a settled generation (ADR-0122 decision 4).
+		if next == PhaseEnded || next == PhaseCancelled || next == PhaseFailed {
+			delete(reg.settling, m.OccurrenceID)
+		}
+	} else {
+		reg.phase = next
+	}
 	// Event names come from docs/spec/01's list, which is the single source of
 	// truth: it has no speech.failed, so a failure is published as speech.ended
 	// carrying result:"failed" and the error, rather than as a new name invented
@@ -421,7 +462,13 @@ func (r *Reducer) applySpeech(ctx context.Context, m SpeechMsg, res *Result) err
 	case SpeechEnded, SpeechFailed:
 		name = events.SpeechEnded
 	}
-	_, err := r.emitFor(ctx, res, reg, name, r.speechData(reg, m))
+	data := r.speechData(reg, m)
+	// A settling line's terminal names the line still being heard, not the
+	// successor that committed on the region: the region's own id belongs to the
+	// successor, so the payload carries the settling occurrence's own identity.
+	data["dialogue_occurrence_id"] = emitOcc
+	data["message_id"] = emitMsg
+	_, err := r.emitFor(ctx, res, reg, name, data)
 	return err
 }
 
@@ -506,18 +553,23 @@ func (r *Reducer) applyControl(ctx context.Context, m ControlMsg, res *Result) e
 		}
 	case ControlSettings:
 		// The mid-session operator policy (docs/spec/09 "/play": the
-		// conservative/predictive toggle and the narrated classes). The
-		// payload is the complete target state — the runtime merged the
-		// request with the session's current policy before sending — so a
-		// message that names the state the session already has is a
-		// duplicate, not a change.
+		// conservative/predictive toggle, the narrated classes and the speech
+		// side's catch-up policy, issue #25). The payload is the complete
+		// target state — the runtime merged the request with the session's
+		// current policy before sending — so a message that names the state
+		// the session already has is a duplicate, not a change.
 		kinds := normalizeNarratedKinds(m.Settings.NarratedKinds)
-		if m.Settings.Predictive == r.cfg.PredictiveMode && kindsEqual(kinds, r.cfg.NarratedKinds) {
+		catchUp, err := ValidateCatchUpPolicy(m.Settings.CatchUp)
+		if err != nil {
+			return err
+		}
+		if m.Settings.Predictive == r.cfg.PredictiveMode && kindsEqual(kinds, r.cfg.NarratedKinds) && catchUp == r.cfg.CatchUp {
 			res.Reason = "duplicate_control"
 			return nil
 		}
 		r.cfg.PredictiveMode = m.Settings.Predictive
 		r.cfg.NarratedKinds = kinds
+		r.cfg.CatchUp = catchUp
 		for _, reg := range r.regions {
 			// The text machine's half of the mode switch: a tracker left on
 			// the old side would hold a box REVEALING (or keep revealing a
@@ -533,6 +585,7 @@ func (r *Reducer) applyControl(ctx context.Context, m ControlMsg, res *Result) e
 			"generation":       r.st.Generation,
 			"mode":             mode,
 			"narrated_classes": kinds,
+			"catch_up":         catchUp,
 			"reason":           reasonOr(m.Reason, "operator"),
 		}); err != nil {
 			return err
@@ -766,6 +819,19 @@ func (r *Reducer) maybeCommit(ctx context.Context, reg *region, res *Result) err
 	r.st.Generation++
 	reg.generation = r.st.Generation
 	reg.predictive = predictive
+	// Catch-up (issue #25, ADR-0122 decision 2): the line the player was just
+	// hearing is not cut by this commit — it settles, keeping its own phase so
+	// its terminal (when its playback ends) can still be applied. latest_only
+	// already cancelled it at the source (ADVANCING / cancelOtherLocked), so
+	// its phase is not active here and nothing settles.
+	if r.cfg.CatchUp == CatchUpPolicyCatchUp && reg.occurrenceID != "" && reg.phase.active() {
+		if reg.settling == nil {
+			reg.settling = make(map[string]settlingLine)
+		}
+		if _, ok := reg.settling[reg.occurrenceID]; !ok && len(reg.settling) < maxSettlingLines {
+			reg.settling[reg.occurrenceID] = settlingLine{phase: reg.phase, messageID: reg.messageID}
+		}
+	}
 	reg.phase = PhaseNone
 	if reg.traceID == "" {
 		reg.traceID = r.ids()
@@ -803,12 +869,17 @@ func commitReason(predictive bool) string {
 // adjudication before committing rank (docs/spec/05 "Clef adjudication and
 // commit policy", ADR-0050): a ranking the local scoring abstained on, or one
 // whose margin over the runner-up falls below the configured threshold — the
-// ambiguous candidates the local evidence cannot settle. A ranking the local
-// policy committed on confidently never spends a model call. This is the single
-// source of truth for the signal: the pipeline consults it to decide whether
-// to dispatch the decision at all, so "the policy asked" and "a call went out"
-// can never disagree. With Adjudicate off (the default) it is always false and
-// the matcher's commitment is the commitment.
+// ambiguous candidates the local evidence cannot settle — or, since ADR-0115 §1,
+// a non-abstaining MATCH_FUZZY ranking whose top candidate's calibrated
+// probability sits below AdjudicateFuzzyBelow: the live case where a real line
+// reads correctly but scores fuzzy at a p the commitment policy would not
+// speak, and the bounded re-ask is the mechanism the "same text keeps being
+// observed" evidence needs. A ranking the local policy committed on
+// confidently never spends a model call. This is the single source of truth
+// for the signal: the pipeline consults it to decide whether to dispatch the
+// decision at all, so "the policy asked" and "a call went out" can never
+// disagree. With Adjudicate off (the default) it is always false and the
+// matcher's commitment is the commitment.
 func (c Config) NeedsAdjudication(rank matcher.Ranking) bool {
 	if !c.Adjudicate {
 		return false
@@ -817,6 +888,21 @@ func (c Config) NeedsAdjudication(rank matcher.Ranking) bool {
 		return true
 	}
 	if c.AdjudicateMargin > 0 && rank.Margin < c.AdjudicateMargin {
+		return true
+	}
+	// The fuzzy-below-bar clause (ADR-0115 §1): a fuzzy read the local policy
+	// accepted but the calibrated probability does not back. The scale is the
+	// operator-visible calibrated one (Candidate.Probability), deliberately not
+	// the revision-1 scale the matcher's acceptance gate runs on (ADR-0035
+	// "Acceptance gate unchanged"). A disabled clause (negative) never fires;
+	// zero is read as the documented default, the way normalize reads it, so a
+	// config that never went through normalize still behaves as documented.
+	fuzzyBar := c.AdjudicateFuzzyBelow
+	if fuzzyBar == 0 {
+		fuzzyBar = 0.5
+	}
+	if fuzzyBar > 0 && fuzzyBar < 1 && rank.Reason == matcher.ReasonFuzzy && len(rank.Candidates) > 0 &&
+		fuzzyBar > rank.Candidates[0].Probability {
 		return true
 	}
 	return false

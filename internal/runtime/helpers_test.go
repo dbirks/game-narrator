@@ -388,10 +388,14 @@ func truthScript(t *testing.T) map[string]string {
 		}
 		// Normalise to RGBA exactly as the pipeline's source does (draw.Draw onto
 		// a fresh RGBA): the fixture frames are paletted PNGs, and the crop hash
-		// only agrees when both sides hash the same concrete pixel type.
+		// only agrees when both sides hash the same concrete pixel type. The crop
+		// options must match the pipeline's recipe (the inset in particular,
+		// ADR-0115 §2): a drift here is a miss on every crop hash and no commits,
+		// so the options come from runtime.DefaultCropOptions, the one source the
+		// pipeline cuts with.
 		rgba := image.NewRGBA(img.Bounds())
 		draw.Draw(rgba, rgba.Bounds(), img, img.Bounds().Min, draw.Src)
-		crop := vision.CropNormalized(rgba, vision.Rect{X: r.X, Y: r.Y, W: r.W, H: r.H}, vision.CropOptions{})
+		crop := vision.CropNormalized(rgba, vision.Rect{X: r.X, Y: r.Y, W: r.W, H: r.H}, runtime.DefaultCropOptions())
 		if crop == nil || crop.Bounds().Empty() {
 			t.Fatalf("%s: crop is empty", row.File)
 		}

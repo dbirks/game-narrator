@@ -44,12 +44,14 @@ func TestDevTraceQuotaEvictsOldest(t *testing.T) {
 		t.Fatalf("NewDevTraceRecorder: %v", err)
 	}
 
-	// Different colours give different hashes, so the sampling gate stores
-	// every frame. Each 320x240 solid JPEG is a few hundred bytes, so ~300
-	// frames overflow the 200 KiB quota.
+	// The frames are spaced a second apart on the source clock, which is what
+	// the sampling gate (ADR-0115 §5) allows through: one sample per second of
+	// captured time, whether or not the picture changed. Each 320x240 solid
+	// JPEG is a few hundred bytes, so ~300 stored samples overflow the 200 KiB
+	// quota.
 	var firstSHA, lastSHA string
 	for i := 0; i < 300; i++ {
-		f := solidFrame(color.RGBA{R: uint8(10 + i%200), G: uint8(i % 250), B: uint8(i % 240)}, int64(i*10_000_000))
+		f := solidFrame(color.RGBA{R: uint8(10 + i%200), G: uint8(i % 250), B: uint8(i % 240)}, int64(i*1_100_000_000))
 		s, err := r.recordFrame(ctx, f, nil)
 		if err != nil {
 			t.Fatalf("recordFrame %d: %v", i, err)
@@ -67,7 +69,7 @@ func TestDevTraceQuotaEvictsOldest(t *testing.T) {
 	}
 
 	// The newest is still there...
-	got, ok := r.lookup(299 * 10_000_000)
+	got, ok := r.lookup(299 * 1_100_000_000)
 	if !ok || got.frame != lastSHA {
 		t.Fatalf("lookup(latest) = %v ok=%v, want the newest sample", got, ok)
 	}
@@ -79,9 +81,9 @@ func TestDevTraceQuotaEvictsOldest(t *testing.T) {
 	}
 }
 
-// TestDevTraceSamplingGate rate-limits storage of an unchanged picture: one
-// stored sample per devTraceMinSampleInterval window, no matter how many
-// identical frames arrive — the time quota docs/spec/13 asks for.
+// TestDevTraceSamplingGate rate-limits storage: at most one stored sample per
+// second of source time, no matter how many frames arrive — the time quota
+// docs/spec/13 asks for, measured on the capture clock (ADR-0115 §5).
 func TestDevTraceSamplingGate(t *testing.T) {
 	ctx := context.Background()
 	r, err := NewDevTraceRecorder(t.TempDir(), 0)

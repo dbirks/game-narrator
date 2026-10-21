@@ -94,6 +94,15 @@ file. You then fill the values on the board (gateway URL/token, the role
 `_MODEL` lines incl. the decision role — protocol `systemone` is its
 default — and `SPEECH_ASR`; full table and semantics in manual 19
 step 5 + manual 04; a commented line records the chosen audio sink).
+**A user-level run (env file + `setsid nohup game-narrator serve`, no
+systemd unit) must carry `GAME_NARRATOR_DATA_DIR=<data-dir>` in that env
+file**: the unit pins the data directory itself, so outside the unit a run
+without the variable silently falls back to `$HOME/.local/share/game-narrator`
+and can open a stale database from an older build (issue #31; manual 19
+step 5). `game-narrator starting` logs the resolved directory, the database
+path and the source (flag, env or default); `doctor` degrades the
+`storage.data_dir` row when a non-empty default data directory sits next to
+an explicitly configured one.
 Then start the service and run doctor:
 
 ```sh

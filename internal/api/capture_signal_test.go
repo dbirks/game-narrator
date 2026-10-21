@@ -261,16 +261,17 @@ func TestCaptureSignalSessionMode(t *testing.T) {
 	}
 	// The last dialogue-region crop: the textbox region mapped through the
 	// tracker's window (the 640x480 content rectangle at x=160 on the
-	// 960x480 bordered frame) — the same active window and MapRect the
+	// 960x480 bordered frame) and then cut with the session recipe's ADR-0115
+	// §2 inset (2 px per side) — the same active window, MapRect and inset the
 	// runtime's cut used, in frame coordinates: x 0.096875 of the window
-	// (222 on the frame), y 0.75625 (363), w 0.80625 of 640 (516),
-	// h 0.158333 of 480 (76).
+	// (222 on the frame, 224 after the inset), y 0.75625 (363, 365),
+	// w 0.80625 of 640 (516, 512), h 0.158333 of 480 (76, 72).
 	if v.DialogueCrop == nil {
 		t.Fatalf("dialogue_crop = null, want the textbox region's last crop rectangle")
 	}
-	if diff(v.DialogueCrop.X, 222) > 2 || diff(v.DialogueCrop.Y, 363) > 2 ||
-		diff(v.DialogueCrop.W, 516) > 2 || diff(v.DialogueCrop.H, 76) > 2 {
-		t.Fatalf("dialogue_crop = %+v, want ~(222, 363, 516, 76) in frame coordinates", v.DialogueCrop)
+	if diff(v.DialogueCrop.X, 224) > 2 || diff(v.DialogueCrop.Y, 365) > 2 ||
+		diff(v.DialogueCrop.W, 512) > 2 || diff(v.DialogueCrop.H, 72) > 2 {
+		t.Fatalf("dialogue_crop = %+v, want ~(224, 365, 512, 72) in frame coordinates (mapped box with the 2 px ADR-0115 §2 inset)", v.DialogueCrop)
 	}
 	if v.AgeMS < 0 {
 		t.Fatalf("age_ms = %d, want non-negative", v.AgeMS)

@@ -51,9 +51,17 @@ func deterministicMut(dec pipeline.Decider, det bool) func(*pipeline.Config) {
 		// slow reply: the retrieval-hold budget is OCRTimeout (60 ms, far under
 		// the Decider's 300 ms), and the per-call deadline stays generous so
 		// the engine (instant fake) never outruns it — what the test changes
-		// is the reply's latency, never the read's.
-		c.OCRTimeout = 60 * time.Millisecond
-		c.ReplayOCRTimeout = 5 * time.Second
+		// is the reply's latency, never the read's. Both wall constants scale
+		// by the package's race factor (issue #22): the ratio the test proves
+		// with — the reply 5x slower than the hold budget — is the load
+		// sensitivity, so it must survive the race build unchanged. Scaled,
+		// the plain arm's tail reply (300 ms × scale) also outlives the
+		// end-of-stream grace (OCRTimeout + 500 ms) under -race, so the
+		// counterfactual's state is the same load-invariant run-to-run there
+		// instead of a scheduling coin flip: the commit delta, not the fence
+		// count, is what carries the dependence.
+		c.OCRTimeout = 60 * time.Millisecond * ocrTimeoutScale
+		c.ReplayOCRTimeout = 5 * time.Second * ocrTimeoutScale
 	}
 }
 
@@ -64,7 +72,10 @@ func deterministicMut(dec pipeline.Decider, det bool) func(*pipeline.Config) {
 // the committed messages and their capture timestamps — is the fast run's
 // outcome no matter how slow the reply was. The same run in plain ModeReplay
 // fences the late reply (the hold budget expires against the Decider's
-// 300 ms), which is the wall-clock dependence the deterministic mode removes.
+// 300 ms x the race factor), which is the wall-clock dependence the
+// deterministic mode removes. Both wall constants of the test scale by the
+// package's race factor (issue #22), so the 5x ratio the dependence is
+// measured in holds in the race build too.
 func TestDeterministicReplaySlowRankReplyDoesNotFence(t *testing.T) {
 	script := ocrScript(t)
 
@@ -93,7 +104,7 @@ func TestDeterministicReplaySlowRankReplyDoesNotFence(t *testing.T) {
 		det:  false,
 	}} {
 		t.Run(mode.name, func(t *testing.T) {
-			dec := &slowDecider{d: 300 * time.Millisecond}
+			dec := &slowDecider{d: 300 * time.Millisecond * ocrTimeoutScale}
 			h := newHarness(t, &fakeOCR{script: script, delay: fastScript, respectCtx: true},
 				deterministicMut(dec, mode.det))
 			st, evs, err := h.run(t, h.source(0, false))
@@ -120,7 +131,7 @@ func TestDeterministicReplaySlowRankReplyDoesNotFence(t *testing.T) {
 				// budget expired) and/or the commit lands late or is lost. This
 				// is the dependence the deterministic mode removes, measured.
 				depended := st.RankingStale > 0 || !slicesEqual(got, want)
-				t.Logf("plain replay with the 300 ms reply: committed %v (reference %v), ranking_stale=%d", got, want, st.RankingStale)
+				t.Logf("plain replay with the %s reply: committed %v (reference %v), ranking_stale=%d", 300*time.Millisecond*ocrTimeoutScale, got, want, st.RankingStale)
 				if !depended {
 					t.Errorf("plain replay's outcome was unaffected by a reply 5x slower than its hold budget (committed %v, ranking_stale=0): the counterfactual is missing and this test proves nothing", got)
 				}

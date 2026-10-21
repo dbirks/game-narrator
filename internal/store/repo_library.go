@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/games"
+	"github.com/dbirks/game-narrator/internal/speech"
 )
 
 // profileDeletionRetention is the window between a soft delete and the moment
@@ -251,6 +252,29 @@ func (s *Store) PurgeProfile(ctx context.Context, profileID string) (PurgeReport
 				toArgs(messageIDs)...); err != nil {
 				return mapWriteError(op, err)
 			}
+
+			// The merged fallback (issue #25, ADR-0122): the merged runs the
+			// catch-up narration committed under versioned id-lists
+			// ("m<version>:id1,id2,…”). The exact-match delete cannot address
+			// them — the provenance column holds the list — and the profile's
+			// words must not outlive the profile inside a merged blob: the rows
+			// that name any of the profile's messages as a whole segment go
+			// down with it, their blobs joining the same report.
+			if merged, err := s.mergedCacheRowsForMessages(ctx, tx, op, messageIDs); err != nil {
+				return err
+			} else if len(merged) > 0 {
+				mph := strings.TrimSuffix(strings.Repeat("?,", len(merged)), ",")
+				margs := make([]any, 0, len(merged))
+				for _, r := range merged {
+					report.CacheEntries++
+					report.CacheBlobs = append(report.CacheBlobs, r.sha256)
+					margs = append(margs, r.key)
+				}
+				if _, err := tx.exec(ctx, op,
+					"DELETE FROM speech_cache WHERE key IN ("+mph+")", margs...); err != nil {
+					return mapWriteError(op, err)
+				}
+			}
 		}
 
 		// The content hashes the cascade is about to orphan (sources and
@@ -335,12 +359,52 @@ func countDerivedRevisions(ctx context.Context, tx *Tx, op string, p games.Profi
 
 // ── speech-cache provenance ────────────────────────────────────────────────
 
+// mergedCacheRowsForMessages selects the speech_cache rows whose
+// original_message_id is a merged utterance's versioned id-list form
+// (issue #25, ADR-0122: "m<version>:id1,id2,…" — a merged run speaks more
+// than one committed line under one cache key) and that names one of
+// messageIDs as one of the list's whole segments. The exact-match IN(…) deletes
+// elsewhere cannot see these rows — the provenance column holds the *list*,
+// not any one of the ids — so the ADR-0107 provenance purge falls back to this
+// when the messages must not outlive their rows in a merged blob. The match is
+// speech.MergedIDsIn: exact-segment, so an id that is a prefix of another
+// segment cannot take a row down with it, and the store never re-spells the
+// merged form it does not own. The candidate set is the merged rows of the
+// cache (a small fraction), not the whole table; the result is the (key,
+// sha256) pairs the caller deletes and hashes for its reference-before-delete
+// blob cleanup.
+func (s *Store) mergedCacheRowsForMessages(ctx context.Context, tx *Tx, op string, messageIDs []string) ([]struct{ key, sha256 string }, error) {
+	rows, err := tx.query(ctx, op,
+		"SELECT key, sha256, original_message_id FROM speech_cache WHERE original_message_id LIKE 'm%'")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []struct{ key, sha256 string }
+	for rows.Next() {
+		var k, sha, omid string
+		if err := rows.Scan(&k, &sha, &omid); err != nil {
+			return nil, mapReadError(op, err)
+		}
+		if speech.IsMergedOriginalID(omid) && speech.MergedIDsIn(omid, messageIDs) {
+			out = append(out, struct{ key, sha256 string }{k, sha})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapReadError(op, err)
+	}
+	return out, nil
+}
+
 // DeleteSpeechCacheRowsForMessages removes the speech_cache rows whose
 // original_message_id names one of messageIDs (0017's provenance column,
 // ADR-0107) and returns their committed-blob hashes, for the caller's
-// reference-before-delete blob cleanup. An empty messageID set is a no-op with
-// an empty report: the purge of a message-free revision still runs, it just
-// addresses nothing.
+// reference-before-delete blob cleanup. A merged utterance's row (issue #25,
+// ADR-0122: original_message_id the "m<version>:id1,id2,…” list) names the
+// same messages through the list, so it is addressed by the segment fallback
+// and dropped with the rows it is made of. An empty messageID set is a no-op
+// with an empty report: the purge of a message-free revision still runs, it
+// just addresses nothing.
 func (s *Store) DeleteSpeechCacheRowsForMessages(ctx context.Context, messageIDs []string) (int, []string, error) {
 	if len(messageIDs) == 0 {
 		return 0, nil, nil
@@ -348,10 +412,7 @@ func (s *Store) DeleteSpeechCacheRowsForMessages(ctx context.Context, messageIDs
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(messageIDs)), ",")
 	args := toArgs(messageIDs)
 
-	var (
-		entries int
-		blobs   []string
-	)
+	var blobs []string
 	err := s.inWrite(ctx, func(ctx context.Context, tx *Tx) error {
 		const op = "delete speech cache rows"
 		rows, err := tx.query(ctx, op,
@@ -372,18 +433,39 @@ func (s *Store) DeleteSpeechCacheRowsForMessages(ctx context.Context, messageIDs
 			return mapReadError(op, err)
 		}
 		rows.Close()
-		entries = len(blobs)
 
 		if _, err := tx.exec(ctx, op,
 			"DELETE FROM speech_cache WHERE original_message_id IN ("+placeholders+")", args...); err != nil {
 			return mapWriteError(op, err)
+		}
+
+		// The merged fallback (issue #25, ADR-0122): the rows a merged run
+		// committed under its versioned id-list, which the exact-match delete
+		// above cannot address. They speak the messages' words, so they go
+		// down with them — and their blobs join the same reference-before-delete
+		// report.
+		merged, err := s.mergedCacheRowsForMessages(ctx, tx, op, messageIDs)
+		if err != nil {
+			return err
+		}
+		if len(merged) > 0 {
+			mph := strings.TrimSuffix(strings.Repeat("?,", len(merged)), ",")
+			margs := make([]any, 0, len(merged))
+			for _, r := range merged {
+				blobs = append(blobs, r.sha256)
+				margs = append(margs, r.key)
+			}
+			if _, err := tx.exec(ctx, op,
+				"DELETE FROM speech_cache WHERE key IN ("+mph+")", margs...); err != nil {
+				return mapWriteError(op, err)
+			}
 		}
 		return nil
 	})
 	if err != nil {
 		return 0, nil, err
 	}
-	return entries, blobs, nil
+	return len(blobs), blobs, nil
 }
 
 // SpeechCacheRowCountByHash counts the speech_cache rows that committed one

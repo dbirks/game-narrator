@@ -55,11 +55,13 @@ func TestReplayPauseMutesSpeech(t *testing.T) {
 	// the session is alive for seconds: long enough to press pause mid-line.
 	// The tone is long (3 s) so the first utterance is genuinely still playing
 	// when the pause lands — the fence the test asserts needs an in-flight line.
-	e := newVoiceEnv(t, 250*time.Millisecond, 3*time.Second, true, sink, "", nil)
+	e := newVoiceEnv(t, 250*time.Millisecond, 3*time.Second, true, sink, "", nil, "")
 	id := e.startReplay()
 
 	// The first line is genuinely playing on the sink before the pause.
-	e.waitEvents(t, id, "the first line started", 60*time.Second,
+	// Patience ceilings below are race-scaled (issue #22): they bound a
+	// healthy-but-slow run, not the contract.
+	e.waitEvents(t, id, "the first line started", 60*time.Second*patienceScale,
 		func(evs []events.Envelope) bool { return countBetween(evs, events.SpeechStarted, 0, 1<<62) >= 1 })
 
 	// The pause: the control's own snapshot carries the operator's state, the
@@ -72,7 +74,7 @@ func TestReplayPauseMutesSpeech(t *testing.T) {
 		t.Fatalf("pause snapshot = paused %v, want true (the button reads the server's state)", info.Paused)
 	}
 
-	evs := e.waitEvents(t, id, "the pause fenced the in-flight line", 30*time.Second,
+	evs := e.waitEvents(t, id, "the pause fenced the in-flight line", 30*time.Second*patienceScale,
 		func(evs []events.Envelope) bool {
 			paused := false
 			fenced := false
@@ -107,13 +109,13 @@ func TestReplayPauseMutesSpeech(t *testing.T) {
 	if info.Paused {
 		t.Fatalf("resume snapshot = paused %v, want false", info.Paused)
 	}
-	evs = e.waitEvents(t, id, "the resume landed on the writer", 30*time.Second,
+	evs = e.waitEvents(t, id, "the resume landed on the writer", 30*time.Second*patienceScale,
 		func(evs []events.Envelope) bool { return countBetween(evs, events.SessionResumed, 0, 1<<62) >= 1 })
 	resumeSeq := seqOf(t, evs, events.SessionResumed)
 
 	// The run settles: source end, both lines, each committed exactly once —
 	// the paused window's observations were observed and decided, not replayed.
-	final := waitState(t, e.mgr, id, 180*time.Second)
+	final := waitState(t, e.mgr, id, 180*time.Second*patienceScale)
 	if final.State != runtime.StateStopped || final.Reason != runtime.StopReasonSourceEnd {
 		t.Fatalf("terminal = %s/%s, want stopped/source_end (stats %+v)", final.State, final.Reason, final.Stats)
 	}
@@ -155,7 +157,7 @@ func TestReplayPauseMutesSpeech(t *testing.T) {
 // admits no other class.
 func TestReplaySettingsMovesThePolicy(t *testing.T) {
 	sink := dummy.New(0, 0)
-	e := newVoiceEnv(t, 250*time.Millisecond, time.Second, true, sink, "", nil)
+	e := newVoiceEnv(t, 250*time.Millisecond, time.Second, true, sink, "", nil, "")
 	id := e.startReplay()
 	e.waitEvents(t, id, "the first line committed", 60*time.Second,
 		func(evs []events.Envelope) bool { return countBetween(evs, events.MessageCommitted, 0, 1<<62) >= 1 })

@@ -106,6 +106,18 @@ type region struct {
 	phase        SpeechPhase
 	predictive   bool
 
+	// settling is the catch-up policy's settling lines (issue #25, ADR-0122
+	// decision 2/8): an occurrence whose audio is still live after a newer
+	// occurrence committed on this region. The region's single phase is the
+	// current occurrence's; a line that committed a successor keeps its own
+	// phase (and its message id, for the terminal's payload) here so its
+	// terminal (it ends when its playback does, not when the box advances) can
+	// still be applied and emitted. Bounded; entries leave on their terminal.
+	// latest_only never settles a line this way: its commit cancels the older
+	// audio at the source, so the older occurrence reaches its terminal
+	// (cancelled) before a successor commits.
+	settling map[string]settlingLine
+
 	// lastKeySeq / lastTextSeq drive text.observed: the event is emitted when the
 	// accepted text changes or the box's state machine moves, not once per frame.
 	// At 5 Hz OCR an unfiltered text.observed would be the loudest event in the
@@ -139,6 +151,22 @@ type region struct {
 // "decision arrived after the next frame"; anything older is answering a screen
 // that no longer exists.
 const maxRankingsPerRegion = 8
+
+// maxSettlingLines bounds the catch-up policy's settling lines (ADR-0122
+// decision 2): the occurrences whose audio is still live after a successor
+// committed on the region. Each leaves on its terminal, so a healthy session
+// holds only the handful of lines inside one batch window; the bound is the
+// backstop for a wedged audio path, the same shape as the runtime's cancel
+// table cap (ADR-0122 decision 4).
+const maxSettlingLines = 16
+
+// settlingLine is one catch-up line still settling on a region: its speech
+// phase and the message id its terminal's payload must name (the region's own
+// message id belongs to the successor, not to the line still being heard).
+type settlingLine struct {
+	phase     SpeechPhase
+	messageID string
+}
 
 type rankedObservation struct {
 	obsSeq  int64
@@ -393,9 +421,13 @@ type State struct {
 	// (docs/spec/09): the conservative/predictive half of the decision mode and
 	// the narrated classes the commitment policy applies. They move on a
 	// settings control and are read by the pipeline's ranking gate from here —
-	// the single source the policy and the evidence half agree on.
+	// the single source the policy and the evidence half agree on. CatchUp is
+	// the speech side's half of the same control (issue #25, ADR-0122): the
+	// catch-up narration policy the audio side runs, moved on the same settings
+	// control and shown in the same snapshot.
 	PredictiveMode bool             `json:"predictive_mode"`
 	NarratedKinds  []games.TextKind `json:"narrated_kinds"`
+	CatchUp        string           `json:"catch_up"`
 	SceneID        string           `json:"scene_id,omitempty"`
 	Recent         []string         `json:"recent_message_ids,omitempty"`
 	Regions        []RegionState    `json:"regions"`
@@ -517,6 +549,7 @@ func (r *Reducer) State() State {
 	out.Stale = append([]StaleNotice(nil), r.st.Stale...)
 	out.PredictiveMode = r.cfg.PredictiveMode
 	out.NarratedKinds = append([]games.TextKind(nil), r.cfg.NarratedKinds...)
+	out.CatchUp = r.cfg.CatchUp
 	return out
 }
 

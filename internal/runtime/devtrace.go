@@ -42,10 +42,13 @@ const (
 	// devTraceMaxBlobBytes caps one stored sample so a single pathological
 	// frame cannot eat the whole session quota by itself.
 	devTraceMaxBlobBytes = 8 << 20
-	// devTraceMinSampleInterval is the minimum gap between two stored samples
-	// of a changing picture: at most four samples per second, so the time
-	// quota docs/spec/13 asks for is honoured, not just the byte quota.
-	devTraceMinSampleInterval = 250 * time.Millisecond
+	// devTraceSampleInterval is the minimum gap, in source time, between two
+	// stored samples: at most one sample per second of captured time
+	// (ADR-0115 §5). The interval is measured on the frame's own capture clock,
+	// so the encode cost — the per-frame CPU the board cannot spare — is a rate
+	// of the capture, not of the host: a changed picture still gets its sample
+	// within a second, a stable picture costs one encode per second at most.
+	devTraceSampleInterval = time.Second
 )
 
 // devFrameSample is the evidence of one captured frame: the stored full-frame
@@ -104,9 +107,10 @@ type devTraceRecorder struct {
 	types    map[string]string // sha → media type, for the inspector's Content-Type
 	total    int64
 
-	lastHash string
-	lastAt   time.Time
-	samples  []devFrameSample
+	lastSampleAtNS int64 // the instant of the last stored sample, on its own clock
+	lastFromSource bool  // that instant was the frame's source clock, not the wall
+	haveSample     bool
+	samples        []devFrameSample
 }
 
 // NewDevTraceRecorder prepares the session's private dev-trace store under
@@ -137,18 +141,39 @@ func NewDevTraceRecorder(root string, quota int64) (*devTraceRecorder, error) {
 func (r *devTraceRecorder) SetCropOptions(o vision.CropOptions) { r.crop = o }
 
 // recordFrame stores the sampled evidence for one frame and returns the
-// sample, or nil when the sampling gate skipped the frame (unchanged picture
-// within the interval). A store failure is returned, not swallowed: the
-// session keeps running untraced rather than dropping frames over a debug
-// feature (docs/spec/13 degraded modes).
+// sample, or nil when the sampling gate skipped the frame. A store failure is
+// returned, not swallowed: the session keeps running untraced rather than
+// dropping frames over a debug feature (docs/spec/13 degraded modes).
 func (r *devTraceRecorder) recordFrame(ctx context.Context, f capture.Frame, regions []games.Region) (*devFrameSample, error) {
 	if r == nil {
 		return nil, nil
 	}
-	now := time.Now()
-	if f.Hash == r.lastHash && now.Sub(r.lastAt) < devTraceMinSampleInterval {
+	// The sampling gate (ADR-0115 §5): at most one encoded sample per second
+	// of source time, whether or not the picture changed. The interval is on
+	// the frame's own capture clock, the wall clock when the frame names none
+	// (a source-less stream is rate-limited on wall time the way the old gate
+	// did). An interval is only meaningful within one clock domain: a frame
+	// whose instant comes from a different clock than the last sample's is
+	// stored, because comparing the two would be comparing source time against
+	// wall time, and the gate's fail-open direction is a stored sample (the
+	// byte quota still bounds the total).
+	//
+	// The gate the picture's hash used to key on re-encoded the full-frame
+	// JPEG and every crop on every frame of an analog feed — where the hash
+	// changes every frame — which is the per-frame CPU cost this gate bounds:
+	// the encode, not the store, is what the board could not spare.
+	sampleAt := f.CaptureTimestampNS
+	fromSource := sampleAt > 0
+	if !fromSource {
+		sampleAt = time.Now().UnixNano()
+	}
+	r.mu.Lock()
+	if r.haveSample && r.lastFromSource == fromSource &&
+		sampleAt-r.lastSampleAtNS < int64(devTraceSampleInterval) {
+		r.mu.Unlock()
 		return nil, nil
 	}
+	r.mu.Unlock()
 	img := f.Image
 	if img == nil || img.Bounds().Empty() {
 		return nil, nil
@@ -189,8 +214,9 @@ func (r *devTraceRecorder) recordFrame(ctx context.Context, f capture.Frame, reg
 	s := devFrameSample{ts: f.CaptureTimestampNS, frame: frameSHA, crops: crops, basis: &basis}
 	r.mu.Lock()
 	r.samples = append(r.samples, s)
-	r.lastHash = f.Hash
-	r.lastAt = now
+	r.lastSampleAtNS = sampleAt
+	r.lastFromSource = fromSource
+	r.haveSample = true
 	r.mu.Unlock()
 	return &s, nil
 }

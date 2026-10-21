@@ -132,7 +132,13 @@ var twentyPages = []string{
 // the others more than a count — no speech stage from any older generation is
 // accepted afterwards.
 func TestTwentyRapidAdvances(t *testing.T) {
-	h := newHarness(t, DefaultConfig())
+	// The cancellation-on-advance contract this test grades is the
+	// latest_only shape (ADR-0122 decision 2): under the catch_up default the
+	// live line is left to run out and the speech side batches the new one, so
+	// the session does not cancel here. Pin the policy the test asserts.
+	cfg := DefaultConfig()
+	cfg.CatchUp = CatchUpPolicyLatestOnly
+	h := newHarness(t, cfg)
 	occurrences := map[string]bool{}
 
 	// Twenty *materially* different pages. The wording matters: a ChangeThreshold
@@ -321,7 +327,13 @@ func TestDismissThenSameTextIsANewOccurrence(t *testing.T) {
 // together; a trace holding both pages' message.committed would look like one
 // occurrence that committed twice.
 func TestPageAdvanceInOneBoxGivesANewTrace(t *testing.T) {
-	h := newHarness(t, DefaultConfig())
+	// The advance cancels the advanced-away page's audio in the latest_only
+	// shape (ADR-0122 decision 2); under the catch_up default the live line is
+	// left to run out and the session does not cancel on the turn. Pin the
+	// policy the test asserts (one cancel for the advanced-away page).
+	cfg := DefaultConfig()
+	cfg.CatchUp = CatchUpPolicyLatestOnly
+	h := newHarness(t, cfg)
 	h.settle("THE DOOR OPENS", 0.9)
 	first := h.rank("msg-01", 0.5, false)
 	if !hasName(first.Events, events.MessageCommitted) {

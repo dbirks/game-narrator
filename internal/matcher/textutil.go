@@ -377,3 +377,60 @@ func nonSpaceLen(s string) int {
 func messageTrigrams(key string, out []uint32) []uint32 {
 	return sortUniqueKeys(trigramKeys([]rune(key), out))
 }
+
+// TrimEdgeNoise strips up to two leading and up to two trailing edge tokens
+// and returns the trimmed text only when a non-empty remainder survives;
+// otherwise the original text is returned unchanged. An edge token qualifies
+// when it is at most two runes (the spec's "1–2 char non-word token") or at
+// most three runes with at least one non-letter (the "$o?" shape the border
+// produces: short and mixed, which no word is). The trim is a candidate, not a
+// rewrite: the scorer ranks the trimmed reading only if it beats the raw one
+// (the rule in retrieve.go), so a line that legitimately begins with a short
+// word ("I saw the boat") is protected by the raw-versus-trimmed comparison —
+// the raw reading keeps its exact match and wins.
+//
+// The bounds are the measured noise made into a rule (ADR-0115 §2): at most
+// two tokens per side (a border produces a handful of marks, never a clause).
+// Whitespace is unicode-aware the way every other fold in this package is: the
+// trim moves token boundaries only, it never splits a grapheme cluster.
+func TrimEdgeNoise(s string) string {
+	fields := strings.Fields(s)
+	if len(fields) < 2 {
+		return s // nothing to trim against: keep the reading as-is
+	}
+	edgeToken := func(f string) bool {
+		runes := utf8.RuneCountInString(f)
+		if runes > 3 {
+			return false
+		}
+		if runes <= 2 {
+			return true
+		}
+		for _, r := range f {
+			if !unicode.IsLetter(r) {
+				return true
+			}
+		}
+		return false
+	}
+	dropLeading := 0
+	for i, f := range fields {
+		if i >= 2 || !edgeToken(f) {
+			break
+		}
+		dropLeading++
+	}
+	dropTrailing := 0
+	for i := len(fields) - 1; i >= 0; i-- {
+		if i < len(fields)-2 || !edgeToken(fields[i]) {
+			break
+		}
+		dropTrailing++
+	}
+	keepFrom := dropLeading
+	keepTo := len(fields) - dropTrailing
+	if keepFrom >= keepTo {
+		return s // nothing real left: the trim must not eat the line
+	}
+	return strings.Join(fields[keepFrom:keepTo], " ")
+}

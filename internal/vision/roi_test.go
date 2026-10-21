@@ -119,6 +119,53 @@ func TestCropNormalizedContent(t *testing.T) {
 	}
 }
 
+// TestCropInset cuts the mapped box on every side (ADR-0115 §2): the textbox
+// border the OCR would read as noise glyphs stays out of the input, the cut
+// degrades to the empty image when the inset eats the whole box, and a
+// negative inset is read as 0 rather than allowed to grow the crop.
+func TestCropInset(t *testing.T) {
+	img := image.NewGray(image.Rect(0, 0, 100, 100))
+	fillRect(img, img.Bounds(), color.Gray{Y: 0})
+	fillRect(img, image.Rect(50, 25, 75, 75), color.Gray{Y: 200})
+
+	rect := Rect{X: 0.5, Y: 0.25, W: 0.25, H: 0.5}
+
+	// The inset cut is the mapped box shrunk by the inset on every side, and
+	// the content starts past the cut (the border pixels are gone).
+	got := CropNormalized(img, rect, CropOptions{Inset: 5})
+	if got.Bounds().Dx() != 15 || got.Bounds().Dy() != 40 {
+		t.Fatalf("inset-5 crop is %v, want 15x40", got.Bounds())
+	}
+	if got.At(0, 0) != (color.Gray{Y: 200}) {
+		t.Errorf("inset crop starts at %v, want the bright block", got.At(0, 0))
+	}
+
+	// A zero inset is the historic cut, byte for byte.
+	plain := CropNormalized(img, rect, CropOptions{})
+	if plain.Bounds().Dx() != 25 || plain.Bounds().Dy() != 50 {
+		t.Fatalf("zero-inset crop is %v, want the historic 25x50", plain.Bounds())
+	}
+
+	// An inset that eats the whole box degrades to the empty image, not a
+	// negative or invented shape.
+	big := CropNormalized(img, rect, CropOptions{Inset: 40})
+	if !big.Bounds().Empty() {
+		t.Fatalf("over-inset crop yielded bounds %v, want empty", big.Bounds())
+	}
+
+	// A negative inset reads as 0: the cut must not grow the OCR input.
+	neg := CropNormalized(img, rect, CropOptions{Inset: -7})
+	if neg.Bounds().Dx() != 25 || neg.Bounds().Dy() != 50 {
+		t.Fatalf("negative-inset crop is %v, want the historic 25x50 (read as 0)", neg.Bounds())
+	}
+
+	// CropRect agrees with the cut: the box it draws is the insetting one.
+	box := CropRect(img, rect, CropOptions{Inset: 5})
+	if want := image.Rect(55, 30, 70, 70); box != want {
+		t.Errorf("CropRect inset = %v, want %v", box, want)
+	}
+}
+
 func TestActiveArea(t *testing.T) {
 	// 4:3 content in a 16:9 frame is the docs/spec/12 case "4:3 frame letterboxed
 	// into 16:9": the picture is 640 wide and the bars are 107 px each side.
