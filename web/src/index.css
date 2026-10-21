@@ -1180,6 +1180,16 @@ pre.muted {
   color: var(--ink);
 }
 
+/* Lilac Night (issue #30): the confirmed badge's --ok re-points to the
+   light --paper in the dark theme and reads 1.9:1 on the selected row's
+   light --peach fill — ink, the way the inferred line above takes it. The
+   scope keeps the light themes' green badge on the peach row (4.9:1 there,
+   the design's own rule). */
+[data-theme="lilac-night"] .graph-row-selected .attr-badge.verified {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
 /* ── OCR regions (m5) ────────────────────────────────────────────────── */
 .regions-page {
   display: grid;
@@ -1428,7 +1438,8 @@ pre.muted {
   gap: var(--sp-8);
   border: none;
   background: transparent;
-  color: var(--ink);
+  /* --fg, not --ink: Lilac Night's --ink is the page background (issue #30). */
+  color: var(--fg);
   font-family: var(--font-display);
   font-weight: 600;
   font-size: 1rem;
@@ -1485,7 +1496,8 @@ pre.muted {
   font-weight: 600;
   font-size: 1.0625rem;
   line-height: 1.25;
-  color: var(--ink);
+  /* --fg, not --ink: Lilac Night's --ink is the page background (issue #30). */
+  color: var(--fg);
   text-decoration: none;
   overflow-wrap: anywhere;
 }
@@ -1539,7 +1551,8 @@ pre.muted {
 }
 
 .lib-list-game a {
-  color: var(--ink);
+  /* --fg, not --ink: Lilac Night's --ink is the page background (issue #30). */
+  color: var(--fg);
   font-family: var(--font-display);
   font-weight: 600;
   text-decoration: none;
@@ -1659,9 +1672,17 @@ pre.muted {
   border: 1.5px solid var(--ink);
   border-radius: var(--radius-pill);
   background: transparent;
-  color: var(--ink);
+  /* --fg, not --ink: the inactive pill sits on the card/page ground
+     (issue #30). The active pill's --peach fill keeps ink text: in the
+     light themes --fg IS ink, and in Lilac Night the light fill re-points
+     the text the way the cast selected row and the rail's active cell do. */
+  color: var(--fg);
   cursor: pointer;
   box-sizing: border-box;
+}
+
+[data-theme="lilac-night"] .traces-pill.active {
+  color: var(--ink);
 }
 
 .traces-pill.active {
@@ -1989,12 +2010,13 @@ pre.muted {
 }
 
 .cast-tabs a:hover {
-  color: var(--ink);
+  /* --fg, not --ink: the tabs sit on the page ground (issue #30). */
+  color: var(--fg);
 }
 
 .cast-tabs .cast-tab-active,
 .cast-tabs a[aria-current="page"] {
-  color: var(--ink);
+  color: var(--fg);
   border-bottom-color: var(--coral);
 }
 
@@ -2037,6 +2059,22 @@ pre.muted {
    on peach; --muted would fall to 3.6:1 there. */
 .cast-roster-table tr.cast-row-selected .muted {
   color: var(--ink);
+}
+
+/* Lilac Night (issue #30): the selected row's fill is the light lilac
+   --peach in every theme, but the dark theme's row text is the light
+   --paper — 1.6:1 on the fill. The rule generalises the .muted line above
+   to the whole row: the row's text and its badges (whose explicit --ok /
+   --warn colours re-point to the light side in the dark theme) take ink,
+   8.4:1 on the lilac fill. Light themes are untouched: their row text is
+   already ink. */
+[data-theme="lilac-night"] .cast-roster-table tr.cast-row-selected {
+  color: var(--ink);
+}
+
+[data-theme="lilac-night"] .cast-roster-table tr.cast-row-selected .badge {
+  color: var(--ink);
+  border-color: var(--ink);
 }
 
 .cast-roster-table tr.cast-row-selected > td:first-child {

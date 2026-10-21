@@ -882,7 +882,9 @@ textarea:focus-visible,
   font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.3;
-  color: var(--ink);
+  /* --fg, not --ink: the dock's ground is the theme's card, and Lilac
+     Night's --ink is the page background (issue #30). */
+  color: var(--fg);
   background: transparent;
   border: 1.5px dashed var(--ink);
   border-radius: var(--radius-pill);
@@ -1123,7 +1125,8 @@ textarea:focus-visible,
 
 .palette-row:focus-visible .palette-row-subtitle,
 .palette-row:focus-visible .palette-row-id {
-  color: var(--ink);
+  /* --fg, not --ink: the palette's ground is the theme's card (issue #30). */
+  color: var(--fg);
 }
 
 /* Phone width: the line id column (full ULIDs) squeezes the titles, so it
@@ -1271,6 +1274,17 @@ textarea:focus-visible,
   font-weight: 700;
 }
 
+/* Lilac Night (issue #30): the theme's coral is a light pink, so the 40%
+   fill lands mid-tone and the light themes' ink text only holds 3.0:1 on
+   it. The dark-theme fill goes darker (more card) and the paper does the
+   work — the same re-point the legacy remap makes for every --ink-named
+   text slot in the dark theme. 5.9:1 on the darker fill, above the chip's
+   4.5:1 small-text bound. */
+[data-theme="lilac-night"] .kit-chip-bad {
+  background: color-mix(in srgb, var(--coral) 30%, var(--card));
+  color: var(--paper);
+}
+
 /* Name tabs: mono 700 uppercase on ink, letter-spacing 0.1em. */
 .kit-name-tab {
   display: inline-block;
@@ -1291,7 +1305,13 @@ textarea:focus-visible,
    (arrow keys move, the selection persists per user). */
 .kit-segmented {
   display: inline-flex;
-  border: 1.5px solid var(--ink);
+  /* --fg for the strip's line and the segments' fills: the light themes'
+     ink strip on the card and the ink-filled active segment are the
+     design; Lilac Night re-points --fg to paper, so the strip and the
+     active segment invert with the theme instead of vanishing into the
+     page (issue #30: the inactive tab's ink text read 1.1:1 on the
+     dark strip). */
+  border: 1.5px solid var(--fg);
   border-radius: var(--radius-pill);
   overflow: hidden;
   background: var(--card);
@@ -1301,7 +1321,7 @@ textarea:focus-visible,
   appearance: none;
   border: none;
   background: transparent;
-  color: var(--ink);
+  color: var(--fg);
   font-family: var(--font-display);
   font-weight: 600;
   font-size: 0.9rem;
@@ -1311,8 +1331,8 @@ textarea:focus-visible,
 }
 
 .kit-segmented [role="tab"][aria-selected="true"] {
-  background: var(--ink);
-  color: var(--paper);
+  background: var(--fg);
+  color: var(--bg);
 }
 
 .kit-segmented [role="tab"]:focus-visible {
@@ -1605,10 +1625,14 @@ textarea:focus-visible,
 
 .kit-select {
   background: var(--card);
-  border: 1.5px solid var(--ink);
+  /* --fg for the line and the text: the light themes' ink is the design;
+     Lilac Night's --ink is the page background, and the select's ground is
+     the dark card — ink text on it read 1.05:1 (issue #30, the settings
+     audio-device select). */
+  border: 1.5px solid var(--fg);
   border-radius: var(--radius-card);
   padding: var(--sp-8) var(--sp-12);
-  color: var(--ink);
+  color: var(--fg);
   font-family: var(--font-mono);
   font-size: 0.9rem;
   /* Native selects size to their longest option — width:100% keeps them
@@ -1749,6 +1773,13 @@ textarea:focus-visible,
    peach, below the AA floor — the active cell reads its mono in ink. */
 .setup-rail-cell[data-state="active"] .setup-rail-num,
 .setup-rail-cell[data-state="active"] .setup-rail-value {
+  color: var(--ink);
+}
+
+/* Lilac Night (issue #30): the cell's 15px label inherits the theme's text
+   (--paper) and would read 1.6:1 on the active cell's light --peach fill —
+   the whole active cell takes ink, the way the cast selected row does. */
+[data-theme="lilac-night"] .setup-rail-cell[data-state="active"] {
   color: var(--ink);
 }
 
@@ -1973,7 +2004,9 @@ textarea:focus-visible,
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.12em;
-  color: var(--ink);
+  /* --fg, not --ink: the block's ground is the near-card mix, so the
+     caption must hold on the theme's text side (issue #30). */
+  color: var(--fg);
 }
 
 .setup-review-items {
