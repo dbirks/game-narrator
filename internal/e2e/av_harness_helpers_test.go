@@ -43,8 +43,17 @@ type avLineRecord struct {
 	VoiceMatch         bool    `json:"voice_match"`
 	ASRWER             float64 `json:"asr_wer"`
 	ASRCER             float64 `json:"asr_cer"`
-	ClipMP4            string  `json:"clip_mp4,omitempty"`
-	ClipWAV            string  `json:"clip_wav,omitempty"`
+	// ASRWERvsScript is the ASR transcript's WER against the line's script
+	// text (the corpus ground truth avASRScore scores against, Amendment 1): the
+	// gate's spoken-line fidelity input; zero where the line was never
+	// scored (an unscored line is "no evidence", not a perfect reading).
+	ASRWERvsScript float64 `json:"asr_wer_vs_script"`
+	// BoxPosition is the line's box placement (Amendment 1, from the
+	// profile's placement-aware region rows, ADR 0137): "top", "middle",
+	// "bottom" — or "" when the line's region has no row to classify.
+	BoxPosition string `json:"box_position,omitempty"`
+	ClipMP4     string `json:"clip_mp4,omitempty"`
+	ClipWAV     string `json:"clip_wav,omitempty"`
 	// Batched: spoken inside a merged catch-up run (ADR-0122); RunPosition
 	// is its place in the run (0 = the run's first, audible-at-start line).
 	Batched         bool   `json:"batched,omitempty"`
@@ -80,6 +89,18 @@ type avTimelineReport struct {
 	DuplicateCommits    int            `json:"duplicate_commits"`
 	StaleStarts         int            `json:"stale_starts"`
 	CacheHits           int            `json:"cache_hits"`
+	// PhantomUtterances (Amendment 1) counts the speech.started events the
+	// timeline cannot explain: the occurrence — or the merged run's
+	// occurrence the started names — maps to no committed line, or to a
+	// read-through line. This is the "phantom speech" counter: on the board
+	// the narrator spoke OCR text with no dialogue box on screen, and the
+	// timeline had no field that named it.
+	PhantomUtterances int `json:"phantom_utterances"`
+	// PhantomReadThroughs is the read-through half of the phantom count: the
+	// started events whose occurrence is a commit with the read-through
+	// marker (message_id "unknown", ADR 0136) — spoken where the corpus
+	// cannot name the line.
+	PhantomReadThroughs int `json:"phantom_read_throughs"`
 	// SkippedLines counts lines whose terminal was skipped (stale catch-up,
 	// duplicate region, backpressure). IdleSamples is the number of lines in
 	// the settled→audio gate; the Queued* percentiles are the lines that
@@ -195,6 +216,17 @@ type avSpeechData struct {
 	EndedAt    string   `json:"ended_at"`
 }
 
+// avExpectedVoices are the voices the session resolves lines to (the
+// ADR-0143 dual-voice scene): the character's voice for a line the commit
+// attributes to a speaker, the narrator's for every other line (the
+// runtime's speakerFor contract: the assigned character, else the
+// narrator). Either may be "" — a line whose slot is empty has no
+// expected voice, and the gate's voice rule skips it.
+type avExpectedVoices struct {
+	Character string
+	Narrator  string
+}
+
 // avBuildTimeline correlates the session's dev event stream onto the
 // recording's wall clock (ADR 0143), per committed occurrence: the box's
 // region+lifetime group's first non-empty non-Mesa reading (t_box_appear)
@@ -206,8 +238,12 @@ type avSpeechData struct {
 // (t_audio_end). t_audio_start_rms is the first 20 ms window at/after the
 // audio start whose RMS in the recorded track crosses -40 dBFS, falling
 // back to the event stamp when the window is silent. Lines are stream-
-// ordered; p50/p95 are the warm-run gate's inputs.
-func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvelope, sessionWAV []byte, expectedVoice string) avTimelineReport {
+// ordered; p50/p95 are the warm-run gate's inputs. Amendment 1 adds the
+// per-line expected voice from the commit's speaker attribution (the
+// resolveVoice rule), the box position from regionGeos (region id → the
+// region row's centre Y over the frame height) and the phantom-utterance
+// scan over the speech.started events the timeline's lines cannot explain.
+func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvelope, sessionWAV []byte, expectedVoices avExpectedVoices, regionGeos map[string]float64) avTimelineReport {
 	rep := avTimelineReport{RunID: runID, SessionID: sessionID, RecordingStartedAt: recStart, Lines: []avLineRecord{}}
 	type obsRec struct {
 		at    time.Time
@@ -225,11 +261,19 @@ func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvel
 		trace, occ, msg, region string
 		lifetime                uint64
 		gen, seq                int64
+		speaker                 string
+		speakerKnown            bool
 	}
 	obsGroups := map[string][]obsRec{}
 	obsByTrace := map[string][]obsRec{}
 	var coms []comRec
 	var decs []decRec
+	// The read-through commits (Amendment 1): the occurrence ids of the
+	// abstained lines (the commit payload's read-through marker, message_id
+	// "unknown", ADR 0136). They are NOT lines of the timeline — the gate
+	// counts their audio as phantom instead — but the scan needs the ids to
+	// name which phantoms were read-throughs.
+	readThroughOcc := map[string]bool{}
 	for _, e := range evs {
 		at, err := time.Parse(time.RFC3339Nano, e.OccurredAt)
 		if err != nil {
@@ -253,18 +297,27 @@ func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvel
 			}
 		case "message.committed":
 			var d struct {
-				Occ        string `json:"dialogue_occurrence_id"`
-				Msg        string `json:"message_id"`
-				Region     string `json:"region_id"`
-				Lifetime   uint64 `json:"lifetime"`
-				Generation int64  `json:"generation"`
-				ObsSeq     int64  `json:"observation_seq"`
-				Eligible   *bool  `json:"speech_eligible"`
+				Occ          string `json:"dialogue_occurrence_id"`
+				Msg          string `json:"message_id"`
+				Region       string `json:"region_id"`
+				Lifetime     uint64 `json:"lifetime"`
+				Generation   int64  `json:"generation"`
+				ObsSeq       int64  `json:"observation_seq"`
+				Eligible     *bool  `json:"speech_eligible"`
+				SpeakerID    string `json:"speaker_id"`
+				SpeakerKnown bool   `json:"speaker_known"`
 			}
-			if len(e.Data) == 0 || json.Unmarshal(e.Data, &d) != nil || d.Occ == "" || d.Msg == "" || d.Msg == "unknown" || (d.Eligible != nil && !*d.Eligible) {
+			if len(e.Data) == 0 || json.Unmarshal(e.Data, &d) != nil || d.Occ == "" || d.Msg == "" {
 				continue
 			}
-			coms = append(coms, comRec{at: at, trace: e.TraceID, occ: d.Occ, msg: d.Msg, region: d.Region, lifetime: d.Lifetime, gen: d.Generation, seq: d.ObsSeq})
+			if d.Msg == "unknown" {
+				readThroughOcc[d.Occ] = true
+				continue // the read-through is not a timeline line (the gate counts its audio as phantom)
+			}
+			if d.Eligible != nil && !*d.Eligible {
+				continue
+			}
+			coms = append(coms, comRec{at: at, trace: e.TraceID, occ: d.Occ, msg: d.Msg, region: d.Region, lifetime: d.Lifetime, gen: d.Generation, seq: d.ObsSeq, speaker: d.SpeakerID, speakerKnown: d.SpeakerKnown})
 		case "decision.resolved":
 			var d struct {
 				Region     string `json:"region_id"`
@@ -288,10 +341,22 @@ func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvel
 			continue
 		}
 		seen[c.occ] = true
+		// The line's expected voice: the resolveVoice rule (the catch-up
+		// test's same per-speaker expectation) — a commit attributed to a
+		// speaker resolves to the character's voice, every other line (the
+		// unattributed) to the narrator's. The attribution is the commit's
+		// own (speaker_id + speaker_known): a known speaker is a character,
+		// an absent one is the narrator's fallback.
+		expected := expectedVoices.Narrator
+		if c.speakerKnown && c.speaker != "" {
+			expected = expectedVoices.Character
+		}
+		centreY, geoKnown := regionGeos[c.region]
 		line := avLineRecord{
 			OccurrenceID: c.occ, TraceID: c.trace, MessageID: c.msg,
 			RegionID: c.region, TCommitMS: avMS(recStart, c.at),
-			ExpectedVoiceID: expectedVoice,
+			ExpectedVoiceID: expected,
+			BoxPosition:     avBoxPosition(centreY, geoKnown),
 		}
 		// The box's readings at/before the commit: in a live session each page
 		// turn mints its own trace_id on StateAdvancing (internal/session/apply.go),
@@ -462,6 +527,42 @@ func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvel
 		}
 	}
 
+	// The phantom scan (Amendment 1): every speech.started the timeline's
+	// lines do not explain. A started names the occurrence of the utterance
+	// it begins (the wiring's correlation; the scheduler's raw event falls
+	// back to the utterance id, the same occurrence). It is explained when
+	// the occurrence is a committed line's, or a merged run's that covers
+	// at least one committed line (the run's message_ids joined it onto
+	// them above). Everything else — no committed line at all, or a line
+	// the timeline does not hold (the read-throughs) — is phantom: audio
+	// with no line to account for it (the board's "speech with no box" is
+	// exactly this class).
+	for _, e := range evs {
+		if e.Name != "speech.started" {
+			continue
+		}
+		var d avSpeechData
+		if len(e.Data) == 0 || json.Unmarshal(e.Data, &d) != nil {
+			continue
+		}
+		occ := d.Occ
+		if occ == "" {
+			occ = d.Utterance
+		}
+		if occ == "" {
+			continue
+		}
+		if _, ok := byOcc[occ]; ok {
+			continue
+		}
+		if idx, ok := runLines[occ]; ok && len(idx) > 0 {
+			continue
+		}
+		rep.PhantomUtterances++
+		if readThroughOcc[occ] {
+			rep.PhantomReadThroughs++
+		}
+	}
 	// The acoustic half: the audible onset in the recorded track (the
 	// fallback is the event stamp when the window is silent).
 	for i := range rep.Lines {

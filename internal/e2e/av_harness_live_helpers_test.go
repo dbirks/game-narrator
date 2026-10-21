@@ -9,6 +9,7 @@ package e2e
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -314,7 +315,9 @@ func avCorpusTexts(t *testing.T, ctx context.Context, st *store.Store, profileID
 
 // avASRScore transcribes each line's clip WAV through the real ASR endpoint
 // and scores it against the line's expected text (the speech.Evaluate WER /
-// CER the QA gate uses). It fills the timeline's per-line ASRWER / ASRCER.
+// CER the QA gate uses). It fills the timeline's per-line ASRWER / ASRCER
+// and — the scored side being the corpus's script text — the line's
+// ASRWERvsScript (Amendment 1, the gate's spoken-line fidelity input).
 // A read-through line (message_id "unknown") has no corpus ground truth and
 // is left unscored (zero). The ASR role unconfigured leaves all lines zero
 // and the caller logs the deviation. It never logs transcript text (rule 5).
@@ -351,10 +354,32 @@ func avASRScore(t *testing.T, ctx context.Context, asrCfg providers.RoleConfig, 
 		}
 		rec := speech.Evaluate(exp, tr.Text)
 		l.ASRWER, l.ASRCER = rec.WER, rec.CER
+		// The scored side IS the script text (the corpus lookup), so the
+		// transcript's WER against the expected reading is the vs-script WER
+		// the gate's spoken-line fidelity rule reads (Amendment 1).
+		l.ASRWERvsScript = rec.WER
 		l.asrScored = true
 		scored++
 	}
 	t.Logf("av asr: scored %d line clips (model %s)", scored, asrCfg.Model)
+}
+
+// avRegionGeos reads the profile's region rows and returns region id →
+// the row's centre Y over the frame height (the normalised RectY plus half
+// the height, ADR 0137's placement-aware rows): the box-position
+// classifier's input (Amendment 1). A profile without rows answers the
+// empty map — the report classifies no positions, honestly.
+func avRegionGeos(t *testing.T, ctx context.Context, st *store.Store, profileID string) map[string]float64 {
+	t.Helper()
+	rows, err := st.ListRegions(ctx, profileID)
+	if err != nil {
+		t.Fatalf("region geos: ListRegions: %v", err)
+	}
+	geos := map[string]float64{}
+	for _, r := range rows {
+		geos[r.ID] = r.RectY + r.RectH/2.0
+	}
+	return geos
 }
 
 // avWriteManifest writes the run's evidence manifest (AGENTS.md evidence
@@ -410,14 +435,18 @@ func avWriteManifest(t *testing.T, bundle, runID string, pc avPreconds, s cuScen
 			"appear_to_audio_p95_ms":  rep.AppearToAudioP95MS,
 			"commit_to_audio_p50_ms":  rep.CommitToAudioP50MS,
 			"commit_to_audio_p95_ms":  rep.CommitToAudioP95MS,
-			"bounds":                  "settled p50<=500ms, p95<=800ms (the ADR-0143 gate; GN_AV_NO_LATENCY_GATE=1 records without asserting)",
+			"idle_samples":            rep.IdleSamples,
+			"bounds":                  "settled p50<=500ms, p95<=800ms on >= 3 idle lines (the ADR-0143 Amendment 1 gate; GN_AV_NO_LATENCY_GATE=1 records the bounds without asserting them)",
 		},
 		"consistency": map[string]any{
-			"lines":             len(rep.Lines),
-			"missed":            rep.MissedLines,
-			"duplicate_commits": rep.DuplicateCommits,
-			"stale_starts":      rep.StaleStarts,
-			"cache_hits":        rep.CacheHits,
+			"lines":                 len(rep.Lines),
+			"missed":                rep.MissedLines,
+			"duplicate_commits":     rep.DuplicateCommits,
+			"stale_starts":          rep.StaleStarts,
+			"cache_hits":            rep.CacheHits,
+			"phantom_utterances":    rep.PhantomUtterances,
+			"phantom_read_throughs": rep.PhantomReadThroughs,
+			"skipped":               rep.SkippedLines,
 		},
 	}
 	if scored > 0 {
@@ -427,36 +456,99 @@ func avWriteManifest(t *testing.T, bundle, runID string, pc avPreconds, s cuScen
 	writeJSONFile(t, filepath.Join(bundle, "manifest.json"), manifest)
 }
 
-// avAssertReport runs the ADR-0143 gate's assertions against the timeline:
-// at least two committed lines, no stale starts (the ADR-0122 backlog at the
-// timeline level) and no duplicate commits, and — unless the run disabled
-// the latency gate (GN_AV_NO_LATENCY_GATE=1) — the settled→audio p50/p95
-// within the warm-run bounds. The RMS-onset and voice-match quality are
-// recorded (the timeline row is the evidence), not hard-asserted: they are
-// acoustic measurements the environment's audio path can degrade, not the
-// session's correctness.
-func avAssertReport(t *testing.T, rep avTimelineReport) {
-	t.Helper()
+// avGateFailures is the ADR-0143 Amendment 1 gate as data: the report's
+// failures, one named message per violated rule (an empty slice is a
+// pass). Pure over the report — no env, no testing — so the unit tests
+// pin each rule on synthetic timelines. The rules (Amendment 1 makes the
+// gate strict: a warm run that cannot name its own audio now fails):
+//
+//   - >= 2 committed lines (the multi-box conversation);
+//   - >= 3 idle samples (the settled→audio gate's floor: two samples are
+//     not a distribution, the 2/2 ms percentile that fooled the first
+//     board run — 12 of 14 lines had no audio at all);
+//   - the settled→audio p50/p95 within the warm-run bounds (the original
+//     ADR-0143 latency rule);
+//   - zero missed lines (a committed line that never got a terminal);
+//   - zero phantom utterances (a speech.started the timeline's lines do
+//     not explain — the board's "speech with no box");
+//   - zero stale starts and zero duplicate commits (the original
+//     ADR-0143 consistency rules);
+//   - every line with a known expected voice speaks in it (the resolveVoice
+//     rule, per line — a character line in the narrator's voice, or
+//     unattributed line in the character's, is a miswired speaker);
+//   - every spoken line's ASR WER vs script at or under 0.35 (a spoken
+//     line that does not track the script is a bad read or a wrong line).
+func avGateFailures(rep avTimelineReport) []string {
+	var fails []string
 	if len(rep.Lines) < 2 {
-		t.Fatalf("av gate: %d committed lines; want >= 2 (the multi-box conversation)", len(rep.Lines))
+		fails = append(fails, fmt.Sprintf("%d committed lines; want >= 2 (the multi-box conversation)", len(rep.Lines)))
+	}
+	if rep.IdleSamples < 3 {
+		fails = append(fails, fmt.Sprintf("idle samples = %d; want >= 3 (too few idle lines to measure: the settled→audio gate needs a distribution, not one or two samples)", rep.IdleSamples))
+	}
+	if rep.MissedLines > 0 {
+		fails = append(fails, fmt.Sprintf("%d missed line(s) (committed, never routed, never terminal); the timeline rows are the evidence", rep.MissedLines))
+	}
+	if rep.PhantomUtterances > 0 {
+		fails = append(fails, fmt.Sprintf("%d phantom utterance(s) (%d read-through): speech.started events no committed line explains — the board's \"speech with no box\"; the timeline rows are the evidence", rep.PhantomUtterances, rep.PhantomReadThroughs))
 	}
 	if rep.StaleStarts != 0 {
-		t.Fatalf("av gate: %d stale start(s) (a line's audio began after a newer line had committed — the ADR-0122 backlog the session must not show); the timeline row is the evidence", rep.StaleStarts)
+		fails = append(fails, fmt.Sprintf("%d stale start(s) (a line's audio began after a newer line had committed — the ADR-0122 backlog the session must not show); the timeline row is the evidence", rep.StaleStarts))
 	}
 	if rep.DuplicateCommits != 0 {
-		t.Fatalf("av gate: %d duplicate commit(s) of the same occurrence (the reducer's dedupe must hold); the timeline row is the evidence", rep.DuplicateCommits)
+		fails = append(fails, fmt.Sprintf("%d duplicate commit(s) of the same occurrence (the reducer's dedupe must hold); the timeline row is the evidence", rep.DuplicateCommits))
 	}
+	for i := range rep.Lines {
+		l := &rep.Lines[i]
+		if l.ExpectedVoiceID != "" && !l.VoiceMatch {
+			fails = append(fails, fmt.Sprintf("line %d: spoken in voice %q; the line's expected voice is %q (a line with a known expected voice must speak in it); the timeline row is the evidence", l.Index, l.VoiceID, l.ExpectedVoiceID))
+		}
+	}
+	for i := range rep.Lines {
+		l := &rep.Lines[i]
+		if l.TAudioStartEventMS == 0 {
+			continue // not a spoken line: nothing was audible to misread
+		}
+		if l.ASRWERvsScript > 0.35 {
+			fails = append(fails, fmt.Sprintf("line %d: ASR WER vs script = %.3f > 0.35 (a spoken line must track the script; the clip and the timeline row are the evidence)", l.Index, l.ASRWERvsScript))
+		}
+	}
+	// The latency bounds: the ADR-0143 warm-run rule, only meaningful over
+	// the gate's idle-sample floor (a p50 over 0..2 samples is no estimate).
+	if rep.IdleSamples >= 3 {
+		if rep.SettledToAudioP50MS > 500 {
+			fails = append(fails, fmt.Sprintf("settled→audio p50 = %d ms > 500 ms (the ADR-0143 warm-run bound, %d idle samples); the per-line rows are the evidence", rep.SettledToAudioP50MS, rep.IdleSamples))
+		}
+		if rep.SettledToAudioP95MS > 800 {
+			fails = append(fails, fmt.Sprintf("settled→audio p95 = %d ms > 800 ms (the ADR-0143 warm-run bound, %d idle samples); the per-line rows are the evidence", rep.SettledToAudioP95MS, rep.IdleSamples))
+		}
+	}
+	return fails
+}
+
+// avAssertReport runs the ADR-0143 Amendment 1 gate's assertions against
+// the timeline: every avGateFailures rule, and — unless the run disabled
+// the latency gate (GN_AV_NO_LATENCY_GATE=1) — the settled→audio p50/p95
+// within the warm-run bounds. The env escape covers the latency bounds
+// only (an acoustic measurement the environment's audio path can degrade);
+// the strictness rules — the idle floor, the missed, the phantoms, the
+// voices, the WER — always assert: they are the session's correctness, not
+// the audio path's. The report.md and the timeline rows are the evidence a
+// failure names.
+func avAssertReport(t *testing.T, rep avTimelineReport) {
+	t.Helper()
+	fails := avGateFailures(rep)
 	if os.Getenv("GN_AV_NO_LATENCY_GATE") == "1" {
-		t.Logf("av gate: latency gate DISABLED (GN_AV_NO_LATENCY_GATE=1) — recorded settled p50/p95 = %d/%d ms without asserting", rep.SettledToAudioP50MS, rep.SettledToAudioP95MS)
-		return
+		var kept []string
+		for _, f := range fails {
+			if !strings.HasPrefix(f, "settled→audio") {
+				kept = append(kept, f)
+			}
+		}
+		t.Logf("av gate: latency bounds DISABLED (GN_AV_NO_LATENCY_GATE=1) — recorded settled p50/p95 = %d/%d ms over %d idle samples without asserting the 500/800 ms bounds", rep.SettledToAudioP50MS, rep.SettledToAudioP95MS, rep.IdleSamples)
+		fails = kept
 	}
-	if rep.SettledToAudioP50MS == 0 || rep.SettledToAudioP95MS == 0 {
-		t.Fatalf("av gate: no settled→audio samples (no line reached both a READY reading and an audio start) — the timeline rows are the evidence")
-	}
-	if rep.SettledToAudioP50MS > 500 {
-		t.Fatalf("av gate: settled→audio p50 = %d ms > 500 ms (the ADR-0143 warm-run bound); the per-line rows are the evidence", rep.SettledToAudioP50MS)
-	}
-	if rep.SettledToAudioP95MS > 800 {
-		t.Fatalf("av gate: settled→audio p95 = %d ms > 800 ms (the ADR-0143 warm-run bound); the per-line rows are the evidence", rep.SettledToAudioP95MS)
+	for _, f := range fails {
+		t.Errorf("av gate: %s", f)
 	}
 }

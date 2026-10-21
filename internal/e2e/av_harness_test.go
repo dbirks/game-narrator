@@ -200,9 +200,13 @@ func TestLiveDolphinAVHarness(t *testing.T) {
 	bridge.Stop()
 
 	// ── the shared-clock timeline + clips + ASR ───────────────────────────
-	// The expected voice is the scene speaker's: the matched lines' speaker
-	// resolves to the character (the narrator carries only the unattributed).
-	rep := avBuildTimeline(runID, sessionID, recStart, evs, sessionWAV, cuV.char.VoiceID)
+	// The expected voices are the scene's two (the per-line resolveVoice
+	// rule): a commit attributed to a speaker resolves to the character's
+	// voice, every unattributed line to the narrator's (the catch-up
+	// test's same expectation). The region rows give the box positions.
+	expectedVoices := avExpectedVoices{Character: cuV.char.VoiceID, Narrator: cuV.narr.VoiceID}
+	regionGeos := avRegionGeos(t, ctx, st, s.profileID)
+	rep := avBuildTimeline(runID, sessionID, recStart, evs, sessionWAV, expectedVoices, regionGeos)
 	rep.SessionMP4 = filepath.Join(mediaDir, "session.mp4")
 	rep.SessionWAV = filepath.Join(mediaDir, "session.wav")
 	clipsDir := filepath.Join(bundle, "clips")
@@ -211,14 +215,19 @@ func TestLiveDolphinAVHarness(t *testing.T) {
 	avASRScore(t, ctx, pc.asrCfg, &rep.Lines, expected)
 
 	// The evidence lands before the assertions: a failed gate still leaves
-	// the timeline + media to diagnose against.
+	// the timeline + the report + the media to diagnose against.
 	writeJSONFile(t, filepath.Join(bundle, "timeline.json"), rep)
+	// The raw session event stream the timeline was built from: a phantom
+	// or a late line is diagnosed from these rows, not re-derived (the
+	// bundle is outside git; events carry OCR text, AGENTS.md rule 5).
+	writeJSONFile(t, filepath.Join(bundle, "events.json"), evs)
+	avWriteReport(t, filepath.Join(bundle, "report.md"), rep)
 	avWriteManifest(t, bundle, runID, pc, s, sessionID, sinkName, prewarm, len(presses), rep, pc.asrCfg.Configured(), startAll)
 
 	avAssertReport(t, rep)
 
-	t.Logf("LIVE A/V HARNESS (Dolphin + real providers): PASS — %d committed lines, %d A presses, settled→audio p50/p95 = %d/%d ms, appear→audio p50/p95 = %d/%d ms, %d cache hits, %d stale starts, %d duplicate commits; bundle %s (%s)",
-		len(rep.Lines), len(presses), rep.SettledToAudioP50MS, rep.SettledToAudioP95MS,
-		rep.AppearToAudioP50MS, rep.AppearToAudioP95MS, rep.CacheHits, rep.StaleStarts, rep.DuplicateCommits,
+	t.Logf("LIVE A/V HARNESS (Dolphin + real providers): PASS — %d committed lines (%d idle samples), %d A presses, settled→audio p50/p95 = %d/%d ms, appear→audio p50/p95 = %d/%d ms, %d cache hits, %d phantom utterances, %d stale starts, %d duplicate commits; bundle %s (%s)",
+		len(rep.Lines), rep.IdleSamples, len(presses), rep.SettledToAudioP50MS, rep.SettledToAudioP95MS,
+		rep.AppearToAudioP50MS, rep.AppearToAudioP95MS, rep.CacheHits, rep.PhantomUtterances, rep.StaleStarts, rep.DuplicateCommits,
 		bundle, time.Since(startAll).Round(time.Second))
 }
