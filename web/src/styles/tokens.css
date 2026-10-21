@@ -1684,6 +1684,15 @@ textarea:focus-visible,
   gap: var(--sp-16);
 }
 
+/* The board is the page's centrepiece (mock 2c spans it to the page width):
+   the shared 76rem main cap left the board at ~2/3 of the content width
+   with its 360px panel beside it (the 2026-10-20 review's "empty space").
+   The setup page runs to the container's full width so the board's four
+   columns — and the cards that fill them — take the room the page has. */
+.page-container > main.setup-page {
+  max-width: none;
+}
+
 .setup-header h1 {
   font-size: 36px;
   font-weight: 600;

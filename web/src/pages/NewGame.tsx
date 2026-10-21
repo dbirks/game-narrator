@@ -748,6 +748,14 @@ function ChatBox({ runId, state }: { runId: string; state: OnboardingRunState })
   );
 }
 
+/** A short display form for a source id (the 2026-10-20 review: the tool
+ *  cards showed raw run ULIDs under each tool). The full id stays on the
+ *  element's title attribute — the row names the fact, the id is a
+ *  drill-down. */
+function shortId(id: string): string {
+  return id.length <= 8 ? id : `${id.slice(0, 8)}…`;
+}
+
 function ToolTimeline({ calls }: { calls: OnboardingToolCallView[] }) {
   if (calls.length === 0)
     return (
@@ -776,7 +784,9 @@ function ToolTimeline({ calls }: { calls: OnboardingToolCallView[] }) {
           {call.source_ids.length > 0 ? (
             <span className="tool-sources" data-testid={`onb-tool-sources-${call.name}`}>
               {call.source_ids.map((id) => (
-                <code key={id}>{id}</code>
+                <code key={id} title={id}>
+                  {shortId(id)}
+                </code>
               ))}
             </span>
           ) : null}
