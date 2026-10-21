@@ -45,6 +45,17 @@ type avLineRecord struct {
 	ASRCER             float64 `json:"asr_cer"`
 	ClipMP4            string  `json:"clip_mp4,omitempty"`
 	ClipWAV            string  `json:"clip_wav,omitempty"`
+	// Batched: spoken inside a merged catch-up run (ADR-0122); RunPosition
+	// is its place in the run (0 = the run's first, audible-at-start line).
+	Batched         bool   `json:"batched,omitempty"`
+	RunPosition     int    `json:"run_position,omitempty"`
+	RunOccurrenceID string `json:"run_occurrence_id,omitempty"`
+	// EndResult is the line's terminal result (completed, interrupted,
+	// skipped, cancelled, …).
+	EndResult string `json:"end_result,omitempty"`
+	// QueuedBehindSpeech: committed while another line was audible, so its
+	// commit→audio is queueing time, kept out of the idle latency gate.
+	QueuedBehindSpeech bool `json:"queued_behind_speech,omitempty"`
 	clipAudioStartMS   int64
 	asrScored          bool
 }
@@ -69,6 +80,14 @@ type avTimelineReport struct {
 	DuplicateCommits    int            `json:"duplicate_commits"`
 	StaleStarts         int            `json:"stale_starts"`
 	CacheHits           int            `json:"cache_hits"`
+	// SkippedLines counts lines whose terminal was skipped (stale catch-up,
+	// duplicate region, backpressure). IdleSamples is the number of lines in
+	// the settled→audio gate; the Queued* percentiles are the lines that
+	// waited behind another line's audio.
+	SkippedLines             int   `json:"skipped_lines"`
+	IdleSamples              int   `json:"idle_samples"`
+	QueuedCommitToAudioP50MS int64 `json:"queued_commit_to_audio_p50_ms"`
+	QueuedCommitToAudioP95MS int64 `json:"queued_commit_to_audio_p95_ms"`
 }
 
 // avDetectRMSOnsetMS scans a 16-bit PCM WAV in 20 ms windows from
@@ -320,12 +339,57 @@ func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvel
 		rep.Lines = append(rep.Lines, line)
 	}
 
-	// The speech side, joined on the occurrence the wiring correlates every
-	// speech event with (a merged run's events carry the run's own
-	// occurrence, so a run-covered line keeps its own events' stamps).
+	// The speech side. A line spoken by its own utterance carries its own
+	// occurrence on every speech event. A line the catch-up policy batched
+	// (ADR-0122) is spoken inside a merged RUN whose events carry the run's
+	// own occurrence plus message_ids (the covered lines in commit order):
+	// the run's requested/ready rows map the run occurrence onto its lines,
+	// and the run's started/ended stamps are the covered lines' playback
+	// span. Only the run's FIRST line becomes audible at the run's start; the
+	// later lines follow it inside the same audio, so they are marked
+	// Batched with their RunPosition and kept out of the idle latency gate.
 	byOcc := make(map[string]int, len(rep.Lines))
 	for i := range rep.Lines {
 		byOcc[rep.Lines[i].OccurrenceID] = i
+	}
+	runLines := map[string][]int{} // run occurrence → covered line indices
+	for _, e := range evs {
+		if e.Name != "speech.requested" && e.Name != "speech.ready" {
+			continue
+		}
+		var d avSpeechData
+		if len(e.Data) == 0 || json.Unmarshal(e.Data, &d) != nil || d.Occ == "" || len(d.MessageIDs) == 0 {
+			continue
+		}
+		if _, own := byOcc[d.Occ]; own {
+			continue
+		}
+		if _, seenRun := runLines[d.Occ]; seenRun {
+			continue
+		}
+		used := map[int]bool{}
+		var idx []int
+		for _, mid := range d.MessageIDs {
+			// The covered line: the latest committed occurrence of that
+			// message at/before the run (a repeat line elsewhere in the
+			// conversation is a different occurrence).
+			best := -1
+			for j := range rep.Lines {
+				if rep.Lines[j].MessageID == mid && !used[j] && !rep.Lines[j].Batched {
+					best = j
+				}
+			}
+			if best >= 0 {
+				used[best] = true
+				idx = append(idx, best)
+			}
+		}
+		for pos, j := range idx {
+			rep.Lines[j].Batched = true
+			rep.Lines[j].RunPosition = pos
+			rep.Lines[j].RunOccurrenceID = d.Occ
+		}
+		runLines[d.Occ] = idx
 	}
 	terminal := map[string]bool{}
 	for _, e := range evs {
@@ -336,113 +400,130 @@ func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvel
 		if d.Occ == "" {
 			d.Occ = d.Utterance
 		}
-		i, ok := byOcc[d.Occ]
-		if !ok {
-			if len(d.MessageIDs) == 1 {
-				for j := range rep.Lines {
-					if rep.Lines[j].MessageID == d.MessageIDs[0] {
-						switch e.Name {
-						case "speech.ready":
-							if rep.Lines[j].TTSReadyMS == 0 {
-								if at, ok := avParseAt(e.OccurredAt); ok {
-									rep.Lines[j].TTSReadyMS = avMS(recStart, at)
-								}
-							}
-							rep.Lines[j].FromCache = d.FromCache
-						case "speech.started":
-							at, _ := avParseAt(e.OccurredAt)
-							if d.StartedAt != "" {
-								if sa, ok := avParseAt(d.StartedAt); ok {
-									at = sa
-								}
-							}
-							if rep.Lines[j].clipAudioStartMS == 0 {
-								rep.Lines[j].clipAudioStartMS = avMS(recStart, at)
-							}
-						}
-						if rep.Lines[j].VoiceID == "" {
-							rep.Lines[j].VoiceID = d.VoiceID
-						}
-					}
-				}
-			}
+		var targets []int
+		if i, ok := byOcc[d.Occ]; ok {
+			targets = []int{i}
+		} else if idx, ok := runLines[d.Occ]; ok {
+			targets = idx
+		} else {
 			continue
 		}
-		line := &rep.Lines[i]
-		switch e.Name {
-		case "speech.ready":
-			if line.TTSReadyMS == 0 {
-				if at, ok := avParseAt(e.OccurredAt); ok {
-					line.TTSReadyMS = avMS(recStart, at)
-				}
-			}
-			line.FromCache = d.FromCache
-		case "speech.started":
-			at, _ := avParseAt(e.OccurredAt)
-			if d.StartedAt != "" {
-				if sa, ok := avParseAt(d.StartedAt); ok {
-					at = sa
-				}
-			}
-			if line.TAudioStartEventMS == 0 {
-				line.TAudioStartEventMS = avMS(recStart, at)
-			}
-			if line.clipAudioStartMS == 0 {
-				line.clipAudioStartMS = avMS(recStart, at)
-			}
-		case "speech.ended":
-			if d.Result == "" {
-				continue // an ended without a result is not a terminal
-			}
-			terminal[d.Occ] = true
-			// The end instant the clip slicer's window needs (an interrupted
-			// line still has its ended_at; the result names the outcome).
-			if line.TAudioEndMS == 0 {
-				at, _ := avParseAt(e.OccurredAt)
-				if d.EndedAt != "" {
-					if ea, ok := avParseAt(d.EndedAt); ok {
-						at = ea
+		for _, i := range targets {
+			line := &rep.Lines[i]
+			switch e.Name {
+			case "speech.ready":
+				if line.TTSReadyMS == 0 {
+					if at, ok := avParseAt(e.OccurredAt); ok {
+						line.TTSReadyMS = avMS(recStart, at)
 					}
 				}
-				line.TAudioEndMS = avMS(recStart, at)
+				line.FromCache = d.FromCache
+			case "speech.started":
+				at, _ := avParseAt(e.OccurredAt)
+				if d.StartedAt != "" {
+					if sa, ok := avParseAt(d.StartedAt); ok {
+						at = sa
+					}
+				}
+				if line.TAudioStartEventMS == 0 {
+					line.TAudioStartEventMS = avMS(recStart, at)
+				}
+				if line.clipAudioStartMS == 0 {
+					line.clipAudioStartMS = avMS(recStart, at)
+				}
+			case "speech.ended":
+				if d.Result == "" {
+					continue // an ended without a result is not a terminal
+				}
+				terminal[line.OccurrenceID] = true
+				if line.EndResult == "" {
+					line.EndResult = d.Result
+				}
+				// The end instant the clip slicer's window needs (an
+				// interrupted line still has its ended_at).
+				if line.TAudioEndMS == 0 && d.Result != "skipped" {
+					at, _ := avParseAt(e.OccurredAt)
+					if d.EndedAt != "" {
+						if ea, ok := avParseAt(d.EndedAt); ok {
+							at = ea
+						}
+					}
+					line.TAudioEndMS = avMS(recStart, at)
+				}
+			case "speech.cancelled":
+				terminal[line.OccurrenceID] = true
+				if line.EndResult == "" {
+					line.EndResult = "cancelled"
+				}
 			}
-		case "speech.cancelled":
-			terminal[d.Occ] = true
-		}
-		if line.VoiceID == "" {
-			line.VoiceID = d.VoiceID
+			if line.VoiceID == "" {
+				line.VoiceID = d.VoiceID
+			}
 		}
 	}
 
-	// The acoustic half: the onset in the recorded track (the fallback is
-	// the event stamp), the stage-to-stage deltas and the counters.
-	var settled, appear, commit []int64
+	// The acoustic half: the audible onset in the recorded track (the
+	// fallback is the event stamp when the window is silent).
 	for i := range rep.Lines {
 		line := &rep.Lines[i]
 		line.Index = i
 		if line.TAudioStartEventMS > 0 {
-			if on, ok := avDetectRMSOnsetMS(sessionWAV, line.TAudioStartEventMS, line.TAudioEndMS+500, -40.0); ok {
+			end := line.TAudioEndMS + 500
+			if line.TAudioEndMS == 0 {
+				end = line.TAudioStartEventMS + 3000
+			}
+			if on, ok := avDetectRMSOnsetMS(sessionWAV, line.TAudioStartEventMS, end, -40.0); ok {
 				line.TAudioStartRMSMS = on
 			} else {
 				line.TAudioStartRMSMS = line.TAudioStartEventMS // silent window: the event stamp
 			}
 		}
+	}
+	// Queued behind speech: the line committed while ANOTHER line's audio
+	// was audible (the player advanced during playback). Its audio cannot
+	// start until the playing line ends (the catch-up policy keeps the
+	// playing line), so its settled→audio is queueing time, not session
+	// latency — it is reported separately and excluded from the idle gate.
+	for i := range rep.Lines {
+		l := &rep.Lines[i]
+		for j := range rep.Lines {
+			o := &rep.Lines[j]
+			if i == j || o.TAudioStartRMSMS == 0 || o.TAudioEndMS == 0 {
+				continue
+			}
+			if o.RunOccurrenceID != "" && o.RunOccurrenceID == l.RunOccurrenceID {
+				continue // the same run: one audio, not a queue
+			}
+			if l.TCommitMS >= o.TAudioStartRMSMS && l.TCommitMS < o.TAudioEndMS {
+				l.QueuedBehindSpeech = true
+				break
+			}
+		}
+	}
+	var settled, appear, commit, queued []int64
+	for i := range rep.Lines {
+		line := &rep.Lines[i]
 		line.VoiceMatch = line.VoiceID != "" && line.VoiceID == line.ExpectedVoiceID
-		if line.TAudioStartEventMS > 0 {
+		audible := line.TAudioStartRMSMS
+		if audible > 0 && (!line.Batched || line.RunPosition == 0) {
 			if line.TTextSettledMS > 0 {
-				line.SettledToAudioMS = line.TAudioStartEventMS - line.TTextSettledMS
+				line.SettledToAudioMS = audible - line.TTextSettledMS
 			}
 			if line.TBoxAppearMS > 0 {
-				line.AppearToAudioMS = line.TAudioStartEventMS - line.TBoxAppearMS
+				line.AppearToAudioMS = audible - line.TBoxAppearMS
 			}
-			line.CommitToAudioMS = line.TAudioStartEventMS - line.TCommitMS
-			if line.SettledToAudioMS > 0 {
-				settled = append(settled, line.SettledToAudioMS)
+			line.CommitToAudioMS = audible - line.TCommitMS
+			if line.QueuedBehindSpeech {
+				queued = append(queued, line.CommitToAudioMS)
+			} else {
+				if line.TTextSettledMS > 0 {
+					settled = append(settled, line.SettledToAudioMS)
+				}
+				if line.AppearToAudioMS > 0 { // 0 = the box's appear was never observed
+					appear = append(appear, line.AppearToAudioMS)
+				}
+				commit = append(commit, line.CommitToAudioMS)
 			}
-			if line.AppearToAudioMS > 0 { // 0 = the box's appear was never observed
-				appear = append(appear, line.AppearToAudioMS)
-			}
-			commit = append(commit, line.CommitToAudioMS)
 		}
 		if line.FromCache {
 			rep.CacheHits++
@@ -450,19 +531,26 @@ func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvel
 		if !terminal[line.OccurrenceID] && line.TAudioStartEventMS == 0 && line.TTSReadyMS == 0 {
 			rep.MissedLines++ // committed, never routed, never terminal
 		}
+		if line.EndResult == "skipped" {
+			rep.SkippedLines++
+		}
 	}
+	rep.IdleSamples = len(settled)
 	rep.SettledToAudioP50MS = avPercentileMS(settled, 50)
 	rep.SettledToAudioP95MS = avPercentileMS(settled, 95)
 	rep.AppearToAudioP50MS = avPercentileMS(appear, 50)
 	rep.AppearToAudioP95MS = avPercentileMS(appear, 95)
 	rep.CommitToAudioP50MS = avPercentileMS(commit, 50)
 	rep.CommitToAudioP95MS = avPercentileMS(commit, 95)
-	// A stale start is the ADR-0122 backlog at the timeline level: this
-	// line's playback began after a NEWER line had already committed (the
-	// player moved on before this audio became audible).
+	rep.QueuedCommitToAudioP50MS = avPercentileMS(queued, 50)
+	rep.QueuedCommitToAudioP95MS = avPercentileMS(queued, 95)
+	// A stale start is the ADR-0122 backlog at the timeline level: a line's
+	// OWN utterance began after a NEWER line had already committed (the
+	// player moved on before this audio became audible). A batched line is
+	// the catch-up policy's by design (its max age fences a stale run).
 	for i := range rep.Lines {
 		l := &rep.Lines[i]
-		if l.TAudioStartEventMS == 0 || l.TCommitMS == 0 {
+		if l.Batched || l.TAudioStartEventMS == 0 || l.TCommitMS == 0 {
 			continue
 		}
 		for j := range rep.Lines {

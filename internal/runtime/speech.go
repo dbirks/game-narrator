@@ -438,6 +438,14 @@ type speechWiring struct {
 	// cancelled when the fence moves or the scene changes.
 	idx          *matcher.Index    // nil = no dialogue graph, no prewarming
 	prewarmTexts map[string]string // message id → canonical TTS text
+	// recentRouted is the cross-region duplicate guard (#41): line identity
+	// (message id, or "rt:"+the cleaned read-through text) → the region and
+	// wall clock it was last routed from. A profile that declares the box at
+	// more than one on-screen position can see the same box from two
+	// overlapping regions, and both commit the same line ~100-200 ms apart;
+	// routing both spoke the line twice (merged into one catch-up run) and
+	// pushed the next line behind it. w.mu.
+	recentRouted map[string]routedMark
 	prewarmCfg   prewarmConfig
 	// prewarmCancel cancels the in-flight batch; the next batch replaces it
 	// (and cancels it) on a new speakable commit or a scene change. w.mu.
@@ -643,6 +651,7 @@ func (m *Manager) newSpeechWiring(id string, speakerByMessage map[string]string,
 		settled:              map[int64]bool{},
 		catchUpRuns:          map[int64]*utteranceInfo{},
 		lineClaim:            map[string]int64{},
+		recentRouted:         map[string]routedMark{},
 		volume:               1.0,
 	}
 	// The catch-up policy's options (issue #25, ADR-0122): nil takes the
@@ -1094,7 +1103,7 @@ func (w *speechWiring) onCommit(e events.Envelope) {
 		text = canon
 	}
 
-	w.routeUtterance(&utteranceInfo{
+	u := &utteranceInfo{
 		occurrence:  d.Occurrence,
 		messageID:   d.MessageID,
 		regionID:    d.RegionID,
@@ -1103,7 +1112,82 @@ func (w *speechWiring) onCommit(e events.Envelope) {
 		traceID:     e.TraceID,
 		character:   w.speakerFor(d.MessageID),
 		committedAt: time.Now().UTC(),
-	})
+	}
+	if w.crossRegionDuplicate(d.MessageID, u) {
+		return
+	}
+	w.routeUtterance(u)
+}
+
+// routedMark is one recentRouted entry: where and when a line identity was
+// last routed.
+type routedMark struct {
+	region string
+	at     time.Time
+}
+
+// crossRegionDupWindow bounds the cross-region duplicate guard: the same
+// line committed from a DIFFERENT region within this window is the same box
+// seen through two overlapping profile regions, not a repeat line (a
+// repeated line re-shows after a dismissal or an advance, seconds later and
+// from the region the box is in).
+const crossRegionDupWindow = 3 * time.Second
+
+// crossRegionDuplicate reports whether u (identity key) duplicates a line
+// routed from another region inside crossRegionDupWindow, and records u's
+// routing otherwise. A duplicate is not routed — it does not fence, batch or
+// speak — and it gets its one terminal (speech.ended skipped,
+// duplicate_region) so the "did it speak, and why not" record is complete.
+func (w *speechWiring) crossRegionDuplicate(key string, u *utteranceInfo) bool {
+	if key == "" {
+		return false
+	}
+	now := time.Now()
+	w.mu.Lock()
+	m, ok := w.recentRouted[key]
+	dup := ok && m.region != u.regionID && now.Sub(m.at) < crossRegionDupWindow
+	if !dup {
+		if w.recentRouted == nil {
+			w.recentRouted = map[string]routedMark{}
+		}
+		w.recentRouted[key] = routedMark{region: u.regionID, at: now}
+		// Bounded: drop marks older than the window once the table grows.
+		if len(w.recentRouted) > 256 {
+			for k, v := range w.recentRouted {
+				if now.Sub(v.at) >= crossRegionDupWindow {
+					delete(w.recentRouted, k)
+				}
+			}
+		}
+	}
+	w.mu.Unlock()
+	if dup {
+		w.log("speech: duplicate commit of a line already routed from another region — not spoken twice",
+			"session_id", w.id, "message_id", u.messageID, "region_id", u.regionID,
+			"first_region_id", m.region, "since_ms", now.Sub(m.at).Milliseconds())
+		// The duplicate's one terminal, without moving the status bar's
+		// current utterance (the first copy may be playing right now).
+		w.mu.Lock()
+		closed := w.closed
+		if !closed {
+			w.localEnded++
+		}
+		w.mu.Unlock()
+		if !closed {
+			w.settle(u.generation)
+			w.emitSpeech(events.SpeechEnded, u, map[string]any{
+				"dialogue_occurrence_id": u.occurrence,
+				"message_id":             u.messageID,
+				"generation":             u.generation,
+				"region_id":              u.regionID,
+				"result":                 "skipped",
+				"reason":                 "duplicate_region",
+				"character_id":           u.character,
+				"trace_id":               u.traceID,
+			})
+		}
+	}
+	return dup
 }
 
 // maybeUnmatchedReadThrough is the unmatched read-through (ADR-0136): the box
@@ -1187,6 +1271,9 @@ func (w *speechWiring) maybeUnmatchedReadThrough(e events.Envelope, d commitPayl
 	// supersedes the older generations, the catch-up policy applies, and a
 	// read-through under backpressure skips with the same reason a matched
 	// line does. Its own generation never collides: the commit assigned it.
+	if w.crossRegionDuplicate("rt:"+strings.ToLower(cleaned), u) {
+		return
+	}
 	w.routeUtterance(u)
 }
 
