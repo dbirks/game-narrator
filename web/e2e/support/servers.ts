@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, type APIRequestContext } from "@playwright/test";
+import { expect, type APIRequestContext, type Page } from "@playwright/test";
 
 /**
  * The handle on the server a spec is talking to.
@@ -31,6 +31,60 @@ export interface ServerRun {
 export interface Snapshot {
   exists: boolean;
   files: { name: string; size: number; mtimeMs: number }[];
+}
+
+/**
+ * The suite's one-shot appliance claim, made race-safe (ADR-0016 §7). The
+ * suite runs several walks against one appliance in parallel
+ * (`fullyParallel` with more than one worker), so a claim submit can lose to
+ * a parallel walk's: the appliance is claimed either way, so the loser must
+ * not fail the walk. The winner's submit moves its own page to /login; the
+ * loser's is refused (the form stays) and the setup-state read — the same
+ * read the page itself makes — tells the truth, so the loser walks straight
+ * to the sign-in.
+ */
+export async function claimAppliance(
+  page: Page,
+  admin: { username: string; password: string },
+): Promise<void> {
+  const setupForm = page.getByTestId("setup-form");
+  const loginUsername = page.getByTestId("login-username");
+  // Wait for whichever gate the appliance shows: the claim form while it is
+  // unclaimed, the sign-in form once claimed. (A single-shot isVisible check
+  // here would race the page's own render and misread a not-yet-painted gate.)
+  await expect(setupForm.or(loginUsername)).toBeVisible({ timeout: 30_000 });
+  if (await loginUsername.isVisible()) return;
+  // The page's own status read predates any claim a parallel walk lands after
+  // it: ask again before submitting, so a walk that lost the race by more
+  // than a render does not even touch the one-shot endpoint.
+  const body = (await (await page.request.get("/api/v1/auth/status")).json()) as {
+    setup_required: boolean;
+  };
+  if (!body.setup_required) {
+    await page.goto("/login");
+    await expect(loginUsername).toBeVisible();
+    return;
+  }
+  await page.getByTestId("setup-username").fill(admin.username);
+  await page.getByTestId("setup-password").fill(admin.password);
+  await page.getByTestId("setup-submit").click();
+  await expect
+    .poll(
+      async () => {
+        if (await loginUsername.isVisible().catch(() => false)) return true;
+        if (!(await setupForm.isVisible().catch(() => false))) return false;
+        // Our submit lost the last-millisecond race (the browser logged the
+        // 409; the spec's console list names it): the claim is done either
+        // way, so re-read the state and move on.
+        const state = (await (await page.request.get("/api/v1/auth/status")).json()) as {
+          setup_required: boolean;
+        };
+        if (!state.setup_required) await page.goto("/login");
+        return !state.setup_required;
+      },
+      { timeout: 30_000, message: "the appliance is claimed (this walk or a parallel one)" },
+    )
+    .toBe(true);
 }
 
 /**

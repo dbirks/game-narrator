@@ -4,7 +4,12 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { trackConsoleErrors } from "./support/console";
-import { apiAsUser, expectDefaultDataDirUntouched, serverRun } from "./support/servers";
+import {
+  apiAsUser,
+  claimAppliance,
+  expectDefaultDataDirUntouched,
+  serverRun,
+} from "./support/servers";
 
 /**
  * The merged Cast screen (ADR-0093, docs/design/plum-peach 2d) end to end
@@ -67,16 +72,11 @@ interface VoiceRevision {
 
 async function signIn(page: Page) {
   await page.goto("/library");
-  const setupForm = page.getByTestId("setup-form");
-  const loginUsername = page.getByTestId("login-username");
-  await expect(setupForm.or(loginUsername)).toBeVisible({ timeout: 15_000 });
-  if (await setupForm.isVisible()) {
-    await page.getByTestId("setup-username").fill(ADMIN.username);
-    await page.getByTestId("setup-password").fill(ADMIN.password);
-    await page.getByTestId("setup-submit").click();
-    await expect(page).toHaveURL(/\/login$/);
-  }
-  await loginUsername.fill(ADMIN.username);
+  // The claim is once per appliance (ADR-0016 §7): a standalone run claims
+  // here; a parallel-suite run finds it claimed by a sibling walk (the
+  // helper's losing submit just walks to the sign-in).
+  await claimAppliance(page, ADMIN);
+  await page.getByTestId("login-username").fill(ADMIN.username);
   await page.getByTestId("login-password").fill(ADMIN.password);
   await page.getByTestId("login-submit").click();
   await expect(page.getByTestId("nav-user")).toBeVisible();
@@ -126,8 +126,10 @@ test("the cast screen: auto-cast default, regenerate + one-step undo, selection,
   const api = apiAsUser(request, origin);
 
   // 401 is allowlisted: the unauthenticated /auth/me probe the guard makes on
-  // mount. Every other console error fails the cleanliness check at the end.
-  const consoleErrors = trackConsoleErrors(page, [401]);
+  // mount. 409 is the one-shot claim's conflict when a parallel walk claimed
+  // the appliance first (ADR-0016 §7). Every other console error fails the
+  // cleanliness check at the end.
+  const consoleErrors = trackConsoleErrors(page, [401, 409]);
 
   // ── 1. first run: claim the appliance, sign in ────────────────────────────
   const cookies = await signIn(page);
@@ -367,7 +369,7 @@ test("the cast screen: screenshots and axe at the design's three widths", async 
 }, testInfo) => {
   test.setTimeout(300_000);
   const run = serverRun("voices");
-  const consoleErrors = trackConsoleErrors(page, [401]);
+  const consoleErrors = trackConsoleErrors(page, [401, 409]);
 
   // The walk's game and take already exist on this server; sign in and open
   // the merged screen with the walk's character selected (its approved take

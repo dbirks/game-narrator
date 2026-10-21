@@ -1301,7 +1301,11 @@ textarea:focus-visible,
   appearance: none;
   border: none;
   background: transparent;
-  color: var(--ink);
+  /* The theme contract (tokens' lilac block): --ink is the background under
+     a dark theme, so the tab's text is the semantic foreground (--fg: ink
+     in the light themes, paper under Lilac Night) — a hard --ink would sit
+     at 1.2:1 on lilac's card and the axe gate is zero serious. */
+  color: var(--fg);
   font-family: var(--font-display);
   font-weight: 600;
   font-size: 0.9rem;
@@ -1465,7 +1469,10 @@ textarea:focus-visible,
 }
 
 .kit-wave-bar {
-  fill: var(--ink);
+  /* The theme contract (tokens' lilac block): --fg is the semantic
+     foreground — under Lilac Night a hard --ink sits the dark bars on the
+     dark surface they draw over; in the light themes --fg is --ink. */
+  fill: var(--fg);
 }
 
 .kit-wave-baseline {

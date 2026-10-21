@@ -54,6 +54,9 @@ export interface SeedProfile {
     /** A seed character id; names the line's assigned speaker. */
     speaker?: string;
     attribution?: { status: string; confidence: number };
+    /** The line's attribution_evidence (the dump's own linkage, e.g. the
+     *  source_field method the disc import writes for its speaker keys). */
+    evidence?: unknown[];
   }[];
   edges: { from: string; to: string; type: string; confidence: number }[];
   regions: { id: string; type: string; x: number; y: number; w: number; h: number }[];
@@ -217,7 +220,7 @@ export function buildManifest(
     scene_id: null,
     attribution: message.attribution ?? { status: "unknown", confidence: 0 },
     markup: [],
-    evidence: [],
+    evidence: message.evidence ?? [],
     flags: {},
     redacted_reason: null,
     pages: [],

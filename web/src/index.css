@@ -2034,9 +2034,33 @@ pre.muted {
 
 /* The design's contrast rule (plan Phase 2: "no --muted on --peach"): the
    muted text inside the selected (peach) row takes ink, which holds 6.3:1
-   on peach; --muted would fall to 3.6:1 there. */
+   to 8.4:1 on peach across the themes; --muted would fall to 3.6:1 there.
+   The row's badges take the same ink: a badge's theme tint does not survive
+   the peach anywhere (the warn-tinted attribution badge sits at 3.3:1 on
+   plum's peach, and under Lilac Night --ok is the light paper — the
+   verified and published badges at 1.7:1 on the light peach) — so a badge
+   on the selected row never carries its tint; ink holds 6.3:1 to 8.4:1 on
+   the peach in every theme. The row's whole text takes the same ink (the
+   name's strong, the counts): under Lilac Night the row's text is paper —
+   light on the light peach — and ink holds 8.4:1 there. The unprobed badge
+   keeps its quiet text, not its 0.7 wash (the wash would drop the ink to
+   ~3.5:1 on the peach). The row-action button keeps its own card surface
+   (the rule above) so its text is never peach-backed. */
+.cast-roster-table tr.cast-row-selected {
+  color: var(--ink);
+}
+
 .cast-roster-table tr.cast-row-selected .muted {
   color: var(--ink);
+}
+
+.cast-roster-table tr.cast-row-selected .badge {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
+.cast-roster-table tr.cast-row-selected .badge-unprobed {
+  opacity: 1;
 }
 
 .cast-roster-table tr.cast-row-selected > td:first-child {
@@ -2220,12 +2244,20 @@ pre.muted {
 .cast-detail {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-8);
-  padding: var(--sp-16);
+  gap: 5px;
+  padding: var(--sp-10);
   background: var(--card);
   border: 1px solid var(--ink);
   border-radius: var(--radius-card);
   overflow-wrap: anywhere;
+}
+
+/* The brief's field: two rows of the panel's mono, one step down from the
+   body size (the fold, below, needs the height back). */
+.cast-detail textarea {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 6px 8px;
 }
 
 /* The facts: a two-column mono definition list (label · value). The state
@@ -2235,11 +2267,11 @@ pre.muted {
    (docs/design/plum-peach 2d). */
 .cast-facts {
   display: grid;
-  gap: var(--sp-6);
+  gap: var(--sp-4);
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: 11px;
+  line-height: 1.3;
 }
 
 .cast-facts > div {
@@ -2366,7 +2398,7 @@ pre.muted {
 }
 
 .cast-portrait {
-  height: 72px;
+  height: 44px;
   flex: 1;
   display: block;
 }
@@ -2377,12 +2409,23 @@ pre.muted {
   gap: var(--sp-8);
 }
 
+/* The picker's fold (the 1440 review width): the action row keeps its
+   non-coral pills one size down from the kit's default so the row and its
+   companions sit above the fold while the roster scrolls. The coral CTA
+   keeps the kit's large-text treatment (1.2rem/700): ink on --coral is
+   3.6:1, which passes only at the large-text threshold (tokens.css).
+   Shrinking it there fails WCAG 1.4.3, and the axe run catches it. */
+.cast-actions .kit-pill:not(.kit-pill-coral) {
+  padding: var(--sp-4) var(--sp-12);
+  font-size: 0.9rem;
+}
+
 /* The current take sits on the warm tint (the design's peach block). */
 .cast-take {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-8);
-  padding: var(--sp-8);
+  gap: var(--sp-6);
+  padding: var(--sp-6);
   border-radius: var(--radius-card);
   background: var(--sand);
 }
@@ -2390,7 +2433,7 @@ pre.muted {
 .cast-take-player {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-8);
+  gap: var(--sp-6);
 }
 
 .cast-take-player audio,
@@ -2398,15 +2441,15 @@ pre.muted {
   width: 100%;
 }
 
-/* The panel's audio controls keep a steady 36px so the take block's height
+/* The panel's audio controls keep a steady 32px so the take block's height
    is predictable at the review widths (the full control would be taller). */
 .cast-take-player audio {
-  height: 36px;
+  height: 32px;
 }
 
 .cast-sample-lines {
   border-top: 1px solid var(--hair);
-  padding-top: var(--sp-12);
+  padding-top: var(--sp-8);
 }
 
 .cast-sample-lines ul {
@@ -2445,4 +2488,244 @@ pre.muted {
 .preview-panel {
   border-top: 1px solid var(--hair);
   padding-top: var(--sp-12);
+}
+
+/* ── the Cast redesign (ADR-0134) ────────────────────────────────────────────
+   The shared voiced count in the header, the bulk bar (voice everyone /
+   name the speakers), the roster's filter chips and name search, the
+   row's single primary action, and the voice picker's room: full-height
+   and sticky at the review widths, a full-screen sheet below 600px. */
+
+.cast-count-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-8);
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+/* The header's one number about the work (ADR-0134): the same definition
+   the Library card and the status bar read from the server. */
+.cast-voiced-chip {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 1px 8px;
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-pill);
+  background: var(--peach);
+  color: var(--ink);
+}
+
+/* The bulk work (ADR-0134): the screen's two one-go actions and their
+   progress. The progress note is a status line (role=status), so a screen
+   reader announces the count as the jobs land. The agent-role note is the
+   screen's own remedy text: it keeps the bar one line at the review width
+   (the picker's fold, below, needs the row's height back). */
+.cast-bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-12);
+  flex-wrap: wrap;
+  padding: var(--sp-8);
+  margin-bottom: var(--sp-8);
+  border: 1px dashed var(--hair);
+  border-radius: var(--radius-card);
+  font-size: 11px;
+}
+
+.cast-bulk-progress {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.cast-bulk-sep {
+  color: var(--muted);
+}
+
+/* The roster's filter chips (ADR-0134): All hides the retired rows by
+   default (the Retired chip is where they live); each chip carries its own
+   count. The name search sits at the row's end. */
+.cast-filters {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-12);
+}
+
+.cast-filter-chip {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 4px 10px;
+  border: 1px solid var(--ink);
+  border-radius: var(--radius-pill);
+  background: var(--card);
+  /* The theme contract (tokens' lilac block): under Lilac Night --ink is
+     the dark surface and --fg (paper) the text — a hard --ink on lilac's
+     --card card sits at 1.2:1 and the axe gate is zero serious. */
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.cast-filter-chip:hover {
+  background: var(--peach);
+}
+
+.cast-filter-chip-active {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.cast-filter-chip-active:hover {
+  background: var(--ink);
+}
+
+.cast-filter-count {
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
+
+.cast-name-search {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 4px 10px;
+  border: 1px solid var(--ink);
+  border-radius: var(--radius-pill);
+  background: var(--card);
+  /* The theme contract (tokens' lilac block): --fg carries the text — a
+     hard --ink on lilac's card sits at 1.2:1 and the axe gate is zero
+     serious. The placeholder takes the per-theme --muted (5.5:1 on the
+     light cards, high over lilac's dark card). */
+  color: var(--fg);
+  min-width: 160px;
+}
+
+.cast-name-search::placeholder {
+  color: var(--muted);
+}
+
+/* The row's single primary action (ADR-0134): a quiet mono button in the
+   row's last cell — Listen / Pick a voice / Name — the work the row
+   offers, one per row. */
+.cast-row-action {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 3px 10px;
+  border: 1px solid var(--ink);
+  border-radius: var(--radius-pill);
+  /* The chip's surface language (ADR-0134): a card background under the
+     text, not the ambient row — under Lilac Night the row's surface is the
+     dark page/card, where a hard --ink would sit at 1.2:1 (the axe gate is
+     zero serious), and the card keeps the button legible over a selected
+     row's peach. */
+  background: var(--card);
+  color: var(--fg);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.cast-row-action:hover {
+  background: var(--peach);
+}
+
+.cast-row-action-none {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* The picker's room (ADR-0134): at the review widths the panel is the
+   screen's right column — full column height, sticky while the roster
+   scrolls, its own overflow when a long run fills it. */
+@media (min-width: 1101px) {
+  .cast-layout {
+    align-items: stretch;
+  }
+
+  .cast-detail {
+    position: sticky;
+    top: var(--sp-16);
+    align-self: start;
+    max-height: calc(100vh - 2 * var(--sp-16));
+    overflow-y: auto;
+  }
+}
+
+/* Below 600px the picker is a full-screen sheet (ADR-0134): the roster
+   stays behind it, the sheet owns the viewport, and the way out is the ✕,
+   the Escape key, or the browser back (the selection is the URL's
+   character param, so back clears it). */
+@media (max-width: 600px) {
+  .cast-detail {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    border-radius: 0;
+    border: none;
+    overflow-y: auto;
+    z-index: 60;
+  }
+}
+
+/* The picker's ✕ (top right of the panel head): the sheet's way out on
+   every width. The theme contract (tokens' lilac block): --fg carries the
+   text — under Lilac Night a hard --ink on the dark --card sits at 1.2:1
+   and the axe gate is zero serious. */
+.cast-detail-close {
+  flex: 0 0 auto;
+  margin-left: auto;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--ink);
+  border-radius: 50%;
+  background: var(--card);
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.cast-detail-close:hover {
+  background: var(--peach);
+}
+
+/* "Name this speaker" (ADR-0134): the import's placeholder row — the
+   lines the row holds, a name, and the speaker-link. */
+.cast-name-speaker {
+  padding: var(--sp-12);
+  border: 1px solid var(--ink);
+  border-radius: var(--radius-card);
+  background: var(--sand);
+}
+
+.cast-name-speaker input {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 6px 10px;
+  border: 1px solid var(--ink);
+  border-radius: var(--radius-card);
+  background: var(--card);
+  /* The theme contract (tokens' lilac block): --fg carries the text —
+     under Lilac Night a hard --ink on the dark --card sits at 1.2:1 and
+     the axe gate is zero serious. */
+  color: var(--fg);
+  width: 100%;
+}
+
+.cast-name-speaker-lines {
+  margin: 0 0 var(--sp-8);
+  padding-left: 1.1em;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
 }

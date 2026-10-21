@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import { trackConsoleErrors } from "./support/console";
-import { expectDefaultDataDirUntouched, serverRun } from "./support/servers";
+import { claimAppliance, expectDefaultDataDirUntouched, serverRun } from "./support/servers";
 
 /**
  * The disc-import walk (ADR-0066), on the packaged binary whose
@@ -55,17 +55,16 @@ test("import a disc image through the UI, publish, and see the messages on /play
   // 404, the page's documented "nothing published" state, and the browser
   // logs the probe as a failed resource — the machine's answer, not a
   // fault of this walk.
-  const consoleErrors = trackConsoleErrors(page, [401, 404]);
+  const consoleErrors = trackConsoleErrors(page, [401, 404, 409]);
   const shot = (step: string) =>
     page.screenshot({ path: `test-results/disc-import-walk-${step}.png`, fullPage: true });
 
   // ── 1. claim the appliance and sign in, through the page ─────────────
+  // The claim is once per appliance (ADR-0016 §7): a standalone run claims
+  // here; a parallel-suite run finds it claimed by the speaker-link walk or
+  // a sibling worker (the helper's losing submit just walks to the sign-in).
   await page.goto("/library");
-  await expect(page.getByTestId("setup-form")).toBeVisible({ timeout: 30_000 });
-  await page.getByTestId("setup-username").fill(ADMIN.username);
-  await page.getByTestId("setup-password").fill(ADMIN.password);
-  await page.getByTestId("setup-submit").click();
-  await expect(page).toHaveURL(/\/login$/);
+  await claimAppliance(page, ADMIN);
   await page.getByTestId("login-username").fill(ADMIN.username);
   await page.getByTestId("login-password").fill(ADMIN.password);
   await page.getByTestId("login-submit").click();

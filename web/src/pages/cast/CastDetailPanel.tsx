@@ -16,7 +16,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
-import { type Character, type Message } from "../../api/client";
+import { catalogApi, type Character, type Message } from "../../api/client";
 import {
   voicesApi,
   type VoiceAudition,
@@ -32,6 +32,7 @@ import {
   currentAndWorking,
   DEFAULT_BRIEF,
   hasPreviousApproved,
+  isUnnamedSpeaker,
   pollVoice,
 } from "./castShared";
 
@@ -57,6 +58,12 @@ export interface CastDetailPanelProps {
   voicesUnavailable: boolean;
   canCurate: boolean;
   onRefresh: () => void;
+  /** Close the picker (the ✕ and the Escape key): the selection is the
+   *  URL's `character` param, so closing is the parent clearing it. */
+  onClose: () => void;
+  /** The speaker-link resolved: the URL's selection follows the name the
+   *  row now carries (ADR-0134), so the panel re-mounts on the named row. */
+  onNamed?: (name: string) => void;
 }
 
 export function CastDetailPanel(p: CastDetailPanelProps) {
@@ -64,6 +71,17 @@ export function CastDetailPanel(p: CastDetailPanelProps) {
   const { character } = p;
   const { working, current } = currentAndWorking(p.revisions);
   const previewInput = useRef<HTMLInputElement>(null);
+
+  // The picker is a selection: the ✕ and the Escape key both clear it
+  // (keyboard access to the sheet, ADR-0134). The listener is on the
+  // window while the panel is mounted — the selection's own frame.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") p.onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [p.onClose]);
 
   // The consent record's copy button (the id is long; the line truncates):
   // the clipboard API first, a selected textarea + execCommand as the
@@ -154,6 +172,15 @@ export function CastDetailPanel(p: CastDetailPanelProps) {
           label={`${character.name} portrait placeholder`}
           className="cast-portrait"
         />
+        <button
+          type="button"
+          className="cast-detail-close"
+          data-testid="cast-detail-close"
+          onClick={p.onClose}
+          aria-label="Close the voice picker"
+        >
+          ✕
+        </button>
       </div>
 
       {/* The facts: a two-column mono definition list (docs/design/plum-peach
@@ -285,6 +312,21 @@ export function CastDetailPanel(p: CastDetailPanelProps) {
         </label>
       )}
 
+      {/* The import's placeholder rows (ADR-0134): the row the source names
+          only as an identifier is named here — the lines the row holds, a
+          name, and the speaker-link that resolves it (an existing row of
+          that exact name when one exists, a new confirmed character when it
+          does not). The picker's selection follows the name the row then
+          carries. */}
+      {isUnnamedSpeaker(character, p.messages) && p.canCurate ? (
+        <NameSpeakerBlock
+          character={character}
+          messages={p.messages}
+          profileId={p.profileId}
+          onNamed={p.onNamed}
+        />
+      ) : null}
+
       {current ? (
         <div className="cast-take" data-testid="cast-take">
           <p className="muted">
@@ -402,6 +444,85 @@ function badgeClassOf(state: string): string {
   if (state === "retired" || state === "invalid") return "archived";
   if (state === "auditioning") return "review";
   return "draft";
+}
+
+/** "Name this speaker" (ADR-0134): the import's placeholder row — the
+ *  source named its speaker only as an identifier, and the import minted a
+ *  proposed row for it. The block shows the lines the row holds, takes a
+ *  name, and runs the speaker-link with that name: an existing non-retired
+ *  row of that exact name when one exists, a new confirmed character when
+ *  it does not. The placeholder is retired either way, its lines repointed,
+ *  and the picker's selection follows the name the row now carries. */
+function NameSpeakerBlock({
+  character,
+  messages,
+  profileId,
+  onNamed,
+}: {
+  character: Character;
+  messages: Message[];
+  profileId: string;
+  onNamed?: (name: string) => void;
+}) {
+  const [name, setName] = useState("");
+  const [result, setResult] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const link = useMutation({
+    mutationFn: () => catalogApi.linkSpeaker(profileId, character.id, { name }),
+    onSuccess: (res) => {
+      setResult(
+        res.created
+          ? `named as “${res.target_name}” — a new character row`
+          : `linked to the existing “${res.target_name}”`,
+      );
+      // The link is a roster write in its own right (docs/spec/04): the
+      // placeholder retires, its lines repoint and the target's aliases
+      // grow — the screen's roster and line reads catch up, and the
+      // selection follows the name the row now carries.
+      void queryClient.invalidateQueries({ queryKey: ["characters"] });
+      if (res.target_name) onNamed?.(res.target_name);
+    },
+    onError: (error) =>
+      setResult(error instanceof Error ? `not named: ${error.message}` : "not named"),
+  });
+  const lines = messages.filter((m) => m.speaker_id === character.id);
+  return (
+    <div className="stack cast-name-speaker" data-testid="speaker-name">
+      <h3>Name this speaker</h3>
+      <p className="muted">
+        The source names this speaker only as <code>{character.name}</code> — its {lines.length}{" "}
+        line{lines.length === 1 ? "" : "s"}:
+      </p>
+      <ul className="cast-name-speaker-lines">
+        {lines.slice(0, 3).map((m) => (
+          <li key={m.id}>{m.speech_text || m.original_text || m.normalized_text || "(no text)"}</li>
+        ))}
+      </ul>
+      <label className="stack">
+        <span>Name</span>
+        <input
+          data-testid="speaker-name-input"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="e.g. the lighthouse keeper"
+          disabled={link.isPending}
+        />
+      </label>
+      <PillButton
+        variant="outline"
+        testid="speaker-name-save"
+        disabled={name.trim() === "" || link.isPending}
+        onClick={() => link.mutate()}
+      >
+        {link.isPending ? "Naming…" : "Name this speaker"}
+      </PillButton>
+      {result !== null ? (
+        <p className="muted" role="status" data-testid="speaker-name-result">
+          {result}
+        </p>
+      ) : null}
+    </div>
+  );
 }
 
 /** One audition clip as an audio element (its SHA-256 is the ETag). */

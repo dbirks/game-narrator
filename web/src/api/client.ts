@@ -765,19 +765,24 @@ export const catalogApi = {
     }) as Promise<{ characters: Character[] }>;
   },
   /**
-   * The curator's speaker-link action (ADR-0070): the placeholder {characterId}
-   * is identified as {targetCharacterId}. The client sends the profile's
-   * cached ETag as If-Match, so a stale page is a 412, not a second link.
+   * The curator's speaker-link action (ADR-0070, extended by ADR-0134): the
+   * placeholder {characterId} is identified as an existing roster row
+   * (`target_character_id`) or as a character by `name` — the existing
+   * non-retired row of that exact name when one exists, a new confirmed
+   * character created in the same transaction when it does not. One of the
+   * two is required; both given must name the same row. The client sends the
+   * profile's cached ETag as If-Match, so a stale page is a 412, not a second
+   * link.
    */
   linkSpeaker(
     profileId: string,
     characterId: string,
-    targetCharacterId: string,
+    body: { target_character_id?: string; name?: string },
     signal?: AbortSignal,
   ) {
     return api.post("/api/v1/profiles/{id}/characters/{cid}/speaker-link", {
       params: { id: profileId, cid: characterId },
-      body: { target_character_id: targetCharacterId },
+      body,
       signal,
     }) as Promise<SpeakerLinkResponse>;
   },
@@ -837,6 +842,20 @@ export const catalogApi = {
   async setAutoCast(id: string, enabled: boolean, signal?: AbortSignal) {
     const etag = (await refreshProfileEtag(id, signal)) ?? "";
     return api.post("/api/v1/profiles/{id}/auto-cast", {
+      params: { id },
+      body: { enabled },
+      etag,
+      signal,
+    });
+  },
+  /** The profile's narrator fallback dial (ADR-0101): on by default; with it
+   *  on, a line whose speaker has no approved voice speaks through the
+   *  narrator voice. If-Match like the other profile writes — the ETag is
+   *  refreshed first (the dial's write does not bump the row version, but it
+   *  answers against the revision the caller last read). */
+  async setNarratorFallback(id: string, enabled: boolean, signal?: AbortSignal) {
+    const etag = (await refreshProfileEtag(id, signal)) ?? "";
+    return api.post("/api/v1/profiles/{id}/narrator-fallback", {
       params: { id },
       body: { enabled },
       etag,

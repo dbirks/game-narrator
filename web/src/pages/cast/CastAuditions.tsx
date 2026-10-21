@@ -21,6 +21,8 @@ import {
   type VoiceRevision,
 } from "../../api/voices";
 import { ErrorState, Loading } from "../../components/states";
+import { Waveform } from "../../components/kit";
+import { CONSENT_DEFAULT } from "./castShared";
 
 export interface AuditionPanelProps {
   /** The working revision: the draft/auditioning run in flight, or the
@@ -42,7 +44,11 @@ export interface AuditionPanelProps {
 export function CastAuditionPanel(p: AuditionPanelProps) {
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<string | null>(null);
-  const [consent, setConsent] = useState("");
+  // The consent record starts as the profile's consent default (the record
+  // the auto-cast approval attributes, ADR-0109): the approval is the
+  // profile-level consent the dial was set under, editable for a run that
+  // needs its own. Clearing the field brings the required note back.
+  const [consent, setConsent] = useState(CONSENT_DEFAULT);
   const auditioning = p.voice.state === "auditioning";
   const consentMissing = consent.trim() === "";
 
@@ -55,7 +61,7 @@ export function CastAuditionPanel(p: AuditionPanelProps) {
     mutationFn: () =>
       voicesApi.approveVoice(p.voice.id, { audition_id: selected as string, consent }),
     onSuccess: () => {
-      setConsent("");
+      setConsent(CONSENT_DEFAULT);
       setSelected(null);
       refresh();
     },
@@ -124,7 +130,7 @@ export function CastAuditionPanel(p: AuditionPanelProps) {
             onClick={() => approve.mutate()}
             disabled={consentMissing || selected === null || approve.isPending}
           >
-            {approve.isPending ? "Approving…" : "Approve selected audition"}
+            {approve.isPending ? "Approving…" : "Approve this take"}
           </button>
           {consentMissing ? (
             <p className="muted" data-testid="consent-required-note">
@@ -226,6 +232,21 @@ export function VoiceGainControl({ voiceId, gain }: { voiceId: string; gain: num
   );
 }
 
+/** The card's waveform: the deterministic bars the kit's Waveform draws
+ *  (the clip's duration is the audio element's own, the bars are the
+ *  picker's preview of it). Derived from the audition's id, so the same
+ *  clip reads the same shape on every render. */
+function waveformFor(auditionId: string): number[] {
+  let seed = 0;
+  for (let i = 0; i < auditionId.length; i++) {
+    seed = (seed * 31 + auditionId.charCodeAt(i)) >>> 0;
+  }
+  return Array.from({ length: 24 }, (_, i) => {
+    const value = Math.abs(Math.sin((seed % 97) * 0.13 + i * 0.55));
+    return 0.25 + 0.7 * value;
+  });
+}
+
 function AuditionCard({
   audition,
   index,
@@ -270,7 +291,14 @@ function AuditionCard({
       {loadError ? (
         <ErrorState error={loadError} action="Loading clip" />
       ) : src ? (
-        <audio controls data-testid={`audition-player-${index}`} src={src} />
+        <div className="stack">
+          <Waveform
+            values={waveformFor(audition.id)}
+            label={`Take ${index + 1} for ${audition.model_id}`}
+            testid={`audition-waveform-${index}`}
+          />
+          <audio controls data-testid={`audition-player-${index}`} src={src} />
+        </div>
       ) : (
         <Loading label="Loading clip…" />
       )}

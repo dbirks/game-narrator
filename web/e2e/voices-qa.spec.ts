@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { resolve } from "node:path";
 
-import { expectDefaultDataDirUntouched, serverRun } from "./support/servers";
+import { claimAppliance, expectDefaultDataDirUntouched, serverRun } from "./support/servers";
 import { trackConsoleErrors } from "./support/console";
 
 /**
@@ -48,16 +48,11 @@ const CONSENT = "original_synthetic_design";
 
 async function signIn(page: Page) {
   await page.goto("/library");
-  const setupForm = page.getByTestId("setup-form");
-  const loginUsername = page.getByTestId("login-username");
-  await expect(setupForm.or(loginUsername)).toBeVisible({ timeout: 15_000 });
-  if (await setupForm.isVisible()) {
-    await page.getByTestId("setup-username").fill(ADMIN.username);
-    await page.getByTestId("setup-password").fill(ADMIN.password);
-    await page.getByTestId("setup-submit").click();
-    await expect(page).toHaveURL(/\/login$/);
-  }
-  await loginUsername.fill(ADMIN.username);
+  // The claim is once per appliance (ADR-0016 §7): a standalone run claims
+  // here; a parallel-suite run finds it claimed by a sibling walk (the
+  // helper's losing submit just walks to the sign-in).
+  await claimAppliance(page, ADMIN);
+  await page.getByTestId("login-username").fill(ADMIN.username);
   await page.getByTestId("login-password").fill(ADMIN.password);
   await page.getByTestId("login-submit").click();
   await expect(page.getByTestId("nav-user")).toBeVisible();

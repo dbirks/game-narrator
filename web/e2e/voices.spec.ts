@@ -2,7 +2,12 @@ import { expect, test, type Page } from "@playwright/test";
 import { resolve } from "node:path";
 
 import { ports } from "./support/ports";
-import { apiAsUser, expectDefaultDataDirUntouched, serverRun } from "./support/servers";
+import {
+  apiAsUser,
+  claimAppliance,
+  expectDefaultDataDirUntouched,
+  serverRun,
+} from "./support/servers";
 import { trackConsoleErrors } from "./support/console";
 
 /**
@@ -40,16 +45,11 @@ const CONSENT = "original_synthetic_design";
 
 async function signIn(page: Page) {
   await page.goto("/library");
-  const setupForm = page.getByTestId("setup-form");
-  const loginUsername = page.getByTestId("login-username");
-  await expect(setupForm.or(loginUsername)).toBeVisible({ timeout: 15_000 });
-  if (await setupForm.isVisible()) {
-    await page.getByTestId("setup-username").fill(ADMIN.username);
-    await page.getByTestId("setup-password").fill(ADMIN.password);
-    await page.getByTestId("setup-submit").click();
-    await expect(page).toHaveURL(/\/login$/);
-  }
-  await loginUsername.fill(ADMIN.username);
+  // The claim is once per appliance (ADR-0016 §7): a standalone run claims
+  // here; a parallel-suite run finds it claimed by a sibling walk (the
+  // helper's losing submit just walks to the sign-in).
+  await claimAppliance(page, ADMIN);
+  await page.getByTestId("login-username").fill(ADMIN.username);
   await page.getByTestId("login-password").fill(ADMIN.password);
   await page.getByTestId("login-submit").click();
   await expect(page.getByTestId("nav-user")).toBeVisible();
@@ -69,9 +69,11 @@ test("voice setup: auditions, consent-gated approval, registration, preview cach
   const api = apiAsUser(request, origin);
 
   // 401 is allowlisted: the unauthenticated /auth/me probe the guard makes on
-  // mount. Every other console error — a CSP block, a missing bundle, a page
-  // fault — fails the cleanliness check at the end.
-  const consoleErrors = trackConsoleErrors(page, [401]);
+  // mount. 409 is the one-shot claim's conflict when a parallel walk claimed
+  // the appliance first (ADR-0016 §7). Every other console error — a CSP
+  // block, a missing bundle, a page fault — fails the cleanliness check at the
+  // end.
+  const consoleErrors = trackConsoleErrors(page, [401, 409]);
 
   // ── 1. first run: claim the appliance, sign in ────────────────────────────
   const cookies = await signIn(page);
@@ -182,10 +184,14 @@ test("voice setup: auditions, consent-gated approval, registration, preview cach
   // shown, not invented by the page.
   await expect(page.getByTestId("audition-card-0")).toContainText("fake-voicedesign");
 
-  // ── 6. approval: refused without consent, taken with it ───────────────────
-  // The page refuses the click itself (the button is disabled), and the note
-  // says why; the server would answer the same attempt with CONSENT_REQUIRED.
-  await expect(page.getByTestId("consent-required-note")).toBeVisible();
+  // ── 6. approval: the record is the profile's consent default, taken with
+  // a selected take (ADR-0134) ────────────────────────────────────────────────
+  // The consent record is prefilled with the profile's consent default (the
+  // record the auto-cast approval attributes, ADR-0109), so the required
+  // note is gone and the button's one gate is a selected take; the server
+  // still answers an empty record with CONSENT_REQUIRED.
+  await expect(page.getByTestId("consent-input")).toHaveValue(CONSENT);
+  await expect(page.getByTestId("consent-required-note")).toHaveCount(0);
   await expect(page.getByTestId("approve-voice")).toBeDisabled();
   // Pick candidate 2: the approval freezes *that* clip, and the page must
   // show the frozen transcript and the consent record afterwards.

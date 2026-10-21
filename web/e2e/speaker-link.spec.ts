@@ -1,22 +1,24 @@
 import { expect, test } from "@playwright/test";
 
 import { trackConsoleErrors } from "./support/console";
-import { expectDefaultDataDirUntouched, serverRun } from "./support/servers";
+import { claimAppliance, expectDefaultDataDirUntouched, serverRun } from "./support/servers";
 
 /**
- * The curator's speaker-link walk (ADR-0070), on the packaged binary whose
- * disc-import allowlist is the repo's synthetic disc (testdata/disc — a
- * synthetic BMG of four invented lines, each carrying a different invented
- * speaker attribute byte, so the import creates four speaker placeholders
- * named by their opaque keys).
+ * The curator's speaker-link walk (ADR-0070, the naming flow of ADR-0134),
+ * on the packaged binary whose disc-import allowlist is the repo's synthetic
+ * disc (testdata/disc — a synthetic BMG of four invented lines, each
+ * carrying a different invented speaker attribute byte, so the import
+ * creates four speaker placeholders named by their opaque keys).
  *
  *   sign in (claiming the appliance only on a standalone run) → game →
-   edition → draft → import the disc image
- *   → the characters page of the draft lists the four placeholders with
- *   their line counts → link the first placeholder to the second through
- *   the target picker → the confirmation lands, the placeholder row leaves
- *   the section (it is retired), and the roster row of the target shows the
- *   moved lines as verified.
+ *   edition → draft → import the disc image
+ *   → the cast page of the draft lists the four placeholders as the roster's
+ *   "Unnamed speaker" rows (the redesign's Unnamed chip counts them)
+ *   → open the first placeholder's voice picker and name it after the
+ *   second (the speaker-link by name: an existing non-retired row of that
+ *   exact name when one exists) → the confirmation lands, the selection
+ *   follows the name the row now carries, the placeholder retires behind
+ *   its chip, and the roster row of the target shows the moved lines.
  *
  * Every step asserts visible page state, not an HTTP status (docs/spec/09,
  * AGENTS.md rule 9).
@@ -37,9 +39,7 @@ const SOURCE = "ww:spk:1";
 const TARGET = "ww:spk:2";
 const slug = (name: string) => encodeURIComponent(name);
 
-test("link the import's speaker placeholders on the characters page", async ({
-  page,
-}, testInfo) => {
+test("name the import's speaker placeholders on the cast page", async ({ page }, testInfo) => {
   test.setTimeout(300_000);
   test.skip(
     testInfo.project.name !== "disc",
@@ -52,25 +52,18 @@ test("link the import's speaker placeholders on the characters page", async ({
   // roster on load — the page degrades (the roster stays, the voice work
   // shows its unavailable note), so the read is the machine's answer, not a
   // fault of the walk.
-  const consoleErrors = trackConsoleErrors(page, [401, 503]);
+  const consoleErrors = trackConsoleErrors(page, [401, 409, 503]);
   const shot = (step: string) =>
     page.screenshot({ path: `test-results/speaker-link-${step}.png`, fullPage: true });
 
   // ── 1. sign in: claim a standalone run, sign in a shared one ─────────
-  // A full-suite run finds the appliance already claimed by the
-  // disc-import walk (same server, the earlier spec); a standalone run
-  // claims it here. Either way the session that follows is this walk's own.
+  // The claim is once per appliance (ADR-0016 §7): a full-suite run finds
+  // it claimed by the disc-import walk (same server, the earlier spec) or by
+  // a parallel worker, and a standalone run claims it here; either way the
+  // helper's losing submit just walks to the sign-in.
   await page.goto("/library");
-  const setupForm = page.getByTestId("setup-form");
-  const loginUsername = page.getByTestId("login-username");
-  await expect(setupForm.or(loginUsername)).toBeVisible({ timeout: 30_000 });
-  if (await setupForm.isVisible()) {
-    await page.getByTestId("setup-username").fill(ADMIN.username);
-    await page.getByTestId("setup-password").fill(ADMIN.password);
-    await page.getByTestId("setup-submit").click();
-    await expect(page).toHaveURL(/\/login$/);
-  }
-  await loginUsername.fill(ADMIN.username);
+  await claimAppliance(page, ADMIN);
+  await page.getByTestId("login-username").fill(ADMIN.username);
   await page.getByTestId("login-password").fill(ADMIN.password);
   await page.getByTestId("login-submit").click();
   await expect(page.getByTestId("nav-user")).toContainText(ADMIN.username);
@@ -115,38 +108,46 @@ test("link the import's speaker placeholders on the characters page", async ({
   await expect(revision1.getByTestId("disc-import-inserted")).toHaveText("4");
   await shot("01-disc-imported");
 
-  // ── 4. the cast page of the draft lists the placeholders ─────────────
-  // Cast merged the characters page (ADR-0093): the roster and the speaker
-  // placeholders are one screen.
+  // ── 4. the cast page of the draft: the placeholders are roster rows ────
+  // Cast merged the characters page (ADR-0093), and the redesign (ADR-0134)
+  // folded the speaker-placeholder section into the roster: the four import
+  // placeholders are the roster's "Unnamed speaker" rows — proposed rows
+  // whose lines carry the source's own source_field linkage — and the
+  // Unnamed chip counts them.
   await revision1.getByTestId("cast-1").click();
   await expect(page.getByTestId("cast-title")).toBeVisible({ timeout: 30_000 });
-
-  const section = page.getByTestId("speaker-placeholders");
-  await expect(section).toBeVisible();
-  await expect(section.locator("li")).toHaveCount(4);
+  const roster = page.getByTestId("character-table");
+  await expect(roster).toBeVisible();
+  await expect(page.getByTestId("cast-filter-unnamed")).toContainText("Unnamed 4");
   for (const name of [SOURCE, TARGET, "ww:spk:3", "ww:spk:4"]) {
-    const row = section.getByTestId(`speaker-placeholder-${slug(name)}`);
+    const row = roster.getByTestId(`character-row-${slug(name)}`);
     await expect(row).toBeVisible();
-    await expect(row).toContainText(name);
-    await expect(row).toContainText("1 line");
+    await expect(row.getByTestId(`cast-row-name-${slug(name)}`)).toContainText("Unnamed speaker");
+    // The roster key the source named the speaker by is the row's tooltip
+    // target and its search string; the line count is the row's figure.
+    await expect(row).toHaveAttribute("title", new RegExp(escapeRegExp(name)));
+    await expect(row.getByTestId(`character-lines-${slug(name)}`)).toHaveText("1");
   }
   await shot("02-placeholders-listed");
 
-  // ── 5. link the first placeholder to the second, through the page ─────
-  const sourceRow = section.getByTestId(`speaker-placeholder-${slug(SOURCE)}`);
-  await sourceRow
-    .getByTestId(`speaker-placeholder-target-${slug(SOURCE)}`)
-    .selectOption({ label: TARGET });
-  await sourceRow.getByTestId(`speaker-placeholder-link-${slug(SOURCE)}`).click();
-
-  // The confirmation lands at the section's level: the linked row retires and
-  // leaves the list on the next read, but the page says what just happened.
-  await expect(page.getByTestId("speaker-link-last-result")).toContainText(
-    `${SOURCE} is ${TARGET}`,
-    { timeout: 30_000 },
-  );
-  await expect(page.getByTestId("speaker-link-last-result")).toContainText("1 line");
-  await expect(section.locator("li")).toHaveCount(3);
+  // ── 5. name the first placeholder as the second, through the page ──────
+  // The row's one action is Name; the picker's Name block takes the name and
+  // runs the speaker-link with it: an existing non-retired row of that exact
+  // name when one exists (ww:spk:2 does), a new confirmed character when it
+  // does not. The selection follows the name the row then carries.
+  const sourceRow = roster.getByTestId(`character-row-${slug(SOURCE)}`);
+  await sourceRow.getByTestId(`cast-row-action-${slug(SOURCE)}`).click();
+  await expect(page).toHaveURL(new RegExp(`character=${encodeURIComponent(SOURCE)}$`));
+  await expect(page.getByTestId("cast-detail-name")).toHaveText(SOURCE);
+  await expect(page.getByTestId("speaker-name")).toBeVisible();
+  await expect(page.getByTestId("speaker-name-input")).toBeVisible();
+  await page.getByTestId("speaker-name-input").fill(TARGET);
+  await page.getByTestId("speaker-name-save").click();
+  // The link lands: the selection follows the name the row now carries (the
+  // panel moves onto the target row; the roster's change is the
+  // confirmation itself).
+  await expect(page).toHaveURL(new RegExp(`character=${encodeURIComponent(TARGET)}$`));
+  await expect(page.getByTestId("cast-detail-name")).toHaveText(TARGET, { timeout: 30_000 });
   await shot("03-linked");
 
   // ── 6. the roster agrees: the target holds the moved line ────────────
@@ -160,13 +161,16 @@ test("link the import's speaker placeholders on the characters page", async ({
   // ids within one millisecond are not monotonic). The pair may read in
   // either order on any run, so the assertion pins the set — both statuses
   // present, no third, the row still inferred — not their order.
-  const roster = page.getByTestId("character-table");
   const targetRow = roster.getByTestId(`character-row-${slug(TARGET)}`);
   await expect(targetRow.getByTestId(`character-lines-${slug(TARGET)}`)).toHaveText("2");
   await expect(targetRow.getByTestId(`character-attribution-${slug(TARGET)}`)).toHaveText(
     /^inferred \(speaker attribution is (?:confirmed\/proposed|proposed\/confirmed), not confirmed\)$/,
   );
+  // The placeholder retires: out of the live chips, into the Retired one.
+  await expect(roster.getByTestId(`character-row-${slug(SOURCE)}`)).toHaveCount(0);
+  await page.getByTestId("cast-filter-retired").click();
   const sourceRosterRow = roster.getByTestId(`character-row-${slug(SOURCE)}`);
+  await expect(sourceRosterRow).toBeVisible();
   await expect(sourceRosterRow).toContainText("retired");
   await expect(sourceRosterRow.getByTestId(`character-lines-${slug(SOURCE)}`)).toHaveText("0");
   await shot("04-roster-agrees");
@@ -174,3 +178,7 @@ test("link the import's speaker placeholders on the characters page", async ({
   expect(consoleErrors).toEqual([]);
   expectDefaultDataDirUntouched(run);
 });
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}

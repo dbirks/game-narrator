@@ -782,7 +782,7 @@ export interface paths {
     put?: never;
     /**
      * Link an import's speaker placeholder to a character.
-     * @description The curator's identification of an opaque source speaker (ADR-0070): the placeholder {cid} — the row an import created for a speaker id the source names only as an attribute — is identified as the target character. One transaction re-points the placeholder's lines at the target (confirmed at 1.0, the source-field evidence kept and the acting curator added as a reviewer entry), records one manual speaker assertion per re-pointed line, folds the placeholder's name into the target's aliases so a re-import binds the key straight to the target, and retires the placeholder. Draft revisions only, and If-Match carries the revision's row version like every profile write: 428 when absent, 412 when stale. A retired placeholder or a retired target answers 409, a self-link or a missing or malformed target_character_id answers 400, and a character the revision does not have answers 404.
+     * @description The curator's identification of an opaque source speaker (ADR-0070): the placeholder {cid} — the row an import created for a speaker id the source names only as an attribute — is identified as the target character. One transaction re-points the placeholder's lines at the target (confirmed at 1.0, the source-field evidence kept and the acting curator added as a reviewer entry), records one manual speaker assertion per re-pointed line, folds the placeholder's name into the target's aliases so a re-import binds the key straight to the target, and retires the placeholder. The body names the target by target_character_id (an existing roster row) or by name (ADR-0134): with name, the roster's non-retired row of that exact name is linked when one exists, otherwise a new confirmed character is created in the same transaction (the response's created and target_name say which). When both are given they must name the same row; a mismatch is a 400. Draft revisions only, and If-Match carries the revision's row version like every profile write: 428 when absent, 412 when stale. A retired placeholder or a retired target answers 409, a self-link, a missing or malformed half, or a name that does not carry the named target answers 400, and a character the revision does not have answers 404.
      */
     post: operations["linkSpeaker"];
     delete?: never;
@@ -971,7 +971,7 @@ export interface paths {
     put?: never;
     /**
      * Start one session: run the published profile against a frame source.
-     * @description One active session at a time (docs/spec/01 key invariant). Only the edition's published revision runs. v4l2 and dolphin frame sources answer 501 unsupported_capability; replay directories must sit under the configured allowlist. dev_trace stores sampled frames and ROI crops under a per-session byte quota and additionally requires the caller to hold the developer role on this operator route (docs/spec/13 explicit toggle; ADR-0024).
+     * @description One active session at a time (docs/spec/01 key invariant). Only the edition's published revision runs. frame_source may be omitted (or carry an empty kind): the runtime then resolves the default (ADR-0119) — a usable capture device runs v4l2 on that device (the session snapshot and the session.started event name the resolved kind and device), and with no usable device the test pattern runs only in developer mode (GAME_NARRATOR_DEV=1), otherwise the start answers 409 no_frame_source (code NO_FRAME_SOURCE) naming the operator action, connect the capture card. A dir or a clip_id without a kind answers 400 incomplete-frame-source. The dolphin frame source answers 501 unsupported_capability; replay directories must sit under the configured allowlist. dev_trace stores sampled frames and ROI crops under a per-session byte quota and additionally requires the caller to hold the developer role on this operator route (docs/spec/13 explicit toggle; ADR-0024).
      */
     post: operations["startSession"];
     delete?: never;
@@ -2628,7 +2628,7 @@ export interface components {
       /** @description The request path that produced it. */
       instance: string;
       request_id: string;
-      /** @description One of: RESOURCE_NOT_FOUND, RESOURCE_CONFLICT, VALIDATION_FAILED, PROFILE_REVISION_CONFLICT, PROFILE_IMMUTABLE, PROFILE_TRANSITION_INVALID, CONTENT_RIGHTS_REVIEW_REQUIRED, UNKNOWN_GAME_EDITION, JOB_REQUIRES_INPUT, IDEMPOTENCY_KEY_REQUIRED, IDEMPOTENCY_KEY_REUSED, UPLOAD_TOO_LARGE, INVALID_PARAMETER, NOT_SUPPORTED, SUBSYSTEM_UNAVAILABLE, INTERNAL. */
+      /** @description One of: RESOURCE_NOT_FOUND, RESOURCE_CONFLICT, VALIDATION_FAILED, PROFILE_REVISION_CONFLICT, PROFILE_IMMUTABLE, PROFILE_TRANSITION_INVALID, CONTENT_RIGHTS_REVIEW_REQUIRED, UNKNOWN_GAME_EDITION, JOB_REQUIRES_INPUT, IDEMPOTENCY_KEY_REQUIRED, IDEMPOTENCY_KEY_REUSED, UPLOAD_TOO_LARGE, INVALID_PARAMETER, NOT_SUPPORTED, SUBSYSTEM_UNAVAILABLE, NO_FRAME_SOURCE, INTERNAL. */
       code?: string;
       /** @description Every finding, for the publish gate and the importer report (docs/spec/03's review screen). */
       problems?: string[];
@@ -3109,12 +3109,14 @@ export interface components {
     CharacterList: {
       characters: components["schemas"]["Character"][];
     };
-    /** @description The identification itself: which live character the placeholder is. A self-link is refused with 400. */
+    /** @description The identification itself: which live character the placeholder is. Either target_character_id (an existing roster row) or name (the character the speaker is, ADR-0134) names the target; one of the two is required and a body without either is a 400. With name, the server links the roster's non-retired row of that exact name when one exists and otherwise creates a new confirmed character in the same transaction (the response's created says which happened). When both are given they must name the same row; a mismatch is a 400. A self-link is refused with 400. */
     SpeakerLinkRequest: {
-      /** @description The character the placeholder's speaker is identified as. */
-      target_character_id: string;
+      /** @description The character the placeholder's speaker is identified as, by row identifier. */
+      target_character_id?: string;
+      /** @description The character the placeholder's speaker is, by name (ADR-0134): the existing roster row of that exact name when one is not retired, a new confirmed character when it is not. */
+      name?: string;
     };
-    /** @description The link's outcome, counts only: which rows were joined and how many lines moved. */
+    /** @description The link's outcome, counts only: which rows were joined and how many lines moved, plus the name half of the answer (ADR-0134). */
     SpeakerLinkResponse: {
       /** @description The revision the link was recorded on. */
       profile_id: string;
@@ -3124,6 +3126,10 @@ export interface components {
       target_character_id: string;
       /** @description The lines that now point at the target, each confirmed at 1.0 with a manual assertion. */
       repointed_messages: number;
+      /** @description The name the target character carries (ADR-0134): the row the link resolved to, whether the caller named it or its identifier did. */
+      target_name?: string;
+      /** @description True when the link created the target character from the request's name (ADR-0134) rather than linking an existing row. */
+      created?: boolean;
     };
     /** @description One revision's region set — every rectangle text is read from, with the values that may be null because the source did not state them. */
     RegionList: {
@@ -3283,7 +3289,24 @@ export interface components {
     /** @description One page of the durable queue. */
     JobList: {
       jobs: components["schemas"]["Job"][];
+      /** @description The queue's foreground pause (ADR-0119, issue #27): present only while a live session holds the appliance's CPU/audio budget (docs/spec/01 invariant 1) and background kinds wait between jobs — the pause the queued rows on this page may be sitting in. Absent when nothing is pausing the queue; never a zeroed object. */
+      jobs_paused?: components["schemas"]["JobPause"];
       next_cursor?: string;
+    };
+    /** @description The background queue's foreground pause, exposed where an operator or an agent polls it: the job list's page-level jobs_paused object and the status snapshot's jobs object carry this same shape, so the pause is never only in the server log (ADR-0119, issue #27). */
+    JobPause: {
+      /**
+       * @description The subsystem holding the queue's foreground budget; today the live narration session (docs/spec/01 invariant 1) is the only caller of the runner's foreground-busy switch, and the enum-shaped value leaves a second pausing subsystem room without a shape change.
+       * @enum {string}
+       */
+      paused_by: "live_session";
+      /**
+       * Format: date-time
+       * @description When the pause began (UTC); stamped on the session that started the pause, never moved by a later session that starts while one is already live.
+       */
+      since: string;
+      /** @description The number of queued jobs the pause is holding: a read of the queue at answer time (the database is the authority on job state), never a counter the worker pool keeps. */
+      queued_count: number;
     };
     /**
      * @description Session lifecycle states (docs/spec/08 example workflow).
@@ -3296,12 +3319,13 @@ export interface components {
      */
     SessionMode: "conservative" | "predictive";
     /**
-     * @description replay reads a recording directory from the configured allowlist; test_pattern is the built-in synthetic source; v4l2 is the UVC HDMI capture dongle (ADR-0078) — dir is the device's stable id (empty: the persisted selection, then the first usable device); dolphin is the dev-only emulator bridge (ADR-0007) and answers 501 unsupported_capability unless its dev gate is met.
+     * @description replay reads a recording directory from the configured allowlist; test_pattern is the built-in synthetic source; v4l2 is the UVC HDMI capture dongle (ADR-0078) — dir is the device's stable id (empty: the persisted selection, then the first usable device); dolphin is the dev-only emulator bridge (ADR-0007) and answers 501 unsupported_capability unless its dev gate is met. The session snapshot's frame_source is this same vocabulary carrying the kind the run actually runs: a request that named no frame source is answered with the resolved kind (v4l2, or the developer-mode test_pattern), never with the absence it carried (ADR-0119).
      * @enum {string}
      */
     FrameSourceKind: "replay" | "test_pattern" | "v4l2" | "dolphin";
+    /** @description The session's frame input. The object, and its kind, may be omitted (or empty): the runtime then resolves the default frame source (ADR-0119) — a usable capture device runs v4l2, and with no usable device the test pattern runs only in developer mode (GAME_NARRATOR_DEV=1), otherwise the start answers 409 no_frame_source naming the operator action. A dir or a clip_id without a kind is a 400 incomplete-frame-source: the shape is ambiguous and the remedy is to name the kind. */
     FrameSource: {
-      kind: components["schemas"]["FrameSourceKind"];
+      kind?: components["schemas"]["FrameSourceKind"];
       /** @description The replay recording directory for kind replay (required, under the configured allowlist); for kind v4l2 the capture device stable id (ADR-0078; empty = the persisted selection, then the first usable device). */
       dir?: string;
       /** @description A managed-store clip id (from GET /api/v1/replay/clips); with kind replay it selects the clip by id and outranks dir. The id is validated against the clip id contract and its resolved directory still has to pass the replay-root allowlist (ADR-0073). */
@@ -3310,7 +3334,8 @@ export interface components {
     StartSessionRequest: {
       /** @description The profile to run; must be the edition's published revision. */
       profile_id: string;
-      frame_source: components["schemas"]["FrameSource"];
+      /** @description The frame source the session runs against; may be omitted (or carry an empty kind), in which case the runtime resolves the default (ADR-0119): a usable capture device runs v4l2 on that device, and with no usable device the test pattern runs only in developer mode, otherwise the start answers 409 no_frame_source. */
+      frame_source?: components["schemas"]["FrameSource"];
       mode?: components["schemas"]["SessionMode"];
       /**
        * @description Store sampled frames (downscaled full-frame JPEG, width 640 max) and ROI crop PNGs under the per-session byte quota; requires the caller to hold the developer role.
@@ -4821,12 +4846,14 @@ export interface components {
        * @description When this snapshot was assembled (UTC).
        */
       updated_at: string;
-      /** @description The canonical status string, e.g. '● live · capture 30fps · 412ms frame→voice', '● agent running · 9 of 12 voiced · 18m 04s' or '5 ok · 1 slow'. A live session's string appends the non-ok health tiles; the idle string is the health rollup. */
+      /** @description The canonical status string, e.g. '● live · capture 30fps · 412ms frame→voice', '● agent running · 9 of 12 voiced · 18m 04s' or '5 ok · 1 slow'. A live session's string appends the jobs-paused marker while the background queue is held (ADR-0119) and the non-ok health tiles; the idle string is the health rollup. */
       status: string;
       /** @description The active narration session; absent when the box is not narrating. */
       session?: components["schemas"]["StatusSession"];
       /** @description The active onboarding runs, newest first (usually zero or one); absent when none is live. */
       setup_runs?: components["schemas"]["StatusSetupRun"][];
+      /** @description The background queue's foreground pause (ADR-0119, issue #27): present only while a live session holds the appliance's CPU/audio budget and background kinds wait between jobs; absent when the queue is not paused (or this process has no runner wired), never a zeroed object. */
+      jobs?: components["schemas"]["JobPause"];
       health: components["schemas"]["StatusHealth"];
       device: components["schemas"]["StatusDevice"];
     };
