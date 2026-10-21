@@ -35,7 +35,17 @@ import {
  *      land (the chip and the server's read catch up to 10 of 55);
  *   6. "Name this speaker": the placeholder's lines, a name, and the
  *      speaker-link that resolves it (a new confirmed character; the
- *      placeholder retires behind its chip).
+ *      placeholder retires behind its chip);
+ *   7. the 2026-10-21 review's structural-contrast gate (axe's
+ *      color-contrast cannot see a fill-on-fill control — it has no text —
+ *      so the review's finding escaped it): the active tab's label against
+ *      its effective background, and the solid primary fill against the
+ *      page ground, both at or above 3:1, asserted in BOTH themes (the
+ *      default Plum and Lilac Night, the persisted-theme seam); and the
+ *      390 viewport-fit gate with the picker open: no document overflow,
+ *      and the full-screen sheet and its fields inside the viewport
+ *      (fixed elements do not stretch document.scrollWidth, so the
+ *      bounding boxes are checked as well as the scroll width).
  *
  * The spec runs on the `voices` project's server and signs in with its admin
  * (the appliance claim is once per appliance, ADR-0016 §7; a full-suite run
@@ -163,6 +173,186 @@ function firstName(page: Page): Promise<string> {
     .then((t) => t ?? "");
 }
 
+/** The DOM surface the in-page probes need, reached the suite's way (the
+ * e2e tsconfig has no DOM lib; the document and viewport come through a
+ * typed globalThis cast). */
+type CastEl = {
+  getBoundingClientRect: () => { right: number };
+  parentElement: CastEl | null;
+};
+type CastGlobal = {
+  document: {
+    querySelector: (sel: string) => CastEl | null;
+    querySelectorAll: (sel: string) => ArrayLike<CastEl>;
+    documentElement: { dataset: Record<string, string | undefined>; scrollWidth: number };
+    body: CastEl;
+  };
+  getComputedStyle: (el: CastEl) => { color: string; backgroundColor: string };
+  innerWidth: number;
+};
+
+type ThemeContrasts = {
+  theme: string;
+  tabTextBg: number;
+  pillBgPage: number;
+  tabColor: string;
+  tabBg: string;
+  pillBg: string;
+  pageBg: string;
+};
+
+/** The review's structural-contrast gate (2026-10-21): axe's color-contrast
+ * rule has no text to measure on a solid control, so the fill-on-fill
+ * control (Lilac Night's ink fill on the ink ground — the "no fill"
+ * finding) reads 1.0:1 to the eye and 0 to axe. Measure the two
+ * relationships the finding broke, explicitly: the active tab's LABEL
+ * against the effective background behind it (the ancestor alphas
+ * composited, not the nearest opaque), and the solid primary FILL against
+ * the page ground — both at or above the 3:1 WCAG large/UI threshold the
+ * review set. Runs per theme; the theme attribute is part of the result so
+ * a seam that fails to apply the persisted theme cannot make a pass
+ * vacuous. */
+async function assertThemeContrasts(page: Page, expectTheme: string): Promise<void> {
+  const result = (await page.evaluate(() => {
+    const g = globalThis as unknown as CastGlobal;
+    const parse = (v: string) => {
+      const m = v.match(/rgba?\(([^)]+)\)/);
+      if (!m) return null;
+      const n = m[1].split(",").map((x) => parseFloat(x.trim()));
+      if (n.length < 3 || n.some((x) => Number.isNaN(x))) return null;
+      return { r: n[0], g: n[1], b: n[2], a: n.length > 3 ? n[3] : 1 };
+    };
+    const luminance = (c: { r: number; g: number; b: number }) => {
+      const f = (u: number) => {
+        const v = u / 255;
+        return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+      };
+      return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b);
+    };
+    const ratio = (
+      a: { r: number; g: number; b: number },
+      b: { r: number; g: number; b: number },
+    ) => {
+      const la = luminance(a);
+      const lb = luminance(b);
+      const hi = la >= lb ? la : lb;
+      const lo = la >= lb ? lb : la;
+      return (hi + 0.05) / (lo + 0.05);
+    };
+    // The effective background under el: the ancestor backgrounds
+    // composited from the farthest (bottom) toward el, alpha-blended over
+    // the canvas.
+    const effectiveBg = (el: CastEl) => {
+      const layers: Array<{ r: number; g: number; b: number; a: number }> = [];
+      let node: CastEl | null = el;
+      while (node) {
+        const c = parse(g.getComputedStyle(node).backgroundColor);
+        if (c) layers.push(c);
+        node = node.parentElement;
+      }
+      let out: { r: number; g: number; b: number } | null = null;
+      for (let i = layers.length - 1; i >= 0; i -= 1) {
+        const c = layers[i];
+        out =
+          out === null
+            ? c.a >= 1
+              ? { r: c.r, g: c.g, b: c.b }
+              : {
+                  r: c.r * c.a + 255 * (1 - c.a),
+                  g: c.g * c.a + 255 * (1 - c.a),
+                  b: c.b * c.a + 255 * (1 - c.a),
+                }
+            : {
+                r: c.r * c.a + out.r * (1 - c.a),
+                g: c.g * c.a + out.g * (1 - c.a),
+                b: c.b * c.a + out.b * (1 - c.a),
+              };
+      }
+      return out || { r: 255, g: 255, b: 255 };
+    };
+    const tab =
+      g.document.querySelector('.cast-tabs a[aria-current="page"]') ||
+      g.document.querySelector(".cast-tabs .cast-tab-active");
+    const pill = g.document.querySelector('[data-testid="cast-start-narrating"]');
+    const body = g.document.body;
+    if (!tab || !pill) {
+      throw new Error(
+        `the contrast gate needs the active tab and the primary pill (tab=${Boolean(tab)}, pill=${Boolean(pill)})`,
+      );
+    }
+    const tabColor = parse(g.getComputedStyle(tab).color);
+    const pillBg = parse(g.getComputedStyle(pill).backgroundColor);
+    const pageBg = parse(g.getComputedStyle(body).backgroundColor);
+    if (!tabColor || !pillBg || !pageBg) {
+      throw new Error(
+        `the contrast gate needs solid computed colours (tab=${Boolean(tabColor)}, pill=${Boolean(pillBg)}, page=${Boolean(pageBg)})`,
+      );
+    }
+    const tabBgRgb = effectiveBg(tab);
+    return {
+      theme: g.document.documentElement.dataset.theme || "(default)",
+      tabColor: g.getComputedStyle(tab).color,
+      tabBg: `rgb(${tabBgRgb.r}, ${tabBgRgb.g}, ${tabBgRgb.b})`,
+      tabTextBg: ratio(tabColor, tabBgRgb),
+      pillBg: g.getComputedStyle(pill).backgroundColor,
+      pageBg: g.getComputedStyle(body).backgroundColor,
+      pillBgPage: ratio(pillBg, pageBg),
+    };
+  })) as ThemeContrasts;
+  expect(result.theme, "the persisted theme applied on this load").toBe(expectTheme);
+  expect(
+    result.tabTextBg,
+    `the active tab's label against its background in ${expectTheme} is ${result.tabTextBg.toFixed(
+      2,
+    )}:1 (label ${result.tabColor} on ${result.tabBg}); the review's gate is 3:1 or more — under 3 means the label sits in its own background (the Lilac Night "underline with no text" finding)`,
+  ).toBeGreaterThanOrEqual(3);
+  expect(
+    result.pillBgPage,
+    `the primary fill against the page ground in ${expectTheme} is ${result.pillBgPage.toFixed(
+      2,
+    )}:1 (fill ${result.pillBg} on ${result.pageBg}); the review's gate is 3:1 or more — at 1.0 the fill IS the ground (the "no visible fill" finding)`,
+  ).toBeGreaterThanOrEqual(3);
+}
+
+/** The review's 390 viewport-fit gate with the picker open: the document
+ * must not overflow the viewport, and neither may the full-screen sheet or
+ * any of its interactive fields. The bounding-box checks are the
+ * load-bearing ones: fixed-position elements do not stretch
+ * document.scrollWidth (a content-box sheet at width:100% overflows the
+ * viewport by its padding and border while scrollWidth still reads the
+ * viewport width), so scroll width alone cannot catch the review's
+ * clipped-corner finding. */
+async function assertViewportFit(page: Page): Promise<void> {
+  const result = await page.evaluate(() => {
+    const g = globalThis as unknown as CastGlobal;
+    const sheet = g.document.querySelector(".cast-detail");
+    const controls = sheet
+      ? Array.from(g.document.querySelectorAll("button, input, textarea, select, a"))
+      : [];
+    const rightEdges = controls
+      .map((el) => el.getBoundingClientRect().right)
+      .concat(sheet ? [sheet.getBoundingClientRect().right] : []);
+    return {
+      scrollWidth: g.document.documentElement.scrollWidth,
+      innerWidth: g.innerWidth,
+      sheetRight: sheet ? sheet.getBoundingClientRect().right : null,
+      controlMaxRight: rightEdges.length ? Math.max(...rightEdges) : null,
+    };
+  });
+  expect(
+    result.scrollWidth,
+    `the document overflows the ${result.innerWidth}px viewport by ${result.scrollWidth - result.innerWidth}px with the picker open`,
+  ).toBeLessThanOrEqual(result.innerWidth);
+  expect(
+    result.sheetRight,
+    `the picker sheet's right edge is at ${result.sheetRight}px, past the ${result.innerWidth}px viewport (the review's clipped close button)`,
+  ).toBeLessThanOrEqual(result.innerWidth);
+  expect(
+    result.controlMaxRight,
+    `the sheet's interactive fields reach ${result.controlMaxRight}px, past the ${result.innerWidth}px viewport (the review's clipped inputs and buttons)`,
+  ).toBeLessThanOrEqual(result.innerWidth);
+}
+
 test("the cast redesign: order, filters, the shared count, the picker, the bulk", async ({
   page,
   request,
@@ -213,6 +403,40 @@ test("the cast redesign: order, filters, the shared count, the picker, the bulk"
 
   // The roster's lines and the shared count both read the message fetch; let
   // it settle (Tessa's twelve lines) before the order and count assertions.
+  await expect(page.getByTestId("character-lines-Tessa")).toHaveText("12", {
+    timeout: 30_000,
+  });
+
+  // The compact row (ADR-0135): avatar · name · line count · state · voice
+  // state · one action — no status badge of the row's own after the name
+  // (the 2026-10-21 review's stray-ring finding: the faint pill that read as
+  // a stray "(" after every row's name). The status a row showed there reads
+  // off the name, the action and the chips instead.
+  await expect(page.locator('[data-testid="cast-row-name-Tessa"] .badge')).toHaveCount(0);
+  await expect(page.locator('[data-testid="cast-row-name-spk:1"] .badge')).toHaveCount(0);
+
+  // ── 3b. the review's structural-contrast gate, both themes ────────────
+  // The 2026-10-21 review's Lilac Night finding (the active tab's label
+  // invisible on the ground, the primary fills unread) is exactly what
+  // axe's color-contrast cannot flag — no text on a fill-on-fill control —
+  // so the walk asserts the two relationships itself. The persisted-theme
+  // seam applies the stored theme on the next full load.
+  await assertThemeContrasts(page, "(default)");
+  await page.evaluate(() => {
+    globalThis.localStorage.setItem("gn-theme", "lilac-night");
+  });
+  await page.reload();
+  await expect(page.getByTestId("character-table")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId("character-lines-Tessa")).toHaveText("12", {
+    timeout: 30_000,
+  });
+  await assertThemeContrasts(page, "lilac-night");
+  // Back to the default theme for the walk's remaining steps.
+  await page.evaluate(() => {
+    globalThis.localStorage.removeItem("gn-theme");
+  });
+  await page.reload();
+  await expect(page.getByTestId("character-table")).toBeVisible({ timeout: 30_000 });
   await expect(page.getByTestId("character-lines-Tessa")).toHaveText("12", {
     timeout: 30_000,
   });
@@ -379,6 +603,15 @@ test("the cast redesign: order, filters, the shared count, the picker, the bulk"
   await expect(page.getByTestId("character-row-spk%3A2")).toHaveCount(0);
   await expect(page.getByTestId("cast-filter-unnamed")).toContainText("Unnamed 44");
   await expect(page.getByTestId("cast-filter-retired")).toContainText("Retired 13");
+
+  // ── 8. the review's 390 viewport-fit gate, the picker open ─────────────
+  // At phone width the detail panel is the full-screen sheet; the review
+  // found its corner clipped (the sheet's content-box width ran past the
+  // viewport with the close button and the fields cut off). The picker is
+  // open on the newly named character from step 7.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByTestId("cast-detail-name")).toBeVisible({ timeout: 10_000 });
+  await assertViewportFit(page);
 
   expect(consoleErrors).toEqual([]);
   expectDefaultDataDirUntouched(run);

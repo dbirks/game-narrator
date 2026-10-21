@@ -1502,9 +1502,9 @@ pre.muted {
   width: 40px;
   height: 40px;
   border-radius: var(--radius-pill);
-  border: 1.5px solid var(--ink);
-  background: var(--ink);
-  color: var(--paper);
+  border: 1.5px solid var(--ink-solid);
+  background: var(--ink-solid);
+  color: var(--on-ink-solid);
   font-size: 13px;
   line-height: 1;
   cursor: pointer;
@@ -1989,12 +1989,16 @@ pre.muted {
 }
 
 .cast-tabs a:hover {
-  color: var(--ink);
+  color: var(--fg);
 }
 
+/* The active tab's label is the semantic foreground (--fg): under Lilac
+   Night --ink is the page ground the tabs sit on, so a hard --ink label
+   reads as an underline with no text (the 2026-10-21 review's finding); in
+   the light themes --fg is --ink, so the look is unchanged. */
 .cast-tabs .cast-tab-active,
 .cast-tabs a[aria-current="page"] {
-  color: var(--ink);
+  color: var(--fg);
   border-bottom-color: var(--coral);
 }
 
@@ -2167,10 +2171,6 @@ pre.muted {
   display: block;
 }
 
-.character-status {
-  margin-left: 0.25rem;
-}
-
 .cast-row-brief {
   display: block;
   max-width: 34ch;
@@ -2250,6 +2250,11 @@ pre.muted {
   border: 1px solid var(--ink);
   border-radius: var(--radius-card);
   overflow-wrap: anywhere;
+  /* Border-box so the full-screen sheet (the 390 rule below) keeps its
+     width:100% inside the viewport: content-box added the padding to the
+     viewport width and the sheet's right edge ran past it (the 2026-10-21
+     review's clipped-corner finding). */
+  box-sizing: border-box;
 }
 
 /* The brief's field: two rows of the panel's mono, one step down from the
@@ -2258,6 +2263,23 @@ pre.muted {
   font-family: var(--font-mono);
   font-size: 12px;
   padding: 6px 8px;
+}
+
+/* The sheet's form controls and records keep their width:100% inside the
+   viewport: the base controls are content-box (the padding and border add
+   to the width), so at phone width the full-screen sheet's fields ran past
+   the right edge with the close button clipped (the 2026-10-21 review's
+   finding). The long records (the registration name, the fingerprint) wrap
+   or truncate on the line instead of widening the panel. */
+.cast-detail input,
+.cast-detail textarea,
+.cast-detail select {
+  box-sizing: border-box;
+}
+
+.cast-detail code {
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 /* The facts: a two-column mono definition list (label · value). The state
@@ -2316,7 +2338,7 @@ pre.muted {
 }
 
 .cast-copy:hover {
-  color: var(--ink);
+  color: var(--fg);
 }
 
 /* The gain: an ink track with the coral thumb and its value read-out.
@@ -2339,7 +2361,9 @@ pre.muted {
   margin: 0;
   height: 4px;
   border-radius: var(--radius-pill);
-  background: var(--ink);
+  /* The solid-fill pair (the dark block's inversion): a hard --ink track on
+     lilac's dark card sits at 1.4:1. */
+  background: var(--ink-solid);
   cursor: pointer;
 }
 
@@ -2349,7 +2373,7 @@ pre.muted {
   height: 14px;
   border-radius: 50%;
   background: var(--coral);
-  border: 1.5px solid var(--ink);
+  border: 1.5px solid var(--ink-solid);
   cursor: pointer;
 }
 
@@ -2358,14 +2382,14 @@ pre.muted {
   height: 11px;
   border-radius: 50%;
   background: var(--coral);
-  border: 1.5px solid var(--ink);
+  border: 1.5px solid var(--ink-solid);
   cursor: pointer;
 }
 
 .cast-gain input[type="range"]::-moz-range-track {
   height: 4px;
   border-radius: var(--radius-pill);
-  background: var(--ink);
+  background: var(--ink-solid);
 }
 
 .cast-gain-value {
@@ -2574,15 +2598,21 @@ pre.muted {
 
 .cast-filter-chip:hover {
   background: var(--peach);
+  /* Ink, not the semantic foreground: paper text on lilac's light peach
+     would sit at 1.7:1; ink holds 6.3:1 (plum) to 8.3:1 (lilac). In the
+     light themes --fg is --ink, so the non-hover look is unchanged. */
+  color: var(--ink);
 }
 
+/* The solid-fill pair (the dark block's inversion): under Lilac Night the
+   active chip's fill is the theme's own foreground, not the ground. */
 .cast-filter-chip-active {
-  background: var(--ink);
-  color: var(--paper);
+  background: var(--ink-solid);
+  color: var(--on-ink-solid);
 }
 
 .cast-filter-chip-active:hover {
-  background: var(--ink);
+  background: var(--ink-solid);
 }
 
 .cast-filter-count {
@@ -2633,6 +2663,7 @@ pre.muted {
 
 .cast-row-action:hover {
   background: var(--peach);
+  color: var(--ink);
 }
 
 .cast-row-action-none {
@@ -2694,6 +2725,7 @@ pre.muted {
 
 .cast-detail-close:hover {
   background: var(--peach);
+  color: var(--ink);
 }
 
 /* "Name this speaker" (ADR-0135): the import's placeholder row — the

@@ -128,6 +128,10 @@ test("name the import's speaker placeholders on the cast page", async ({ page },
     await expect(row).toHaveAttribute("title", new RegExp(escapeRegExp(name)));
     await expect(row.getByTestId(`character-lines-${slug(name)}`)).toHaveText("1");
   }
+  // The roster holds no retired rows yet: the link in step 6 retires the
+  // source's placeholder, and the Retired chip's count is the roster's read
+  // of that (the compact row itself carries no status badge — ADR-0135).
+  await expect(page.getByTestId("cast-filter-retired")).toContainText("Retired 0");
   await shot("02-placeholders-listed");
 
   // ── 5. name the first placeholder as the second, through the page ──────
@@ -171,7 +175,11 @@ test("name the import's speaker placeholders on the cast page", async ({ page },
   await page.getByTestId("cast-filter-retired").click();
   const sourceRosterRow = roster.getByTestId(`character-row-${slug(SOURCE)}`);
   await expect(sourceRosterRow).toBeVisible();
-  await expect(sourceRosterRow).toContainText("retired");
+  // The retirement's evidence on the roster: the chip's count caught up and
+  // the row now sits under it (the compact row carries no status badge of
+  // its own — ADR-0135's row is avatar · name · lines · state · voice
+  // state · one action).
+  await expect(page.getByTestId("cast-filter-retired")).toContainText("Retired 1");
   await expect(sourceRosterRow.getByTestId(`character-lines-${slug(SOURCE)}`)).toHaveText("0");
   await shot("04-roster-agrees");
 

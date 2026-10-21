@@ -820,10 +820,13 @@ function RosterList({ roster, messages, voices, selectedName, onSelect }: Roster
                     ) : character.aliases.length > 0 ? (
                       <span className="muted"> · {character.aliases.join(", ")}</span>
                     ) : null}
-                    <span className={`badge badge-plain character-status`}>
-                      {" "}
-                      {character.status}
-                    </span>
+                    {/* The compact row (ADR-0135) carries no status badge of
+                        its own: avatar · name · lines · state · voice state ·
+                        one action. The roster status a row used to show (the
+                        2026-10-21 review's stray-ring finding) reads off the
+                        name ("Unnamed speaker" for a placeholder), the row's
+                        action (Name / Pick a voice / Listen) and the filter
+                        chips instead. */}
                   </button>
                 </td>
                 <td data-th="lines" data-testid={`character-lines-${slug}`}>
