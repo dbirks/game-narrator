@@ -249,3 +249,69 @@ convention (b14e24f): a `*_test.go` constant pair, 5 under `//go:build race`,
   files); restore the unscaled `OCRTimeout` / `ReplayOCRTimeout` /
   `slowDecider` constants in `internal/pipeline` `deterministic_test.go`.
   Nothing else reverts.
+
+## Amendment 1 (2026-10-21): the real-Tesseract replay session's engine budget is race-scaled, and its terminal ceiling joins the package's
+
+**Trigger.** CI red on `5fcf61e` (run 39542298642, 2026-10-21 04:07–04:22, the 2-core
+GitHub runner, `go test -race`, tesseract 5.3): `TestSyntheticReplaySessionRealTesseract`
+(`internal/runtime`) fails `commits = 1, want 2` with OCRCalls 13, OCRErrors 4,
+ReplayDegradedFrames 4 (frame seqs 4 9 13 19), FrameToOCR P50 5 s / mean 6.8 s /
+max 12.3 s. The test passes locally under `-race` on an unsaturated host. This is
+issue #22's load-sensitivity class in a test #22's fix did not cover (filed as
+issue #38 by the 2026-10-21 acceptance audit).
+
+**Root cause.** In `ModeReplay` the pipeline's per-call budget is
+`ReplayOCRTimeout` (30 s) and the replay retry policy (`ReplayOCRMaxAttempts` = 3,
+`internal/pipeline`) gives every attempt a fresh 30 s deadline — but the
+engine's own per-recognition deadline (`ocr.Tesseract.Timeout`, default
+`ocr.DefaultTimeout` = 4 s) is the tighter bound, and it fires inside the
+attempt: `Tesseract.Recognize` wraps the caller's context in
+`context.WithTimeoutCause(ctx, t.deadline(), ErrTimeout)`. The session test's
+`newEnv` injected the production default engine `ocr.Tesseract{}` (0 → 4 s), so
+the pipeline's 30 s per-attempt budget could never outrun the engine's 4 s
+kill. On the race-instrumented runner one crop takes 5–12.3 s: every attempt of
+the retry policy times out at 4 s, the frame degrades
+(`Stats.ReplayDegradedFrames`), and one line never commits. The degraded-frame
+path itself is correct (bounded retries, then a named degrade — the ADR-0116
+class of policy, the pipeline's own replay version); what was wrong was the
+test's injected engine carrying an unscaled budget into a race build.
+
+**Decision.** The ADR-0113 convention, applied to the two load-sensitive
+bounds of this test; production defaults unchanged:
+
+1. `newEnv`'s default engine becomes
+   `ocr.Tesseract{Timeout: ocr.DefaultTimeout * ocrTimeoutScale}` — 20 s per
+   recognition under `//go:build race`, 4 s in the uninstrumented build (the
+   production default, tuned for the board). The package's existing
+   `liveOCRTimeoutScale` constant is renamed `ocrTimeoutScale` (5 / 1) because
+   it now covers the session's default engine and the live OCR fallback
+   pre-check, not just the pre-check. The engine's scaled budget stays tighter
+   than the pipeline's 30 s replay budget, so the retry policy's contract
+   (fresh per-attempt deadline, bounded attempts, degrade after the budget)
+   is unchanged — a single slow crop now fits inside one attempt instead of
+   burning all three.
+2. The test's 180 s terminal patience ceiling (the `waitState` bound) becomes
+   `180 * time.Second * patienceScale`, the package's existing race-scaled
+   wedge-guard convention (900 s under race) — the same shape as
+   `controls_test.go`'s 180 s ceiling, which this test had overlooked.
+
+**Reproduction and validation (this 8-core host).** Protocol: the compiled
+`-race` test binary (`go test -race -c ./internal/runtime`), 6 busy-loop CPU
+burners, `GOMAXPROCS=2` (the 2-core runner), the single test per run
+(evidence: `artifacts/ci-ocr-timeout-race-2026-10-21/`).
+
+- **Old code, N=6:** reproduces CI exactly — `commits = 1, want 2`,
+  OCRErrors 15 (every timed-out attempt booked).
+- **New code, N=6:** 10 consecutive PASS, 12–74 s wall each. Every run:
+  `Commits: 2`, `OCRErrors: 0`, `ReplayDegradedFrames: 0`, `OCRCancelled: 0`,
+  `FramesDropped: 0`. FrameToOCR max across the 10 runs: 0.79–14.76 s — in
+  four of ten runs the slowest single read (14.76, 12.56, 12.38, 5.12 s)
+  outlived the old 4 s engine deadline and is exactly what the unscaled
+  budget converted into a degrade; the scaled 20 s budget carries it.
+- `go test -race ./internal/runtime` and `make lint` pass on the final tree.
+
+The assertions (2 commits, 24 delivered frames, the dev-trace evidence chain)
+are unchanged; nothing in the pipeline, the retry policy, or the production
+budgets moved. **Reversal:** restore `ocr: ocr.Tesseract{}` in `newEnv`
+(`helpers_test.go`), the `liveOCRTimeoutScale` name in the runtime race files,
+and the unscaled 180 s `waitState` bound in `manager_test.go`.

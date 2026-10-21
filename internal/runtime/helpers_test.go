@@ -83,9 +83,18 @@ type env struct {
 func newEnv(t *testing.T, opts ...func(*env)) *env {
 	t.Helper()
 	e := &env{
-		t:     t,
-		ctx:   context.Background(),
-		ocr:   ocr.Tesseract{},
+		t:   t,
+		ctx: context.Background(),
+		// The production engine with the production default budget, scaled
+		// for the test build (ocrTimeoutScale, race_on_test.go): the engine's
+		// own per-call deadline is the tighter bound in ModeReplay — tighter
+		// than the pipeline's 30 s ReplayOCRTimeout — so on a
+		// race-instrumented runner whose load makes one crop outlive it, every
+		// attempt of the replay retry policy times out and the frames degrade
+		// (Stats.ReplayDegradedFrames) instead of committing. The production
+		// default stays tuned for the board; the injected test engine alone
+		// widens its budget (ADR-0113).
+		ocr:   ocr.Tesseract{Timeout: ocr.DefaultTimeout * time.Duration(ocrTimeoutScale)},
 		roots: []string{absPath(t, syntheticDir)},
 	}
 	for _, opt := range opts {
