@@ -219,7 +219,7 @@ test.describe("the inspector's Clef decision chain", () => {
       }
     ).requests.length;
 
-    // The inspector view on the renamed route (ADR-0109, the ADR-0093
+    // The inspector view on the renamed route (ADR-0141, the ADR-0093
     // rename): /developer redirects here, preserving the query.
     await page.goto("/traces?view=inspector");
     await expect(page).toHaveURL(/\/login/);
@@ -367,7 +367,7 @@ test.describe("the inspector's Clef decision chain", () => {
       }
     ).requests.length;
 
-    // The renamed route's inspector view (ADR-0109): the guard sends the
+    // The renamed route's inspector view (ADR-0141): the guard sends the
     // unauthenticated page to the login form, exactly as before the rename.
     await page.goto("/traces?view=inspector");
     await page.getByTestId("login-username").fill(ADMIN.username);

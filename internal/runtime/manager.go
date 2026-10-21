@@ -183,6 +183,16 @@ type SessionSettings struct {
 	// latest_only cancels the older audio and speaks the newest line at once.
 	// nil keeps the session's current value.
 	CatchUp *string `json:"catch_up,omitempty"`
+	// UnmatchedReadThrough is the unmatched read-through policy (ADR-0136):
+	// when the box commits as a line the corpus cannot name (the matcher
+	// abstained, or the retrieval found nothing the commitment policy would
+	// commit, and the decision — when asked — did not resolve one), the
+	// speaker speaks the OCR text (cleaned, bounded, the speaker's voice when
+	// the attribution is known) instead of staying silent. Default ON: a
+	// session started without a settings call reads true from the snapshot,
+	// and the Play toggle moves it mid-session. nil keeps the session's
+	// current value.
+	UnmatchedReadThrough *bool `json:"unmatched_read_through,omitempty"`
 }
 
 // Options wires the runtime into its neighbours. Store and Hub are mandatory;

@@ -202,7 +202,7 @@ test("⌘K opens the overlay (role=dialog) from any page without navigation", as
         expect(page.getByTestId("play-start-form")).toBeVisible({ timeout: 30_000 }),
     },
     {
-      // /traces is the Traces screen itself now (the ADR-0109 rename landed):
+      // /traces is the Traces screen itself now (the ADR-0141 rename landed):
       // the line-trace list settles on its panel.
       path: "/traces",
       settled: (page) => expect(page.getByTestId("traces-list")).toBeVisible({ timeout: 20_000 }),
@@ -267,7 +267,7 @@ test("⌘K: grouped results across categories; ↵ per row kind", async ({ page 
 
   // ── ↵ on a line row opens the line's trace ──────────────────────────────
   // The line rows carry the line id in mono and the /traces?line= route; the
-  // ADR-0109 rename landed the trace query on the Traces screen itself.
+  // ADR-0141 rename landed the trace query on the Traces screen itself.
   const lineRow = page.locator('[data-testid="palette-row"][data-kind="line"]').first();
   const lineRoute = (await lineRow.getAttribute("data-route")) ?? "";
   expect(lineRoute, "the line row targets the line's trace").toMatch(/^\/traces\?line=/);

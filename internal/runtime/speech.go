@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/dbirks/game-narrator/internal/assets"
 	"github.com/dbirks/game-narrator/internal/audio"
@@ -60,6 +62,33 @@ const (
 // a line whose speaker is unattributed, or whose character has no approved
 // voice, is spoken by the narrator voice when one is configured.
 const narratorCharacter = "narrator"
+
+// speechReasonUnmatched is the speech.requested reason of the unmatched
+// read-through line (ADR-0136): the trace's answer to "why did a line the
+// corpus cannot name get audio?".
+const speechReasonUnmatched = "unmatched_read_through"
+
+// unmatchedMinConfidence is the OCR confidence floor the unmatched
+// read-through requires (ADR-0136): the box is already SETTLED (the
+// commitment policy only commits a READY box), so this is the *text* half of
+// "confident and stable" — the tracker's mean read confidence, in the
+// [0,1] scale the tracker's MinConfidence default (0.55, recognition's
+// documented default) is measured on. A matched line speaks on the
+// commitment, never on this number; the read-through speaks OCR text with
+// no script to vouch for it, so the floor is the tracker's own readiness
+// floor raised — a wobbly read the matcher already refused is not a line to
+// improvise aloud. Measured against the live capture's clean top-box reads
+// (the ADR-0137 fixture, where the full line reads at ~0.9+ confidence),
+// 0.75 is a read that is plain as day, not a guess.
+const unmatchedMinConfidence = 0.75
+
+// unmatchedMaxRunes bounds the TTS text length of a read-through line
+// (docs/spec/14 "Bound … TTS text length"): the text is untrusted game
+// content (trust zone C), and a hostile or noisy read must not become a
+// long synthesis. A dialogue box shows at most a few lines; beyond the
+// bound the text is cut at a word boundary, which is the degradation —
+// the line still speaks, at the bound.
+const unmatchedMaxRunes = 400
 
 // speechTTSTimeout is one utterance's synthesis deadline: the voice_clone
 // role's documented timeout floor (internal/providers roleSpecs).
@@ -508,6 +537,15 @@ type speechWiring struct {
 	// The policy's decision counters (docs/spec/13 "did it speak, and why
 	// not"): w.mu.
 	catchUpBatched, catchUpMerged, catchUpDropped int64
+
+	// unmatchedReadThrough is the session's unmatched read-through policy
+	// (ADR-0136): when the box commits as a line the corpus cannot name (the
+	// matcher abstained and nothing adjudicated into a candidate), the
+	// speaker speaks the OCR text (cleaned and bounded) instead of staying
+	// silent. Default ON (a construction with no settings call is the
+	// documented default); the settings route moves it mid-session.
+	// w.mu.
+	unmatchedReadThrough bool
 }
 
 // utteranceInfo is one committed line's audio correlation record.
@@ -546,6 +584,17 @@ type utteranceInfo struct {
 	// commit order (ADR-0122 decision 3): the run's terminal settles them,
 	// and a rescue of the run re-batches them individually.
 	mergedLines []speech.CatchUpLine
+	// reason names the speech side's verdict for the line (ADR-0136): "" is
+	// the matched line the commitment policy committed, and
+	// speechReasonUnmatched is the unmatched read-through — the line the
+	// matcher could not name, spoken from the OCR text under the session's
+	// policy. It rides on the line's speech.requested so the trace shows why
+	// a line without a message id was spoken.
+	reason string
+	// confidence is the line's OCR confidence for the read-through's
+	// record (0 for a matched line: its evidence is the commitment, not the
+	// OCR's number).
+	confidence float64
 }
 
 // synthSlot is one in-flight synthesis's cancellable scope, registered
@@ -579,14 +628,18 @@ func (m *Manager) newSpeechWiring(id string, speakerByMessage map[string]string,
 		voiceLat:         voiceLat,
 		speakerByMessage: speakerByMessage,
 		narratorFallback: narratorFallback,
-		sem:              make(chan struct{}, speechWorkerSlots),
-		utterances:       map[string]*utteranceInfo{},
-		byGeneration:     map[int64]string{},
-		genCancel:        map[int64]*synthSlot{},
-		settled:          map[int64]bool{},
-		catchUpRuns:      map[int64]*utteranceInfo{},
-		lineClaim:        map[string]int64{},
-		volume:           1.0,
+		// The unmatched read-through starts ON (ADR-0136's documented
+		// default): a session without a settings call speaks an unmatched
+		// box from its OCR text, and the Play toggle is what moves it.
+		unmatchedReadThrough: true,
+		sem:                  make(chan struct{}, speechWorkerSlots),
+		utterances:           map[string]*utteranceInfo{},
+		byGeneration:         map[int64]string{},
+		genCancel:            map[int64]*synthSlot{},
+		settled:              map[int64]bool{},
+		catchUpRuns:          map[int64]*utteranceInfo{},
+		lineClaim:            map[string]int64{},
+		volume:               1.0,
 	}
 	// The catch-up policy's options (issue #25, ADR-0122): nil takes the
 	// documented defaults; a construction that names a foreign policy word
@@ -981,15 +1034,28 @@ func (w *speechWiring) pause() {
 // onCommit is the commit watcher's handoff: it runs on the pipeline's
 // reducer goroutine and must stay fast — the fence, the cancel and the event
 // are the synchronous half; the TTS work is the worker's.
+// commitPayload is the message.committed data the speech side reads: the
+// commit's correlation ids, the eligibility verdict the read-through gates
+// on (ADR-0136), the OCR text and confidence it may speak, and the speaker
+// attribution it may voice. Every field is optional on the wire in the
+// honest sense — a payload without one keeps the zero value, and the gates
+// below treat the zero value as "no", never as "yes".
+type commitPayload struct {
+	Occurrence   string  `json:"dialogue_occurrence_id"`
+	MessageID    string  `json:"message_id"`
+	RegionID     string  `json:"region_id"`
+	Generation   int64   `json:"generation"`
+	Text         string  `json:"text"`
+	RawText      string  `json:"raw_text"`
+	Eligible     bool    `json:"speech_eligible"`
+	Reason       string  `json:"reason"`
+	Confidence   float64 `json:"confidence"`
+	SpeakerID    string  `json:"speaker_id"`
+	SpeakerKnown bool    `json:"speaker_known"`
+}
+
 func (w *speechWiring) onCommit(e events.Envelope) {
-	var d struct {
-		Occurrence string `json:"dialogue_occurrence_id"`
-		MessageID  string `json:"message_id"`
-		RegionID   string `json:"region_id"`
-		Generation int64  `json:"generation"`
-		Text       string `json:"text"`
-		Eligible   bool   `json:"speech_eligible"`
-	}
+	var d commitPayload
 	if err := json.Unmarshal(e.Data, &d); err != nil || d.Occurrence == "" || d.Generation <= 0 {
 		return
 	}
@@ -997,16 +1063,20 @@ func (w *speechWiring) onCommit(e events.Envelope) {
 
 	// The commit payload is the eligibility answer: an abstained box
 	// (message_id "unknown"), a non-narratable line, or a decision that
-	// refused speech is not a line the narrator speaks. It gets no speech
-	// events at all — and it must NOT fence: a commit with no audio of its
-	// own must not cancel the line the player is listening to (issue #6;
-	// ADR-0092). Only a speakable commit advances the fence, because only a
-	// speakable commit is a line whose audio supersedes the previous one.
-	if !d.Eligible || d.MessageID == "" || d.MessageID == "unknown" || text == "" {
+	// refused speech is not a line the narrator speaks on the commitment.
+	// It gets no speech events at all from that path — and it must NOT
+	// fence: a commit with no audio of its own must not cancel the line the
+	// player is listening to (issue #6; ADR-0092). Only a speakable commit
+	// advances the fence, because only a speakable commit is a line whose
+	// audio supersedes the previous one. The one exception the operator's
+	// policy admits (ADR-0136) is the unmatched read-through: a box the
+	// matcher could not name, spoken from the OCR text instead of silence.
+	if !d.Eligible || d.MessageID == "" || d.MessageID == ses.UnknownMessage || text == "" {
+		w.maybeUnmatchedReadThrough(e, d)
 		return
 	}
 
-	u := &utteranceInfo{
+	w.routeUtterance(&utteranceInfo{
 		occurrence:  d.Occurrence,
 		messageID:   d.MessageID,
 		regionID:    d.RegionID,
@@ -1015,7 +1085,101 @@ func (w *speechWiring) onCommit(e events.Envelope) {
 		traceID:     e.TraceID,
 		character:   w.speakerFor(d.MessageID),
 		committedAt: time.Now().UTC(),
+	})
+}
+
+// maybeUnmatchedReadThrough is the unmatched read-through (ADR-0136): the box
+// committed as a line the corpus cannot name and the session's policy says to
+// speak what the screen actually shows, so the speaker speaks the OCR text
+// (cleaned and bounded) instead of staying silent.
+//
+// The gate is the commit's own verdict: message_id "unknown" plus the
+// COMMITTED_ABSTAINED reason is the session's "no line matched, and nothing
+// adjudicated into one". A matched line the policy vetoed (safe_to_speak, the
+// narrated classes) keeps its known message id and never reaches here — the
+// Clef decision path is untouched. The line speaks the OCR text with the
+// speaker's voice when the commit carries a known attribution (the Clef
+// speaker answer, or a declared nameplate) and the narrator's otherwise;
+// the text is bounded the way docs/spec/14 bounds TTS text (length cap,
+// hostile-string scrub) because it is untrusted game content (trust zone C).
+//
+// Dedupe: the session's commit identity (region + lifetime + text) commits
+// one occurrence once — the reducer suppresses the repeat — and the
+// utterance table refuses to route an occurrence a second time, so the same
+// unmatched box speaks at most once. A new occurrence (the box dismissed and
+// re-shown, a repeat NPC) is a new line, the way a matched repeat re-speaks.
+//
+// The text is the screen's, not the matcher's: the raw OCR read (case and
+// punctuation as drawn) — the commit's normalized text is the text machine's
+// comparison key, already lower-cased, and a narration of it would flatten
+// the line the way a transcript does. The raw read is what the user is
+// looking at, and what "plain as day" refers to.
+func (w *speechWiring) maybeUnmatchedReadThrough(e events.Envelope, d commitPayload) {
+	if d.MessageID != ses.UnknownMessage || d.Reason != ses.ReasonCommittedAbstain {
+		return
 	}
+	readText := strings.TrimSpace(d.RawText)
+	if readText == "" {
+		// The raw read is absent (a payload without it, the honest zero
+		// value): the normalized text is still a line, and it is the only
+		// one the commit carries.
+		readText = strings.TrimSpace(d.Text)
+	}
+	if readText == "" {
+		return
+	}
+	w.mu.Lock()
+	enabled := w.unmatchedReadThrough
+	_, routed := w.utterances[d.Occurrence]
+	w.mu.Unlock()
+	if !enabled || routed {
+		return
+	}
+	if d.Confidence < unmatchedMinConfidence {
+		w.log("speech: unmatched read-through below the confidence floor",
+			"session_id", w.id, "occurrence", d.Occurrence, "confidence", d.Confidence,
+			"floor", unmatchedMinConfidence)
+		return
+	}
+	cleaned := cleanReadThroughText(readText)
+	if cleaned == "" {
+		w.log("speech: unmatched read-through empty after the noise trim",
+			"session_id", w.id, "occurrence", d.Occurrence)
+		return
+	}
+	character := narratorCharacter
+	if d.SpeakerKnown && d.SpeakerID != "" {
+		character = d.SpeakerID
+	}
+	u := &utteranceInfo{
+		occurrence:  d.Occurrence,
+		messageID:   d.MessageID,
+		regionID:    d.RegionID,
+		generation:  d.Generation,
+		text:        cleaned,
+		traceID:     e.TraceID,
+		character:   character,
+		committedAt: time.Now().UTC(),
+		reason:      speechReasonUnmatched,
+		confidence:  d.Confidence,
+	}
+	// Route it through the same batch / fence / backpressure / worker path a
+	// matched line uses (one audio pipeline, one set of terminals), and it is
+	// a speakable line for the fence: the box advanced, so its audio
+	// supersedes the older generations, the catch-up policy applies, and a
+	// read-through under backpressure skips with the same reason a matched
+	// line does. Its own generation never collides: the commit assigned it.
+	w.routeUtterance(u)
+}
+
+// routeUtterance routes one committed line through the audio pipeline:
+// registration, the commit→voice sample, the catch-up decision, the fence
+// move, the speech.requested and the TTS worker. The immediate path alone
+// prewarms the line's successors (FR-11) — a read-through line has no
+// message id in the graph, so it warms nothing and, importantly, does not
+// cancel the previous matched line's in-flight prewarm batch (an ineligible
+// commit never did).
+func (w *speechWiring) routeUtterance(u *utteranceInfo) {
 	w.register(u)
 	// The status bar's commit half (status.go): this wall clock is the
 	// sample's start, and the occurrence id is what speech.started carries
@@ -1033,7 +1197,7 @@ func (w *speechWiring) onCommit(e events.Envelope) {
 	// (the historical shape), under catch_up nothing (the rescued generations
 	// are settled and the playing one is spared).
 	batched := w.catchUpBatchCommit(u)
-	w.fenceAndCancel(d.Generation)
+	w.fenceAndCancel(u.generation)
 	if batched {
 		// The batched line's commit is still a request (the counter and the
 		// event say the line was asked for), but the line's one terminal is
@@ -1046,20 +1210,11 @@ func (w *speechWiring) onCommit(e events.Envelope) {
 		w.requested++
 		w.current = &UtteranceState{Phase: "requested", Generation: u.generation, UtteranceID: u.occurrence, At: u.committedAt}
 		w.mu.Unlock()
-		w.emitSpeech(events.SpeechRequested, u, map[string]any{
-			"dialogue_occurrence_id": u.occurrence,
-			"message_id":             u.messageID,
-			"generation":             u.generation,
-			"region_id":              u.regionID,
-			"text":                   u.text,
-			"character_id":           u.character,
-			"trace_id":               u.traceID,
-		})
+		w.emitSpeech(events.SpeechRequested, u, requestedPayload(u))
 		// No terminal here: the batch owns the line's one terminal (its
 		// outcome — the merged run's, the window's fence, the pause — emits
 		// it under the claim the batch holds, ADR-0092's one-terminal rule
 		// carried onto the batch's lines by lineClaim).
-		w.prewarm(u.messageID)
 		return
 	}
 
@@ -1075,7 +1230,30 @@ func (w *speechWiring) onCommit(e events.Envelope) {
 	w.requested++
 	w.current = &UtteranceState{Phase: "requested", Generation: u.generation, UtteranceID: u.occurrence, At: time.Now().UTC()}
 	w.mu.Unlock()
-	w.emitSpeech(events.SpeechRequested, u, map[string]any{
+	w.emitSpeech(events.SpeechRequested, u, requestedPayload(u))
+	w.wg.Add(1)
+	go w.speak(u)
+	// Successor prewarming (FR-11), matched lines only: the just-committed
+	// line's weighted successors are synthesised in the background into the
+	// same cache, so the later commit of one of them resolves from the cache.
+	// The fence just moved, so this batch's "likely next" supersedes the
+	// previous batch's — the previous batch is cancelled inside the call.
+	// (The backpressure skip above returns earlier: the session's TTS slots
+	// are all busy, and a prewarm would only queue behind them.)
+	if u.reason == "" {
+		w.prewarm(u.messageID)
+	}
+}
+
+// requestedPayload is the speech.requested payload for one routed line. A
+// matched line carries exactly the historic fields; a read-through line
+// adds the reason and the OCR confidence that explain the audio (ADR-0136
+// "an event naming it … so traces show why") — the developer UI joins the
+// line's commit (message.committed, reason COMMITTED_ABSTAINED) to the
+// speech.requested on the occurrence id and sees the policy's verdict in
+// both.
+func requestedPayload(u *utteranceInfo) map[string]any {
+	data := map[string]any{
 		"dialogue_occurrence_id": u.occurrence,
 		"message_id":             u.messageID,
 		"generation":             u.generation,
@@ -1083,17 +1261,100 @@ func (w *speechWiring) onCommit(e events.Envelope) {
 		"text":                   u.text,
 		"character_id":           u.character,
 		"trace_id":               u.traceID,
-	})
-	w.wg.Add(1)
-	go w.speak(u)
-	// Successor prewarming (FR-11): the just-committed line's weighted
-	// successors are synthesised in the background into the same cache, so
-	// the later commit of one of them resolves from the cache. The fence
-	// just moved, so this batch's "likely next" supersedes the previous
-	// batch's — the previous batch is cancelled inside the call. (The
-	// backpressure skip above returns earlier: the session's TTS slots are
-	// all busy, and a prewarm would only queue behind them.)
-	w.prewarm(u.messageID)
+	}
+	if u.reason != "" {
+		data["reason"] = u.reason
+	}
+	if u.confidence > 0 {
+		data["ocr_confidence"] = u.confidence
+	}
+	return data
+}
+
+// setUnmatchedReadThrough live-moves the session's read-through policy
+// (ADR-0136): the settings route (PUT /api/v1/sessions/{id}/settings) calls
+// it when the operator flips the Play toggle. The switch decides what
+// happens with lines committed *next* — the flag is read at the commit
+// gate, so no in-flight state is touched and a line already routed is
+// settled by its own terminal, exactly the catch-up switch's shape.
+func (w *speechWiring) setUnmatchedReadThrough(v bool) {
+	w.mu.Lock()
+	w.unmatchedReadThrough = v
+	w.mu.Unlock()
+}
+
+// cleanReadThroughText prepares the OCR text for speech (ADR-0136): the
+// line breaks joined, the control characters dropped, the box-edge glyph
+// noise trimmed (ADR-0115's TrimEdgeNoise — the "4 ", "$o?" border reads),
+// and the TTS text length bounded (docs/spec/14). The text is untrusted game
+// content (trust zone C): every character that leaves this function is
+// printable, and the length is capped before it reaches the TTS request —
+// the bound is the abuse control, the trim is the quality control.
+func cleanReadThroughText(s string) string {
+	// The OCR engine's line breaks become word joins: a box that wraps is
+	// one sentence, and a TTS reading of "line two after a pause" is not
+	// what the screen says.
+	s = strings.NewReplacer("\n", " ", "\r", " ", "\t", " ").Replace(s)
+	// The hostile-string half (docs/spec/14 "Treat OCR text as hostile
+	// string … and log encoding"): control characters are dropped rather
+	// than passed through — a \u0007 in the middle of a line would reach the
+	// log line and the TTS request as data it was never meant to carry.
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if !unicode.IsControl(r) {
+			b.WriteRune(r)
+		}
+	}
+	s = b.String()
+	// Collapse the whitespace runs the join and the drop leave behind.
+	s = strings.Join(strings.Fields(s), " ")
+	// The box-edge glyph noise, trimmed the way the matcher trims it for
+	// its own evidence (ADR-0115 §2): up to two leading and two trailing
+	// edge tokens of at most two runes — the border and the speaker icon
+	// reads — and only when a remainder survives.
+	s = strings.TrimSpace(matcher.TrimEdgeNoise(s))
+	// The length bound (docs/spec/14 "Bound … TTS text length"), cut at a
+	// word boundary so the cut does not land mid-word in the middle of the
+	// line.
+	if utf8.RuneCountInString(s) > unmatchedMaxRunes {
+		s = truncateReadThrough(s, unmatchedMaxRunes)
+	}
+	// A read that is all noise after the trim ("$o? 4", "……") has nothing to
+	// say: the empty answer is the silent one, logged by the caller.
+	if !hasWordChar(s) {
+		return ""
+	}
+	return strings.TrimSpace(s)
+}
+
+// truncateReadThrough cuts s to at most n runes at the last word boundary
+// before n: the TTS length bound's degradation is a shorter line at a word
+// edge, not a line ending mid-word. A cut with no boundary in reach (a run
+// of unbroken glyphs) lands at n.
+func truncateReadThrough(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	cut := r[:n]
+	for i := n - 1; i >= 0; i-- {
+		if cut[i] == ' ' {
+			return strings.TrimRight(string(cut[:i]), " ")
+		}
+	}
+	return string(cut)
+}
+
+// hasWordChar reports whether s carries a letter or a digit: the test that
+// separates "a line with noise at its edges" from "noise".
+func hasWordChar(s string) bool {
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return true
+		}
+	}
+	return false
 }
 
 // catchUpBatchCommit is the catch-up policy's commit-side decision
@@ -1512,7 +1773,14 @@ func (w *speechWiring) speak(u *utteranceInfo) {
 		return
 	}
 
-	rv, why := w.resolveVoice(ctx, u.messageID)
+	// The line's speaker, resolved on the character the commit named it
+	// (ADR-0136): a matched line's character is the curator's assignment for
+	// its message id (resolveVoice's speakerFor), and a read-through line's
+	// is the commit's own attribution — the Clef speaker answer or a declared
+	// nameplate — or the narrator when unattributed. Resolving on the
+	// message id would lose the read-through's attribution, because the line
+	// has no message id in the corpus to look up.
+	rv, why := w.resolveVoiceForCharacter(ctx, u.character)
 	if rv.profile.ID == "" {
 		// Silence with the reason: no approved voice for the speaker and no
 		// configured narrator voice — or the approved reference is missing.

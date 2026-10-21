@@ -6,7 +6,7 @@ import { ports } from "./support/ports";
 import { acquireScenarioLock } from "./support/scenario-lock";
 
 /**
- * The settings-and-theme walk (plan.md Phase 1 item 9, ADR-0109): the theme
+ * The settings-and-theme walk (plan.md Phase 1 item 9, ADR-0142): the theme
  * picker (UX-09), the audio output selector's sink categories with the test
  * tone and the unpaired-Bluetooth pairing prompt (UX-12), and the tailnet
  * URL (UX-13) — each asserted on its own packaged-binary server so the walk

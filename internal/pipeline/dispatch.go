@@ -21,6 +21,25 @@ type regionState struct {
 	region games.Region
 	gate   *rankGate
 
+	// textCands is the placement-aware textbox region's candidate bands (ADR-0137):
+	// the top / profile / bottom rects derived from the region's stored rect, in
+	// that order. Empty for a region that is not placement-aware (a non-textbox
+	// role, or PlacementDisabled), which crops the single fixed band exactly as
+	// the historic path does. Precomputed once when the region is built: the
+	// candidates are a function of the stored rect, not of any frame.
+	textCands []vision.Rect
+	// band is the index, in textCands, of the band the region is currently
+	// cropping: the standing crop the hysteresis protects (ADR-0137). Defaults
+	// to the profile's own band so frame one reads the calibrated rectangle. It
+	// is touched only by the roiLoop goroutine (the same no-lock discipline as
+	// the rest of regionState).
+	band int
+	// bandMem is the placement switch's persistence (ADR-0137 §Robustness): the
+	// consecutive-frame run the best box-like band has held, so a crop switch
+	// never fires on a single strong frame (the llvmpipe banner's case). Touched
+	// only by the roiLoop goroutine, with band.
+	bandMem placementMemory
+
 	// lastHash is the crop hash currently being read, or the last one read
 	// successfully. Equality with a new frame's crop is the OCR skip
 	// (docs/spec/05 "suppress duplicate OCR calls on unchanged region hash"). It is
@@ -80,7 +99,17 @@ func (r *Runner) roiLoop(ctx context.Context, frames <-chan capture.Frame, in ch
 	defer close(in)
 	regions := make([]*regionState, 0, len(r.cfg.Regions))
 	for _, reg := range r.cfg.Regions {
-		regions = append(regions, &regionState{region: reg, gate: r.gates[reg.ID]})
+		rs := &regionState{region: reg, gate: r.gates[reg.ID]}
+		// Placement-aware textbox candidates (ADR-0137): derived at run time from
+		// the stored rect, so the behaviour reaches an existing profile without a
+		// schema change or a re-publish. A non-textbox role, or a profile that
+		// disabled placement, keeps textCands empty and crops the single fixed
+		// band the historic path does.
+		if !r.cfg.PlacementDisabled && reg.RegionType == games.RegionTextbox {
+			rs.textCands = textBandCandidates(vision.RectOf(reg))
+			rs.band = profileBandIndex(rs.textCands, vision.RectOf(reg))
+		}
+		regions = append(regions, rs)
 	}
 	ticker := time.NewTicker(time.Second / time.Duration(r.cfg.FrameProbeHz))
 	defer ticker.Stop()
@@ -444,11 +473,32 @@ func (r *Runner) ageOut(regions []*regionState) {
 
 // --- one region ------------------------------------------------------------
 
+// placeBand reports the rect to crop for one frame (ADR-0137). For a region that
+// is not placement-aware it is the profile's fixed band, exactly the historic
+// crop. For a placement-aware textbox region it scores the candidate bands on
+// this frame's crops (a luma pass each, no OCR) and advances rs.band through the
+// sticky hysteresis, returning the selected band's rect. The caller crops that
+// rect and runs the unchanged presence/dedupe/OCR machinery on it, so the
+// tracker, the settle and the escalation see one stable stream the way they
+// always have.
+func (rs *regionState) placeBand(r *Runner, f capture.Frame) vision.Rect {
+	base := vision.RectOf(rs.region)
+	if len(rs.textCands) == 0 || f.Image == nil {
+		return base
+	}
+	scores := scoreTextBands(f.Image, rs.textCands, r.cfg.Crop, r.cfg.Presence.DarkLuma)
+	rs.band = pickTextBand(scores, rs.band,
+		r.cfg.Presence.MinDarkShare, r.cfg.PlacementSwitchMargin, r.cfg.PlacementTextMin,
+		r.cfg.PlacementTextOnPanel, &rs.bandMem, r.cfg.PlacementSwitchFrames)
+	return scores[rs.band].rect
+}
+
 // accept takes one frame's look at one region: crop, presence, hash, dedupe, and
 // either an OCR dispatch or the reuse observation docs/spec/05 requires.
 func (rs *regionState) accept(r *Runner, ctx context.Context, f capture.Frame, in chan<- *obsIn, jobs chan<- *ocrJob) error {
 	now := r.cfg.Now()
-	a := r.analyze(f, rs.region)
+	rect := rs.placeBand(r, f)
+	a := r.analyze(f, rs.region, rect)
 	p := &pending{frame: f, reg: rs.region, a: a, at: now}
 
 	switch {

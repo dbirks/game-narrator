@@ -1,6 +1,6 @@
 package api
 
-// The /library screen's per-game read (ADR-0109, docs/design/plum-peach 2a):
+// The /library screen's per-game read (ADR-0140, docs/design/plum-peach 2a):
 // the actionable revision plus the counts the shelf tiles and list rows
 // render. Every step below is an HTTP call as a specific role, and every 2xx
 // body is validated against the OpenAPI contract on the way through

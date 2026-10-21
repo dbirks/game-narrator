@@ -40,7 +40,14 @@ export type StageLatency = Schemas["StageLatency"];
 
 export interface StartSessionBody {
   profile_id: string;
-  frame_source: FrameSource;
+  /**
+   * May be omitted: the runtime then resolves the default frame source
+   * (ADR-0119) — a usable capture device runs v4l2, else the test pattern in
+   * developer mode, else the start answers 409 no_frame_source. The Play page
+   * omits it so the server default applies; the developer replay page still
+   * names a replay source explicitly.
+   */
+  frame_source?: FrameSource;
   mode?: Schemas["SessionMode"];
   /** The contract types the toggle as required (default false server-side). */
   dev_trace: boolean;

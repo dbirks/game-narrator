@@ -1,4 +1,4 @@
-# ADR-0109: Settings rework, the theme page, and the tailnet URL surface
+# ADR-0142: Settings rework, the theme page, and the tailnet URL surface
 
 Date: 2026-10-21
 Status: accepted

@@ -1,4 +1,4 @@
-# ADR-0109: The Traces screen — line view, session-inspector reachability, and the UX-05 correction flow
+# ADR-0141: The Traces screen — line view, session-inspector reachability, and the UX-05 correction flow
 
 Date: 2026-10-21
 Status: accepted (plum-peach Phase 1 item 7)

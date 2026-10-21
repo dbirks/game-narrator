@@ -375,7 +375,7 @@ export const ports = {
    *  instance, so the board's voicing transition runs through the real
    *  audition job and the real StageObserver. */
   setupBoard: base + 35,
-  /** the packaged binary the Traces screen drives (traces.spec.ts, ADR-0109):
+  /** the packaged binary the Traces screen drives (traces.spec.ts, ADR-0141):
    *  a replay session with the speech roles at the scripted TTS instance and
    *  the agent_reasoning role at the scripted assistant gateway
    *  (web/e2e/fake-assistant.mjs). Same "just past the band" placement as the

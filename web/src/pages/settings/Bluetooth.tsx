@@ -13,7 +13,7 @@ import { useAuth } from "../../auth/auth-context";
 import { Card, Table, type TableColumn } from "../../components/kit";
 
 /**
- * `/settings` "Bluetooth output" (ADR-0091, issues #2/#3, ADR-0109 restyle):
+ * `/settings` "Bluetooth output" (ADR-0091, issues #2/#3, ADR-0142 restyle):
  * the paired-radio half of the audio surface. The state badge reads the
  * adapter (powered, discovering); the scan is time-bounded (the measured
  * elapsed time is the proof the bound held); the inventory carries BlueZ's

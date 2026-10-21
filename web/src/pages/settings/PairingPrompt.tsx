@@ -1,6 +1,6 @@
 /**
  * The unpaired-Bluetooth pairing prompt (docs/design/plum-peach UX-12,
- * ADR-0109 §4): the audio device selector lists an unpaired device from the
+ * ADR-0142 §4): the audio device selector lists an unpaired device from the
  * Bluetooth inventory as a "pair first" option; selecting it renders this
  * prompt — the device's name, why it cannot be the output yet (no pairing,
  * no A2DP sink), and the Pair action that drives the existing pair action

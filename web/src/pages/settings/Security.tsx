@@ -2,11 +2,11 @@ import type { Settings } from "../../api/settings";
 import { Card } from "../../components/kit";
 
 /**
- * `/settings` "Security" (ADR-0109 restyle, docs/spec/14): the bound listen
+ * `/settings` "Security" (ADR-0142 restyle, docs/spec/14): the bound listen
  * address and the auth mode. Read-only by design (ADR-0047): the page shows
  * the effective values and names the variable a change would have to go
  * through. The bound address is an address, not a credential — it already
- * crosses this boundary (ADR-0109 keeps the tailnet section's note on the
+ * crosses this boundary (ADR-0142 keeps the tailnet section's note on the
  * same footing).
  */
 export function SecuritySection({ data }: { data: Settings }) {

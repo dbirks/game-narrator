@@ -2292,7 +2292,7 @@ textarea:focus-visible,
   }
 }
 
-/* ── the theme page (/settings/theme; UX-09, ADR-0109) ─────────────────────
+/* ── the theme page (/settings/theme; UX-09, ADR-0142) ─────────────────────
  * The swatch previews are pure CSS over the token set: the `data-theme`
  * attribute scopes the theme's token block to the preview element (the token
  * blocks are bare [data-theme] selectors, so they apply at any depth), and
@@ -2450,7 +2450,7 @@ textarea:focus-visible,
   }
 }
 
-/* ── the /settings rework (ADR-0109) ───────────────────────────────────────
+/* ── the /settings rework (ADR-0142) ───────────────────────────────────────
  * The page's sections render as kit cards; these rules are the page-level
  * composition the kit does not own (the section stack, the dl grid inside a
  * card, the tailnet line, the Bluetooth pairing prompt). */

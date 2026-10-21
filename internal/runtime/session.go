@@ -51,8 +51,15 @@ type Info struct {
 	// per speaker; latest_only cancels the older audio and speaks the newest
 	// line at once. The snapshot carries the applied word so the UI's toggle
 	// reads the server's state, not the form's last click.
-	CatchUp    string `json:"catch_up"`
-	SourceKind string `json:"frame_source"`
+	CatchUp string `json:"catch_up"`
+	// UnmatchedReadThrough is the operator's unmatched read-through policy
+	// (ADR-0136): when ON (the default), a box the matcher cannot name is
+	// spoken from its OCR text (cleaned, bounded, the speaker's voice when
+	// the attribution is known) instead of staying silent; when OFF the
+	// abstained box keeps the historic silence. The snapshot carries the
+	// applied state so the Play toggle reads the server's value.
+	UnmatchedReadThrough bool   `json:"unmatched_read_through"`
+	SourceKind           string `json:"frame_source"`
 	// ClipID is the managed-store clip this run replays (ADR-0073): the id a
 	// session was started with, so the UI's source line can say which clip is
 	// running rather than only which kind. Empty for dir- and device-sourced
@@ -420,18 +427,23 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 		// snapshot carries the current set so the UI's toggles read the
 		// server's state, not the form's last click. CatchUp starts at the
 		// documented default (catch_up, issue #25): the same snapshot
-		// discipline — the settings call is what moves it.
-		NarratedClasses:   []games.TextKind{games.TextDialogue},
-		CatchUp:           ses.CatchUpPolicyCatchUp,
-		SourceKind:        kind,
-		ClipID:            req.FrameSource.ClipID,
-		DevTrace:          req.DevTrace,
-		CaptureDevice:     srcB.device,
-		CaptureMode:       srcB.mode,
-		CaptureModeSource: srcB.modeSource,
-		CaptureFPSTarget:  srcB.modeFPS,
-		State:             StateStarting,
-		CreatedAt:         time.Now().UTC(),
+		// discipline — the settings call is what moves it. UnmatchedReadThrough
+		// starts at its documented default (ON, ADR-0136): an unmatched box
+		// speaks from its OCR text unless the operator turns the read-through
+		// off — the user's own words: "just read it, even if we don't have the
+		// dialogue correct".
+		NarratedClasses:      []games.TextKind{games.TextDialogue},
+		CatchUp:              ses.CatchUpPolicyCatchUp,
+		UnmatchedReadThrough: true,
+		SourceKind:           kind,
+		ClipID:               req.FrameSource.ClipID,
+		DevTrace:             req.DevTrace,
+		CaptureDevice:        srcB.device,
+		CaptureMode:          srcB.mode,
+		CaptureModeSource:    srcB.modeSource,
+		CaptureFPSTarget:     srcB.modeFPS,
+		State:                StateStarting,
+		CreatedAt:            time.Now().UTC(),
 	}
 	sess.rec = rec
 
@@ -910,10 +922,21 @@ func (m *Manager) trackerConfig(kind string, predictive bool) recognition.Config
 func (s *session) run(runCtx context.Context, src *observedSource, pub ses.Publisher) {
 	defer close(s.done)
 	s.setState(StateRunning, "")
+	// The startup log reads info fields that Manager.SetSettings rewrites
+	// under the session lock (mode, and the settings block around it): a
+	// settings call that lands while this log is formatting its fields would
+	// race the unlocked reads (issue #40). Read the log's fields under the
+	// lock, so the line can never describe a half-updated settings struct.
+	s.mu.Lock()
+	profileID := s.info.ProfileID
+	revision := s.info.ProfileRevision
+	mode := s.info.Mode
+	devTrace := s.info.DevTrace
+	s.mu.Unlock()
 	s.m.log.Info("session running",
-		"session_id", s.id, "profile_id", s.info.ProfileID,
-		"revision", s.info.ProfileRevision, "mode", s.info.Mode,
-		"source", src.ID(), "dev_trace", s.info.DevTrace)
+		"session_id", s.id, "profile_id", profileID,
+		"revision", revision, "mode", mode,
+		"source", src.ID(), "dev_trace", devTrace)
 
 	err := s.runner.Run(runCtx, src, pub)
 
@@ -1299,11 +1322,22 @@ func (m *Manager) SetSettings(id string, body SessionSettings) (Info, error) {
 		catchUp = *body.CatchUp
 	}
 
+	// The unmatched read-through (ADR-0136): a plain bool, no vocabulary to
+	// validate — the documented values are true and false. A nil field keeps
+	// the session's current value (the partial-body rule), and the value is
+	// the snapshot's, so a body that names what the session already has is a
+	// no-op below.
+	readThrough := cur.UnmatchedReadThrough
+	if body.UnmatchedReadThrough != nil {
+		readThrough = *body.UnmatchedReadThrough
+	}
+
 	norm := normalizeKinds(kinds)
 	sameMode := mode == cur.Mode
 	sameKinds := sameKinds(norm, cur.NarratedClasses)
 	sameCatchUp := catchUp == cur.CatchUp
-	if sameMode && sameKinds && sameCatchUp {
+	sameReadThrough := readThrough == cur.UnmatchedReadThrough
+	if sameMode && sameKinds && sameCatchUp && sameReadThrough {
 		return sess.Snapshot(), nil // the session already has this policy
 	}
 
@@ -1319,11 +1353,21 @@ func (m *Manager) SetSettings(id string, body SessionSettings) (Info, error) {
 	}) {
 		return Info{}, fmt.Errorf("%w: the session's writer is not accepting controls", ErrSessionNotRunning)
 	}
+	// The read-through's speech half (ADR-0136): the policy lives on the
+	// speech wiring, not the session reducer — the reducer's commit contract
+	// (speech_eligible false for an unmatched box) is untouched, and the
+	// wiring reads the flag at the next commit. A session without a speech
+	// wiring (no voice workflow in this process) runs silent whatever the
+	// policy, so the flag has nothing to move.
+	if sess.speech != nil {
+		sess.speech.setUnmatchedReadThrough(readThrough)
+	}
 	sess.mu.Lock()
 	if sess.info.State == StateRunning || sess.info.State == StateStarting {
 		sess.info.Mode = mode
 		sess.info.NarratedClasses = norm
 		sess.info.CatchUp = catchUp
+		sess.info.UnmatchedReadThrough = readThrough
 	}
 	sess.mu.Unlock()
 	return sess.Snapshot(), nil

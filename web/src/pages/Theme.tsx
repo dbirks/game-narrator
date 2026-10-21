@@ -7,7 +7,7 @@ import { THEMES, THEME_LABELS, type Theme } from "../lib/themes";
 
 /**
  * `/settings/theme` — the theme picker (docs/design/plum-peach product-notes
- * UX-09; ADR-0093 §2; ADR-0109). The four themes of docs/design/plum-peach/README.md
+ * UX-09; ADR-0093 §2; ADR-0142). The four themes of docs/design/plum-peach/README.md
  * "Themes" as cards: a static swatch preview (a nested `data-theme` element
  * the token blocks style — the same attribute the whole app carries, never
  * injected CSS), the theme's character note, and the selection action.

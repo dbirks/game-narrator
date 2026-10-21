@@ -9,7 +9,7 @@ import { buildManifest, type SeedProfile } from "./support/manifest";
 import { expectDefaultDataDirUntouched, serverRun } from "./support/servers";
 
 /**
- * The Traces screen (docs/design/plum-peach 2h, ADR-0109): on /traces, the
+ * The Traces screen (docs/design/plum-peach 2h, ADR-0141): on /traces, the
  * run's committed lines as a filterable list (spoken / skipped / slow), each
  * line's 5-step strip (Saw frame → Read OCR → Matched → Who → Spoke) matching
  * the API's own per-trace record, "what it read" (crop + raw vs normalised
@@ -318,7 +318,7 @@ test("the Traces screen: the line list, the strip, the actions and the UX-05 wal
     await page.getByTestId("login-submit").click();
     await expect(page.getByTestId("nav-role")).toHaveText("admin", { timeout: 15_000 });
 
-    // /developer redirects to /traces (ADR-0109), preserving the query: the
+    // /developer redirects to /traces (ADR-0141), preserving the query: the
     // session inspector is the ?view=inspector surface (the preserved
     // developer dashboard).
     await page.goto("/developer?view=inspector");
@@ -367,7 +367,7 @@ test("the Traces screen: the line list, the strip, the actions and the UX-05 wal
 
     // ── 3. the line list: /traces shows the committed lines ────────────────
     // The list orders newest-commit-first and selects its first line, so the
-    // page-1 line is selected by its ?trace= deep link (the ADR-0109 seam).
+    // page-1 line is selected by its ?trace= deep link (the ADR-0141 seam).
     await page.goto(`/traces?trace=${encodeURIComponent(traceId)}`);
     await expect(page.getByTestId("traces-list")).toBeVisible({ timeout: 15_000 });
     // The clip's two committed pages are the run's lines (the distractor
@@ -383,7 +383,7 @@ test("the Traces screen: the line list, the strip, the actions and the UX-05 wal
     expect(await page.getByTestId(`traces-line-${traceId}`).getAttribute("aria-current")).toBe(
       "true",
     );
-    // The per-session deep link into the preserved inspector (ADR-0109 §1):
+    // The per-session deep link into the preserved inspector (ADR-0141 §1):
     // the line view links to the session inspector view on the same route.
     await expect(page.getByTestId("traces-open-inspector")).toHaveAttribute(
       "href",
@@ -575,7 +575,7 @@ test("the Traces screen: the line list, the strip, the actions and the UX-05 wal
     // ── 7. the review widths: screenshots, axe, no horizontal scroll ──────
     // The design's three review widths (docs/design/plum-peach README, IA):
     // the line view settled on the seeded line (the ?trace= deep link, the
-    // ADR-0109 seam — a fresh load, so the walk's agent panel is not part of
+    // ADR-0141 seam — a fresh load, so the walk's agent panel is not part of
     // the review state), each width screenshotted into test-results and run
     // through axe (WCAG 2.1 A/AA); at the phone width the document must not
     // be wider than the viewport (wide content scrolls inside its own

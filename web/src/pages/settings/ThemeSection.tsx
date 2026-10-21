@@ -5,7 +5,7 @@ import { THEMES, THEME_LABELS, type Theme } from "../../lib/themes";
 import { Card } from "../../components/kit";
 
 /**
- * `/settings` "Theme" (ADR-0109): the link to the theme page
+ * `/settings` "Theme" (ADR-0142): the link to the theme page
  * (`/settings/theme`) with the current theme named. The page carries the
  * live value off the `<html>` attribute the Phase 0 seam (lib/theme.ts)
  * owns — the applied attribute wins, and a missing attribute (the default

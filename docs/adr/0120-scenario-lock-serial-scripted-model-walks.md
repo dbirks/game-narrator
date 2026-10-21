@@ -4,7 +4,7 @@ Date: 2026-10-20
 Status: accepted
 Owners: redesign-b3 (Health/Settings merge integration)
 Related requirements/tests: docs/spec/12 ("UI" mode, the Playwright suite), AGENTS.md rules 2 and 3, `web/e2e/fake-model.mjs` (the scripted model gateway), `web/playwright.config.ts` (the "agent-dock" webServer entry names the contract), `web/e2e/onboarding.spec.ts`, `web/e2e/library.spec.ts`, `web/e2e/agent-dock.spec.ts`
-Links/references: ADR-0028 (the onboarding agent), ADR-0099 (the agent dock's scripted provider boundary), ADR-0109 (the settings/theme page — its library in-setup seed uses the gateway's `stall` scenario)
+Links/references: ADR-0028 (the onboarding agent), ADR-0099 (the agent dock's scripted provider boundary), ADR-0142 (the settings/theme page — its library in-setup seed uses the gateway's `stall` scenario)
 Supersedes / superseded by: —
 
 ## Context

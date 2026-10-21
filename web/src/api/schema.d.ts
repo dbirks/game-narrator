@@ -500,7 +500,7 @@ export interface paths {
     };
     /**
      * The /library screen's per-game read: the actionable revision and its counts.
-     * @description The shelf tile and the list row are one read, not three (ADR-0109): profile is the edition's published revision when any edition has one (the newest publication wins - the revision a session would pin), otherwise the edition's newest revision (a draft an onboarding run is still filling), otherwise absent; lines, characters and voiced are that revision's indexed counts. A game with no profile answers 200 with the empty view, the same honest-empty shape the catalogue lists use.
+     * @description The shelf tile and the list row are one read, not three (ADR-0140): profile is the edition's published revision when any edition has one (the newest publication wins - the revision a session would pin), otherwise the edition's newest revision (a draft an onboarding run is still filling), otherwise absent; lines, characters and voiced are that revision's indexed counts. A game with no profile answers 200 with the empty view, the same honest-empty shape the catalogue lists use.
      */
     get: operations["getGameLibrary"];
     put?: never;
@@ -3043,7 +3043,7 @@ export interface components {
     EditionList: {
       editions: components["schemas"]["Edition"][];
     };
-    /** @description GET /api/v1/games/{id}/library (docs/design/plum-peach 2a, ADR-0109): the one read behind the /library hero and tiles. The profile members are the actionable revision's identity, all absent together when the game has no profile; lines, characters and voiced are its counts, zero in that case. characters and voiced agree with the status bar's setup-run progress (the store's ProfileCharacterVoiceCounts), so the tile chip and the bar cannot disagree about how much of a game has a voice. */
+    /** @description GET /api/v1/games/{id}/library (docs/design/plum-peach 2a, ADR-0140): the one read behind the /library hero and tiles. The profile members are the actionable revision's identity, all absent together when the game has no profile; lines, characters and voiced are its counts, zero in that case. characters and voiced agree with the status bar's setup-run progress (the store's ProfileCharacterVoiceCounts), so the tile chip and the bar cannot disagree about how much of a game has a voice. */
     GameLibrary: {
       game_id: string;
       profile_id?: string;
@@ -3407,6 +3407,8 @@ export interface components {
       paused?: boolean;
       /** @description The operator's narrated-class setting (docs/spec/09 “/play”): the text classes the commitment policy narrates, normalized — dialogue first, always present. The default (dialogue alone) is what a session started without a settings call carries; PUT /api/v1/sessions/{id}/settings moves them. */
       narrated_classes?: components["schemas"]["TextKind"][];
+      /** @description The operator's unmatched read-through policy (ADR-0136): when true (the default), a box the matcher cannot name — the matcher abstained and nothing adjudicated into a line — is spoken from its OCR text (cleaned, bounded, the speaker's voice when the attribution is known) instead of staying silent; when false the abstained box keeps the historic silence. It moves on PUT /api/v1/sessions/{id}/settings and the snapshot carries the applied state, so the Play toggle shows the state the server holds. */
+      unmatched_read_through?: boolean;
       /** @description The UVC HDMI capture device's stable id this run uses (kind v4l2, ADR-0078): the device the resolution settled on — the requested id, the persisted selection, or the first usable device. Absent for every other source kind. */
       capture_device?: string;
       /** @description The mode the session asked of that device (e.g. "640x480 MJPEG @ 10 fps"); absent for every other source kind. */
@@ -3478,6 +3480,8 @@ export interface components {
       mode?: components["schemas"]["SessionMode"];
       /** @description The text classes the session may narrate. The commitment policy force-includes dialogue (the product), so a request for “signs only” applies as “dialogue and signs”; the normalized list — dialogue first, deduped — is what the snapshot carries. An unknown text-kind word is a 400 invalid_session_settings. */
       narrated_classes?: components["schemas"]["TextKind"][];
+      /** @description The unmatched read-through policy (ADR-0136): when the box commits as a line the corpus cannot name (the matcher abstained, and the decision — when asked — did not resolve one), the speaker speaks the OCR text (cleaned, bounded, the speaker's voice when the attribution is known) instead of staying silent. Default ON: a session started without a settings call reads true from the snapshot, and a body that omits the field keeps the session's current value. */
+      unmatched_read_through?: boolean;
     };
     /** @description The session's audio half: the sink in use, the live controls, the speech counters and the current utterance (docs/spec/07, docs/spec/13 “did it speak, and why not”). */
     SessionAudio: {

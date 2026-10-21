@@ -1277,7 +1277,7 @@ pre.muted {
   text-align: left;
 }
 
-/* ── /library — the design's 2a (docs/design/plum-peach; ADR-0109) ────────
+/* ── /library — the design's 2a (docs/design/plum-peach; ADR-0140) ────────
  * Tokens only (ADR-0011 / ADR-0093): no raw colours, no inline styles.
  * The hero, the "All games" row, the shelf grid and the list table are
  * page-specific compositions of the kit pieces (DitherCover, Chip, the
@@ -1622,7 +1622,7 @@ pre.muted {
   }
 }
 
-/* ── the Traces screen (docs/design/plum-peach 2h; ADR-0109) ───────────────
+/* ── the Traces screen (docs/design/plum-peach 2h; ADR-0141) ───────────────
  * The line trace: a filterable line list on the left, the selected line's
  * 5-step reading strip and actions on the right. Tokens only. */
 

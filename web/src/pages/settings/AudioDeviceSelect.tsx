@@ -1,7 +1,7 @@
 import type { AudioDevice } from "../../api/audio";
 
 /**
- * The audio device picker (docs/design/plum-peach UX-12, ADR-0109 §4): the
+ * The audio device picker (docs/design/plum-peach UX-12, ADR-0142 §4): the
  * selector's shape is the appliance's real sink categories — one `optgroup`
  * each for HDMI (the hub's port), USB and Bluetooth, with everything else
  * under "Other" so the enumeration is never dropped from the picker. An

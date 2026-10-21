@@ -296,7 +296,7 @@ export default defineConfig({
       // scripted gateway (the in-setup seed is a live labelled-synthetic
       // onboarding run at its publish review), screenshots at the design's
       // three widths plus axe, and a real session start through the hero's
-      // ▶ (the test_pattern frame source, ADR-0109).
+      // ▶ (the test_pattern frame source, ADR-0140).
       name: "library",
       testMatch: /library\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: libraryUrl },
@@ -334,7 +334,7 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"], baseURL: setupBoardUrl },
     },
     {
-      // The Traces screen (docs/design/plum-peach 2h, ADR-0109): a replay
+      // The Traces screen (docs/design/plum-peach 2h, ADR-0141): a replay
       // session on the packaged binary — the speech roles at the scripted TTS
       // instance (the committed lines' audio is real synthetic bytes) and the
       // agent_reasoning role at the scripted assistant gateway
@@ -441,7 +441,7 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"], baseURL: audioUrl },
     },
     {
-      // The settings-and-theme walk (plan.md Phase 1 item 9, ADR-0109): the
+      // The settings-and-theme walk (plan.md Phase 1 item 9, ADR-0142): the
       // theme picker (UX-09), the audio sink categories with the test tone
       // and the unpaired-Bluetooth pairing prompt (UX-12), and the tailnet
       // URL (UX-13), each on its own packaged-binary server so the walk
@@ -493,7 +493,7 @@ export default defineConfig({
       command: `node web/e2e/serve.mjs api 127.0.0.1:${ports.api} go run ./cmd/game-narrator serve`,
       cwd: "..",
       url: `${apiUrl}/api/v1/health/live`,
-      // GN_E2E_NO_TAILSCALE (ADR-0109): the settings page's network section
+      // GN_E2E_NO_TAILSCALE (ADR-0142): the settings page's network section
       // probes the host's tailscale, and this spec's no-foreign-URL assertion
       // must hold on a developer box that is on a tailnet — the probe's
       // honest "not configured" answer is the deterministic state.
@@ -864,6 +864,12 @@ export default defineConfig({
       env: {
         GAME_NARRATOR_ROLE_AGENT_REASONING_MODEL: "fake/onboarding",
         GAME_NARRATOR_ROLE_AGENT_REASONING_URL: `http://127.0.0.1:${ports.fakeModel}/v1`,
+        // The Library's ▶ omits frame_source (ADR-0119) so the runtime resolves
+        // the default. The e2e appliance has no capture dongle, so the default
+        // is the developer-mode test pattern (GAME_NARRATOR_DEV=1): the session
+        // starts and the snapshot names the resolved kind. developer mode only
+        // gates this default fallback (internal/runtime/source.go), nothing else.
+        GAME_NARRATOR_DEV: "1",
       },
       reuseExistingServer: false,
       timeout: 60_000,
@@ -907,7 +913,7 @@ export default defineConfig({
       stderr: "pipe",
     },
     {
-      // The Traces screen (docs/design/plum-peach 2h, ADR-0109) on the
+      // The Traces screen (docs/design/plum-peach 2h, ADR-0141) on the
       // packaged binary: the replay allowlist admits the repo's testdata (the
       // synthetic clip), the speech roles at the scripted TTS instance (the
       // committed lines' audio is real synthetic bytes the waveform/fixture/
@@ -1109,7 +1115,7 @@ export default defineConfig({
     },
     {
       // The settings-and-theme walk's server (plan.md Phase 1 item 9,
-      // ADR-0109): the tailnet URL pin (UX-13) — an obviously-fake stable
+      // ADR-0142): the tailnet URL pin (UX-13) — an obviously-fake stable
       // *.ts.net name, so the spec asserts text equality against the API
       // without a real tailnet — the labelled-synthetic audio seam with the
       // design's three sink categories (the hub's HDMI port, a USB DAC, the
@@ -1139,7 +1145,7 @@ export default defineConfig({
       // GN_E2E_NO_TAILSCALE scrubbing the tailscale CLI out of the child's
       // PATH (serve.mjs), so the network section's not-configured state is
       // asserted on any host — including a developer box with a running
-      // tailscaled (ADR-0109: an explicit note, never a blank field).
+      // tailscaled (ADR-0142: an explicit note, never a blank field).
       command: `node web/e2e/serve.mjs theme-notcfg 127.0.0.1:${ports.themeNotCfg} ${embeddedBinary} serve`,
       cwd: "..",
       url: `${themeNotCfgUrl}/api/v1/health/live`,

@@ -172,7 +172,7 @@ function renderPage() {
   });
   return render(
     // MemoryRouter: the page's Theme card carries a Link to /settings/theme
-    // (ADR-0109), the same seam the other page tests wrap.
+    // (ADR-0142), the same seam the other page tests wrap.
     <MemoryRouter>
       <QueryClientProvider client={client}>
         <AuthProvider>
@@ -242,7 +242,7 @@ describe("SettingsPage (unit test with a stubbed fetch fake)", () => {
     expect(screen.getByTestId("settings-version")).toHaveTextContent("abcdef1");
     expect(screen.getByTestId("settings-version")).toHaveTextContent("no auto-update");
     expect(screen.getByTestId("backup-download")).toBeInTheDocument();
-    // The new ADR-0109 cards: the theme link (the theme page route) and the
+    // The new ADR-0142 cards: the theme link (the theme page route) and the
     // tailnet URL, rendered verbatim from the API's network section.
     expect(screen.getByTestId("theme-page-link")).toHaveAttribute("href", "/settings/theme");
     expect(screen.getByTestId("settings-theme-current")).toHaveTextContent("Plum & Peach");

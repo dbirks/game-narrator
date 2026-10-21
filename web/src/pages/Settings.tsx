@@ -27,7 +27,7 @@ import { VersionUpdatesSection } from "./settings/VersionUpdates";
  * the "Audio output" card, with every part's source shown so an environment
  * override is visible instead of guessed.
  *
- * The Plum & Peach restyle (ADR-0109): the sections render as kit cards over
+ * The Plum & Peach restyle (ADR-0142): the sections render as kit cards over
  * the same contract — every existing data-testid and role is preserved, and
  * two cards are new: "Theme" (the link to /settings/theme with the current
  * theme named) and "Network" (the tailnet URL, UX-13).

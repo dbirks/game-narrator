@@ -191,6 +191,17 @@ export function ControlBar({
           />
           <span>+items</span>
         </label>
+        <label className="pp-class">
+          <input
+            type="checkbox"
+            checked={controls.readThrough}
+            disabled={controlsDisabled || controls.settingsPending}
+            onChange={controls.toggleReadThrough}
+            title="Speak a settled line the corpus cannot name, from its on-screen text (ADR-0136; on by default)"
+            data-testid="play-read-through"
+          />
+          <span>read unmatched</span>
+        </label>
       </div>
       <p className="pp-controls-note" data-testid="play-controls-note">
         Narrating:{" "}

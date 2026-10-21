@@ -1,7 +1,7 @@
 import type { CaptureProbe } from "../../api/capture";
 
 /**
- * The live preview of the "Capture" card (ADR-0078, ADR-0109 restyle): one
+ * The live preview of the "Capture" card (ADR-0078, ADR-0142 restyle): one
  * throttled JPEG per poll (the browser's `<img>` is the loop; the server
  * rate-limits and refuses while a session holds the device). The last good
  * frame is kept on a refused poll; a failed poll surfaces its error.

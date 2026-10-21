@@ -1,6 +1,6 @@
 package api
 
-// The /settings network section's handler tests (UX-13, ADR-0109): the
+// The /settings network section's handler tests (UX-13, ADR-0142): the
 // tailnet URL is the running system's own answer — the operator's pin wins,
 // the live tailscale derivation is labelled, and an absent Tailscale renders
 // an explicit not-configured note, never a blank field or an invented URL.

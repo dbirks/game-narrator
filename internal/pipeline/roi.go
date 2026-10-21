@@ -38,8 +38,14 @@ type analysis struct {
 // region: ~0.1 ms), against tens of milliseconds for the OCR that follows it, so
 // bounding the pool by OCR work — what docs/spec/01's "ROI worker pool" is for —
 // is unaffected.
-func (r *Runner) analyze(f capture.Frame, reg games.Region) analysis {
-	rect := vision.RectOf(reg)
+//
+// rect is the band to crop, chosen by the caller: the profile's fixed band for
+// a region that is not placement-aware, or the selected candidate band for a
+// placement-aware textbox region (ADR-0137). analyze is agnostic to which it
+// is — presence, the perceptual hash and the preprocessed hash all run on the
+// band it is handed, which is what keeps the tracker and the dedupe on one
+// stable stream.
+func (r *Runner) analyze(f capture.Frame, reg games.Region, rect vision.Rect) analysis {
 	crop := vision.CropNormalized(f.Image, rect, r.cfg.Crop)
 	a := analysis{crop: crop}
 	// The live view's last-crop record (ADR-0110): the box the cut actually

@@ -1,6 +1,6 @@
 /**
  * `src/pages/tracesModel.ts` — the Traces screen's pure reading rules
- * (docs/design/plum-peach 2h, ADR-0109).
+ * (docs/design/plum-peach 2h, ADR-0141).
  *
  * The screen reads the durable developer event log (the same surface the
  * session inspector reads) and renders it as a line list plus the 5-step
@@ -11,7 +11,7 @@
  * acceptance: "for a seeded trace_id, the 5-step strip values match the API
  * record").
  *
- * The rules (ADR-0109 §3–§5):
+ * The rules (ADR-0141 §3–§5):
  * - one line per committed occurrence, grouped by trace id;
  * - the 5-step strip maps onto the trace's own events (Saw frame → Read OCR
  *   → Matched → Who → Spoke), each step with a +ms offset from the trace's
@@ -154,7 +154,7 @@ export function speakerName(speakerId: string | null, characters: Record<string,
 }
 
 /**
- * One line of the list view, from the trace's events (ADR-0109 §3–§4). The
+ * One line of the list view, from the trace's events (ADR-0141 §3–§4). The
  * trace is one dialogue occurrence: the commit is the line, the observation
  * is what it read, the candidates are why, and the speech events are how it
  * ended.
@@ -239,7 +239,7 @@ export function traceLine(
   }
   const slow = latencyMs !== null && latencyMs > SLOW_THRESHOLD_MS;
 
-  // ── the 5-step strip (ADR-0109 §4) ──────────────────────────────────────
+  // ── the 5-step strip (ADR-0141 §4) ──────────────────────────────────────
   const steps: StripStep[] = [];
   steps.push(
     observed
@@ -327,7 +327,7 @@ export function traceLine(
 }
 
 /**
- * The line list, from a page of the durable dev log (ADR-0109 §3): one entry
+ * The line list, from a page of the durable dev log (ADR-0141 §3): one entry
  * per committed occurrence, newest commit first. Traces that never committed
  * are not lines the list shows — the list is the lines the run spoke (or held
  * back), and a pre-commit trace has no line yet.
@@ -347,14 +347,14 @@ export function traceLines(
   const lines: TraceLine[] = [];
   for (const [traceId, traceEvents] of byTrace) {
     const committed = lastWhere(traceEvents, (event) => event.name === "message.committed");
-    if (!committed) continue; // the list is committed lines (ADR-0109 §3)
+    if (!committed) continue; // the list is committed lines (ADR-0141 §3)
     lines.push(traceLine(traceId, traceEvents, characters));
   }
   return lines.sort((a, b) => b.occurredAt.localeCompare(a.occurredAt));
 }
 
 /**
- * The one-sentence reason for "why this line" (ADR-0109): the matcher's
+ * The one-sentence reason for "why this line" (ADR-0141): the matcher's
  * reason code in words, with the probability and margin when it ranked. The
  * codes are the matcher's own tokens (internal/matcher/reasons.go, plus the
  * decision layer's additions); a code this map does not know prints as-is.

@@ -1,6 +1,6 @@
 /**
  * `src/pages/tracesModel.test.ts` — the Traces screen's reading rules
- * (ADR-0109): one line per committed occurrence, the 5-step strip with +ms
+ * (ADR-0141): one line per committed occurrence, the 5-step strip with +ms
  * offsets, the spoken/skipped/slow filters, and the matcher's reason codes
  * in words. Pure: fake envelopes in, assertions out.
  */

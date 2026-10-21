@@ -387,7 +387,7 @@ func TestPutMessagesReconcilesInsteadOfDuplicating(t *testing.T) {
 }
 
 // TestProfileMessageCountCountsPerRevision is the Library's "N lines" column
-// (ADR-0109) at the store level: an indexed COUNT scoped to one revision —
+// (ADR-0140) at the store level: an indexed COUNT scoped to one revision —
 // the dialogue browser's length is never a page walk, and a revision's lines
 // are never another revision's.
 func TestProfileMessageCountCountsPerRevision(t *testing.T) {

@@ -1,7 +1,7 @@
 package api
 
 // The /settings "Network" section (docs/design/plum-peach product-notes UX-13,
-// ADR-0109): the tailnet URL — the Tailscale address for reaching this
+// ADR-0142): the tailnet URL — the Tailscale address for reaching this
 // appliance's web UI over the tailnet. The appliance has no screen of its
 // own, so the URL is what the family types on the laptop beside the TV, and
 // it must be copied from the running system so the display always matches
@@ -41,7 +41,7 @@ import (
 )
 
 // EnvTailnetURL is the operator's pin of the appliance's tailnet URL
-// (ADR-0109). When set, the settings page renders exactly this value — the
+// (ADR-0142). When set, the settings page renders exactly this value — the
 // stable *.ts.net name the operator wrote — regardless of what the tailscale
 // CLI answers.
 const EnvTailnetURL = "GAME_NARRATOR_TAILNET_URL"
@@ -132,7 +132,7 @@ func (s *Server) listenPortOf() (int, bool) {
 	return 0, false
 }
 
-// settingsNetwork builds the network section (ADR-0109).
+// settingsNetwork builds the network section (ADR-0142).
 func (s *Server) settingsNetwork(ctx context.Context) networkView {
 	pin, _ := osLookupEnv(EnvTailnetURL)
 	if pin := strings.TrimSpace(pin); pin != "" {

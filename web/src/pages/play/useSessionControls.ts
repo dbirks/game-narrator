@@ -2,8 +2,8 @@
  * `src/pages/play/useSessionControls.ts` — the one owner of the live
  * session's operator controls (docs/spec/08 "…/pause, …/resume, …/settings",
  * docs/spec/07 audio, ADR-0039/0075): pause/resume, the decision mode
- * (careful/eager), the narrated classes, the live audio controls and the
- * operator's corrections.
+ * (careful/eager), the narrated classes, the unmatched read-through policy
+ * (ADR-0136), the live audio controls and the operator's corrections.
  *
  * Both Play views (now-speaking and "show workings") and the kid mode render
  * from this single hook, so switching views cannot restart or duplicate
@@ -37,6 +37,11 @@ export interface SessionControlsValue {
   setMode: (mode: DecisionMode) => void;
   classes: string[];
   toggleClass: (cls: "sign" | "item") => void;
+  /** The session's unmatched read-through policy (ADR-0136): the snapshot's
+   *  applied state, default ON (a session before its first snapshot reads
+   *  the server's documented default). */
+  readThrough: boolean;
+  toggleReadThrough: () => void;
   muted: boolean;
   volumePct: number;
   delayMs: number;
@@ -113,6 +118,17 @@ export function useSessionControls(options: Options): SessionControlsValue {
     },
     [classes, settings],
   );
+
+  // The unmatched read-through (ADR-0136): a session policy like the
+  // narrated classes — the snapshot carries the applied state (the server's
+  // default is ON), and the switch moves it on the settings route. The
+  // switch decides what happens with lines committed next; the applied
+  // snapshot re-syncs the checkbox from the 200 body the way the class
+  // toggles re-sync from theirs.
+  const readThrough = session?.unmatched_read_through ?? true;
+  const toggleReadThrough = useCallback(() => {
+    settings.mutate({ unmatched_read_through: !readThrough });
+  }, [readThrough, settings]);
 
   // ── the live audio controls (docs/spec/07, ADR-0039) ─────────────────────
   const [muted, setMutedState] = useState(session?.audio?.muted ?? false);
@@ -218,6 +234,8 @@ export function useSessionControls(options: Options): SessionControlsValue {
     setMode: (mode) => settings.mutate({ mode }),
     classes,
     toggleClass,
+    readThrough,
+    toggleReadThrough,
     muted,
     volumePct,
     delayMs: delayMS,

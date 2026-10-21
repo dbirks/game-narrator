@@ -1,6 +1,6 @@
 /**
  * `src/pages/Traces.tsx` — the Traces screen (docs/design/plum-peach 2h,
- * ADR-0109): the line trace the operator reviews after a run.
+ * ADR-0141): the line trace the operator reviews after a run.
  *
  * Left: a filterable list of the run's committed lines (spoken / skipped /
  * slow), each showing speaker + time + line; the selected one is `--peach`.
@@ -80,7 +80,7 @@ export function TracesPage() {
     );
   }
   // The inspector view: ?view=inspector or a ?session= deep link (the old
-  // /developer surface, preserved unmodified; ADR-0109).
+  // /developer surface, preserved unmodified; ADR-0141).
   const view = searchParams.get("view");
   const sessionParam = searchParams.get("session");
   if (view === "inspector" || sessionParam !== null) {

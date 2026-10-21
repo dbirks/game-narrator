@@ -4,7 +4,7 @@ import { Card, Table, type TableColumn } from "../../components/kit";
 type RoleRow = Settings["models"]["roles"][number];
 
 /**
- * `/settings` "Model roles" (ADR-0109 restyle, docs/spec/09): the roles
+ * `/settings` "Model roles" (ADR-0142 restyle, docs/spec/09): the roles
  * providers.LoadRoles resolves for this build, each with its state, model,
  * protocol, endpoint and budgets. General settings are read-only by design
  * (ADR-0047): the table shows the effective values, and the shared-gateway

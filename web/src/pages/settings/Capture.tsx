@@ -14,7 +14,7 @@ import { CaptureDeviceTable, modeText } from "./CaptureDeviceTable";
 import { CapturePreviewPane, CaptureProbePane } from "./CapturePreview";
 
 /**
- * `/settings` "Capture" (ADR-0078, docs/spec/08/10, ADR-0109 restyle): the
+ * `/settings` "Capture" (ADR-0078, docs/spec/08/10, ADR-0142 restyle): the
  * UVC HDMI capture dongle as a product surface. The selection persists
  * (device always, the mode when pinned; omitting it records "the policy
  * decides"). The preview is one throttled JPEG per poll (the browser's

@@ -9,7 +9,7 @@ export function modeText(w: number, h: number, fps: number, pixFmt: string): str
 }
 
 /**
- * The capture device table (ADR-0078, ADR-0109 restyle): the kit Table with
+ * The capture device table (ADR-0078, ADR-0142 restyle): the kit Table with
  * the e2e contract — the table's own testid (`capture-devices`) and one row
  * testid per device (`capture-device-<id>`). Stable ids, never /dev/videoN;
  * each node's USB link and state, and the mode a session would ask for with

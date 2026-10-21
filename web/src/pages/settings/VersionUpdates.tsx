@@ -7,7 +7,7 @@ import { refreshUpdates } from "../../api/settings";
 import { Card } from "../../components/kit";
 
 /**
- * `/settings` "Version and updates" (ADR-0088, ADR-0109 restyle): the
+ * `/settings` "Version and updates" (ADR-0088, ADR-0142 restyle): the
  * running build against the latest release of the repository this build
  * belongs to. The check informs, it never installs — auto_update is false
  * in every answer, and the upgrade is the documented manual step

@@ -266,7 +266,7 @@ test("the second game (bench-synthetic-002) through the library, regions and dev
   // ── 4. the developer inspector: a replay session over the committed clip ──
   // (runs before the Regions page: that page draws the region boxes relative
   // to the game's last observed frame, so the session must exist first). The
-  // inspector view on the renamed route (ADR-0109): /developer redirects here,
+  // inspector view on the renamed route (ADR-0141): /developer redirects here,
   // preserving the query.
   await page.goto("/traces?view=inspector");
   await expect(page).toHaveURL(/\/traces\?view=inspector$/);

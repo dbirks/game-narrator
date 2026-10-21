@@ -168,7 +168,7 @@ test("the developer inspector over a real replay session", async ({
   expect(storeIds["demo-page-2"], "demo-page-2 is a stored message").toBeTruthy();
 
   // ── 3. the page: sign in, start the replay with dev trace on ──────────────
-  // The inspector view on the renamed route (ADR-0109, the ADR-0093
+  // The inspector view on the renamed route (ADR-0141, the ADR-0093
   // rename): /developer redirects here, preserving the query.
   await page.goto("/traces?view=inspector");
   await expect(page).toHaveURL(/\/login/);
@@ -373,7 +373,7 @@ test("the developer inspector over a real replay session", async ({
   await page.getByTestId("login-password").fill(VIEWER.password);
   await page.getByTestId("login-submit").click();
   await expect(page).toHaveURL(/\/traces\?view=inspector$/);
-  // The role gate moved to the Traces page with the rename (ADR-0109):
+  // The role gate moved to the Traces page with the rename (ADR-0141):
   // both views sit behind the developer role, the testid follows.
   await expect(page.getByTestId("traces-role-required")).toBeVisible();
   await expect(page.getByTestId("traces-role-required")).toContainText("developer role");

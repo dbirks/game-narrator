@@ -20,7 +20,7 @@ import { EmptyState, ErrorState, Loading } from "../components/states";
 import { useLiveStatus } from "../lib/liveStatus";
 
 /**
- * `/library` — the design's 2a (docs/design/plum-peach; ADR-0109): a hero
+ * `/library` — the design's 2a (docs/design/plum-peach; ADR-0140): a hero
  * card over the "All games" shelf, with the ⌘K pill and the persisted
  * shelf / list toggle (UX-08).
  *
@@ -53,12 +53,6 @@ const VIEW_OPTIONS: ReadonlyArray<{ value: LibraryView; label: string }> = [
   { value: "list", label: "List" },
 ];
 
-/** The frame source the Library's ▶ runs with: the built-in synthetic
- *  pattern — real frames through the production consumer, no capture dongle
- *  or replay directory needed (ADR-0109). The Play setup form keeps the
- *  operator's full source picker. */
-const LIBRARY_FRAME_SOURCE = { kind: "test_pattern" as const };
-
 export function LibraryPage() {
   const { atLeast } = useAuth();
   const canCurate = atLeast("curator");
@@ -80,7 +74,7 @@ export function LibraryPage() {
 
   const seen: Game[] = games.data?.pages.flatMap((page) => page.games) ?? [];
 
-  // One library read per visible game (ADR-0109): the actionable revision
+  // One library read per visible game (ADR-0140): the actionable revision
   // and its counts. Keyed by game id so the react-query cache keeps them
   // across the view toggle and reloads within the query window.
   const libraryReads = useQueries({
@@ -646,7 +640,10 @@ function ListView({
 // ── the start action ────────────────────────────────────────────────────────
 
 /** ▶ on any game: start a session for that game's published profile and land
- *  on /play with it (ADR-0109). One shared mutation: the profile id is the
+ *  on /play. The frame source is omitted so the runtime resolves the default
+ *  (ADR-0119) — a usable capture device runs v4l2, else the test pattern in
+ *  developer mode, else the start answers 409 no_frame_source. The Play page
+ *  then shows the resolved source. One shared mutation: the profile id is the
  *  target, the session id lands in the URL (the Play page's
  *  session-survives-refresh seam). */
 function useStartSession(navigate: (to: string) => void) {
@@ -655,7 +652,6 @@ function useStartSession(navigate: (to: string) => void) {
     mutationFn: (profileId: string) =>
       sessionsApi.start({
         profile_id: profileId,
-        frame_source: LIBRARY_FRAME_SOURCE,
         dev_trace: false,
       }),
     onSuccess: (session) => {

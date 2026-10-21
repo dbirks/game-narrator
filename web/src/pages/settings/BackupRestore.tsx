@@ -12,7 +12,7 @@ import {
 import { Card } from "../../components/kit";
 
 /**
- * The backup/restore pair (ADR-0090, ADR-0109 restyle): the backup download
+ * The backup/restore pair (ADR-0090, ADR-0142 restyle): the backup download
  * (a point-in-time SQLite snapshot) and the restore — the upload validates
  * server-side (format, schema marker, integrity, forward-migrations only),
  * takes an automatic pre-restore copy, and the appliance restarts to apply

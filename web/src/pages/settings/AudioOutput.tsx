@@ -17,7 +17,7 @@ import { AudioVolumeAndTone } from "./AudioVolumeAndTone";
 import { PairingPrompt } from "./PairingPrompt";
 
 /**
- * The one runtime-mutable setting (ADR-0074, ADR-0109 restyle): the output
+ * The one runtime-mutable setting (ADR-0074, ADR-0142 restyle): the output
  * device, the sink kind and the device-level master volume. The device list
  * comes from the live enumeration with a backend name — and when the test
  * seam (GAME_NARRATOR_AUDIO_FAKE_DEVICES) stands in for a real backend, the

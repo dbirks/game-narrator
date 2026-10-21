@@ -8,7 +8,7 @@ package api
 // providers.LoadRoles for the model roles, GAME_NARRATOR_LISTEN,
 // GAME_NARRATOR_DATA_DIR, GAME_NARRATOR_AUDIO_SINK / GAME_NARRATOR_AUDIO_DEVICE,
 // GAME_NARRATOR_WEB_ALLOW_PRIVATE / GAME_NARRATOR_WEB_PRIVATE_ALLOW,
-// GAME_NARRATOR_TAILNET_URL (the tailnet URL pin, ADR-0109) — plus the
+// GAME_NARRATOR_TAILNET_URL (the tailnet URL pin, ADR-0142) — plus the
 // build constants cmd/game-narrator pins for the agent budget. One setting is
 // runtime-mutable: the audio output (ADR-0074) persists through its own route
 // (PUT /api/v1/settings/audio) with the environment as the override layer.

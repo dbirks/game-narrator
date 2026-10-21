@@ -89,6 +89,41 @@ const (
 	// still typing; three quiet crops in a row can, because a line that is
 	// still typing keeps moving.
 	DefaultPerceptualSkipSettle = 3
+
+	// DefaultPlacementSwitchMargin is the relative margin the placement-aware
+	// textbox selection requires before the crop moves off its current band
+	// (ADR-0137): a competing band must score at least this many times the
+	// current band's text share to win the crop. One keeps the crop on the band
+	// that is winning outright; the margin (1.25) is the anti-flicker — a dark
+	// scene scores a little text on every band, and a one-frame blip of 5% must
+	// not move the crop and reset the perceptual dedupe.
+	DefaultPlacementSwitchMargin = 1.25
+	// DefaultPlacementTextMin is the absolute text-share floor the winning band
+	// must clear before the placement selection will move the crop (ADR-0137):
+	// below it no band confidently carries text, so the crop stays put rather
+	// than drift between empty bands on a dark scene. Measured on the live-hdmi
+	// capture, a band that carries the line scores 0.019–0.036 and an empty band
+	// 0.005–0.019, so 0.01 sits under the line and over most of the scene noise.
+	DefaultPlacementTextMin = 0.01
+	// DefaultPlacementTextOnPanel is the on-panel share a band must reach to be
+	// box-like (ADR-0137 §Robustness): of its text's bright-on-dark pixels, the
+	// fraction that sits in panel rows (rows that are majority panel-dark). The
+	// dialogue box's letters sit in the panel's rows (~1.0, measured on both the
+	// live-hdmi top-box capture and the 2026-10-21 Dolphin probe's box band); a
+	// text strip floating over the scene — the llvmpipe GL-info banner Dolphin
+	// draws into the frame's top after a savestate load — sits in scene rows
+	// (0.80 measured on the probe's banner band, the dark-scene case; 0.00 once
+	// the scene behind it brightens). 0.9 sits between the two.
+	DefaultPlacementTextOnPanel = 0.9
+	// DefaultPlacementSwitchFrames is the consecutive-frame run a competing band
+	// must hold as the best box-like band before it takes the textbox crop
+	// (ADR-0137 §Robustness): never on a single strong frame. At the capture's
+	// 10 fps cadence, 3 frames is a 0.3 s settle — short enough that a box that
+	// genuinely moves (top → bottom between scenes) is followed within half a
+	// second, long enough that a one- or two-frame blip of bright-on-dark noise
+	// (a scene flash, a caption's first frame) never moves the crop and resets
+	// the perceptual dedupe.
+	DefaultPlacementSwitchFrames = 3
 )
 
 // ErrNoEngine / ErrNoIndex name the two inputs without which the chain is a
@@ -380,6 +415,31 @@ type Config struct {
 	// Presence parameterizes the textbox-present detector.
 	Presence PresenceConfig
 
+	// PlacementDisabled turns off the placement-aware textbox crop for every
+	// region (ADR-0137), restoring the historic single fixed band: a profile
+	// for a game whose dialogue box genuinely does not move. Off by default —
+	// the placement-aware crop is the runtime default, which is what lets the
+	// existing rev2/rev3 profiles pick the behaviour up on the next run without
+	// a schema change or a re-publish (the candidate bands are derived at
+	// runtime from the stored rect, ADR-0137).
+	PlacementDisabled bool
+	// PlacementSwitchMargin is the relative margin a competing band must clear
+	// to move the textbox crop off its current band (ADR-0137). Zero takes
+	// DefaultPlacementSwitchMargin.
+	PlacementSwitchMargin float64
+	// PlacementTextMin is the absolute text-share floor the winning band must
+	// clear before the placement selection moves the crop (ADR-0137). Zero
+	// takes DefaultPlacementTextMin.
+	PlacementTextMin float64
+	// PlacementTextOnPanel is the on-panel share a band must reach to count as
+	// box-like — its letters must sit in the panel's rows, not float over the
+	// scene (ADR-0137 §Robustness). Zero takes DefaultPlacementTextOnPanel.
+	PlacementTextOnPanel float64
+	// PlacementSwitchFrames is the consecutive-frame run a competing band must
+	// hold as the best box-like band before it takes the crop (ADR-0137
+	// §Robustness). Zero takes DefaultPlacementSwitchFrames.
+	PlacementSwitchFrames int
+
 	// SceneID seeds matcher observations (matcher.Observation.SceneID). Empty
 	// means "unknown", which scores the scene component neutrally.
 	SceneID string
@@ -646,6 +706,25 @@ func (c Config) normalize() Config {
 		c.DecisionCandidates = 15
 	}
 	c.Presence = c.Presence.normalize()
+	// Placement-aware textbox selection (ADR-0137): zero (and non-positive) knob
+	// values take the measured defaults so a profile that names none keeps the
+	// default hysteresis; a negative margin or floor is a misconfiguration with
+	// an obvious intended reading (the default), so it clamps rather than runs
+	// a selection that never or always moves. The text floor in particular must
+	// default on a zero value — a floor of 0 would make every dark band
+	// "carry text" and let a dark scene drag the crop between bands.
+	if c.PlacementSwitchMargin <= 0 {
+		c.PlacementSwitchMargin = DefaultPlacementSwitchMargin
+	}
+	if c.PlacementTextMin <= 0 {
+		c.PlacementTextMin = DefaultPlacementTextMin
+	}
+	if c.PlacementTextOnPanel <= 0 {
+		c.PlacementTextOnPanel = DefaultPlacementTextOnPanel
+	}
+	if c.PlacementSwitchFrames <= 0 {
+		c.PlacementSwitchFrames = DefaultPlacementSwitchFrames
+	}
 	c.Preprocess = c.Preprocess.Clamp()
 	if c.Preprocess.Scale == 0 {
 		c.Preprocess = vision.DefaultSteps()

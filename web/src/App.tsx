@@ -38,7 +38,7 @@ import { TracesPage } from "./pages/Traces";
  */
 
 /**
- * The /developer → /traces rename (ADR-0109): preserves the query string so a
+ * The /developer → /traces rename (ADR-0141): preserves the query string so a
  * `?session=` deep link lands in the inspector view on the new route.
  */
 function TracesRedirect() {
@@ -52,7 +52,7 @@ export function App() {
     <Shell>
       <Routes>
         <Route path="/" element={<Navigate to="/library" replace />} />
-        {/* Plum & Peach IA seams (ADR-0093 §4, ADR-0109, ADR-0111): /traces
+        {/* Plum & Peach IA seams (ADR-0093 §4, ADR-0141, ADR-0111): /traces
             is the line-trace surface; /developer (the session inspector)
             redirects to it, preserving the query so ?session= deep links
             still land in the inspector view. Health is the other Phase 1
@@ -93,7 +93,7 @@ export function App() {
             </RequireAuth>
           }
         />
-        {/* The theme picker lives under /settings/theme (plan.md item 9, ADR-0109):
+        {/* The theme picker lives under /settings/theme (plan.md item 9, ADR-0142):
             the same guard as /settings; the page itself renders the four
             themes over the Phase 0 token seam. */}
         <Route

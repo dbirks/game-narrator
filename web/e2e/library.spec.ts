@@ -15,7 +15,7 @@ import { setPlayView } from "./support/play";
 import { acquireScenarioLock } from "./support/scenario-lock";
 
 /**
- * The /library screen (docs/design/plum-peach 2a; ADR-0109) on a fresh
+ * The /library screen (docs/design/plum-peach 2a; ADR-0140) on a fresh
  * packaged-binary appliance with the `agent_reasoning` role pointed at the
  * scripted model gateway (web/e2e/fake-model.mjs) — the same labelled-synthetic
  * boundary the onboarding walk uses (AGENTS.md rule 3: the model is scripted,
@@ -447,15 +447,43 @@ test("library: hero, status chip, view persistence and a real session start", as
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto("/library");
     await expect(page.getByTestId("lib-hero-start")).toBeVisible({ timeout: WAIT_MS });
+    // The Library's ▶ must not hardcode a frame source (ADR-0119): the start
+    // request omits frame_source so the runtime resolves the default and the
+    // snapshot carries the resolved kind. Capture the start body and assert the
+    // field is absent — the point of the fix, not just the resolved label.
+    const startBodies: string[] = [];
+    page.on("request", (req) => {
+      if (req.method() === "POST" && req.url().endsWith("/api/v1/sessions")) {
+        startBodies.push(req.postData() ?? "");
+      }
+    });
     await page.getByTestId("lib-hero-start").click();
     await expect(page, "the start lands on /play with the session in the URL").toHaveURL(
       /\/play\?session=.[^&]+/,
       { timeout: WAIT_MS },
     );
+    // The start request named no frame source: the server default (ADR-0119)
+    // resolved it, so the UI shows the resolved kind rather than a hardcoded
+    // one the operator did not choose.
+    expect(startBodies, "the Library ▶ fired a session start").not.toEqual([]);
+    const startBody = JSON.parse(startBodies[startBodies.length - 1]) as Record<string, unknown>;
+    expect(
+      "frame_source" in startBody,
+      "the Library start omits frame_source so the runtime default applies (ADR-0119)",
+    ).toBe(false);
     await expect(page.getByTestId("play-live"), "the session is live on /play").toBeVisible({
       timeout: WAIT_MS,
     });
     await expect(page.getByTestId("play-session-id")).not.toHaveText("");
+    // The unmatched read-through toggle (ADR-0136) is on Play and reads the
+    // snapshot's applied state: a session started without a settings call
+    // carries the documented default (ON) — a box the corpus cannot name
+    // speaks its on-screen text unless the operator switches this off here.
+    await expect(
+      page.getByTestId("play-read-through"),
+      "the read-through toggle is on Play",
+    ).toBeVisible({ timeout: WAIT_MS });
+    await expect(page.getByTestId("play-read-through")).toBeChecked();
     // The session runs the ready game's published profile with the library's
     // synthetic frame source: the snapshot names test_pattern. The facts are
     // read from the operator "show workings" view (the 2026-10-20 review

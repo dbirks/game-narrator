@@ -79,6 +79,7 @@ lint:
 	pnpm --dir web check:api
 	pnpm --dir web lint
 	pnpm --dir web fmt:check
+	scripts/gates/adr-numbers.sh
 	scripts/gates/secret-scan.sh
 
 ## secret-scan: the "no secrets / private endpoints / game data in Git" gate
@@ -287,8 +288,18 @@ test-ui:
 ## env — so a host without any of them never turns this gate red. It needs
 ## GN_GATE=test-dolphin like the first phase (the test enforces it) and runs
 ## AFTER the real-drive phase: one Dolphin at a time, and this phase boots
-## the only emulator of its phase. 60 m: the voice auditions and the
-## screen-driven walk to the opening legend take minutes each.
+## the only emulator of its phase. The phase now runs a second live e2e in
+## the same package (issue #25, ADR-0122): TestLiveCatchUpRapidDialogue —
+## the catch-up narration E2E: the same first-dialogue savestate, the
+## session's catch_up policy, the rapid-A drive (faster than the speech) and
+## the no-backlog/merge/voice assertions against the correlated stream, the
+## bundle under artifacts/catch-up-live/<run-id>/. It boots its own Dolphin
+## sequentially in the phase (one emulator at a time: it runs before
+## TestLivePlayUI, in file order) and NOT RUNs on the same missing env. The
+## phase budget is 115 m: 45 m for the catch-up test's internal budget (the
+## voice design, the drive and the settle) plus TestLivePlayUI's 60 m (the
+## voice auditions and the screen-driven walk to the opening legend take
+## minutes each).
 ## The liveui phase needs the packaged SPA go:embedded into the test
 ## binary (webassets.Built()); the recipe builds it between the scenario
 ## and liveui phases (make web-build) so the phase RUNS on a host with pnpm
@@ -309,7 +320,7 @@ test-dolphin:
 	else \
 		echo "(web-build skipped: pnpm not on PATH - the live play UI phase reports NOT RUN)" >&2; \
 	fi ; \
-	GN_GATE=test-dolphin scripts/gates/run-go-gate.sh test-dolphin-liveui -count=1 -p 1 -timeout 60m -run 'TestLivePlayUI$$' ./internal/e2e/... ; \
+	GN_GATE=test-dolphin scripts/gates/run-go-gate.sh test-dolphin-liveui -count=1 -p 1 -timeout 115m -run 'TestLivePlayUI$$|TestLiveCatchUpRapidDialogue$$' ./internal/e2e/... ; \
 	rc3=$$?; \
 	if [ $$rc1 -eq 1 ] || [ $$rc2 -eq 1 ] || [ $$rc3 -eq 1 ]; then rc=1; elif [ $$rc1 -eq 2 ] || [ $$rc2 -eq 2 ] || [ $$rc3 -eq 2 ]; then rc=2; else rc=0; fi; \
 	echo $$rc > artifacts/gates/test-dolphin.rc ; exit $$rc

@@ -2,7 +2,7 @@ import type { Settings } from "../../api/settings";
 import { Card } from "../../components/kit";
 
 /**
- * `/settings` "Audio" (ADR-0109 restyle, ADR-0074): the read-only half of
+ * `/settings` "Audio" (ADR-0142 restyle, ADR-0074): the read-only half of
  * the audio surface — the sink in force, the device it resolves to and the
  * variables that control them. The runtime-mutable half (the device
  * selection, the master volume, the test tone) is the "Audio output" card

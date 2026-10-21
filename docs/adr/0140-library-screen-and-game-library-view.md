@@ -1,4 +1,4 @@
-# ADR-0109: Library screen (Plum & Peach 2a) and the per-game library view endpoint
+# ADR-0140: Library screen (Plum & Peach 2a) and the per-game library view endpoint
 
 Date: 2026-10-20
 Status: accepted

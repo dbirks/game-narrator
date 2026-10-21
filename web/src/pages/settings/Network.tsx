@@ -2,7 +2,7 @@ import type { Settings } from "../../api/settings";
 import { Card } from "../../components/kit";
 
 /**
- * `/settings` "Network" (docs/design/plum-peach UX-13, ADR-0109): the
+ * `/settings` "Network" (docs/design/plum-peach UX-13, ADR-0142): the
  * tailnet URL — the Tailscale address that reaches this appliance's web UI.
  * The appliance has no screen of its own, so the URL is what the family
  * types on the laptop beside the TV, and it is copied from the running

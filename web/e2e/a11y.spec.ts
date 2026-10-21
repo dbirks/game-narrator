@@ -256,7 +256,7 @@ test("axe: every route of the ui-coverage matrix, WCAG 2.1 A/AA", async ({ page 
         await expect(page.getByTestId("empty-state")).toBeVisible();
       },
     },
-    // The ADR-0109 rename: the a11y walk visits the renamed route's
+    // The ADR-0141 rename: the a11y walk visits the renamed route's
     // inspector view (the session inspector the /developer surface was),
     // settled on the same control.
     {

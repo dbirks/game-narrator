@@ -2,7 +2,7 @@ import type { Settings } from "../../api/settings";
 import { Card } from "../../components/kit";
 
 /**
- * `/settings` "Profiles and import policies" (ADR-0109 restyle, docs/spec/14):
+ * `/settings` "Profiles and import policies" (ADR-0142 restyle, docs/spec/14):
  * the agent's research surface (the registered web-search provider and the
  * private-endpoint allowlist count — the entries are network topology and
  * stay server-side) and the agent budget. Read-only by design (ADR-0047):

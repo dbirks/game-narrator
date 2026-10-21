@@ -3,7 +3,7 @@
 Date: 2026-10-21
 Status: accepted
 Owners: agent worker (issue #33, gap audit G12)
-Related requirements/tests: ADR-0079 (the second synthetic game: bench set, committed clip, non-Latin abstain), ADR-0065 (gate marker discipline), ADR-0093 (the play-pc e2e project's port placement), ADR-0109 (the renamed dev inspector route), docs/spec/12 (evidence discipline; frame replay determinism), `internal/providers/tts` (secondgame_live_test.go, live_test.go, wav.go), `web/e2e` (second-game.spec.ts, support/ports.ts, support/servers.ts), `web/playwright.config.ts`, `scripts/gates/test-full-manifest.sh`, Makefile `test-full` recipe, `artifacts/second-game-live-tts/` (the one-shot evidence the live test replaces)
+Related requirements/tests: ADR-0079 (the second synthetic game: bench set, committed clip, non-Latin abstain), ADR-0065 (gate marker discipline), ADR-0093 (the play-pc e2e project's port placement), ADR-0141 (the renamed dev inspector route), docs/spec/12 (evidence discipline; frame replay determinism), `internal/providers/tts` (secondgame_live_test.go, live_test.go, wav.go), `web/e2e` (second-game.spec.ts, support/ports.ts, support/servers.ts), `web/playwright.config.ts`, `scripts/gates/test-full-manifest.sh`, Makefile `test-full` recipe, `artifacts/second-game-live-tts/` (the one-shot evidence the live test replaces)
 
 ## Context and constraints
 
