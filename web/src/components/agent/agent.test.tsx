@@ -72,6 +72,30 @@ describe("deriveAgentContext", () => {
     expect(context.selection).toBeUndefined();
   });
 
+  it("takes the selection from the page's registration when the URL names it by name (the merged Cast screen)", () => {
+    const context = deriveAgentContext(
+      { pathname: `/games/${GAME_ID}/cast`, search: `?profile=${PROFILE_ID}&character=Marla` },
+      { selection: { type: "character", id: CHARACTER_ID } },
+    );
+    expect(context.selection).toEqual({ type: "character", id: CHARACTER_ID });
+  });
+
+  it("drops a registered selection whose id the server would refuse", () => {
+    const context = deriveAgentContext(
+      { pathname: `/games/${GAME_ID}/cast`, search: `?character=Marla` },
+      { selection: { type: "character", id: "not-an-id" } },
+    );
+    expect(context.selection).toBeUndefined();
+  });
+
+  it("prefers the URL's own valid id over the registration when both are present", () => {
+    const context = deriveAgentContext(
+      { pathname: `/games/${GAME_ID}/cast`, search: `?character=${CHARACTER_ID}` },
+      { selection: { type: "character", id: OTHER_CHARACTER_ID } },
+    );
+    expect(context.selection).toEqual({ type: "character", id: CHARACTER_ID });
+  });
+
   it("derives a line selection from ?line=", () => {
     const context = deriveAgentContext({
       pathname: `/traces/${RUN_ID}`,

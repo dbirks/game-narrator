@@ -21,12 +21,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useLocation } from "react-router";
 
 import { PillButton } from "../kit/PillButton";
-import {
-  agentChipText,
-  routeContextChip,
-  selectionFromLocation,
-  useSelectionLabel,
-} from "./agentContext";
+import { agentChipText, routeContextChip, useSelectionLabel } from "./agentContext";
 import { useAgentDock, type DockEventSource, type DockQuestion } from "./useAgentDock";
 
 const MAX_MESSAGE_LEN = 4000; // the server's assistantMaxText bound
@@ -117,14 +112,10 @@ export function AgentDock({ onClose, eventSourceFactory, initialQuery }: Options
   const [draft, setDraft] = useState(initialQuery ?? "");
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // The chip seam: the bare screen name, or `screen › name` once the URL's
+  // The chip seam: the bare screen name, or `screen › name` once the screen's
   // selection has resolved to one (UX-01: the chip follows the selection).
-  const selection = selectionFromLocation({
-    pathname: location.pathname,
-    search: location.search,
-  });
   const profileId = new URLSearchParams(location.search).get("profile");
-  const selectionName = useSelectionLabel(selection, profileId);
+  const selectionName = useSelectionLabel(location, profileId);
   const chip = agentChipText(routeContextChip(location.pathname), selectionName);
 
   // Esc closes the dock (the pill's aria-haspopup dialog contract).

@@ -214,8 +214,11 @@ test("agent dock: context payload, the selection chip and ⌘J reachability (UX-
     );
     const first = roster.characters[0];
     const second = roster.characters[1];
-    const voicesUrl = (characterId: string) =>
-      `/games/${gameId}/voices?profile=${profileId}&character=${characterId}`;
+    // The merged Cast screen keys its selection by character name in the URL
+    // (ADR-0093 §4); the payload's selection id is the row id the page
+    // resolves from that name.
+    const castUrl = (characterName: string) =>
+      `/games/${gameId}/cast?profile=${profileId}&character=${encodeURIComponent(characterName)}`;
 
     // ── 4. the selection screen: the chip, the dock and the context payload ─
     const captured: string[] = [];
@@ -226,7 +229,7 @@ test("agent dock: context payload, the selection chip and ⌘J reachability (UX-
     });
 
     await page.setViewportSize({ width: 1440, height: 900 });
-    await page.goto(voicesUrl(first.id));
+    await page.goto(castUrl(first.name));
     await expect(page.getByTestId("voice-characters")).toBeVisible({ timeout: 20_000 });
     // The pill's chip reads the screen and the resolved selection (UX-01).
     await expect(page.getByTestId("agent-pill-context")).toHaveText(`cast › ${first.name}`, {
@@ -262,11 +265,10 @@ test("agent dock: context payload, the selection chip and ⌘J reachability (UX-
       };
     };
     // The full context payload (UX-01): the route (path + the selection's
-    // query), the game, the profile and the selection.
+    // query), the game, the profile and the selection — whose id is the row
+    // id the Cast page resolved from the name-keyed query.
     expect(body.text).toBe(PLACEHOLDER_MESSAGE);
-    expect(body.context?.route).toBe(
-      `/games/${gameId}/voices?profile=${profileId}&character=${first.id}`,
-    );
+    expect(body.context?.route).toBe(castUrl(first.name));
     expect(body.context?.game_id).toBe(gameId);
     expect(body.context?.profile_id).toBe(profileId);
     expect(body.context?.selection).toEqual({ type: "character", id: first.id });
@@ -278,7 +280,7 @@ test("agent dock: context payload, the selection chip and ⌘J reachability (UX-
     });
 
     // ── 5. the chip follows the selection when it changes ───────────────────
-    await page.goto(voicesUrl(second.id));
+    await page.goto(castUrl(second.name));
     await expect(page.getByTestId("voice-characters")).toBeVisible({ timeout: 20_000 });
     await expect(page.getByTestId("agent-pill-context")).toHaveText(`cast › ${second.name}`, {
       timeout: 20_000,
@@ -320,7 +322,7 @@ test("agent dock: context payload, the selection chip and ⌘J reachability (UX-
     }
 
     // ── 8. evidence: the docked panel at the design's three widths ──────────
-    await page.goto(voicesUrl(first.id));
+    await page.goto(castUrl(first.name));
     await expect(page.getByTestId("voice-characters")).toBeVisible({ timeout: 20_000 });
     await page.keyboard.press("Meta+j");
     await expect(page.getByTestId("agent-dock")).toBeVisible();

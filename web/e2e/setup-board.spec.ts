@@ -430,7 +430,7 @@ test("setup board: the cards glide on the stream, no polling, coral while voicin
   await page.getByTestId("onb-start-narrating").click();
   await expect(page).toHaveURL(/\/cast$/, { timeout: WAIT_MS });
   await expect(page.getByTestId("cast-start-narrating")).toBeVisible();
-  await expect(page.getByTestId("cast-start-narrating")).toHaveText("Start narrating");
+  await expect(page.getByTestId("cast-start-narrating")).toHaveText("▶ Start narrating");
 
   // ── the wire read: the stream the UI claims to be driven by ─────────────
   // The durable log replayed from the start (AGENTS.md evidence): Marla's

@@ -32,6 +32,7 @@ import {
 import { fetchAllMessages } from "../api/profiles";
 import { voicesApi, type VoiceRevision } from "../api/voices";
 import { useAuth } from "../auth/auth-context";
+import { setAgentEnrichment } from "../components/agent/agentContext";
 import { DitherCover, NameTab, Segmented, Switch, readSegmented } from "../components/kit";
 import { EmptyState, ErrorState, Loading } from "../components/states";
 import { CastDetailPanel } from "./cast/CastDetailPanel";
@@ -182,23 +183,35 @@ export function CastPage() {
   };
 
   // A stale ?character= (a retired name, another profile's roster) is
-  // cleared, not rendered as an error: the roster itself is the answer.
+  // cleared, not rendered as an error: the roster itself is the answer. A
+  // legacy row-id selection — the old /voices and /characters links the Cast
+  // redirect keeps (ADR-0093 §4) — is rewritten to the character's name, the
+  // screen's convention, so a saved link still selects the same character.
   useEffect(() => {
-    if (
-      characterParam !== "" &&
-      roster.length > 0 &&
-      !roster.some((c) => c.name === characterParam)
-    ) {
-      setParams(
-        (prev) => {
-          const next = new URLSearchParams(prev);
-          next.delete("character");
-          return next;
-        },
-        { replace: true },
-      );
-    }
+    if (characterParam === "" || roster.length === 0) return;
+    if (roster.some((c) => c.name === characterParam)) return;
+    const legacy = roster.find((c) => c.id === characterParam);
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (legacy !== undefined) next.set("character", legacy.name);
+        else next.delete("character");
+        return next;
+      },
+      { replace: true },
+    );
   }, [roster, characterParam, setParams]);
+
+  // The agent dock's screen context (UX-01): the roster's rows in order, and
+  // the screen's own selection — which the URL names by character name, so
+  // the dock's payload carries the resolved row id the server will accept.
+  useEffect(() => {
+    setAgentEnrichment({
+      visibleIds: roster.map((c) => c.id),
+      selection: selected !== null ? { type: "character", id: selected.id } : undefined,
+    });
+    return () => setAgentEnrichment({});
+  }, [roster, selected]);
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ["voices"] });

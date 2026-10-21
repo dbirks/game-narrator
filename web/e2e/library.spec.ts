@@ -11,6 +11,7 @@ import {
   serverRun,
 } from "./support/servers";
 import { trackConsoleErrors } from "./support/console";
+import { setPlayView } from "./support/play";
 import { acquireScenarioLock } from "./support/scenario-lock";
 
 /**
@@ -177,7 +178,11 @@ test("library: hero, status chip, view persistence and a real session start", as
   // 503 joins 401 on the ignore list: on this appliance the capture layer is
   // unwired (no UVC dongle, no test seam), and the Settings capture section
   // renders that 503 as its own "no capture layer" note.
-  const consoleErrors = trackConsoleErrors(page, [401, 503]);
+  // 409 and 429 are the Play screen's designed degradations (the capture
+  // frame is unavailable before the capture layer warms up, the session is
+  // busy): the walk's real session start lands on that screen's operator
+  // view, so the walk allows the same codes the play-pc walk does.
+  const consoleErrors = trackConsoleErrors(page, [401, 409, 429, 503]);
 
   // The scenario lock (ADR-0120): the in-setup seed drives the shared
   // fake-model gateway's one global scenario (stall), so this walk is serial
@@ -452,7 +457,10 @@ test("library: hero, status chip, view persistence and a real session start", as
     });
     await expect(page.getByTestId("play-session-id")).not.toHaveText("");
     // The session runs the ready game's published profile with the library's
-    // synthetic frame source: the snapshot names test_pattern.
+    // synthetic frame source: the snapshot names test_pattern. The facts are
+    // read from the operator "show workings" view (the 2026-10-20 review
+    // moved them out of the caption view) — toggle before the read.
+    await setPlayView(page, "operator");
     await expect(page.getByTestId("play-source")).toContainText("test_pattern", {
       timeout: WAIT_MS,
     });

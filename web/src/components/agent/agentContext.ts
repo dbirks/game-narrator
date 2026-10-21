@@ -13,6 +13,9 @@
  * - `profileId` is the `?profile=` revision picker the pages already use;
  * - `selection` is the `?character=` / `?line=` id, kept only when it is an
  *   id the server will accept (a malformed id is dropped rather than 422'd);
+ *   a page whose selection the URL names in another form (the merged Cast
+ *   screen's `?character=<name>`) registers its resolved row instead — the
+ *   payload's `selection` then comes from the page's enrichment;
  * - `visibleIds` is what a page registers into the enrichment store below —
  *   roster order on a list page, timeline order on a trace. Pages opt in;
  *   the dock works without them (the payload's "selection is null/absent"
@@ -55,11 +58,15 @@ const SELECTION_PARAMS: Record<string, string> = {
 };
 
 /** The enrichment a page registers for the screen it renders: the ids
- *  visible in its main list. One active registration at a time — a page sets
- *  it in an effect and clears it on unmount, so a route change cannot carry
- *  the previous screen's ids along. */
+ *  visible in its main list, and — when the URL names the selection in a
+ *  form the server will not accept (the merged Cast screen keys it by
+ *  character name) — the selection resolved to a row id the server will
+ *  accept. One active registration at a time — a page sets it in an effect
+ *  and clears it on unmount, so a route change cannot carry the previous
+ *  screen's ids along. */
 export interface AgentEnrichment {
   visibleIds?: string[];
+  selection?: { type: string; id: string };
 }
 
 let enrichment: AgentEnrichment = {};
@@ -111,6 +118,13 @@ export function deriveAgentContext(
 
   const selection = selectionFromLocation(location);
   if (selection !== null) context.selection = selection;
+  else if (registered.selection !== undefined) {
+    // The page resolved a selection the URL could not carry as a valid id
+    // (the Cast screen's name-keyed `?character=`): the page knows its row
+    // id; the same id gate the URL form passes is applied here too.
+    const { type, id } = registered.selection;
+    if (type.length <= 64 && ID_RE.test(id)) context.selection = { type, id };
+  }
 
   if (registered.visibleIds !== undefined) {
     const ids = registered.visibleIds
@@ -178,21 +192,25 @@ interface CharacterRoster {
   characters: { id: string; name: string }[];
 }
 
-/** The name a `?character=` selection points at: the profile's roster
- *  (the same read the cast/voices pages render), or null while it has not
- *  resolved. No character selection, no profile, or a failed read all
- *  settle on null — the chip then shows the bare screen name. */
+/** The name the screen's `?character=` selection points at: the profile's
+ *  roster (the same read the cast screen renders), matched first by row id
+ *  (a legacy /voices and /characters link, which the Cast redirect keeps)
+ *  and then by character name (the merged Cast screen keys its selection by
+ *  name). null while it has not resolved — the chip then shows the bare
+ *  screen name. No character selection, no profile, or a failed read all
+ *  settle on null; other screens' selections never carry a name here. */
 export function useSelectionLabel(
-  selection: { type: string; id: string } | null,
+  location: AgentLocation,
   profileId: string | null,
 ): string | null {
   const [label, setLabel] = useState<string | null>(null);
-  const selectionKey = selection === null ? "" : `${selection.type}:${selection.id}`;
+  const isCastScreen = routeContextChip(location.pathname) === "cast";
+  const characterParam = isCastScreen
+    ? new URLSearchParams(location.search).get("character")
+    : null;
   useEffect(() => {
     setLabel(null);
-    if (selectionKey === "" || selectionKey.startsWith("line:") || profileId === null) return;
-    const [type, id] = selectionKey.split(":");
-    if (type !== "character") return;
+    if (characterParam === null || characterParam === "" || profileId === null) return;
     let cancelled = false;
     const controller = new AbortController();
     api
@@ -202,7 +220,9 @@ export function useSelectionLabel(
       })
       .then((roster) => {
         if (cancelled) return;
-        const found = (roster as CharacterRoster | undefined)?.characters?.find((c) => c.id === id);
+        const rows = (roster as CharacterRoster | undefined)?.characters ?? [];
+        const found =
+          rows.find((c) => c.id === characterParam) ?? rows.find((c) => c.name === characterParam);
         setLabel(found?.name ?? null);
       })
       .catch(() => {
@@ -212,6 +232,6 @@ export function useSelectionLabel(
       cancelled = true;
       controller.abort();
     };
-  }, [selectionKey, profileId]);
+  }, [location.pathname, characterParam, profileId]);
   return label;
 }

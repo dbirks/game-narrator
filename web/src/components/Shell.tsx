@@ -4,12 +4,7 @@ import { Link, useLocation, useNavigate } from "react-router";
 import { fetchSystemInfo } from "../api/system";
 import { useAuth } from "../auth/auth-context";
 import { subscribeAgentQuery } from "../lib/search";
-import {
-  agentChipText,
-  routeContextChip,
-  selectionFromLocation,
-  useSelectionLabel,
-} from "./agent/agentContext";
+import { agentChipText, routeContextChip, useSelectionLabel } from "./agent/agentContext";
 import { AgentDock } from "./agent/AgentDock";
 import { useLiveStatus } from "../lib/liveStatus";
 import { KSearchPalette } from "../pages/KSearch";
@@ -112,9 +107,8 @@ export function Shell({ children }: ShellProps) {
   // The pill's chip: the dock's seam (agentContext), so the pill and the
   // docked header — and the outgoing message's context payload — read the
   // same words (UX-01).
-  const selection = selectionFromLocation(location);
   const pillProfileId = new URLSearchParams(location.search).get("profile");
-  const pillSelectionName = useSelectionLabel(selection, pillProfileId);
+  const pillSelectionName = useSelectionLabel(location, pillProfileId);
   const chip = agentChipText(routeContextChip(location.pathname), pillSelectionName);
 
   const togglePalette = useCallback(() => setPaletteOpen((open) => !open), []);
