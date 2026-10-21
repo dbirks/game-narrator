@@ -24,7 +24,7 @@ RUN_GATES := test-unit test-ui diagnostics release-snapshot bench \
              test-replay test-dolphin test-models test-hardware secret-scan
 
 .PHONY: bootstrap dev build web-build test-unit test-replay test-ui test-dolphin test-models \
-        test-hardware test-full lint release-snapshot diagnostics bench soak secret-scan
+        test-hardware test-full lint release-snapshot verify-apt-pins diagnostics bench soak secret-scan
 
 ## web-build: build the React UI and stage it for go:embed
 web-build:
@@ -330,6 +330,16 @@ test-hardware:
 	@GAME_NARRATOR_HW_SMOKE=1 scripts/gates/run-go-gate.sh test-hardware -count=1 -timeout 15m ./internal/hwsmoke/... ; \
 	rc=$$?; echo $$rc > artifacts/gates/test-hardware.rc ; exit $$rc
 
+## verify-apt-pins: drift guard for the OCI image's apt version pins (ADR 0131).
+## packaging/Dockerfile pins exact package versions against immutable
+## snapshot.debian.org timestamps; this verifies the pins resolve (fast index
+## check, no docker needed) and, when docker is usable, builds the
+## `apt-pins` stage for linux/amd64 (+ linux/arm64 under binfmt emulation).
+## Wired into release-snapshot and publish.yml so a Debian version update
+## fails early with an actionable message instead of at image build time.
+verify-apt-pins:
+	@scripts/release/verify-apt-pins.sh
+
 ## release-snapshot: local snapshot pipeline (docs/spec/15, ADR 0033).
 ## Validates the build, archives, SBOMs, .debs and the OCI image WITHOUT
 ## publishing: --snapshot skips all publishing and dockers_v2 snapshot builds
@@ -341,6 +351,7 @@ test-hardware:
 release-snapshot:
 	@command -v goreleaser >/dev/null 2>&1 || { echo "NOT RUN: release-snapshot (goreleaser not installed; see docs/spec/16)" >&2; exit 1; }
 	@set -e; \
+	scripts/release/verify-apt-pins.sh; \
 	goreleaser check; \
 	if docker info >/dev/null 2>&1; then \
 		echo "release-snapshot: docker available in this session"; \
