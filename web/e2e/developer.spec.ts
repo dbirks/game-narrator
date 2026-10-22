@@ -372,6 +372,10 @@ test("the developer inspector over a real replay session", async ({
   await page.getByTestId("login-username").fill(VIEWER.username);
   await page.getByTestId("login-password").fill(VIEWER.password);
   await page.getByTestId("login-submit").click();
+  // A deliberate sign-out carries no return path (1007c17): the viewer
+  // lands on the default page and opens the inspector by URL.
+  await expect(page).not.toHaveURL(/\/login/);
+  await page.goto("/traces?view=inspector");
   await expect(page).toHaveURL(/\/traces\?view=inspector$/);
   // The role gate moved to the Traces page with the rename (ADR-0141):
   // both views sit behind the developer role, the testid follows.
