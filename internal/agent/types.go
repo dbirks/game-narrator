@@ -154,12 +154,17 @@ const (
 	StateFailed    State = "failed"
 	StateSucceeded State = "succeeded"
 	StateCancelled State = "cancelled"
+	// StateAbandoned is the operator's way out of a run that is waiting
+	// (blocked on a provider fault or a human, stopped by a pause) without
+	// deleting anything: the run stops being status data and leaves nothing
+	// resumable behind (issue #45, ADR-0028). It is terminal.
+	StateAbandoned State = "abandoned"
 )
 
 // Terminal reports whether the run can no longer make progress.
 func (s State) Terminal() bool {
 	switch s {
-	case StateFailed, StateSucceeded, StateCancelled:
+	case StateFailed, StateSucceeded, StateCancelled, StateAbandoned:
 		return true
 	}
 	return false
@@ -175,6 +180,10 @@ const (
 	StopReasonCancelled  = "cancelled"
 	StopReasonModelError = "model_error"
 	StopReasonToolError  = "tool_error"
+	// StopReasonAbandoned records an operator-initiated stop (issue #45,
+	// ADR-0028): the run was waiting and the operator ended it rather than
+	// leaving the status bar naming a blocked run forever.
+	StopReasonAbandoned = "abandoned"
 	// StopReasonProviderUnavailable is the degraded-mode stop (ADR-0028):
 	// the agent_reasoning endpoint was unavailable (breaker open, 404/503)
 	// and the run is *waiting for the provider*, not broken. blocked is a

@@ -1,9 +1,10 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
 
-import { Segmented } from "../components/kit";
+import { PillButton, Segmented } from "../components/kit";
 import { ErrorState } from "../components/states";
 import { fetchSystemInfo } from "../api/system";
+import { onboardingApi } from "../api/onboarding";
 import { useLiveStatus, type StatusSnapshot } from "../lib/liveStatus";
 import { CaptureSignalBlock } from "./health/signal-block";
 import { HealthTiles } from "./health/tiles";
@@ -179,11 +180,18 @@ export function HealthPage() {
 /**
  * The setup-runs tab (ADR-0111 §4): the live onboarding runs from the one
  * status stream (state, stage, voiced/total, elapsed) — real data from the
- * same feed the bar reads, with the dashed empty state when none is live.
+ * same feed the bar reads, with the dashed empty state when none is live. A
+ * run that has gone blocked (or been paused) can be dismissed by the operator
+ * (issue #45, ADR-0028): the button is the web face of POST …/abandon, behind
+ * an inline confirm.
  */
 function SetupRunsTab() {
   const { snapshot } = useLiveStatus();
   const runs = snapshot?.setup_runs ?? [];
+  const [confirmRunId, setConfirmRunId] = useState<string | null>(null);
+  const abandon = useMutation({
+    mutationFn: (runId: string) => onboardingApi.abandon(runId),
+  });
 
   if (runs.length === 0) {
     return (
@@ -208,6 +216,7 @@ function SetupRunsTab() {
             <th>Stage</th>
             <th>Voiced</th>
             <th>Elapsed</th>
+            <th>Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -220,6 +229,40 @@ function SetupRunsTab() {
                 {run.voiced} of {run.characters || "?"}
               </td>
               <td>{formatElapsed(run.elapsed_ms)}</td>
+              <td>
+                {run.state === "blocked" || run.state === "review" ? (
+                  confirmRunId === run.run_id ? (
+                    <span
+                      className="row-actions"
+                      data-testid={`health-setup-run-confirm-${run.run_id}`}
+                    >
+                      <PillButton
+                        variant="coral"
+                        disabled={abandon.isPending}
+                        onClick={() => void abandon.mutate(run.run_id)}
+                        data-testid={`health-setup-run-dismiss-confirm-${run.run_id}`}
+                      >
+                        {abandon.isPending ? "…" : "Dismiss"}
+                      </PillButton>
+                      <PillButton
+                        variant="outline"
+                        onClick={() => setConfirmRunId(null)}
+                        data-testid={`health-setup-run-dismiss-keep-${run.run_id}`}
+                      >
+                        Keep run
+                      </PillButton>
+                    </span>
+                  ) : (
+                    <PillButton
+                      variant="outline"
+                      onClick={() => setConfirmRunId(run.run_id)}
+                      data-testid={`health-setup-run-dismiss-${run.run_id}`}
+                    >
+                      Dismiss
+                    </PillButton>
+                  )
+                ) : null}
+              </td>
             </tr>
           ))}
         </tbody>

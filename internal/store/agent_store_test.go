@@ -74,6 +74,44 @@ func TestAgentRunCreateGetState(t *testing.T) {
 	}
 }
 
+// TestAgentRunAbandonTransition pins the operator-initiated stop (issue #45,
+// ADR-0028): a blocked run with no attempt in flight moves to the terminal
+// abandoned state, and the widened run-state vocabulary (migration 0019) admits
+// the state at the write edge.
+func TestAgentRunAbandonTransition(t *testing.T) {
+	ctx := testCtx(t)
+	s := openIn(t)
+	if _, err := s.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	a := NewAgentStore(s)
+
+	// The migration's CHECK admits the terminal abandoned state.
+	if err := a.CreateAgentRun(ctx, AgentRun{
+		ID: "run-abandon", State: AgentStateAbandoned,
+		PlanJSON:      []byte(`{"title":"Wind Waker"}`),
+		BudgetJSON:    []byte(`{}`),
+		PromptVersion: "onboarding-1",
+	}); err != nil {
+		t.Fatalf("CreateAgentRun with the abandoned state: %v", err)
+	}
+	// A blocked run is abandonable: it moves to the terminal state, with the
+	// operator stop recorded as the run's stop reason.
+	if err := a.SetAgentRunState(ctx, "run-abandon", AgentStateBlocked, "budget_exhausted"); err != nil {
+		t.Fatalf("SetAgentRunState to blocked: %v", err)
+	}
+	if err := a.SetAgentRunState(ctx, "run-abandon", AgentStateAbandoned, "abandoned"); err != nil {
+		t.Fatalf("SetAgentRunState to abandoned: %v", err)
+	}
+	run, err := a.GetAgentRun(ctx, "run-abandon")
+	if err != nil {
+		t.Fatalf("GetAgentRun: %v", err)
+	}
+	if run.State != AgentStateAbandoned || run.StopReason != "abandoned" {
+		t.Fatalf("run = %+v, want abandoned with stop reason %q", run, "abandoned")
+	}
+}
+
 func TestAgentMessagesSequencing(t *testing.T) {
 	ctx := testCtx(t)
 	s := openIn(t)

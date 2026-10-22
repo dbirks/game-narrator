@@ -644,6 +644,59 @@ func (s *Server) onbStopAttempt(w http.ResponseWriter, r *http.Request, verb str
 	})
 }
 
+// handleOnboardingAbandon serves POST /api/v1/onboarding/runs/{id}/abandon
+// (issue #45, ADR-0028): the operator's way out of a run that is waiting —
+// blocked on a provider fault or a human, stopped by a pause — without deleting
+// anything. A run with no attempt in flight moves to the terminal `abandoned`
+// state (migration 0019 widened the run-state CHECK); the status line, the
+// Library and the Health surfaces stop naming it because abandoned is
+// terminal. A run with an attempt in flight is refused with 409: the operator
+// cancels the attempt first (POST .../cancel keeps the run resumable), and a
+// second lifecycle verb cannot both stop and end a run.
+func (s *Server) handleOnboardingAbandon(w http.ResponseWriter, r *http.Request) {
+	if !s.onboardingRequired(w, r) {
+		return
+	}
+	runID, ok := s.onbRunIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	run, ok := s.onbLoadRun(w, r, runID)
+	if !ok {
+		return
+	}
+	active, err := s.onbActiveJob(r.Context(), runID)
+	if err != nil {
+		s.storeProblem(w, r, err, "check active job", "job")
+		return
+	}
+	if active != nil {
+		s.writeCodeProblem(w, r, http.StatusConflict, "run-in-progress", codeConflict,
+			"Conflict", fmt.Sprintf("run %s has an attempt in flight; cancel it before abandoning the run", runID))
+		return
+	}
+	switch agent.State(run.State) {
+	case agent.StateBlocked, agent.StateReview, agent.StateCancelled:
+		// Abandonable: the run is waiting on a human or a provider fault, or
+		// was stopped by a pause — not over, and nothing is executing.
+	default:
+		s.writeCodeProblem(w, r, http.StatusConflict, "run-already-terminal", codeConflict,
+			"Conflict", fmt.Sprintf("run %s is %s and cannot be abandoned", runID, run.State))
+		return
+	}
+	if err := s.onb.AgentStore.SetAgentRunState(r.Context(), runID, string(agent.StateAbandoned), string(agent.StopReasonAbandoned)); err != nil {
+		s.storeProblem(w, r, err, "abandon run", "run")
+		return
+	}
+	s.auditEvent(r.Context(), "onboarding.run.abandon", IdentityFromContext(r.Context()), s.clientAddr(r), map[string]any{
+		"run_id": runID, "state": string(agent.StateAbandoned),
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"run_id": runID, "state": string(agent.StateAbandoned),
+		"note": fmt.Sprintf("the run was abandoned; no attempt was in flight and the run is terminal"),
+	})
+}
+
 // handleOnboardingResume serves POST .../resume: enqueue a fresh attempt for
 // a run that is waiting (blocked on a provider fault or a budget, in review,
 // cancelled, or finished-but-unpublished). The run's own state gates the
@@ -664,6 +717,10 @@ func (s *Server) handleOnboardingResume(w http.ResponseWriter, r *http.Request) 
 	case agent.StateFailed:
 		s.writeCodeProblem(w, r, http.StatusConflict, "run-failed", codeConflict,
 			"Conflict", "a failed run is not resumable; start a new run")
+		return
+	case agent.StateAbandoned:
+		s.writeCodeProblem(w, r, http.StatusConflict, "run-already-terminal", codeConflict,
+			"Conflict", "a run that was abandoned is terminal; start a new run instead of resuming")
 		return
 	case agent.StateQueued, agent.StateRunning, agent.StateBlocked, agent.StateReview, agent.StateCancelled, agent.StateSucceeded:
 	default:

@@ -196,6 +196,12 @@ func TestMigratedDatabaseHoldsExactlyTheMigrationTables(t *testing.T) {
 // without the VIRTUAL/IF NOT EXISTS noise in between.
 var createTablePattern = regexp.MustCompile("(?i)^CREATE\\s+(?:VIRTUAL\\s+)?TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?([A-Za-z0-9_]+)")
 
+// alterTablePattern matches the table an ALTER TABLE ... RENAME TO statement
+// renames: the rebuild migration 0019 widens a CHECK by renaming a freshly
+// created table over the old shape, and the drift check must read the surviving
+// name, not the transient one.
+var alterTablePattern = regexp.MustCompile("(?i)^ALTER\\s+TABLE\\s+([A-Za-z0-9_]+)\\s+RENAME\\s+TO\\s+([A-Za-z0-9_]+)")
+
 // createdTables answers "which tables does each embedded migration create?", plus the
 // subset that came from a CREATE VIRTUAL TABLE statement — whose shadow tables SQLite
 // adds by itself and no migration names.
@@ -224,16 +230,29 @@ func migrationTables(t *testing.T) createdTables {
 			t.Fatalf("splitSQL(%s): %v", mig.Name, err)
 		}
 		out.virtual[mig.Name] = map[string]bool{}
+		renames := map[string]string{}
+		created := []string{}
 		for _, stmt := range statements {
 			code := stripLeadComments(stmt)
 			m := createTablePattern.FindStringSubmatch(code)
 			if m == nil {
+				if rm := alterTablePattern.FindStringSubmatch(code); rm != nil {
+					renames[rm[1]] = rm[2]
+				}
 				continue
 			}
-			out.byFile[mig.Name] = append(out.byFile[mig.Name], m[1])
+			created = append(created, m[1])
 			if strings.HasPrefix(strings.ToUpper(code), "CREATE VIRTUAL TABLE") {
 				out.virtual[mig.Name][m[1]] = true
 			}
+		}
+		// A rebuild (create, copy, drop, rename) leaves the surviving name on
+		// the database, so the migration's contribution is the renamed shape.
+		for _, name := range created {
+			if next, ok := renames[name]; ok {
+				name = next
+			}
+			out.byFile[mig.Name] = append(out.byFile[mig.Name], name)
 		}
 	}
 	return out

@@ -1145,3 +1145,32 @@ func TestStatusStreamWithoutHubAnswers503(t *testing.T) {
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 }
+
+// TestStatusExcludesAbandonedSetupRuns is the issue #45 regression on the
+// status line: a run the operator abandoned (terminal) is no longer status
+// data, so the bar, the Library and the Health surfaces stop naming it — the
+// abandoned run must not appear in the snapshot's setup_runs, the way a
+// superseded run does not (ADR-0104 amendment).
+func TestStatusExcludesAbandonedSetupRuns(t *testing.T) {
+	env := newStatusEnv(t, func(e *statusTestEnv) {
+		e.s.onb = &onbDeps{AgentStore: store.NewAgentStore(e.st)}
+	})
+	profileID := seedStatusContent(t, env.ctx, env.st)
+	agentStore := store.NewAgentStore(env.st)
+	if err := agentStore.CreateAgentRun(env.ctx, store.AgentRun{
+		ID: "run-abandoned", ProfileID: profileID, State: store.AgentStateAbandoned, PlanJSON: []byte(`{"title":"Skies of Arcadia"}`), PromptVersion: "test-prompt",
+	}); err != nil {
+		t.Fatalf("CreateAgentRun: %v", err)
+	}
+	resp, body := env.getJSON(auth.RoleViewer, statusPath)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET = %d (%s)", resp.StatusCode, body)
+	}
+	var snap StatusSnapshot
+	if err := json.Unmarshal(body, &snap); err != nil {
+		t.Fatalf("body is not the snapshot: %v (%s)", err, body)
+	}
+	if len(snap.Setup) != 0 {
+		t.Fatalf("setup_runs = %v, want the abandoned run excluded", snap.Setup)
+	}
+}

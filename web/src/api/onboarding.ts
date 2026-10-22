@@ -85,6 +85,16 @@ export const onboardingApi = {
     }) as Promise<OnboardingAttemptResult>;
   },
 
+  /** Abandon a blocked or paused run (issue #45, ADR-0028): the operator's
+   *  stop. A run with no attempt in flight moves to the terminal abandoned
+   *  state; an attempt in flight answers 409 (cancel the attempt first). */
+  abandon(runId: string, signal?: AbortSignal) {
+    return api.post("/api/v1/onboarding/runs/{id}/abandon", {
+      params: { id: runId },
+      signal,
+    }) as Promise<OnboardingAttemptResult>;
+  },
+
   /** Approve a review item. `review_item_id "publish"` is the publish
    *  boundary: the token is issued server-side and never crosses the wire. */
   approve(runId: string, reviewItemId: string, signal?: AbortSignal) {

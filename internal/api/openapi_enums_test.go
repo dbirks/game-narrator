@@ -109,14 +109,14 @@ var literalEnums = map[string][]string{
 	// core writes on the run row, the tool-result statuses the executor
 	// wraps (plus the store's pending row state), and the two review-item
 	// vocabularies internal/api/onboarding_state.go computes.
-	"OnboardingRunState.properties.state":      {string(agent.StateQueued), string(agent.StateRunning), string(agent.StateBlocked), string(agent.StateReview), string(agent.StateFailed), string(agent.StateSucceeded), string(agent.StateCancelled)},
+	"OnboardingRunState.properties.state":      {string(agent.StateQueued), string(agent.StateRunning), string(agent.StateBlocked), string(agent.StateReview), string(agent.StateFailed), string(agent.StateSucceeded), string(agent.StateCancelled), string(agent.StateAbandoned)},
 	"OnboardingToolCallView.properties.status": {"pending", string(agent.StatusSucceeded), string(agent.StatusFailed), string(agent.StatusRefused), string(agent.StatusTimeout), string(agent.StatusCancelled)},
 	"OnboardingReviewItem.properties.kind":     {"publish", "tool"},
 	"OnboardingReviewItem.properties.state":    {"pending", "resolved"},
 	// The setup board snapshot (ADR-0108, UX-06): the card columns
 	// internal/setupboard derives, the rail's six cells and cell states it
 	// writes, and the run-state vocabulary the snapshot answers verbatim.
-	"SetupBoard.properties.state":          {string(agent.StateQueued), string(agent.StateRunning), string(agent.StateBlocked), string(agent.StateReview), string(agent.StateFailed), string(agent.StateSucceeded), string(agent.StateCancelled)},
+	"SetupBoard.properties.state":          {string(agent.StateQueued), string(agent.StateRunning), string(agent.StateBlocked), string(agent.StateReview), string(agent.StateFailed), string(agent.StateSucceeded), string(agent.StateCancelled), string(agent.StateAbandoned)},
 	"SetupBoardCharacter.properties.stage": {string(setupboard.StageFinding), string(setupboard.StageBrief), string(setupboard.StageVoicing), string(setupboard.StageDone)},
 	"SetupRailCell.properties.id":          {setupboard.RailFindGame, setupboard.RailDialogue, setupboard.RailCharacters, setupboard.RailBriefs, setupboard.RailVoices, setupboard.RailPublish},
 	"SetupRailCell.properties.state":       {string(setupboard.CellPending), string(setupboard.CellActive), string(setupboard.CellDone)},

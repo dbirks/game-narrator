@@ -39,6 +39,11 @@ const (
 	AgentStateFailed    = "failed"
 	AgentStateSucceeded = "succeeded"
 	AgentStateCancelled = "cancelled"
+	// AgentStateAbandoned is the terminal state an operator-initiated stop
+	// writes for a run that was waiting and had no attempt in flight
+	// (issue #45, ADR-0028). It joins the store's closed run-state set with
+	// the migration that widens the agent_runs.state CHECK.
+	AgentStateAbandoned = "abandoned"
 )
 
 // Agent tool-call statuses: 'pending' is the not-yet-outcome state; the rest
@@ -122,7 +127,7 @@ func validateJSONOrEmpty(op string, raw []byte, field string) (string, error) {
 func validAgentState(s string) bool {
 	switch s {
 	case AgentStateQueued, AgentStateRunning, AgentStateBlocked, AgentStateReview,
-		AgentStateFailed, AgentStateSucceeded, AgentStateCancelled:
+		AgentStateFailed, AgentStateSucceeded, AgentStateCancelled, AgentStateAbandoned:
 		return true
 	}
 	return false

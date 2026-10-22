@@ -5132,6 +5132,58 @@
         }
       }
     },
+    "/api/v1/onboarding/runs/{id}/abandon": {
+      "post": {
+        "operationId": "abandonOnboardingRun",
+        "tags": [
+          "onboarding"
+        ],
+        "summary": "Abandon a blocked or paused run.",
+        "description": "The operator-initiated stop (issue #45, ADR-0028): a run that is waiting — blocked on a provider fault or a human, or stopped by a pause — and has no attempt in flight moves to the terminal abandoned state and stops being status data; the abandoned run is not listed by the status line, the Library or the Health surfaces. An attempt in flight answers 409: cancel the attempt first (POST .../cancel keeps the run resumable).",
+        "x-required-role": "curator",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The run ULID.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The abandonment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OnboardingAttemptResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "403": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "409": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
     "/api/v1/onboarding/runs/{id}/approve": {
       "post": {
         "operationId": "approveOnboardingReview",
@@ -10885,7 +10937,7 @@
       },
       "OnboardingAttemptResult": {
         "type": "object",
-        "description": "A lifecycle answer (message, pause, resume, cancel, approve).",
+        "description": "A lifecycle answer (message, pause, resume, cancel, abandon, approve).",
         "required": [
           "run_id"
         ],
@@ -11187,7 +11239,8 @@
               "review",
               "failed",
               "succeeded",
-              "cancelled"
+              "cancelled",
+              "abandoned"
             ]
           },
           "stop_reason": {
@@ -15451,7 +15504,8 @@
               "review",
               "failed",
               "succeeded",
-              "cancelled"
+              "cancelled",
+              "abandoned"
             ]
           },
           "created_at": {

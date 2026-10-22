@@ -813,6 +813,7 @@ func (s *Server) Handler() http.Handler {
 	routes.register(mux, http.MethodPost, "/api/v1/onboarding/runs/{id}/pause", s.handleOnboardingPause)
 	routes.register(mux, http.MethodPost, "/api/v1/onboarding/runs/{id}/resume", s.handleOnboardingResume)
 	routes.register(mux, http.MethodPost, "/api/v1/onboarding/runs/{id}/cancel", s.handleOnboardingCancel)
+	routes.register(mux, http.MethodPost, "/api/v1/onboarding/runs/{id}/abandon", s.handleOnboardingAbandon)
 	routes.register(mux, http.MethodPost, "/api/v1/onboarding/runs/{id}/approve", s.handleOnboardingApprove)
 	routes.register(mux, http.MethodPost, "/api/v1/onboarding/uploads", s.handleOnboardingUpload)
 	// The setup board snapshot (ADR-0108, UX-06): the page-load half of the

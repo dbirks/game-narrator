@@ -178,6 +178,13 @@ function renderPage({
         return fakeResponse(200, { devices: [{ id: "out-0", name: "Hub HDMI", state: "ready" }] });
       }
       if (url.includes("/api/v1/jobs")) return fakeResponse(200, { jobs: [] });
+      if (url.includes("/api/v1/onboarding/runs/")) {
+        return fakeResponse(200, {
+          run_id: "r1",
+          state: "abandoned",
+          note: "operator stopped the run",
+        });
+      }
       throw new Error(`unexpected fetch: ${url}`);
     }),
   );
@@ -457,5 +464,40 @@ describe("HealthPage (unit test with a stubbed feed and fetch fake)", () => {
 
     fireEvent.mouseDown(await screen.findByRole("tab", { name: "setup runs" }), { button: 0 });
     expect(await screen.findByTestId("health-setup-run-r1")).toBeInTheDocument();
+  });
+
+  it("the setup-runs tab's Dismiss button abandons a blocked run through the abandon route (issue #45)", async () => {
+    renderPage({
+      snapshot: fixtureSnapshot({
+        setup_runs: [
+          {
+            run_id: "r1",
+            game: "Harbour Light",
+            state: "blocked",
+            stage: "finding",
+            voiced: 0,
+            characters: 12,
+            elapsed_ms: 12_000,
+          },
+        ],
+      }),
+    });
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "setup runs" }), { button: 0 });
+    expect(await screen.findByTestId("health-setup-run-r1")).toBeInTheDocument();
+
+    // A blocked run is dismissible: the first Dismiss arms the confirm step.
+    const dismiss = screen.getByTestId("health-setup-run-dismiss-r1");
+    fireEvent.click(dismiss);
+    const confirm = await screen.findByTestId("health-setup-run-dismiss-confirm-r1");
+    fireEvent.click(confirm);
+
+    // The confirm step is the web face of POST …/abandon: the route the
+    // button calls is the operator's stop.
+    await waitFor(() => {
+      expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+        expect.stringContaining("/api/v1/onboarding/runs/r1/abandon"),
+        expect.anything(),
+      );
+    });
   });
 });

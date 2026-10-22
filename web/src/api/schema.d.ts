@@ -1670,6 +1670,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/onboarding/runs/{id}/abandon": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Abandon a blocked or paused run.
+     * @description The operator-initiated stop (issue #45, ADR-0028): a run that is waiting — blocked on a provider fault or a human, or stopped by a pause — and has no attempt in flight moves to the terminal abandoned state and stops being status data; the abandoned run is not listed by the status line, the Library or the Health surfaces. An attempt in flight answers 409: cancel the attempt first (POST .../cancel keeps the run resumable).
+     */
+    post: operations["abandonOnboardingRun"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/onboarding/runs/{id}/approve": {
     parameters: {
       query?: never;
@@ -3626,7 +3646,7 @@ export interface components {
       /** @description One user turn; the run resumes to read it. */
       text: string;
     };
-    /** @description A lifecycle answer (message, pause, resume, cancel, approve). */
+    /** @description A lifecycle answer (message, pause, resume, cancel, abandon, approve). */
     OnboardingAttemptResult: {
       run_id: string;
       job_id?: string;
@@ -3720,7 +3740,15 @@ export interface components {
     OnboardingRunState: {
       run_id: string;
       /** @enum {unknown} */
-      state: "queued" | "running" | "blocked" | "review" | "failed" | "succeeded" | "cancelled";
+      state:
+        | "queued"
+        | "running"
+        | "blocked"
+        | "review"
+        | "failed"
+        | "succeeded"
+        | "cancelled"
+        | "abandoned";
       stop_reason?: string;
       model?: string;
       profile_id?: string;
@@ -5158,7 +5186,15 @@ export interface components {
     SetupBoard: {
       run_id: string;
       /** @enum {string} */
-      state: "queued" | "running" | "blocked" | "review" | "failed" | "succeeded" | "cancelled";
+      state:
+        | "queued"
+        | "running"
+        | "blocked"
+        | "review"
+        | "failed"
+        | "succeeded"
+        | "cancelled"
+        | "abandoned";
       /** Format: date-time */
       created_at: string;
       characters: components["schemas"]["SetupBoardCharacter"][];
@@ -8159,6 +8195,35 @@ export interface operations {
       401: components["responses"]["Problem"];
       403: components["responses"]["Problem"];
       404: components["responses"]["Problem"];
+      503: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  abandonOnboardingRun: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The run ULID. */
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The abandonment. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["OnboardingAttemptResult"];
+        };
+      };
+      401: components["responses"]["Problem"];
+      403: components["responses"]["Problem"];
+      404: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
       503: components["responses"]["Problem"];
       default: components["responses"]["Problem"];
     };

@@ -502,6 +502,11 @@ func (l *loop) loadConversation() (bool, error) {
 		// continues when the human approves a publish or sends a follow-up
 		// message — the durable log is the total record either way.
 		return false, fmt.Errorf("agent: run %s is already %s", run.ID, run.State)
+	case string(StateAbandoned):
+		// abandoned is terminal (issue #45, ADR-0028): the operator ended a
+		// waiting run that had no attempt in flight, and no resume may
+		// resurrect it back into work.
+		return false, fmt.Errorf("agent: run %s is already %s", run.ID, run.State)
 	}
 	// queued / running / blocked / review / cancelled are all resumable:
 	// blocked and review are waiting on a human, cancelled is a killed

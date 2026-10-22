@@ -736,6 +736,7 @@ func TestOnboardingLifecycleGuards(t *testing.T) {
 		"POST /api/v1/onboarding/runs/0123456789ABCDEFGHJKMNPQRSTU/pause",
 		"POST /api/v1/onboarding/runs/0123456789ABCDEFGHJKMNPQRSTU/resume",
 		"POST /api/v1/onboarding/runs/0123456789ABCDEFGHJKMNPQRSTU/cancel",
+		"POST /api/v1/onboarding/runs/0123456789ABCDEFGHJKMNPQRSTU/abandon",
 		"POST /api/v1/onboarding/runs/0123456789ABCDEFGHJKMNPQRSTU/approve",
 	} {
 		parts := strings.SplitN(target, " ", 2)
@@ -771,5 +772,82 @@ func TestOnboardingLifecycleGuards(t *testing.T) {
 	decode(t, rec, &body)
 	if body["run_id"] != runID {
 		t.Fatalf("cancel body = %v", body)
+	}
+}
+
+// TestOnboardingAbandon pins the operator-initiated stop (issue #45, ADR-0028):
+// a blocked run with no attempt in flight moves to the terminal abandoned
+// state (200, stop_reason abandoned), an attempt in flight is refused with the
+// run-in-progress conflict (409, "cancel the attempt first"), and the
+// unauthenticated/role-gated halves of the route are refused before the run
+// state is ever read.
+func TestOnboardingAbandon(t *testing.T) {
+	e := newOnbEnv(t, &scriptedOnboardingModel{})
+	agentStore := store.NewAgentStore(e.st)
+
+	// Unknown run ids are 404s on the abandon route, like every onboarding
+	// lifecycle route.
+	rec := e.post("0123456789ABCDEFGHJKMNPQRSTU", "abandon", `{}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("abandon unknown run = %d, want 404 (body %s)", rec.Code, rec.Body.String())
+	}
+
+	// The /onboarding prefix is curator-gated: a viewer may not end a run.
+	rec = e.do(auth.RoleViewer, http.MethodPost, "/api/v1/onboarding/runs/0123456789ABCDEFGHJKMNPQRSTU/abandon", []byte(`{}`))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("abandon as viewer = %d, want 403 (body %s)", rec.Code, rec.Body.String())
+	}
+
+	// A blocked run with no attempt in flight moves to the terminal
+	// abandoned state.
+	if err := agentStore.CreateAgentRun(e.ctx, store.AgentRun{
+		ID: "01J12345678901234567890124", State: store.AgentStateBlocked,
+		PlanJSON:      []byte(`{"title":"Wind Waker"}`),
+		BudgetJSON:    []byte(`{}`),
+		PromptVersion: "onboarding-1",
+	}); err != nil {
+		t.Fatalf("CreateAgentRun: %v", err)
+	}
+	rec = e.post("01J12345678901234567890124", "abandon", `{}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("abandon = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	decode(t, rec, &body)
+	if body["run_id"] != "01J12345678901234567890124" {
+		t.Fatalf("abandon body = %v", body)
+	}
+	if body["state"] != "abandoned" {
+		t.Fatalf("abandon body state = %v, want abandoned", body["state"])
+	}
+	st := e.onbState("01J12345678901234567890124")
+	if st["state"] != "abandoned" {
+		t.Fatalf("state after abandon = %v, want abandoned", st["state"])
+	}
+	if st["stop_reason"] != "abandoned" {
+		t.Fatalf("stop_reason after abandon = %v, want abandoned", st["stop_reason"])
+	}
+
+	// A run with an attempt in flight is refused: cancel the attempt first.
+	if err := agentStore.CreateAgentRun(e.ctx, store.AgentRun{
+		ID: "01J12345678901234567890125", State: store.AgentStateBlocked,
+		PlanJSON:      []byte(`{"title":"Harbour Light"}`),
+		BudgetJSON:    []byte(`{}`),
+		PromptVersion: "onboarding-1",
+	}); err != nil {
+		t.Fatalf("CreateAgentRun: %v", err)
+	}
+	rec = e.post("01J12345678901234567890125", "resume", `{}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("resume = %d, want 202 (body %s)", rec.Code, rec.Body.String())
+	}
+	rec = e.post("01J12345678901234567890125", "abandon", `{}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("abandon with an in-flight attempt = %d, want 409 (body %s)", rec.Code, rec.Body.String())
+	}
+	var conflict map[string]any
+	decode(t, rec, &conflict)
+	if conflict["code"] != codeConflict {
+		t.Fatalf("conflict body = %v, want %q", conflict, codeConflict)
 	}
 }
