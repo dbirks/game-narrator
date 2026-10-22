@@ -499,6 +499,16 @@ type Config struct {
 	// question, and the session's decide still validates the chosen id against
 	// the full local ranking. Zero takes DefaultDecisionCandidates.
 	DecisionCandidates int
+	// SharedSpeakerMessages names the published message ids whose speaker slot
+	// is shared — the slot takes more than one speaker, so the curator's
+	// slot→character link is a claim about a slot, not a per-occurrence
+	// identity (ADR-0156, ADR-0160): a line on a shared slot owes the
+	// adjudicator's speaker attribution even when the local policy committed
+	// the line confidently on its own. A map entry naming a message the
+	// session will not commit keeps the commit local; the map is consulted
+	// only when a Decider is wired (the early-speaker ask is a decision-role
+	// behaviour). Empty means "no shared-slot line owes an early ask".
+	SharedSpeakerMessages map[string]bool
 
 	// Presence parameterizes the textbox-present detector.
 	Presence PresenceConfig
@@ -624,6 +634,15 @@ type DecisionRequest struct {
 	// cropped badly — or found at a placement no region covers — is still
 	// decided from what the player sees.
 	Frame image.Image
+	// SpeakerOnly asks the adjudicator for one attribution answer and nothing
+	// else (ADR-0160's early-speaker ask): the caller already holds the line the
+	// commit will speak — a confident local top candidate whose speaker slot is
+	// shared — and the question is only who spoke. The bundle the Decider renders
+	// carries the speaker + speaker_kind questions only; the candidate
+	// narrowing and the safe-to-speak verdict stay the local policy's. The
+	// Decider answers with the attribution overlaid on the local line, never
+	// narrowing it.
+	SpeakerOnly bool
 }
 
 // DecisionReply is the Decider's answer to one DecisionRequest. The pipeline

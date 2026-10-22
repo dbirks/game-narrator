@@ -458,6 +458,19 @@ type speechWiring struct {
 	// absence of voices — is what kept the line silent.
 	narratorFallback bool
 
+	// The ADR-0160 early-speaker bounded wait: one in flight per committed
+	// shared-slot occurrence, holding the adjudicator's attribution answer
+	// while the early-speaker adjudication is in flight, plus the budget the
+	// wait is bounded by. The runtime's decision path feeds it (the asker
+	// registers the occurrence's wait when the early-speaker adjudication
+	// goes out, the answer resolves it when it lands or the ask gives up); the
+	// speech side waits on it before resolving a committed shared-slot line's
+	// voice, bounded by the budget — after which it speaks with what it has
+	// (the narrator), as today. Nil-safe without a decision path wired.
+	earlyMu      sync.Mutex
+	earlyPending map[string]*earlyPending
+	earlyBudget  time.Duration
+
 	// sem bounds the concurrent TTS workers (explicit backpressure).
 	sem chan struct{}
 
@@ -666,6 +679,118 @@ type synthSlot struct {
 	cancel context.CancelFunc
 }
 
+// earlyPending is one committed occurrence's in-flight early-speaker
+// attribution answer (ADR-0160): the wait a speech-side commit holds while
+// the early-speaker adjudication is in flight, closed when the answer lands
+// or the ask gives up — so a wait is bounded and never blocks forever.
+type earlyPending struct {
+	done chan struct{}
+	// attribution holds the answer that closed the wait, written under the
+	// registry's lock before done is closed (the mutex orders the write before
+	// the close, the same way it orders every other registry step).
+	speakerID       string
+	speakerKnown    bool
+	speakerConf     float64
+	speakerKind     string
+	speakerKindConf float64
+}
+
+// attributionEarly is the early-speaker answer's attribution half as the
+// speech side reads it back: the speaker the adjudicator named and the
+// apparent kind it read, with the confidences the runtime's gates read
+// (ADR-0156, ADR-0158).
+type attributionEarly struct {
+	speakerID       string
+	speakerKnown    bool
+	speakerConf     float64
+	speakerKind     string
+	speakerKindConf float64
+}
+
+// beginEarlyAttribution registers one committed occurrence's early-speaker
+// attribution wait (ADR-0160) and returns its handle; the runtime's decision
+// path feeds it when the early-speaker adjudication goes out. The wait is
+// bounded by the budget the caller passes (the EarlySpeakerBudget), and a
+// nil handle means no early ask is owed for the key.
+func (w *speechWiring) beginEarlyAttribution(key string, budget time.Duration) *earlyPending {
+	w.earlyMu.Lock()
+	defer w.earlyMu.Unlock()
+	if w.earlyPending == nil {
+		w.earlyPending = map[string]*earlyPending{}
+	}
+	if budget > 0 {
+		w.earlyBudget = budget
+	}
+	p := &earlyPending{done: make(chan struct{})}
+	w.earlyPending[key] = p
+	return p
+}
+
+// resolveEarlyAttribution closes the occurrence's early-speaker wait with
+// the answer the adjudication produced and returns it. res is the answer the
+// decision side read back from the adjudication's reply (the attribution
+// half); the pending's own stored fields are what a wait that observed the
+// close reads. The caller that resolves with no answer (the ask gave up) passes
+// the zero attribution, so a bound wait falls back to the local evidence.
+func (w *speechWiring) resolveEarlyAttribution(key string, res attributionEarly) attributionEarly {
+	w.earlyMu.Lock()
+	defer w.earlyMu.Unlock()
+	out := attributionEarly{}
+	if p, ok := w.earlyPending[key]; ok && p != nil {
+		out = res
+		p.speakerID = res.speakerID
+		p.speakerKnown = res.speakerKnown
+		p.speakerConf = res.speakerConf
+		p.speakerKind = res.speakerKind
+		p.speakerKindConf = res.speakerKindConf
+		delete(w.earlyPending, key)
+		close(p.done)
+	}
+	return out
+}
+
+// waitEarlyAttribution waits up to the early-speaker budget for the answer
+// to "who is speaking" of one committed occurrence (ADR-0160). It reports
+// whether an early ask was in flight for the key and whether the answer
+// resolved inside the budget; a wait that outlives the budget — or the run —
+// resolves empty, so the commit proceeds on the local evidence alone and
+// the line speaks the narrator, as today, without stalling.
+func (w *speechWiring) waitEarlyAttribution(ctx context.Context, key string, budget time.Duration) (attributionEarly, bool) {
+	w.earlyMu.Lock()
+	p, ok := w.earlyPending[key]
+	b := w.earlyBudget
+	w.earlyMu.Unlock()
+	if !ok || p == nil {
+		return attributionEarly{}, false
+	}
+	if budget > 0 && budget < b {
+		b = budget
+	}
+	if b <= 0 {
+		b = DefaultEarlySpeakerBudget
+	}
+	select {
+	case <-p.done:
+		w.earlyMu.Lock()
+		res := attributionEarly{
+			speakerID:       p.speakerID,
+			speakerKnown:    p.speakerKnown,
+			speakerConf:     p.speakerConf,
+			speakerKind:     p.speakerKind,
+			speakerKindConf: p.speakerKindConf,
+		}
+		delete(w.earlyPending, key)
+		w.earlyMu.Unlock()
+		return res, true
+	case <-ctx.Done():
+		w.resolveEarlyAttribution(key, attributionEarly{})
+		return attributionEarly{}, false
+	case <-time.After(b):
+		w.resolveEarlyAttribution(key, attributionEarly{})
+		return attributionEarly{}, false
+	}
+}
+
 // newSpeechWiring builds the per-session speech pipeline. It returns nil
 // (with a warning already logged) when the sink cannot be built — the
 // documented degradation: the session runs silent rather than failing the
@@ -676,6 +801,10 @@ func (m *Manager) newSpeechWiring(id string, speakerByMessage map[string]string,
 	var mLabels telemetry.Labels
 	if runner != nil {
 		metrics, mLabels = runner.Telemetry()
+	}
+	earlyBudget := DefaultEarlySpeakerBudget
+	if m.opts.Decision != nil && m.opts.Decision.EarlySpeakerBudget > 0 {
+		earlyBudget = m.opts.Decision.EarlySpeakerBudget
 	}
 	w := &speechWiring{
 		id:               id,
@@ -689,6 +818,11 @@ func (m *Manager) newSpeechWiring(id string, speakerByMessage map[string]string,
 		voiceLat:         voiceLat,
 		speakerByMessage: speakerByMessage,
 		narratorFallback: narratorFallback,
+		// The ADR-0160 early-speaker bounded wait: how long a committed shared
+		// slot's line may hold for the early adjudication's attribution answer
+		// before the commit proceeds on the local evidence alone. Zero takes
+		// the documented default (DefaultEarlySpeakerBudget).
+		earlyBudget: earlyBudget,
 		// The unmatched read-through starts ON (ADR-0136's documented
 		// default): a session without a settings call speaks an unmatched
 		// box from its OCR text, and the Play toggle is what moves it.
@@ -1188,6 +1322,28 @@ func (w *speechWiring) onCommit(e events.Envelope) {
 	}
 	if canon := strings.TrimSpace(w.prewarmTexts[d.MessageID]); canon != "" && pageKey == d.MessageID {
 		text = canon
+	}
+
+	// ADR-0160 (redesign): a committed line whose speaker slot is shared and
+	// whose attribution the local evidence could not name may still be waiting
+	// on the early-speaker adjudication — the answer arrives through the
+	// attribution-only overlay when it lands before the commit, and through
+	// this bounded wait when it lands after (the ask fires at the first read
+	// of the typing box, typically while the typewriter is still typing, so
+	// the answer usually lands before the commit and the wait is 0). The wait
+	// is bounded by the early-speaker budget (the ADR-0160 proposal's 300 ms):
+	// past it the commit proceeds on the local evidence alone and the line
+	// speaks the narrator, as today — the wait never stalls, and the answer
+	// that arrives inside the budget is the attribution the confidence gates
+	// read (ADR-0156, ADR-0158).
+	if w.speakerSlotByMessage[d.MessageID] && !d.SpeakerKnown {
+		if res, pending := w.waitEarlyAttribution(w.endCtx, earlyAskKey(d.RegionID, d.Generation, d.MessageID), w.earlyBudget); pending {
+			d.SpeakerID = res.speakerID
+			d.SpeakerKnown = res.speakerKnown
+			d.SpeakerConfidence = res.speakerConf
+			d.SpeakerKind = res.speakerKind
+			d.SpeakerKindConfidence = res.speakerKindConf
+		}
 	}
 
 	character, route := w.commitVoice(d)

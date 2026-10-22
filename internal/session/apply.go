@@ -393,7 +393,8 @@ func (r *Reducer) applyDecision(ctx context.Context, m DecisionMsg, res *Result)
 		known: m.SpeakerKnown, speakerConfidence: m.SpeakerConfidence,
 		speakerKind: m.SpeakerKind, speakerKindConfidence: m.SpeakerKindConfidence,
 		eligible: m.SpeechEligible, accepted: m.Accepted,
-		provider: m.Provider, model: m.Model,
+		attributionOnly: m.AttributionOnly,
+		provider:        m.Provider, model: m.Model,
 	})
 	return nil
 }
@@ -956,15 +957,24 @@ func (r *Reducer) decide(reg *region, rk rankedObservation) (messageID string, e
 			reason = ReasonCommittedKnown
 		}
 		if ans, ok := reg.decisionFor(rk.obsSeq); ok {
-			// A decision may *narrow* the answer, never widen it: the model's choice is
-			// honoured only if retrieval offered it, because the alternative lets a
-			// hallucinated option outrank the local evidence (docs/spec/12 "hallucinated
-			// VLM speaker", "high score on wrong option").
-			if ans.accepted && ans.msgID != "" && ans.msgID != UnknownMessage && candidateHas(rk.rank, ans.msgID) {
+			if ans.attributionOnly {
+				// The early-speaker answer (ADR-0160) carries attribution and
+				// nothing else: the line the commit speaks is the local
+				// evidence's confident top candidate — the shared-slot shape
+				// that committed MATCH_FUZZY with high confidence and so never
+				// asked Clef — and the answer may not narrow that choice. The
+				// speaker fields it carries are the overlay the commit payload
+				// reads (committedData takes them from here); the choice, the
+				// eligibility and the reason all stand from the local policy.
+			} else if ans.accepted && ans.msgID != "" && ans.msgID != UnknownMessage && candidateHas(rk.rank, ans.msgID) {
+				// A decision may *narrow* the answer, never widen it: the model's choice is
+				// honoured only if retrieval offered it, because the alternative lets a
+				// hallucinated option outrank the local evidence (docs/spec/12 "hallucinated
+				// VLM speaker", "high score on wrong option").
 				messageID = ans.msgID
 				reason = ReasonClefDisambiguated
 			}
-			if ans.accepted && !ans.eligible {
+			if !ans.attributionOnly && ans.accepted && !ans.eligible {
 				// safe_to_speak = no vetoes the utterance. The reverse is not a
 				// licence: eligibility comes from the local policy, and one high
 				// probability is not why audio starts.

@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -66,7 +67,24 @@ type DecisionOptions struct {
 	// (the System One per-choice option cap is MaxOptions; the cap leaves
 	// room for the "unknown" option the question always carries).
 	SpeakerOptions int
+	// EarlySpeakerBudget bounds how long the early-speaker adjudication may
+	// hold the commit of a confident local top candidate whose slot is shared
+	// (ADR-0160): the answer to "who is speaking" has to land before the
+	// commit speaks, but never longer than this — a small budget the proposal
+	// names (the documented default is 300 ms), after which the commit proceeds
+	// on the local evidence alone and the line speaks the narrator (or the
+	// kind fallback) as today. Zero takes the default. It is the speaker-only
+	// ask's own deadline: the decision role's timeout still bounds the whole
+	// adjudication when a full bundle is asked.
+	EarlySpeakerBudget time.Duration
 }
+
+// DefaultEarlySpeakerBudget bounds how long the early-speaker adjudication
+// (ADR-0160) waits for the answer to "who is speaking" before the commit for
+// the confident local top candidate proceeds on the local evidence alone. The
+// proposal names a small budget (300 ms) so the line is never delayed past
+// it; a session may tighten or widen it through DecisionOptions.EarlySpeakerBudget.
+const DefaultEarlySpeakerBudget = 300 * time.Millisecond
 
 // DecisionStatus is the session's view of the decision role (docs/spec/13
 // "Decision/VLM down … dev dashboard marks degraded"): whether the role is
@@ -128,6 +146,9 @@ func (m *Manager) newDecisionWiring(id string, texts map[string]string) *decisio
 		id:    id,
 		opts:  *opts,
 		texts: texts,
+	}
+	if w.opts.EarlySpeakerBudget <= 0 {
+		w.opts.EarlySpeakerBudget = DefaultEarlySpeakerBudget
 	}
 	w.roleOK = w.opts.Role.Configured() && w.opts.Role.Protocol == providers.ProtocolSystemOne
 	if !w.roleOK {
@@ -202,10 +223,26 @@ func (w *decisionWiring) Decide(ctx context.Context, req pipeline.DecisionReques
 	w.mu.Unlock()
 	w.emitRequested(req)
 
+	// The ADR-0160 early-speaker ask (redesign): register the committed
+	// occurrence's attribution wait on the session's speech wiring so the
+	// commit side can bound its wait for the answer before resolving a
+	// committed shared-slot line's voice — the EarlySpeakerBudget, not this
+	// call's deadline, is the bounded wait.
+	if req.SpeakerOnly {
+		if sw := w.speechWiringFor(); sw != nil {
+			sw.beginEarlyAttribution(earlyAskKey(req.RegionID, req.Generation, topCandidateID(req)), w.opts.EarlySpeakerBudget)
+		}
+	}
+
 	// The whole adjudication — retries included — stays inside the decision
 	// budget (docs/spec/06 "Timeout and cancellation defaults"): the router
 	// gives each attempt the role's per-attempt timeout, and this context
-	// bounds the attempts collectively.
+	// bounds the attempts collectively. The early-speaker ask (ADR-0160) is a
+	// fire-and-forget adjudication: it runs on the decision role's normal
+	// timeout like any other adjudication, and the bounded wait for its answer
+	// moved to the speech side (the EarlySpeakerBudget, the ADR-0160 proposal's
+	// small budget) — the commit proceeds on the local evidence alone once that
+	// budget elapses, without stalling on the answer.
 	deadline := w.opts.Timeout
 	if deadline <= 0 {
 		deadline = w.opts.Role.Timeout
@@ -222,6 +259,12 @@ func (w *decisionWiring) Decide(ctx context.Context, req pipeline.DecisionReques
 		LastMessage: req.LastMessage,
 	}
 	bundle := systemone.BuildAdjudication(obs, scands, speakers)
+	// The early-speaker ask (ADR-0160) renders the attribution questions only:
+	// the speaker + speaker_kind bundle, no candidate / eligibility / completeness
+	// questions — the caller already holds the line the commit will speak.
+	if req.SpeakerOnly {
+		bundle = systemone.BuildAdjudicationSpeakerOnly(obs, speakers)
+	}
 	// The screenshot (ADR-0154): the model reads the whole frame, not only the
 	// OCR'd text, so a misplaced crop or a misread box is still decided from
 	// the picture. No frame (a source that delivered none yet) keeps the
@@ -272,6 +315,15 @@ func (w *decisionWiring) Decide(ctx context.Context, req pipeline.DecisionReques
 			reply.Reason = "provider_error:" + string(pe.Kind)
 			if pe.Model != "" {
 				reply.Model = pe.Model
+			}
+		}
+		// The early-speaker ask's answer never landed (the ask gave up inside
+		// the decision's own budget): resolve the occurrence's wait so the
+		// commit side stops holding its bounded wait and speaks on the local
+		// evidence alone.
+		if req.SpeakerOnly {
+			if sw := w.speechWiringFor(); sw != nil {
+				sw.resolveEarlyAttribution(earlyAskKey(req.RegionID, req.Generation, topCandidateID(req)), attributionEarly{})
 			}
 		}
 		return reply
@@ -353,7 +405,74 @@ func (w *decisionWiring) Decide(ctx context.Context, req pipeline.DecisionReques
 		Provider:              "systemone",
 		Model:                 dec.Model,
 	}
+	if req.SpeakerOnly {
+		// The early-speaker ask (ADR-0160) answered: the reply overlays the
+		// adjudicator's attribution onto the confident local top candidate the
+		// commit will speak — attribution only, never a narrowing. The local
+		// line's choice, eligibility and reason stand (the session's decide
+		// reads the answer through the attribution-only path); the speaker
+		// fields above are the overlay the commit payload carries, and the
+		// speech side's commitVoice reads them exactly as it reads a full
+		// bundle's answer (ADR-0156, ADR-0158).
+		if top := topCandidateID(req); top != "" {
+			reply.ChosenID = top
+			reply.Msg.MessageID = top
+			reply.Msg.SpeechEligible = true
+			reply.Msg.Accepted = true
+			reply.Msg.AttributionOnly = true
+			reply.Msg.Reason = "answered"
+			reply.Choice = ""
+			reply.Probabilities = nil
+		}
+		// The early-speaker ask's answer landed: resolve the occurrence's
+		// bounded wait so a commit side still holding it for the attribution
+		// reads the answer back.
+		if req.SpeakerOnly {
+			if sw := w.speechWiringFor(); sw != nil {
+				sw.resolveEarlyAttribution(earlyAskKey(req.RegionID, req.Generation, topCandidateID(req)), attributionEarly{
+					speakerID:       reply.Speaker,
+					speakerKnown:    reply.SpeakerKnown,
+					speakerConf:     reply.SpeakerConfidence,
+					speakerKind:     reply.SpeakerKind,
+					speakerKindConf: reply.SpeakerKindConfidence,
+				})
+			}
+		}
+	}
 	return reply
+}
+
+// topCandidateID is the confident local top candidate the early-speaker ask
+// attributes the speaker of — the line the commit for this occurrence will
+// speak, and the answer may not narrow it away.
+func topCandidateID(req pipeline.DecisionRequest) string {
+	if len(req.Ranking.Candidates) > 0 {
+		return req.Ranking.Candidates[0].MessageID
+	}
+	return ""
+}
+
+// earlyAskKey is the ADR-0160 early-speaker occurrence key — the region, the
+// generation and the top message id — the runtime's ask registry and the
+// speech side's pending-wait lookups key on. One ask per key, at most one in
+// flight per region.
+func earlyAskKey(region string, gen int64, topID string) string {
+	return region + "\x00" + strconv.FormatInt(gen, 10) + "\x00" + topID
+}
+
+// speechWiringFor returns the session's speech wiring when the manager holds
+// the session — the early-speaker bounded wait registry lives there (the
+// speech side owns the wait; the decision path feeds it), and the registry is
+// nil when the process has no speech pipeline for this session, in which case
+// the commit side falls back to the commit payload's own attribution.
+func (w *decisionWiring) speechWiringFor() *speechWiring {
+	w.m.mu.Lock()
+	sess, ok := w.m.sessions[w.id]
+	w.m.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	return sess.speech
 }
 
 // textFor renders one candidate option's description: the canonical original

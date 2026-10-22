@@ -145,25 +145,10 @@ func BuildAdjudication(obs Context, candidates []Candidate, speakers []Speaker) 
 			{ID: TextKindNone, Description: "no narratable text"},
 		},
 	})
-	speakerOpts := make([]Option, 0, len(speakers)+1)
-	for i, s := range speakers {
-		// Positional alias, exactly the candidate pattern (ADR-0072): the
-		// speaker's own id is an opaque identity (ADR-0070), not a wire id.
-		speakerOpts = append(speakerOpts, Option{ID: fmt.Sprintf("sp%d", i+1), Description: s.Description})
-	}
-	speakerOpts = append(speakerOpts, Option{ID: SpeakerUnknown, Description: "cannot be established from the frame"})
-	questions = append(questions, Question{
-		ID:           QSpeaker,
-		Type:         TypeChoice,
-		Instructions: "Who is speaking, if anyone is?",
-		Criteria:     speakerOpts,
-	})
-	questions = append(questions, Question{
-		ID:           QSpeakerKind,
-		Type:         TypeChoice,
-		Instructions: "What apparent kind is the speaker?",
-		Criteria:     SpeakerKindOptions(),
-	})
+	speakerQ := speakerQuestion(speakers)
+	questions = append(questions, speakerQ)
+	speakerKindQ := kindQuestion()
+	questions = append(questions, speakerKindQ)
 	n := len(candidates)
 	if n > maxBundleCandidates {
 		n = maxBundleCandidates
@@ -237,6 +222,68 @@ type Adjudication struct {
 	// IsComplete and SafeToSpeak are the raw noul signals.
 	IsComplete  *float64
 	SafeToSpeak *float64
+}
+
+// BuildAdjudicationSpeakerOnly builds the early-speaker adjudication bundle
+// (ADR-0160): the speaker + speaker_kind questions only — the attribution
+// questions the early-speaker ask carries — for a top local candidate the
+// commitment policy already settled on its own (a confident local match whose
+// speaker slot is shared, the live shape that committed MATCH_FUZZY and never
+// asked Clef). The candidate, eligibility and completeness questions are the
+// caller's business and stay on the local evidence; the returned bundle
+// carries no candidate options, so its answers attribute rather than choose a
+// line. The positional option contract is the speaker question's (spN aliases
+// over the speakers slice, unknown) and the kind question's (the kind ids, the
+// unknown fallback) — exactly the shapes the full bundle renders — and both
+// questions are choice questions, so the answer shape Interpret already maps
+// back is unchanged: the speaker answer's confidence and the kind answer's
+// confidence are the chosen option's probabilities, which is what the runtime's
+// speaker and kind gates read (ADR-0156, ADR-0158).
+func BuildAdjudicationSpeakerOnly(obs Context, speakers []Speaker) Request {
+	questions := make([]Question, 0, 2)
+	questions = append(questions, speakerQuestion(speakers))
+	questions = append(questions, kindQuestion())
+	return Request{
+		State:     obs.state(),
+		Questions: questions,
+	}
+}
+
+// speakerQuestion renders the speaker question: the speakers slice's
+// positional spN aliases (the speaker's own id is an opaque identity, ADR-0070,
+// so the wire never carries it) plus the question's own unknown fallback.
+func speakerQuestion(speakers []Speaker) Question {
+	return Question{
+		ID:           QSpeaker,
+		Type:         TypeChoice,
+		Instructions: "Who is speaking, if anyone is?",
+		Criteria:     speakerOptions(speakers),
+	}
+}
+
+// kindQuestion renders the speaker_kind question: the adjudicator's apparent-
+// kind options plus the question's own unknown fallback (ADR-0158).
+func kindQuestion() Question {
+	return Question{
+		ID:           QSpeakerKind,
+		Type:         TypeChoice,
+		Instructions: "What apparent kind is the speaker?",
+		Criteria:     SpeakerKindOptions(),
+	}
+}
+
+// speakerOptions renders the speaker question's declared options: the
+// speakers slice's positional spN aliases, one per declared speaker in profile
+// order, plus the question's own unknown fallback. The positional contract is
+// the candidate question's (ADR-0072): the Nth element of the slice is the Nth
+// spN the model may pick, and Interpret maps it back to the speaker's own id.
+func speakerOptions(speakers []Speaker) []Option {
+	opts := make([]Option, 0, len(speakers)+1)
+	for i, s := range speakers {
+		opts = append(opts, Option{ID: fmt.Sprintf("sp%d", i+1), Description: s.Description})
+	}
+	opts = append(opts, Option{ID: SpeakerUnknown, Description: "cannot be established from the frame"})
+	return opts
 }
 
 // Interpret maps a Decision for a BuildAdjudication request back to ids.
