@@ -153,7 +153,7 @@ func TestLiveOCRFallbackSession(t *testing.T) {
 		dir := t.TempDir()
 		crop := v.render(t, dir)
 		frame := filepath.Join(dir, "frame.png")
-		magick(t, "-size", "640x480", "xc:#05070a", crop, "-geometry", "+0+48", "-composite", frame)
+		magick(t, append([]string{"-size", "640x480", "xc:#05070a", crop, "-geometry", "+0+48", "-composite"}, append(panelMarker, frame)...)...)
 		cerV, read, err := primaryCER(t, context.Background(), primary, frame, region, known)
 		if err != nil {
 			// A timed-out measurement is inconclusive (the deadline fired,
@@ -185,8 +185,8 @@ func TestLiveOCRFallbackSession(t *testing.T) {
 	for i := 1; i <= frames; i++ {
 		name := fmt.Sprintf("frame-%03d.png", i)
 		if out, err := exec.Command("magick",
-			"-size", "640x480", "xc:#05070a", winnerCrop, "-geometry", "+0+48", "-composite",
-			filepath.Join(clip, name),
+			append(append([]string{"-size", "640x480", "xc:#05070a", winnerCrop, "-geometry", "+0+48", "-composite"}, panelMarker...),
+				filepath.Join(clip, name))...,
 		).CombinedOutput(); err != nil {
 			t.Fatalf("magick frame %d: %v: %s", i, err, bytes.TrimSpace(out))
 		}
@@ -718,3 +718,12 @@ func min3(a, b, c int) int {
 	}
 	return m
 }
+
+// panelMarker draws a small crisp bright glyph at the band's right edge, the
+// way a real dialogue box carries its advance prompt. The hard-font render is
+// downscaled and blurred (the recipe that defeats Tesseract), so its glyph
+// edges ramp over several pixels and the board-calibrated presence gate
+// (ADR-0137: a bright stroke must ride a panel-dark pixel) reads no text at
+// all; the marker gives the gate the crisp edge a real box has. The marker sits
+// clear of the text, so Tesseract still faces the same blurred line.
+var panelMarker = []string{"-fill", "#e8eef4", "-draw", "rectangle 604,148 609,160"}
