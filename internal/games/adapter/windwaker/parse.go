@@ -233,6 +233,26 @@ func (a Adapter) mapFile(ctx context.Context, file *bmg.File, opts adapter.Parse
 			}
 		}
 		result.Stats.Imported++
+
+		// Display pages (ADR-0155): a Wind Waker script message often spans
+		// several on-screen boxes, and the boxes the player has not reached yet
+		// are not dialogue yet. The BMG's display line break (the pool's 0x0A)
+		// and newline tags are the only paging structure the source encodes, so
+		// the box limit is the derivation. One box → one page whose text is the
+		// message's own text; several boxes → one page per box, in source order.
+		// The import path (internal/profileio) already writes what the adapter
+		// returns through the existing message_pages table — no migration, no
+		// schema change — so a re-import of a paged script keeps its pages.
+		for i, pageText := range messagePages(m, rules) {
+			result.Pages = append(result.Pages, games.MessagePage{
+				MessageID:       row.ID,
+				Ordinal:         i + 1,
+				PageText:        pageText,
+				VisiblePrefixes: json.RawMessage("[]"),
+				DisplayControls: json.RawMessage("[]"),
+				TimingJSON:      json.RawMessage("{}"),
+			})
+		}
 	}
 	if len(result.Speakers) > 0 {
 		result.SpeakerColumn = SpeakerColumn

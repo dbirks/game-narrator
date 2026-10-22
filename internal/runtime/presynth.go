@@ -15,10 +15,25 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/dbirks/game-narrator/internal/games"
 	"github.com/dbirks/game-narrator/internal/providers/tts"
 	"github.com/dbirks/game-narrator/internal/speech"
 	"github.com/dbirks/game-narrator/internal/store"
 )
+
+// canonicalSpeechText is the text a matched commit speaks for one message:
+// the speech text, else the original text, else the normalized key — what a
+// matched commit speaks, not the tracker's folded read.
+func canonicalSpeechText(m games.Message) string {
+	t := m.SpeechText
+	if t == "" {
+		t = m.OriginalText
+	}
+	if t == "" {
+		t = m.NormalizedText
+	}
+	return strings.TrimSpace(t)
+}
 
 // profileSpeechMaps is the speech-side view of a profile's content that a
 // session and the pre-synthesis share, so both compute the same cache key
@@ -28,7 +43,11 @@ import (
 // the id, ADR-0101), and message id → canonical TTS text (the speech text,
 // else the original text, else the normalized key — what a matched commit
 // speaks, not the tracker's folded read).
-func profileSpeechMaps(content store.ProfileContent, resolveSpeaker func(string) string) (speakers, aliasByID, texts map[string]string) {
+// It also returns message id → display pages (ADR-0155): the content's page
+// rows when the profile carries them, else the runtime's own split of the
+// canonical text (the fallback for profiles imported before paging was
+// derived).
+func profileSpeechMaps(content store.ProfileContent, resolveSpeaker func(string) string) (speakers, aliasByID, texts map[string]string, pages map[string][]string) {
 	speakers = make(map[string]string, len(content.Messages))
 	aliasByID = make(map[string]string, len(content.Characters))
 	for _, ch := range content.Characters {
@@ -37,22 +56,29 @@ func profileSpeechMaps(content store.ProfileContent, resolveSpeaker func(string)
 		}
 	}
 	texts = make(map[string]string, len(content.Messages))
+	pages = make(map[string][]string, len(content.Messages))
+	for _, p := range content.Pages {
+		pages[p.MessageID] = append(pages[p.MessageID], p.PageText)
+	}
 	for _, msg := range content.Messages {
 		if msg.SpeakerID != "" {
 			speakers[msg.ID] = resolveSpeaker(msg.SpeakerID)
 		}
-		t := msg.SpeechText
-		if t == "" {
-			t = msg.OriginalText
-		}
-		if t == "" {
-			t = msg.NormalizedText
-		}
+		t := canonicalSpeechText(msg)
 		if t != "" {
-			texts[msg.ID] = strings.TrimSpace(t)
+			texts[msg.ID] = t
+		}
+		if _, ok := pages[msg.ID]; !ok {
+			// ADR-0155 fallback: a profile that carries no page rows for the
+			// message gets the runtime's split of its canonical text, so the
+			// session and the pre-synthesis speak reached pages without a
+			// re-import.
+			if pt := splitCanonicalPages(t); len(pt) > 0 {
+				pages[msg.ID] = pt
+			}
 		}
 	}
-	return speakers, aliasByID, texts
+	return speakers, aliasByID, texts, pages
 }
 
 // PresynthOptions bound one pre-synthesis run.
@@ -114,7 +140,7 @@ func (m *Manager) PresynthesizeProfile(ctx context.Context, profileID string, op
 	if err != nil {
 		return p, err
 	}
-	speakers, aliases, texts := profileSpeechMaps(content, speakerLinkResolver(content.Characters))
+	speakers, aliases, texts, pages := profileSpeechMaps(content, speakerLinkResolver(content.Characters))
 	w := &speechWiring{
 		id:               "presynth:" + profileID,
 		log:              m.log.Debug,
@@ -125,11 +151,36 @@ func (m *Manager) PresynthesizeProfile(ctx context.Context, profileID string, op
 		speakerAliasByID: aliases,
 	}
 
-	var ids []string
+	// One entry per utterance the pre-synthesis fills: a multi-page message
+	// contributes one entry per display page (each under its own page-scoped
+	// cache key), a single-page message one entry under the bare message id —
+	// the same key the live commit path computes, so a pre-synthesized page is
+	// a hit for the commit that speaks it (ADR-0155).
+	entries := make([]struct {
+		id   string
+		text string
+	}, 0, len(content.Messages))
 	for _, msg := range content.Messages {
-		if texts[msg.ID] != "" {
-			ids = append(ids, msg.ID)
+		msgPages := pages[msg.ID]
+		if len(msgPages) > 1 {
+			for i, pageText := range msgPages {
+				entries = append(entries, struct {
+					id   string
+					text string
+				}{pageMessageID(msg.ID, i+1), pageText})
+			}
+			continue
 		}
+		if t := texts[msg.ID]; t != "" {
+			entries = append(entries, struct {
+				id   string
+				text string
+			}{msg.ID, t})
+		}
+	}
+	var ids []string
+	for _, e := range entries {
+		ids = append(ids, e.id)
 	}
 	if opt.Limit > 0 && len(ids) > opt.Limit {
 		ids = ids[:opt.Limit]
@@ -171,7 +222,12 @@ func (m *Manager) PresynthesizeProfile(ctx context.Context, profileID string, op
 			cancel()
 		}
 	}
+	entriesByID := map[string]string{}
+	for _, e := range entries {
+		entriesByID[e.id] = e.text
+	}
 	for _, id := range ids {
+		text := entriesByID[id]
 		select {
 		case sem <- struct{}{}:
 		case <-runCtx.Done():
@@ -180,10 +236,10 @@ func (m *Manager) PresynthesizeProfile(ctx context.Context, profileID string, op
 			break
 		}
 		wg.Add(1)
-		go func(id string) {
+		go func(id, text string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			hit, n, skipped, err := w.presynthOne(runCtx, id, texts[id])
+			hit, n, skipped, err := w.presynthOne(runCtx, id, text)
 			mu.Lock()
 			defer mu.Unlock()
 			p.Done++
@@ -220,7 +276,7 @@ func (m *Manager) PresynthesizeProfile(ctx context.Context, profileID string, op
 				}
 			}
 			report()
-		}(id)
+		}(id, text)
 	}
 	wg.Wait()
 	mu.Lock()

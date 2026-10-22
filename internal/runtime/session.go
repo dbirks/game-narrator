@@ -531,8 +531,8 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 	// to a silent session (logged), never a failed run: audio output
 	// misconfiguration must not take the capture down with it.
 	if m.opts.Speech != nil {
-		speakers, speakerAliasByID, prewarmTexts := profileSpeechMaps(content, resolveSpeaker)
-		if w := m.newSpeechWiring(id, speakers, published.NarratorFallback, runCtx, runner, idx, prewarmTexts, sess.voiceLat); w != nil {
+		speakers, speakerAliasByID, prewarmTexts, prewarmPages := profileSpeechMaps(content, resolveSpeaker)
+		if w := m.newSpeechWiring(id, speakers, published.NarratorFallback, runCtx, runner, idx, prewarmTexts, prewarmPages, sess.voiceLat); w != nil {
 			w.speakerAliasByID = speakerAliasByID
 			sess.speech = w
 			// The OnAdjudicating hook above reads the wiring through this

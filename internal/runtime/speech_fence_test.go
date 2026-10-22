@@ -247,7 +247,7 @@ func (e *fenceEnv) waitEvents(t *testing.T, desc string, deadline time.Duration,
 // commit.
 func (e *fenceEnv) withGraph(t *testing.T, idx *matcher.Index, texts map[string]string) {
 	t.Helper()
-	e.w.initPrewarm(idx, texts, nil)
+	e.w.initPrewarm(idx, texts, nil, nil)
 }
 
 // blockingTTS is a Base checkpoint that honours the request context: the

@@ -438,6 +438,15 @@ type speechWiring struct {
 	// cancelled when the fence moves or the scene changes.
 	idx          *matcher.Index    // nil = no dialogue graph, no prewarming
 	prewarmTexts map[string]string // message id → canonical TTS text
+	// Display pages (ADR-0155): a committed message's pages in ordinal order,
+	// page texts only (the display line break folded to the speech column's
+	// space, so a page's text is the text that box would speak). Populated
+	// from the published content's page rows when the profile carries them;
+	// when it carries none, the fallback split of the canonical text fills the
+	// map (the profiles imported before paging was derived). An absent entry
+	// means the message has no pages to speak (a single-box message, or one the
+	// split found empty).
+	prewarmPages map[string][]string
 	// recentRouted is the cross-region duplicate guard (#41): line identity
 	// (message id, or "rt:"+the cleaned read-through text) → the region and
 	// wall clock it was last routed from. A profile that declares the box at
@@ -621,7 +630,7 @@ type synthSlot struct {
 // (with a warning already logged) when the sink cannot be built — the
 // documented degradation: the session runs silent rather than failing the
 // run because audio output is misconfigured.
-func (m *Manager) newSpeechWiring(id string, speakerByMessage map[string]string, narratorFallback bool, runCtx context.Context, runner *pipeline.Runner, idx *matcher.Index, prewarmTexts map[string]string, voiceLat *frameVoiceSampler) *speechWiring {
+func (m *Manager) newSpeechWiring(id string, speakerByMessage map[string]string, narratorFallback bool, runCtx context.Context, runner *pipeline.Runner, idx *matcher.Index, prewarmTexts map[string]string, prewarmPages map[string][]string, voiceLat *frameVoiceSampler) *speechWiring {
 	opts := m.opts.Speech
 	var metrics *telemetry.Product
 	var mLabels telemetry.Labels
@@ -671,7 +680,7 @@ func (m *Manager) newSpeechWiring(id string, speakerByMessage map[string]string,
 			w.catchUp = cu
 		}
 	}
-	w.initPrewarm(idx, prewarmTexts, opts.Prewarm)
+	w.initPrewarm(idx, prewarmTexts, prewarmPages, opts.Prewarm)
 	endCtx, endCancel := context.WithCancel(runCtx)
 	w.endCtx, w.endCancel = endCtx, endCancel
 
@@ -768,9 +777,10 @@ func (m *Manager) newSpeechWiring(id string, speakerByMessage map[string]string,
 // initPrewarm resolves the session's prewarming policy and state. It is
 // called by newSpeechWiring and by the white-box test harness, which builds
 // the wiring without going through the manager.
-func (w *speechWiring) initPrewarm(idx *matcher.Index, texts map[string]string, opts *PrewarmOptions) {
+func (w *speechWiring) initPrewarm(idx *matcher.Index, texts map[string]string, pages map[string][]string, opts *PrewarmOptions) {
 	w.idx = idx
 	w.prewarmTexts = texts
+	w.prewarmPages = pages
 	w.prewarmCfg = defaultPrewarmConfig(opts)
 	w.prewarmKeys = map[string]struct{}{}
 }
@@ -1099,13 +1109,33 @@ func (w *speechWiring) onCommit(e events.Envelope) {
 	// prefix instead of the full line. Only a matched line reaches here:
 	// the unmatched read-through above deliberately keeps the screen's
 	// text (ADR-0136), and it has no canonical text in the corpus.
-	if canon := strings.TrimSpace(w.prewarmTexts[d.MessageID]); canon != "" {
+	//
+	// Display pages (ADR-0155): a matched message can span several boxes,
+	// and the box the player reached is the page whose text the OCR reading
+	// lives in. The utterance speaks that page and only that page — the
+	// boxes after the player reached are not on screen yet ("it's upcoming"),
+	// and the next box of the same script message is then its own utterance
+	// under its own page-scoped cache key, not a duplicate of the message's
+	// first box. A message that resolved to no page keeps the historical
+	// whole-message behaviour.
+	pageKey := d.MessageID // the utterance's cache identity: the message, or "<message>#p<ordinal>"
+	if pages := w.pagesFor(d.MessageID); len(pages) > 0 {
+		if ordinal, pageText, found := choosePage(w, pages, d); found {
+			text = pageText
+			// A single-page message keeps the bare message id (the pre-change
+			// identity); a multi-box message's box is page-scoped (ADR-0155).
+			if len(pages) > 1 {
+				pageKey = pageMessageID(d.MessageID, ordinal)
+			}
+		}
+	}
+	if canon := strings.TrimSpace(w.prewarmTexts[d.MessageID]); canon != "" && pageKey == d.MessageID {
 		text = canon
 	}
 
 	u := &utteranceInfo{
 		occurrence:  d.Occurrence,
-		messageID:   d.MessageID,
+		messageID:   pageKey,
 		regionID:    d.RegionID,
 		generation:  d.Generation,
 		text:        text,
@@ -1113,10 +1143,131 @@ func (w *speechWiring) onCommit(e events.Envelope) {
 		character:   w.speakerFor(d.MessageID),
 		committedAt: time.Now().UTC(),
 	}
-	if w.crossRegionDuplicate(d.MessageID, u) {
+	if w.crossRegionDuplicate(pageKey, u) {
 		return
 	}
 	w.routeUtterance(u)
+}
+
+// choosePage picks the display page of one committed message whose text
+// contains the OCR reading the commit carries (ADR-0155): a multi-page message
+// means the same script line reached its next box, and the box the player saw is
+// that page's text — the narrator must speak the page, not the message's whole
+// text. The comparison reuses the matcher's fold (the one the commitment made
+// the match with), so the choice is the commitment's own comparison rather than
+// a second hand-rolled fold; a normalized containment check is enough for the
+// page the reading lives in. Pages are in ordinal order, so the first page that
+// contains the reading is the reached one. It reports no page (found = false) for
+// an empty reading or a message with no pages, and the caller keeps the whole
+// canonical text.
+func choosePage(w *speechWiring, pages []string, d commitPayload) (ordinal int, pageText string, found bool) {
+	if len(pages) == 0 {
+		return 0, "", false
+	}
+	read := strings.TrimSpace(d.RawText)
+	if read == "" {
+		read = strings.TrimSpace(d.Text)
+	}
+	if read == "" {
+		return 0, "", false
+	}
+	fold := func(s string) string {
+		if w.idx != nil {
+			return w.idx.Fold(s)
+		}
+		return strings.ToLower(strings.Join(strings.Fields(s), " "))
+	}
+	foldedRead := fold(read)
+	for i, p := range pages {
+		fp := fold(p)
+		if foldedRead != "" && fp != "" && strings.Contains(fp, foldedRead) {
+			return i + 1, pages[i], true
+		}
+	}
+	return 0, "", false
+}
+
+// pageMessageID renders the cache-identity form of one display page of a
+// message: "<message id>#p<ordinal>". The page is part of the identity so a
+// later box of the same script message is a different utterance — spoken under
+// its own page key and its own audio — rather than a duplicate of the
+// message's first box (ADR-0155).
+func pageMessageID(messageID string, ordinal int) string {
+	return fmt.Sprintf("%s#p%d", messageID, ordinal)
+}
+
+// pagesFor returns one committed message's display pages in ordinal order:
+// the profile's page rows when the published content carries them (the
+// session fills the wiring from the same content the prewarm texts came
+// from), and the runtime's own split of the canonical text otherwise — the
+// fallback for profiles imported before paging was derived, so existing
+// profiles benefit without a re-import (ADR-0155). A missing entry means
+// the message had no pages to speak.
+func (w *speechWiring) pagesFor(messageID string) []string {
+	if pages := w.prewarmPages[messageID]; len(pages) > 0 {
+		return pages
+	}
+	return splitCanonicalPages(w.prewarmTexts[messageID])
+}
+
+// maxBoxLines is the dialogue box's display line limit the runtime's fallback
+// page split packs against — the same observed Wind Waker box geometry the
+// adapter's derivation packs against (internal/games/adapter/windwaker).
+const maxBoxLines = 4
+
+// splitCanonicalPages splits one message's canonical speech text into display
+// pages (ADR-0155's runtime fallback). The canonical text is already folded to
+// one line — a display wrap is layout, not a spoken pause — so the fallback has
+// no display line structure left to pack and splits on sentence boundaries,
+// packing the sentences into boxes of at most maxBoxLines. A text that fits one
+// box (the single-page case) splits to a single page, which keeps the pre-change
+// behaviour for every message that does not span boxes.
+func splitCanonicalPages(canon string) []string {
+	sentences := splitSentences(strings.TrimSpace(canon))
+	if len(sentences) == 0 {
+		return nil
+	}
+	var pages [][]string
+	var box []string
+	closeBox := func() {
+		if len(box) == 0 {
+			return
+		}
+		pages = append(pages, box)
+		box = nil
+	}
+	for _, s := range sentences {
+		if len(box) >= maxBoxLines {
+			closeBox()
+		}
+		box = append(box, s)
+	}
+	closeBox()
+	out := make([]string, 0, len(pages))
+	for _, b := range pages {
+		out = append(out, strings.Join(b, " "))
+	}
+	return out
+}
+
+// splitSentences splits on sentence-final punctuation, keeping the terminator;
+// a trailing fragment without one is its own sentence.
+func splitSentences(s string) []string {
+	var out []string
+	rs := []rune(s)
+	start := 0
+	for i, r := range rs {
+		if r == '.' || r == '!' || r == '?' || r == '…' {
+			if t := strings.TrimSpace(string(rs[start : i+1])); t != "" {
+				out = append(out, t)
+			}
+			start = i + 1
+		}
+	}
+	if t := strings.TrimSpace(string(rs[start:])); t != "" {
+		out = append(out, t)
+	}
+	return out
 }
 
 // routedMark is one recentRouted entry: where and when a line identity was
@@ -1364,7 +1515,18 @@ func (w *speechWiring) routeUtterance(u *utteranceInfo) {
 	// (The backpressure skip above returns earlier: the session's TTS slots
 	// are all busy, and a prewarm would only queue behind them.)
 	if u.reason == "" {
-		w.prewarm(u.messageID)
+		// Successor prewarming (FR-11), matched lines only: the just-committed
+		// line's weighted successors are synthesised in the background into the
+		// same cache, so the later commit of one of them resolves from the cache.
+		// The fence just moved, so this batch's "likely next" supersedes the
+		// previous batch's — the previous batch is cancelled inside the call.
+		// (The backpressure skip above returns earlier: the session's TTS slots
+		// are all busy, and a prewarm would only queue behind them.)
+		//
+		// The utterance's cache identity may be page-scoped (ADR-0155: a multi-box
+		// message's box is its own utterance), but the successor graph is
+		// message-level, so the batch warms the containing message's successors.
+		w.prewarm(prewarmSourceOf(u.messageID))
 	}
 }
 
@@ -2667,6 +2829,18 @@ func (w *speechWiring) prewarm(messageID string) {
 	}
 }
 
+// prewarmSourceOf maps a committed utterance's cache identity back to the
+// message it displays: the bare message id, or the "<message id>#p<ordinal>"
+// page form the utterance spoke under (ADR-0155). The successor graph is
+// message-level, so a page-scoped commit warms the containing message's
+// successors.
+func prewarmSourceOf(messageID string) string {
+	if i := strings.LastIndexByte(messageID, '#'); i >= 0 {
+		return messageID[:i]
+	}
+	return messageID
+}
+
 // speculativePrewarm is the pipeline's OnAdjudicating hook (docs/spec/07,
 // the overlap of the Clef round trip with the synthesis): while the
 // adjudication is in flight, the top local candidate's line is synthesised
@@ -2763,8 +2937,8 @@ func (w *speechWiring) PrewarmMessages(messageIDs []string) {
 // finished still commits the audio (it is valid, versioned cache content) —
 // a commit that never comes is what makes it wasted.
 func (w *speechWiring) prewarmWorker(batch context.Context, messageID string) {
-	text := w.prewarmTexts[messageID]
-	if text == "" {
+	pages := w.pagesFor(messageID)
+	if len(pages) == 0 {
 		return // no canonical text in the profile: nothing to synthesise
 	}
 	rv, _ := w.resolveVoice(batch, messageID)
@@ -2773,63 +2947,78 @@ func (w *speechWiring) prewarmWorker(batch context.Context, messageID string) {
 		// the same silence-with-reason the commit path takes; the line's own
 		// commit reports it when it comes.
 	}
-	key, err := w.lineCacheKey(rv, messageID, text)
-	if err != nil {
-		return
-	}
-	w.mu.Lock()
-	if w.closed {
-		w.mu.Unlock()
-		return
-	}
-	if _, booked := w.prewarmKeys[string(key)]; booked {
-		// A still-running or finished prewarm owns this key (an earlier batch
-		// of this session, or a converging graph reached it first): one
-		// synthesis per key, so this worker yields without double-spending.
-		w.mu.Unlock()
-		return
-	}
-	w.prewarmKeys[string(key)] = struct{}{}
-	w.prewarmRequested++
-	w.mu.Unlock()
-
-	if batch.Err() != nil {
-		w.prewarmKeyWasted(key)
-		return
-	}
 	pctx, cancel := context.WithTimeout(batch, w.prewarmCfg.jobDeadline)
 	defer cancel()
-	res, err := w.voices.Speech.GetOrGenerate(speech.WithKeyInput(pctx, messageID), key, speech.PriorityBackground, func(ctx context.Context) (tts.Audio, error) {
-		return rv.generate(ctx, text)
-	})
-	if err != nil {
-		if batch.Err() == nil && !w.closedLoad() {
-			// A provider failure the batch did not cause (or the job deadline
-			// expired while the batch lived): no bytes were committed, so the key
-			// goes back to "unbooked" and a later batch may request it again.
-			w.prewarmKeyDrop(key)
-			w.log("speech: prewarm generation failed",
-				"session_id", w.id, "message_id", messageID, "reason", providerErrorKind(err))
+	// One synthesis per display page (ADR-0155): a multi-page message's later
+	// boxes are separate utterances with page-scoped cache identities, so the
+	// worker fills one key per page; a single-box message keeps the bare message
+	// id (the pre-change behaviour).
+	for i, pageText := range pages {
+		pageID := messageID
+		if len(pages) > 1 {
+			pageID = pageMessageID(messageID, i+1)
+		}
+		key, err := w.lineCacheKey(rv, pageID, pageText)
+		if err != nil {
 			return
 		}
-		// Cancelled (fence move, scene change, session end): the job is cut
-		// short and its budget is gone.
-		w.prewarmKeyWasted(key)
-		return
-	}
-	w.mu.Lock()
-	if w.closed {
+		w.mu.Lock()
+		if w.closed {
+			w.mu.Unlock()
+			return
+		}
+		if _, booked := w.prewarmKeys[string(key)]; booked {
+			// A still-running or finished prewarm owns this key (an earlier batch
+			// of this session, or a converging graph reached it first): one
+			// synthesis per key, so this worker yields without double-spending.
+			w.mu.Unlock()
+			continue
+		}
+		w.prewarmKeys[string(key)] = struct{}{}
+		w.prewarmRequested++
 		w.mu.Unlock()
-		return // the session ended after the generation: the bytes are cached,
-		// but this session's stats do not book them
+
+		if batch.Err() != nil {
+			w.prewarmKeyWasted(key)
+			continue
+		}
+		res, err := w.voices.Speech.GetOrGenerate(speech.WithKeyInput(pctx, pageID), key, speech.PriorityBackground, func(ctx context.Context) (tts.Audio, error) {
+			return rv.generate(ctx, pageText)
+		})
+		if err != nil {
+			if batch.Err() == nil && !w.closedLoad() {
+				// A provider failure the batch did not cause (or the job deadline
+				// expired while the batch lived): no bytes were committed, so the key
+				// goes back to "unbooked" and a later batch may request it again.
+				w.prewarmKeyDrop(key)
+				w.log("speech: prewarm generation failed",
+					"session_id", w.id, "message_id", pageID, "reason", providerErrorKind(err))
+				continue
+			}
+			// Cancelled (fence move, scene change, session end): the job is cut
+			// short and its budget is gone.
+			w.prewarmKeyWasted(key)
+			continue
+		}
+		w.mu.Lock()
+		if w.closed {
+			w.mu.Unlock()
+			return // the session ended after the generation: the bytes are cached,
+			// but this session's stats do not book them
+		}
+		w.prewarmBytes += int64(len(res.WAV))
+		w.mu.Unlock()
 	}
-	w.prewarmBytes += int64(len(res.WAV))
-	w.mu.Unlock()
 }
 
 // lineCacheKey is a matched line's TTS cache key under a resolved voice: the
 // identity the prewarm, the profile pre-synthesis (presynth.go) and a commit
 // of the line share, so cached audio is found by whichever path speaks it.
+// The utterance's message id is the identity: the bare message id for a
+// single-box message, or the page-scoped "<message id>#p<ordinal>" for one
+// display page of a multi-box message (ADR-0155) — the page is part of the
+// identity, so a later box of the same script message is a different utterance
+// under its own key, not a duplicate of the message's first box.
 func (w *speechWiring) lineCacheKey(rv resolvedVoice, messageID, text string) (speech.CacheKey, error) {
 	return speech.CacheKeyOf(speech.KeyInput{
 		UtteranceText:            text,
