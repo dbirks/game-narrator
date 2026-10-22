@@ -26,13 +26,42 @@ Each problem was reproduced from board events and frames and then fixed on main:
 | Committed-line evidence evicted within ~20 min | Pinned dev-trace budget for committed reads | 0024 amendment (#46) |
 | Old cache entries and deploy backups filled the board disk to 99% | Speech-cache prune job/API/CLI/doctor (#49); deploy keeps 3 backups | 0159 |
 
+## Afternoon, 2026-10-22: the play loop and what it found
+
+The owner restated the goal: a loop where the agent walks up to a character in Dolphin, presses A, and judges the result. Is audio generated? Is it a man, a woman or a child? Is it immediate or ten seconds late? Does the narrator say random "ah"s while walking? Does a top-of-screen box work?
+
+**Delivered:** `make play ROUTE=…` (ADR 0162, `612276d`) runs scripted routes from a savestate:
+- stick holds, A presses, waits and segment marks;
+- shared-clock video and audio;
+- per-utterance segment, box, latency, ASR, voice and YIN pitch class;
+- PHANTOM rows first.
+
+Running it found and fixed three defects in the new code:
+- the runner never succeeded a checkpoint-free step;
+- segment marks were offsets from a zero time (plus a data race);
+- the first pitch estimator doubled every F0.
+
+**Findings with real providers** (`outset-deck-walk` route):
+- **No phantom speech.** Walking and idling with the A-button HUD on screen produced 0 phantom utterances. The board's history shows its "A"/"a"/"4" phantoms all predate the read-through plausibility gate.
+- **Aryll's box.** Spoken whole, 124 ms after the text settled. Her voice measured 340 Hz, "high (child)", confirmed by an independent YIN measurement.
+- **Literal placeholder.** `{player}` reached TTS as written and was spoken "player". A worker is fixing this (#48, ADR 0163).
+- **Navigation.** Reaching a different NPC (and a top-of-screen box) needs navigation off the lookout: every committed savestate starts there. Dead-reckoned routes found the exit. The vision-guided step is #55, and owner-made savestates next to NPCs were requested.
+
+**Also fixed today:**
+- **Dolphin scenarios.** The truth OCR engine indexed only the base rect while the pipeline reads placement-aware bands, so 2 of 17 scenarios had been failing since before this session (`70527d9`). All 17 pass.
+- **Live OCR-fallback test.** Its synthetic band had no crisp edge for the presence text floor, found by bisecting to `6053975`. It now carries a panel marker (`6d3816d`). Live: primary confidence 0.19, then the vision model read the line at CER 0.
+- **Thinking leak and vision capability (ADR 0161).** flint leaks `<think>`, which is now split by tag, and takes no images, so vision legs use an image-capable model.
+- **Telescope walk.** The vision probe uses the vision model, and the walk now reaches Aryll by reading the SPEAK label (`6945fbb`).
+- **Harness metrics.** The catch-up harness's "45 s stalls" and the A/V harness's 66 s appear→audio outlier are measurement artifacts (a stale last read after a conversation ends, and an early box-appear stamp). They are not narrator stalls.
+
 ## #41 Done-means checklist
 
 - [ ] **The board runs current main, and the owner plays a session where boxes at any height are read and spoken in character voices, within the latency budget.**
-  - The board runs `0.1.0-0f44d45` (user-level install via `scripts/board/deploy.sh --user`), with profile rev 5 and a live v4l2 session.
-  - Real-frame read on 2026-10-22: the bottom box read exactly. It committed `MATCH_FUZZY` and spoke from the presynth cache 7 ms after commit.
-  - It was voiced as the slot-linked character, which is the wrong speaker. Fixed after that observation in `0b5d52c` (ADR 0156 amendment 2); not yet deployed.
-  - **Open:** the early speaker question (ADR 0160, worker in flight) and box-anywhere (ADR 0154 step 2, worker in flight), then a redeploy and an owner play-through.
+  - The board runs a recent main (user-level install via `scripts/board/deploy.sh --user`), with profile rev 5 and a live v4l2 session. It is redeployed on the final sweep SHA.
+  - Real-frame read on 2026-10-22: a boy NPC's bottom box read exactly, committed `MATCH_FUZZY`, and spoke from the presynth cache 7 ms after commit.
+    - After `0b5d52c`, that shared-slot line routes to the narrator instead of the slot-linked character. Verified on the board.
+  - **Early speaker question (ADR 0160): merged, then reverted.** On the board it made 930 Clef calls in ~90 min, and matched lines stopped committing; details in ADR 0160 and #54.
+  - **Box-anywhere (ADR 0154 step 2): deferred to #53** after three worker attempts. The board's real top/middle/bottom placements are covered by rev 5's regions and the full-frame Clef.
 - [x] **The Dolphin A/V harness exists, runs from a make target, and reports per-line latency, missed or duplicate lines, ASR accuracy and voice correctness.**
   - `make test-av` writes `report.md`, `timeline.json`, `events.json`, `clips/*.mp4|wav` and `media/session.{mp4,wav}`.
   - Runs are tabled below. I inspected clip frames (montage) and per-clip RMS myself on `av-20261022T051337Z`: bottom and middle boxes, no OSD text, clips ending on the post-line cut-in.
