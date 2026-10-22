@@ -15,7 +15,6 @@ import (
 	"github.com/dbirks/game-narrator/internal/pipeline"
 )
 
-//
 // The delays stay well inside the 2.4 s clip: at 400 ms under -race and
 // parallel package load the clip can end before a fresh read confirms the
 // last box (a real box stays up until the player advances; the clip does
