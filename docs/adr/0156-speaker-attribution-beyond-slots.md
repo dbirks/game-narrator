@@ -127,3 +127,17 @@ A slot is now shared when the profile's lines reach the resolved character throu
 A character reached through a single key keeps its assignment, however many names and aliases it carries.
 
 **Limitation:** a single slot used by several NPCs but linked to one character is not detectable from the script. It still voices through the link, unless the adjudicator confidently names someone else.
+
+## Amendment 2 (2026-10-22): speaker-link erases the per-line key
+
+Speaker-link (ADR-0070) re-points a placeholder's lines onto the target character, and retires the placeholder with its name folded into the target's aliases. After a link, every line carries the target's own ID. The distinct-key rule from amendment 1 therefore saw one key, and a boy NPC's line on the board still voiced as Aryll, who has three folded placeholders.
+
+A character with **two or more retired placeholders folded into its aliases** now counts as a slot merge too. On the board's rev5 cast that covers 13 of 29 characters, from Tetra (5 slots) to Medli (2).
+
+Those lines need a confident Clef speaker or kind answer to get a character or generic voice. Without one they fall back to the narrator.
+
+A confident local match skips Clef, so ADR-0160 asks the speaker question early for these lines.
+
+Test: the speaker-link case in `TestSharedSpeakerSlots`.
+
+Evidence: `make test-av` passed on this change (settled→audio p50/p95 243/384 ms, voice gate green).

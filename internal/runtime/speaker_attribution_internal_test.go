@@ -131,6 +131,30 @@ func TestSharedSpeakerSlots(t *testing.T) {
 	if shared["msg-3"] || shared["msg-4"] {
 		t.Fatalf("shared = %v, want the single-slot character's lines not marked shared", shared)
 	}
+
+	// After speaker-link the lines carry the target's own id and the
+	// placeholders are retired, their names folded into the target's
+	// aliases: two folded placeholders is the merge, one is not.
+	linked := store.ProfileContent{
+		Characters: []games.Character{
+			{ID: "char-sister", Name: "Sister", Status: games.CharacterConfirmed, Aliases: json.RawMessage(`["ww:spk:11","ww:spk:3","little sis"]`)},
+			{ID: "char-baker", Name: "Baker", Status: games.CharacterConfirmed, Aliases: json.RawMessage(`["ww:spk:7","the baker"]`)},
+			{ID: "ph-11", Name: "ww:spk:11", Status: games.CharacterRetired},
+			{ID: "ph-3", Name: "ww:spk:3", Status: games.CharacterRetired},
+			{ID: "ph-7", Name: "ww:spk:7", Status: games.CharacterRetired},
+		},
+		Messages: []games.Message{
+			{ID: "msg-a", SpeakerID: "char-sister"},
+			{ID: "msg-b", SpeakerID: "char-baker"},
+		},
+	}
+	shared = sharedSpeakerSlots(linked, speakerLinkResolver(linked.Characters))
+	if !shared["msg-a"] {
+		t.Fatalf("shared = %v, want msg-a (two placeholders folded into one character) marked shared", shared)
+	}
+	if shared["msg-b"] {
+		t.Fatalf("shared = %v, want msg-b (one placeholder folded) not marked shared", shared)
+	}
 }
 
 // ── ADR-0158: the apparent-kind fallback (the generic voice) -----------------

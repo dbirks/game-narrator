@@ -96,7 +96,9 @@ func profileSpeechMaps(content store.ProfileContent, resolveSpeaker func(string)
 // curator's merge of slots, and a slot the curator merged onto one character
 // is one that several speakers use. A character reached through a single
 // speaker key — however many names and aliases it carries — is a
-// single-speaker attribution and keeps its assignment. (The first cut counted
+// single-speaker attribution and keeps its assignment. Speaker-link erases
+// the per-line key, so a character two or more retired placeholders were
+// folded into counts as a merge too (see below). (The first cut counted
 // names plus aliases, so every slot-linked character, name + one alias, read
 // as shared and the A/V harness's character spoke as the narrator.)
 func sharedSpeakerSlots(content store.ProfileContent, resolveSpeaker func(string) string) map[string]bool {
@@ -114,12 +116,42 @@ func sharedSpeakerSlots(content store.ProfileContent, resolveSpeaker func(string
 		}
 		keysByChar[char][textnorm.Normalize(m.SpeakerID, textnorm.Options{})] = true
 	}
+	// Speaker-link (ADR-0070) re-points a placeholder's lines onto the target
+	// and retires the placeholder, folding its name (the opaque slot key) into
+	// the target's aliases — after a link the lines carry the target's id, so
+	// the distinct-key count above sees one key. The folded placeholders are
+	// the surviving record of the merge: a character two or more retired
+	// placeholders were folded into is a slot merge too (on the board, Aryll
+	// took ww:spk:11 and ww:spk:3 and voiced a boy's line).
+	retired := map[string]bool{}
+	for _, c := range content.Characters {
+		if c.Status == games.CharacterRetired && c.Name != "" {
+			retired[textnorm.Normalize(c.Name, textnorm.Options{})] = true
+		}
+	}
+	mergedChar := map[string]bool{}
+	for _, c := range content.Characters {
+		if c.Status == games.CharacterRetired || len(c.Aliases) == 0 {
+			continue
+		}
+		var aliases []string
+		_ = json.Unmarshal(c.Aliases, &aliases)
+		folded := 0
+		for _, a := range aliases {
+			if retired[textnorm.Normalize(a, textnorm.Options{})] {
+				folded++
+			}
+		}
+		if folded > 1 {
+			mergedChar[c.ID] = true
+		}
+	}
 	out := map[string]bool{}
 	for _, m := range content.Messages {
 		if m.SpeakerID == "" {
 			continue
 		}
-		if len(keysByChar[resolveSpeaker(m.SpeakerID)]) > 1 {
+		if char := resolveSpeaker(m.SpeakerID); len(keysByChar[char]) > 1 || mergedChar[char] {
 			out[m.ID] = true
 		}
 	}
