@@ -126,8 +126,11 @@ func requireFragmentCommit(t *testing.T, label string, r Ranking, want string) {
 	if r.Margin < DefaultRankOptions().MinMargin {
 		t.Fatalf("%s: margin %.3f below the commit floor %.3f", label, r.Margin, DefaultRankOptions().MinMargin)
 	}
-	if got := r.Candidates[0].Components[ComponentText]; got < 0.9 {
-		t.Fatalf("%s: text component %.3f, want >= 0.9: a contained fragment must score as contained evidence, not as a half-similarity", label, got)
+	// 0.85: the length-aware floor (score.go) puts a contained fragment at
+	// coverage·(0.9 + 0.1·len(read)/len(line)) — far above the 0.2–0.35 its
+	// similarity metrics give it, below a candidate whose text IS the read.
+	if got := r.Candidates[0].Components[ComponentText]; got < 0.85 {
+		t.Fatalf("%s: text component %.3f, want >= 0.85: a contained fragment must score as contained evidence, not as a half-similarity", label, got)
 	}
 }
 

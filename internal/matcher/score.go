@@ -91,8 +91,18 @@ func (r *ranker) scoreOne(c *candidate) {
 			}
 		}
 	}
-	if c.frag > text {
-		text = c.frag
+	// The floor is scaled below 1 and by the read's share of the candidate
+	// (fragmentFloorScale + (1-scale)·len(read)/len(line)): containment lifts
+	// a fragment's weak similarity score, but it never ties or beats a
+	// candidate whose own text IS the reading (~1.0), and among several lines
+	// that all contain the read the closest in length ranks first — a short
+	// line equal to most of the read is better evidence than a long line that
+	// also contains it (the bench hardset pools pin that ranking).
+	if c.frag > 0 {
+		ratio := float64(len(r.obsRunes)) / float64(idx.keyLens[c.ord])
+		if f := c.frag * (fragmentFloorScale + (1-fragmentFloorScale)*ratio); f > text {
+			text = f
+		}
 	}
 
 	prefix := 0.0

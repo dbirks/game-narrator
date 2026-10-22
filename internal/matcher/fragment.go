@@ -73,6 +73,12 @@ import (
 
 const fragmentCoverageFloor = 0.9
 
+// fragmentFloorScale scales the containment fraction before it floors the
+// text component: a contained fragment scores at most 0.9 — far above the
+// 0.2–0.35 its similarity metrics give it, below the ~1.0 of a candidate
+// whose own text matches the reading.
+const fragmentFloorScale = 0.9
+
 // interiorTrigramKeys returns the sorted, duplicate-free hash keys of the
 // string's interior character trigrams — every (r[i-2], r[i-1], r[i]) for
 // i ≥ 2, without the boundary-pad trigrams trigramKeys adds at both ends.
