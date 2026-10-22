@@ -158,3 +158,21 @@ func TestEarlySpeakerBurstReadsOfOneBoxStayFastWithSleepingDecider(t *testing.T)
 		t.Fatalf("the first read's reply came back in %s — behind the sleeping decider's 2 s answer?", first)
 	}
 }
+
+// TestEarlyAskWorthy pins the early ask's read-quality floor on the UNO Q's
+// actual junk scene reads (2026-10-22) and on dialogue as it types in.
+func TestEarlyAskWorthy(t *testing.T) {
+	for text, want := range map[string]bool{
+		"ot":                      false,
+		"r 4 \"":                  false,
+		"vy 1 ©":                  false,
+		"a . \\ a. dal":           false,
+		"looked up":               false,
+		"The harbour":             true,
+		"Nobody in the village h": true,
+	} {
+		if got := earlyAskWorthy(text); got != want {
+			t.Errorf("earlyAskWorthy(%q) = %v, want %v", text, got, want)
+		}
+	}
+}
