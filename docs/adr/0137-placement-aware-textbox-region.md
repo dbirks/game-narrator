@@ -137,3 +137,40 @@ The ceiling sits an order of magnitude from both sides. The text floor is set to
 - `TestPresenceMatchesCorpusTruth` (synthetic corpus) and `make test-replay` stay green.
 
 **Reversal.** Set `MaxSaturatedDarkShare: 1` and `MinTextShare` to a tiny positive value in the profile's presence config.
+
+## Amendment (2026-10-22): the placement replay gate and the live-capture bundle (#47)
+
+**Context.** The ADR's captured-frame replays — `TestPlacementOnLiveCapture`,
+`TestPlacementOCRBeforeAfterFix` (the live-hdmi rev3 before/after) and
+`TestPlacementOnDolphinProbe` (the §Robustness banner regression) — were wired
+into no gate: `make test-replay` kept the family `-skip`ped (so a fixture-less
+host, CI included, saw a clean 0 instead of a NOT RUN exit 2) and `make test-dolphin`
+never ran them either, so the placement fix had no gate of its own. The second
+half of the gap was worse: the replays took `$GAME_NARRATOR_FIXTURE_DIR` as the
+live-capture bundle, the same variable the named-fixture gates take as the root
+of the fixture ids — so pointing it at the named-fixture root made a placement
+replay walk an unrelated no-box capture and fail on the wrong assertion ("picker
+never selected the top band", "the placement-aware crop did not read the fuller
+line").
+
+**Decision.** The live-capture bundle gets a dedicated root, and the replay
+family gets a gate:
+
+1. The live-capture bundle is `$GAME_NARRATOR_LIVE_CAPTURE_DIR` when set, else
+the fixture root's `live-capture/` subdirectory; it is **never** the whole
+fixture root — the named fixtures are the other gates' input, and the split is
+what makes one env var mean one thing again (issue #47).
+2. The three placement replays run in `make test-dolphin's` captures phase (the
+   same phase as the sea-amendment presence gate), through the gate's `-run`
+   pattern; each reports `NOT RUN` with its setup line when its bundle is
+   absent, and never a pass when absent. `make test-replay` keeps the family
+   `-skip`ped so a fixture-less host sees a clean 0 instead of a NOT RUN exit 2.
+
+**Validation.** On a host whose fixture root holds the named fixtures and no
+`live-capture/` subdirectory, all three placement replays report `NOT RUN`
+instead of consuming the named fixtures and failing.
+
+**Reversal.** Point `$GAME_NARRATOR_LIVE_CAPTURE_DIR` back at the capture
+bundle root and move the replays back to a dedicated phase — or simply revert
+the captures-phase `-run` pattern; the bundle split is the load-bearing half,
+the phase wiring the cosmetic half.

@@ -32,11 +32,11 @@ import (
 //
 // AGENTS.md rule 5: the output is aggregate — durations, confidences, rune
 // counts, band counts — never a recognised line. NOT RUN when the external
-// fixture is absent (never a pass).
+// bundle is absent (never a pass).
 func TestPlacementOCRBeforeAfterFix(t *testing.T) {
 	root, frames, ok := liveFixtureDir()
 	if !ok {
-		t.Skip("NOT RUN: live-hdmi fixture absent (set $GAME_NARRATOR_FIXTURE_DIR to the capture root)")
+		t.Skip("NOT RUN: live-capture bundle absent (set $GAME_NARRATOR_LIVE_CAPTURE_DIR to the capture bundle root, or $GAME_NARRATOR_FIXTURE_DIR to the fixture root holding a live-capture/ subdirectory)")
 	}
 
 	// The production crop recipe: the runtime's single source (letterbox

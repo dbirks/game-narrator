@@ -30,8 +30,8 @@ A gate whose capabilities are not configured is never green, and
 | `diagnostics` | `game-narrator doctor --dev` on a fresh build | — |
 | `release-snapshot` | GoReleaser snapshot pipeline (no publishing) | `goreleaser` on PATH; docker optional |
 | `bench` | the synthetic holdout split through the real pipeline (real Tesseract, real matcher) plus the captured-Dolphin holdout (class b) from the external fixtures and the calibration fit, each reported separately | `tesseract` and `magick` on PATH; the captured part also needs `$GAME_NARRATOR_FIXTURE_DIR` (the `windwaker-newgame` and/or `windwaker-legend-dense` fixtures) and `GAME_NARRATOR_GAME_IMAGE_PATH` — absent, it reports NOT RUN with setup steps, never a pass or a failure of the synthetic part |
-| `test-replay` | synthetic scenario suite (fault injection; BLOCKED reported, never passed) plus pipeline replay tests, `-race` | `tesseract` on PATH, else the replay test reports NOT RUN |
-| `test-dolphin` | real Dolphin tests (`-run Real`, one emulator at a time: `-p 1`, 45m timeout) plus the committed Dolphin scenarios replayed through the real recognition/runtime path (`TestDolphinScenarios`, 30m), writing the HTML report to `artifacts/scenarios/<run-id>/index.html`, plus the live play path through the real UI (task browser-live-play, class (d)+(e)): `TestLivePlayUI` (`internal/e2e`) serves the in-process API + embedded SPA on a real port with the dev Dolphin bridge wired, seeds the profile/region/voice from the disc image and runs the Playwright `live-play` project over the packaged /play and /developer pages (start with the Dolphin source, committed line + speech counters, the inspector's trace row chain, the Play page's Stop), asserting the docs/spec/12 live-E2E set and writing the evidence bundle (Playwright trace, screenshots, WAVs, timeline, manifest) to `artifacts/live-play-ui/<run-id>/` (60m) | `GAME_NARRATOR_GAME_IMAGE_PATH`; `dolphin-emu`, `Xvfb`, `ffmpeg`, `x11-utils`, `tesseract` and `xdotool` (savestate hotkeys, ADR 0043 am7) on PATH; the scenario phase also needs the external fixtures under `$GAME_NARRATOR_FIXTURE_DIR` (default `artifacts/fixtures/`) — absent or unverified fixtures report NOT RUN per scenario, never a pass; the UI phase also needs `pnpm` + a Playwright chromium (`cd web && pnpm exec playwright install chromium`), the built web UI (`make web-build` — the SPA the in-process server embeds) and the live gateway + TTS env (`GAME_NARRATOR_GATEWAY_URL` + token, the voice-design/clone role models and the Base registry URL) — each absent capability reports NOT RUN (exit 2) with the setup line, never a pass |
+| `test-replay` | synthetic scenario suite (fault injection; BLOCKED reported, never passed) plus pipeline replay tests, `-race` — the fixture-dependent placement replays are kept `-skip`ped here (they run in the `test-dolphin` captures phase) | `tesseract` on PATH, else the replay test reports NOT RUN |
+| `test-dolphin` | real Dolphin tests (`-run Real`, one emulator at a time: `-p 1`, 45m timeout) plus the committed Dolphin scenarios replayed through the real recognition/runtime path (`TestDolphinScenarios`, 30m), writing the HTML report to `artifacts/scenarios/<run-id>/index.html`, plus the live play path through the real UI (task browser-live-play, class (d)+(e)): `TestLivePlayUI` (`internal/e2e`) serves the in-process API + embedded SPA on a real port with the dev Dolphin bridge wired, seeds the profile/region/voice from the disc image and runs the Playwright `live-play` project over the packaged /play and /developer pages (start with the Dolphin source, committed line + speech counters, the inspector's trace row chain, the Play page's Stop), asserting the docs/spec/12 live-E2E set and writing the evidence bundle (Playwright trace, screenshots, WAVs, timeline, manifest) to `artifacts/live-play-ui/<run-id>/` (60m) | `GAME_NARRATOR_GAME_IMAGE_PATH`; `dolphin-emu`, `Xvfb`, `ffmpeg`, `x11-utils`, `tesseract` and `xdotool` (savestate hotkeys, ADR 0043 am7) on PATH; the scenario phase also needs the external fixtures under `$GAME_NARRATOR_FIXTURE_DIR` (default `artifacts/fixtures/`) — absent or unverified fixtures report NOT RUN per scenario, never a pass; the captures phase also runs the captured-frame placement replays (`TestPlacementOnLiveCapture`, `TestPlacementOnDolphinProbe`, `TestPlacementOCRBeforeAfterFix`) against the live-capture bundle (`$GAME_NARRATOR_LIVE_CAPTURE_DIR`, else the `$GAME_NARRATOR_FIXTURE_DIR` fixture root's `live-capture/` subdirectory) — absent bundle reports NOT RUN, never a pass; the UI phase also needs `pnpm` + a Playwright chromium (`cd web && pnpm exec playwright install chromium`), the built web UI (`make web-build` — the SPA the in-process server embeds) and the live gateway + TTS env (`GAME_NARRATOR_GATEWAY_URL` + token, the voice-design/clone role models and the Base registry URL) — each absent capability reports NOT RUN (exit 2) with the setup line, never a pass |
 | `test-models` | live provider contract tests (`-run Live`), sequential (`-p 1`) | `GAME_NARRATOR_GATEWAY_URL` plus the token env (default `GAME_NARRATOR_GATEWAY_TOKEN`, name overridable via `GAME_NARRATOR_GATEWAY_TOKEN_ENV`); the vision tests run by default (the `GAME_NARRATOR_LIVE_VISION` opt-in was removed, ADR 0040); the VLM OCR fallback session test (`TestLiveOCRFallbackSession`) uses the configured `GAME_NARRATOR_ROLE_VISION_OCR_FALLBACK_MODEL` (standard dev value `qwen3-8-27b` over the shared gateway, `.env.example`) before falling back to `GAME_NARRATOR_LIVE_MODEL`; TTS registry tests `GAME_NARRATOR_TTS_BASE_DIRECT_URL` (or `GAME_NARRATOR_ROLE_VOICE_CLONE_REGISTRY_URL`) |
 | `test-hardware` | UNO Q hardware smoke (`internal/hwsmoke`, `TestHW*`): V4L2 capture grab through the app's FFmpeg path, consented audio-sink tone, controlled-image OCR, RAM/CPU/temperature/storage preflight + 60 s serve-session RSS budget, platform report — every absent capability is NOT RUN with the attach/configure instruction, never a vacuous pass | attach a UNO Q with capture source + audio sink (13-uno-q-hardware-smoke.md); `GAME_NARRATOR_HW_AUDIO_CONSENT=1` for the audio tone; `GAME_NARRATOR_CAPTURE_DEVICE` / `GAME_NARRATOR_AUDIO_DEVICE` to choose the node/sink |
 | `soak` | the long soak pair (1h replay + 2h chaos, docs/spec/12; `TestSoakLong` budgets with explicit `-timeout`, ADR-0045) — hours-long, so it is not part of `test-full`; reports under `artifacts/soak/<run-id>/` | — |
@@ -70,7 +70,14 @@ is a maintenance action, not a gate item; run it on demand with
 `GN_GATE=test-dolphin GN_REOCR_FIXTURE=windwaker-newgame go test -count=1
 -timeout 30m -run 'TestRealReOCRFixture$' ./internal/dolphin/`. The hardware
 smoke family is gated separately by `GAME_NARRATOR_HW_SMOKE=1`, which only
-`make test-hardware` and `scripts/hw/run-on-device.sh` set.
+`make test-hardware` and `scripts/hw/run-on-device.sh` set. The fixture-dependent
+families are excluded from the gates that do not own them: `test-replay` keeps
+`-skip` for the recorded-scenario replay and the captured-frame placement replays
+(`TestPlacementOnLiveCapture`, `TestPlacementOnDolphinProbe`,
+`TestPlacementOCRBeforeAfterFix`) plus the ADR-0137 sea presence gate
+(`TestPresenceRejectsSeaAcceptsBoxes`) — they run in the `test-dolphin` captures
+phase instead (issue #47), and a fixture-less host sees a clean 0 instead of a
+NOT RUN exit 2.
 
 The go-test gates (`test-replay`, `test-dolphin`, `test-models`) run through
 `scripts/gates/run-go-gate.sh`, which parses `go test -json`, prints one
@@ -82,6 +89,40 @@ in `artifacts/gates/<gate>.rc` because `make` maps any recipe failure to its
 own exit status 2. GNU make reports any failing recipe as make exit status
 2, so scripts must read `artifacts/gates/<gate>.rc` (0 pass, 1 fail, 2 NOT
 RUN) or the printed summary table, not make's own exit code.
+
+## Fixture and live-capture bundle layout
+
+The external fixture trees the gates read are never committed (AGENTS.md rule 5)
+and live under the gitignored `artifacts/` tree, or — for a user-supplied root —
+under `$GAME_NARRATOR_FIXTURE_DIR`:
+
+- **Named fixtures** (`$GAME_NARRATOR_FIXTURE_DIR`, default
+  `artifacts/fixtures/`): one directory per fixture id (`windwaker-*`,
+  `board-sailing-20261021`, `states/`, `trace-fixtures/`, …), each carrying
+  its own `manifest.json` / `truth.json` / `profile.json` plus the frame
+  trees (`frames/`, `crops/`). The bench captured holdout, the scenario phase,
+  the presence gate and the bench calibration take the root and read the
+  fixture ids they know.
+
+- **Live-capture bundle** (the placement replays): the captured-frame
+  placement replays — `TestPlacementOnLiveCapture`, `TestPlacementOCRBeforeAfterFix`,
+  and, via the e2e catch-up run's dev-trace frames, `TestPlacementOnDolphinProbe` —
+  take a **dedicated** capture bundle. The bundle root is
+  `$GAME_NARRATOR_LIVE_CAPTURE_DIR` when set, else the fixture root's
+  `live-capture/` subdirectory (issue #47). The bundle holds the captured
+  frames the placement fix was proven on; JPEGs are recognised by magic byte
+  (the content-addressed dev-trace blobs carry no extension), and frames are
+  sorted, with per-capture-session grouping by subdirectory. It is **never**
+  the whole fixture root — the named fixtures are the other gates' input, and
+  a placement replay must not walk them.
+
+- **Probe bundle**: the Dolphin banner-regression replays
+  (`TestPlacementOnDolphinProbe`) run against the gitignored
+  `artifacts/catch-up-live/<run-id>/` dev-trace frames (PNG).
+
+When the live-capture bundle is absent, the three placement replays report
+`NOT RUN` with the setup line — never a pass, never a failure of the
+named-fixture gates.
 
 ## Host
 

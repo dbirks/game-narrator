@@ -12,13 +12,24 @@ import (
 	"github.com/dbirks/game-narrator/internal/vision"
 )
 
-// liveFixtureDir resolves the external live-capture fixture root (the
-// $GAME_NARRATOR_FIXTURE_DIR, ADR-0054) and reports whether it holds any
-// JPEG frame. It is the class-(b) captured-frame replay root (AGENTS.md rule 5:
-// the fixture is external and private, referenced by the env var, never
-// committed); the test is NOT RUN — never a pass — when it is absent.
+// liveFixtureDir resolves the external live-capture fixture bundle and
+// reports whether it holds any JPEG frame. The bundle is the dedicated
+// live-capture root — $GAME_NARRATOR_LIVE_CAPTURE_DIR when set, else the
+// $GAME_NARRATOR_FIXTURE_DIR fixture root's live-capture/ subdirectory
+// (ADR-0054's fixture-root convention) — and it is NEVER the whole fixture
+// root: that root also holds the named fixtures (windwaker-*, board-sailing-*,
+// states/) the other gates read, and walking it would let a placement replay
+// pick up frames it does not own. It is the class-(b) captured-frame replay
+// root (AGENTS.md rule 5: the fixture is external and private, referenced by
+// the env vars, never committed); the test is NOT RUN — never a pass — when
+// the bundle is absent.
 func liveFixtureDir() (string, []string, bool) {
-	root := os.Getenv("GAME_NARRATOR_FIXTURE_DIR")
+	root := os.Getenv("GAME_NARRATOR_LIVE_CAPTURE_DIR")
+	if root == "" {
+		if v := os.Getenv("GAME_NARRATOR_FIXTURE_DIR"); v != "" {
+			root = filepath.Join(v, "live-capture")
+		}
+	}
 	if root == "" {
 		return "", nil, false
 	}
@@ -62,11 +73,11 @@ func liveFixtureDir() (string, []string, bool) {
 // reporting it against the ~600 ms frame_to_ocr budget the selection steers. It
 // quotes no game text (AGENTS.md rule 5): the assertion is on the selected band
 // and the measured cost, never on the recognised line. NOT RUN when the
-// external fixture is absent.
+// bundle is absent.
 func TestPlacementOnLiveCapture(t *testing.T) {
 	root, frames, ok := liveFixtureDir()
 	if !ok {
-		t.Skip("NOT RUN: live-hdmi fixture absent (set $GAME_NARRATOR_FIXTURE_DIR to the capture root)")
+		t.Skip("NOT RUN: live-capture bundle absent (set $GAME_NARRATOR_LIVE_CAPTURE_DIR to the capture bundle root, or $GAME_NARRATOR_FIXTURE_DIR to the fixture root holding a live-capture/ subdirectory)")
 	}
 
 	// The profile's calibrated textbox band (the "dialogue box high" rect
@@ -100,7 +111,7 @@ func TestPlacementOnLiveCapture(t *testing.T) {
 		_ = i
 	}
 	if len(costs) == 0 {
-		t.Skip("NOT RUN: no decodable JPEG frames in the fixture")
+		t.Skip("NOT RUN: no decodable JPEG frames in the bundle")
 	}
 
 	// The box sat in the top band across this capture: the picker's standing
