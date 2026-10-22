@@ -358,6 +358,13 @@ func TestLiveCatchUpRapidDialogue(t *testing.T) {
 	t.Logf("catchup e2e: voices ready: character %s (%s), narrator %s (%s)",
 		cuScene.charID, cuV.char.Registered, "narrator", cuV.narr.Registered)
 
+	// Warm the TTS cache the way production does (the profile presynth,
+	// ADR-0153) and the A/V harness does: without it the catch-up timing
+	// measured the TTS backend's raw synthesis (2-3 s per uncached line on
+	// 2026-10-22), not the session's catch-up pacing the assertions are about.
+	warmed := avPreSynthesize(t, ctx, st, cuV.service, cuScene.profileID, fdDir, cuV.char, cuV.narr)
+	t.Logf("catchup e2e: prewarm: %d (voice, line-text) cache entries", warmed)
+
 	// ── the live session: bridge from the first-dialogue savestate ───────
 	launchCtx, launchCancel := context.WithTimeout(context.Background(), cuLaunchTimeout)
 	defer launchCancel()
