@@ -395,13 +395,6 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 		cfg.Reducer.Adjudicate = true
 		cfg.Reducer.AdjudicateMargin = m.opts.Decision.Margin
 		cfg.Speakers = speakers
-		// The ADR-0160 early-speaker view: which of the published lines sit on a
-		// speaker slot the script reaches through more than one speaker — the
-		// shared slots whose commit still owes the adjudicator's speaker
-		// attribution, even though the local policy committed the line
-		// confidently. The rank worker reads it to decide when a confident top
-		// candidate owes the speaker-only adjudication.
-		cfg.SharedSpeakerMessages = sharedSpeakerSlots(content, resolveSpeaker)
 		if w := m.newDecisionWiring(id, texts); w != nil {
 			cfg.Decider = w
 		}

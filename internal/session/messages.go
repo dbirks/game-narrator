@@ -262,19 +262,10 @@ type DecisionMsg struct {
 	// difference between "the model abstained" and "the model never answered" in
 	// the developer inspector — but it changes nothing.
 	Accepted bool
-	// AttributionOnly marks an advisory answer that carries speaker
-	// attribution and nothing else (ADR-0160's early-speaker ask): the caller
-	// already holds the line the commit will speak — a confident local top
-	// candidate whose speaker slot is shared — so the answer may not narrow
-	// the commit's candidate choice, and the local evidence's choice,
-	// eligibility and reason stand. The speaker fields it still carries are the
-	// overlay the commit's voice decision reads for that occurrence; the line
-	// choice the answer does not own is the local policy's.
-	AttributionOnly bool
-	Provider        string
-	RouteID         string
-	Model           string
-	Reason          string
+	Provider string
+	RouteID  string
+	Model    string
+	Reason   string
 }
 
 func (m DecisionMsg) MsgKind() Kind     { return KindDecision }

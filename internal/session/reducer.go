@@ -198,13 +198,8 @@ type answeredObservation struct {
 	// rules may read it as a way to say "not this", never as a way to say "yes".
 	eligible bool
 	accepted bool
-	// attributionOnly marks the answer as carrying attribution only (ADR-0160):
-	// the early-speaker answer asked for the line's speaker, and the line itself
-	// was already settled by the local evidence's confident top candidate, so
-	// the answer may not narrow the commit's candidate choice.
-	attributionOnly bool
-	provider        string
-	model           string
+	provider string
+	model    string
 }
 
 // SpeechPhase is where one committed utterance has got. It is a phase rather than

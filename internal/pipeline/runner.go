@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"sync"
 	"time"
 
@@ -71,16 +70,6 @@ type Runner struct {
 	// from the API's goroutines, so each is mutex-guarded the way the tracker's
 	// Box reads are (ADR-0082 amendment 1). See liveview.go.
 	liveView liveView
-
-	// The ADR-0160 early-speaker attribution asks: per region the in-flight
-	// slot for the speaker-only adjudication, and the (region, generation, top
-	// message id) keys an occurrence's ask has been made. The rank worker reads
-	// it to fire the early ask for a confident local top candidate whose slot is
-	// shared — at most one ask in flight per region, at most one ask per box
-	// occurrence, the rest of a burst of reads of the same typing box dropping.
-	earlyMu       sync.Mutex
-	earlyInFlight map[string]bool
-	earlyAsked    map[string]bool
 }
 
 // lastCommitted reports the id of the last message this run committed, for
@@ -562,36 +551,6 @@ func (r *Runner) rankWorker(ctx context.Context, ranks <-chan rankJob, replies c
 				// stays the only dimension (docs/spec/13).
 				r.metrics.DecisionDuration(r.mLabels, r.cfg.Now().Sub(asked))
 				r.metrics.DecisionVerdict(r.mLabels, reply.Reason)
-			} else if r.cfg.Decider != nil && len(r.cfg.SharedSpeakerMessages) > 0 {
-				// ADR-0160 (redesign): the early-speaker ask. A confident local top
-				// candidate whose speaker slot is shared still owes the adjudicator's
-				// speaker attribution — the live shape that committed MATCH_FUZZY with
-				// high confidence and so never asked Clef (the boy the frame could
-				// name, voiced through the narrator). The local policy committed the
-				// line; the question is only who spoke, so the ask is speaker-only
-				// (the speaker + speaker_kind questions, the frame attached per
-				// ADR-0154) and it fires on the first read whose top candidate is that
-				// message, before the commit for the occurrence — the ranking the
-				// commit would have consumed anyway, so the ordering is the ordinary
-				// one (score → decide → commit) and the speculative TTS prewarm hook
-				// (ADR-0154's overlap) already covers synthesis while the answer is in
-				// flight.
-				//
-				// Fire and forget (the review-redesign): the ask runs in its own
-				// goroutine on the decision role's normal timeout — not the early
-				// budget, which is now the speech side's bounded wait (ADR-0160) —
-				// and delivers this job's ranking reply itself, so the rank worker
-				// never blocks on it and keeps answering the next read: a burst of
-				// reads of the same typing box costs one ask, and the rest drop
-				// through the in-flight bound.
-				topID := ""
-				if len(rank.Candidates) > 0 {
-					topID = rank.Candidates[0].MessageID
-				}
-				if topID != "" && r.cfg.SharedSpeakerMessages[topID] && r.beginEarlyAsk(j.req.region, j.req.gen, topID) {
-					go r.runEarlyAsk(ctx, replies, j, rank, topID)
-					continue
-				}
 			}
 			select {
 			case replies <- rankIn{req: j.req, rank: rank, at: r.cfg.Now(), reply: reply}:
@@ -601,67 +560,6 @@ func (r *Runner) rankWorker(ctx context.Context, ranks <-chan rankJob, replies c
 		case <-ctx.Done():
 			return
 		}
-	}
-}
-
-// runEarlyAsk fires the ADR-0160 early-speaker attribution ask for one
-// confident local top candidate whose speaker slot is shared — the live
-// shape that committed MATCH_FUZZY with high confidence and so never asked
-// Clef — and owns this job's delivery of the ranking reply: the answer (or
-// the honest abstain) rides the same replies path the full adjudication
-// uses, so the session's decide reads it through the attribution-only
-// overlay before the commit for the occurrence reads it.
-//
-// Fire and forget (the review-redesign): the goroutine runs the ask on the
-// decision role's normal timeout (never the early budget, which is now the
-// speech side's bounded wait) and sends the reply itself; the rank worker
-// moved on the moment it fired, so the burst of reads a typing box produces
-// never waits on the answer and the rank→reply latency of a burst stays
-// flat while the answer is in flight. The send is bounded by the run context
-// (the session gone → no delivery, the commit proceeds on local evidence).
-func (r *Runner) runEarlyAsk(ctx context.Context, replies chan<- rankIn, j rankJob, rank matcher.Ranking, topID string) {
-	reply := DecisionReply{Provider: "systemone"}
-	if r.cfg.Decider != nil {
-		r.cnt.decisions()
-		r.metrics.Decision(r.mLabels)
-		asked := r.cfg.Now()
-		// Speculative TTS prewarming (docs/spec/07, the overlap of the
-		// adjudication's round trip with the synthesis): the top local
-		// candidate is known before the Clef call goes out, so the runtime's
-		// hook starts its background synthesis now. When the verdict lands
-		// and the commit confirms the same line, the speech cache's
-		// singleflighted GetOrGenerate either joins the in-flight
-		// generation or resolves from the cache. The commitment and the
-		// speech fences are untouched: nothing is scheduled or played until
-		// the commit occurs, so a verdict that narrows away from the
-		// prewarmed line costs at most one wasted synthesis, never a stale
-		// playback.
-		if r.cfg.OnAdjudicating != nil && len(rank.Candidates) > 0 && rank.Candidates[0].MessageID != "" {
-			r.cfg.OnAdjudicating(rank.Candidates[0].MessageID)
-		}
-		reply = r.cfg.Decider.Decide(ctx, DecisionRequest{
-			SessionID:       r.cfg.SessionID,
-			ProfileRevision: r.cfg.ProfileRevision,
-			RegionID:        j.req.region,
-			ObservationSeq:  j.req.obsSeq,
-			Generation:      j.req.gen,
-			SceneID:         j.req.scene,
-			Text:            j.req.text,
-			RawText:         j.raw,
-			Confidence:      j.conf,
-			Ranking:         rank,
-			Speakers:        r.cfg.Speakers,
-			LastMessage:     r.lastCommitted(),
-			Frame:           r.latestImage(),
-			SpeakerOnly:     true,
-		})
-		r.metrics.DecisionDuration(r.mLabels, r.cfg.Now().Sub(asked))
-		r.metrics.DecisionVerdict(r.mLabels, reply.Reason)
-	}
-	r.endEarlyAsk(j.req.region)
-	select {
-	case replies <- rankIn{req: j.req, rank: rank, at: r.cfg.Now(), reply: reply}:
-	case <-ctx.Done():
 	}
 }
 
@@ -676,59 +574,3 @@ func engineName(e ocr.Engine) string {
 	}
 	return "unnamed"
 }
-
-// earlyAskKey is the ADR-0160 early-speaker ask's box-occurrence key: the
-// region the line was read from, the generation the commit for it will carry,
-// and the top candidate the confident local policy committed on. One ask per
-// key, at most one in flight per region.
-func earlyAskKey(region string, gen int64, topID string) string {
-	return region + "\x00" + strconv.FormatInt(gen, 10) + "\x00" + topID
-}
-
-// beginEarlyAsk reports whether the ranking's confident local top candidate
-// owns the next early-speaker attribution ask for its box occurrence (ADR-0160):
-// the ask is deduped per occurrence (region + generation + top message id) and
-// at most one ask is in flight per region, so the rest of a burst of reads of
-// the same typing box — the same top candidate, the same occurrence — drops
-// rather than re-spending the appliance's decision budget. It returns false
-// when an ask for this occurrence was already made or when another ask owns
-// the region's slot; the caller then keeps the commit on the local evidence.
-func (r *Runner) beginEarlyAsk(region string, gen int64, topID string) bool {
-	r.earlyMu.Lock()
-	defer r.earlyMu.Unlock()
-	if r.earlyInFlight == nil {
-		r.earlyInFlight = map[string]bool{}
-	}
-	if r.earlyAsked == nil {
-		r.earlyAsked = map[string]bool{}
-	}
-	if r.earlyInFlight[region] {
-		return false
-	}
-	key := earlyAskKey(region, gen, topID)
-	if r.earlyAsked[key] {
-		return false
-	}
-	r.earlyInFlight[region] = true
-	r.earlyAsked[key] = true
-	if len(r.earlyAsked) > maxEarlyAsks {
-		// The occurrence keys of a long session can outlive the boxes that
-		// produced them; the bounded drop keeps the registry a leak tripwire,
-		// not a history table.
-		r.earlyAsked = map[string]bool{}
-	}
-	return true
-}
-
-// endEarlyAsk releases the region's early-attribution in-flight slot once
-// the ask has settled (its answer delivered, or the run went away) — the next
-// read of the same region may then own a fresh ask.
-func (r *Runner) endEarlyAsk(region string) {
-	r.earlyMu.Lock()
-	defer r.earlyMu.Unlock()
-	delete(r.earlyInFlight, region)
-}
-
-// maxEarlyAsks bounds the early-ask dedupe registry; an occurrence older
-// than this many keys cannot recur meaningfully, so the registry resets.
-const maxEarlyAsks = 1024
