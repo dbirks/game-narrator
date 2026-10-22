@@ -66,15 +66,3 @@ Drop the `SpeakerOnly` flag and the early-ask trigger (the session's `SharedSpea
 ## Links / references
 
 - ADR-0070, ADR-0072, ADR-0101, ADR-0135, ADR-0154, ADR-0156, ADR-0158.
-
-## Amendment 2026-10-22: read-quality floor (observed on the UNO Q)
-
-The first board deploy (8e609ab) asked Clef every 2–5 s while the owner was in scenes with no dialogue box. Junk scene reads such as "ot", "vy 1 ©" and "a . \ a. dal" passed the fragment matcher (ADR 0151) onto a shared-slot line, and each new generation/top pair defeated the per-occurrence dedupe. No junk was spoken, because the commit-side gates held.
-
-The early ask now also requires:
-- a non-abstaining ranking;
-- a read that looks like dialogue: at least two words of three or more letters (`earlyAskWorthy`).
-
-A box still typing asks a moment later, once its text has grown.
-
-Tests: `TestEarlyAskWorthy` uses the board's actual junk strings, and `TestEarlySpeakerAskNotFiredForAbstainingJunkRead` fails without the floor.

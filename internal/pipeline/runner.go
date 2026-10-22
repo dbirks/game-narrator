@@ -6,11 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/dbirks/game-narrator/internal/capture"
 	"github.com/dbirks/game-narrator/internal/events"
@@ -591,14 +588,7 @@ func (r *Runner) rankWorker(ctx context.Context, ranks <-chan rankJob, replies c
 				if len(rank.Candidates) > 0 {
 					topID = rank.Candidates[0].MessageID
 				}
-				// Only a ranking the local policy would commit owes the attribution
-				// question: an abstaining ranking is the junk read of a scene with
-				// no box (observed on the board: scene text ranked a shared-slot
-				// line on top and asked Clef every few seconds). Short junk reads
-				// can still pass the fragment matcher, so the read itself must
-				// look like dialogue (earlyAskWorthy); a box still typing asks a
-				// moment later, once its text has grown.
-				if topID != "" && !rank.Abstain && earlyAskWorthy(j.req.text) && r.cfg.SharedSpeakerMessages[topID] && r.beginEarlyAsk(j.req.region, j.req.gen, topID) {
+				if topID != "" && r.cfg.SharedSpeakerMessages[topID] && r.beginEarlyAsk(j.req.region, j.req.gen, topID) {
 					go r.runEarlyAsk(ctx, replies, j, rank, topID)
 					continue
 				}
@@ -691,20 +681,6 @@ func engineName(e ocr.Engine) string {
 // region the line was read from, the generation the commit for it will carry,
 // and the top candidate the confident local policy committed on. One ask per
 // key, at most one in flight per region.
-// earlyAskWorthy is the read-quality floor for the early ask: at least two
-// words of three or more letters. The board's junk scene reads ("ot",
-// "vy 1 ©", "a . \\ a. dal") all fail it; a line of dialogue passes within its
-// first few typed words.
-func earlyAskWorthy(text string) bool {
-	words := 0
-	for _, f := range strings.FieldsFunc(text, func(r rune) bool { return !unicode.IsLetter(r) }) {
-		if utf8.RuneCountInString(f) >= 3 {
-			words++
-		}
-	}
-	return words >= 2
-}
-
 func earlyAskKey(region string, gen int64, topID string) string {
 	return region + "\x00" + strconv.FormatInt(gen, 10) + "\x00" + topID
 }

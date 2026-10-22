@@ -198,34 +198,3 @@ func TestEarlySpeakerAskNotFiredForNonSharedTop(t *testing.T) {
 		t.Fatalf("commits = %d, want both clip lines", commits)
 	}
 }
-
-// TestEarlySpeakerAskNotFiredForAbstainingJunkRead: a scene with no dialogue
-// box reads short junk that the fragment matcher can still rank onto a
-// shared-slot line. Observed on the UNO Q (2026-10-22): every such read asked
-// Clef, one request every few seconds. The early ask needs a read that looks
-// like dialogue (two words of 3+ letters) on a non-abstaining ranking.
-func TestEarlySpeakerAskNotFiredForAbstainingJunkRead(t *testing.T) {
-	dec := &earlySpeakerDecider{}
-	eng := &garbleOCR{text: junkReadText}
-	h := newHarness(t, nil, func(c *pipeline.Config) {
-		c.Mode = pipeline.ModeReplay
-		c.OCR = eng
-		c.Decider = dec
-		c.SharedSpeakerMessages = map[string]bool{msgIDLineA: true, msgIDLineB: true}
-	})
-	st, _, err := h.run(t, h.source(0, false))
-	if err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	if eng.calls.Load() == 0 {
-		t.Fatal("the junk engine was never called: the test exercised nothing")
-	}
-	if n := len(dec.snapshot()); n != 0 {
-		t.Fatalf("early speaker-only asks on abstaining junk reads = %d, want 0 (stats %+v)", n, st)
-	}
-}
-
-// junkReadText is a short read that the fragment matcher ranks onto lineA
-// (without the read-quality floor it asked Clef), standing in for the board's
-// scene-text misreads.
-const junkReadText = "looked up"
