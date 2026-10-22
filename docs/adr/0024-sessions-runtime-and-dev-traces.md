@@ -186,3 +186,53 @@ Drop the three route registrations and the two scope grants, delete
 pipeline, store, event, asset and jobs packages are untouched by this ADR,
 so no data migration is owed; stored dev-trace directories are disposable
 by definition and may be removed with the feature.
+
+## Amendment: pinned dev-trace evidence (2026-10-21)
+
+Issue #46 amended the developer-trace retention rule this ADR set. The
+rolling, byte-bounded store kept only the newest evidence, so the frames
+and crops of committed and spoken lines were evicted within minutes by
+idle frames — the "why did OCR read X" record the operator was holding
+was gone before it could be opened.
+
+**Decision.** A per-session pinned-evidence budget: when a `text.observed`
+read led to a `message.committed` (which is also how an unmatched
+read-through speaks), the dev-trace recorder pins the committing read's
+frame and crops plus the last `devTracePinContextReads` retained reads
+before it, and the rolling sweep skips pinned blobs. The pinned budget is
+`DevTracePinnedQuotaFraction` (0.25) of the session quota, and the pinned
+budget — not the rolling quota — owns the pinned bytes: once it overflows,
+the oldest pinned evidence is evicted first, oldest-pinned-first, which
+is the mirror image of the rolling oldest-first sweep. Everything else
+about the store is unchanged (per-session quota, oldest-first idle
+eviction, sampling gate, blob bound, `text.observed` enrichment).
+
+**Wiring.** The `tracePublisher` (the runtime's dev-trace event boundary)
+resolves a `text.observed` read to its stored sample, remembers the read a
+later `message.committed` answers, and pins through the recorder on the
+commit — the read that committed, and the last reads before it. The
+recorder's `PinSample` books the frame and crops against the pinned
+budget, evicts oldest-pinned-first on overflow and prunes the sample
+ledger together with the store, so ledger, samples and on-disk blobs
+cannot drift apart.
+
+**Tradeoffs.** Pinned bytes stay inside the rolling total while pinned, so
+the rolling quota is a ceiling on everything the session keeps — pinned
+or not — and the pinned budget is the ceiling on how long pinning may
+hold. The pin context window is a bounded cost: the committing read is
+always pinned, and the last three reads before it ride along, so a
+commit's context survives the same idle sweep without unbounding the
+budget per commit.
+
+**Validation.** `internal/runtime` dev-trace tests: `TestDevTracePinnedCommitSurvivesIdleStream`
+(a long idle stream after a commit leaves the commit's crop retrievable
+through the store's read while the rolling quota still holds), `TestDevTracePinnedBudgetBounds`
+(the pinned budget bounds pinning; the oldest pinned evidence is
+evicted first and the newest pinned survives), and `TestDevTraceIdleEvictionUnchangedAfterPin`
+(the pin holds the pinned read out of the sweep without switching the
+idle sweep off). The pre-existing `TestDevTraceQuotaEvictsOldest` keeps
+covering the rolling idle eviction itself.
+
+**Reversal.** Drop the `tracePublisher` pin hook and the recorder's pinned
+state; the rolling sweep reverts to evicting the oldest retained blob
+unconditionally and no pinned bytes are ever booked.

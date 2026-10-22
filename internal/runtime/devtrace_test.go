@@ -279,3 +279,144 @@ func TestDevTraceSampleBasisDegradesToWholeFrame(t *testing.T) {
 		t.Fatalf("no-tracker basis = %+v, want the whole frame", s2.basis)
 	}
 }
+
+// TestDevTracePinnedCommitSurvivesIdleStream is the issue #46 acceptance test:
+// a long idle stream after a commit must not take the committing read's frame
+// and crop — the pin holds the committing read (and the last reads before it)
+// out of the rolling idle eviction, and the pinned budget is what bounds it.
+func TestDevTracePinnedCommitSurvivesIdleStream(t *testing.T) {
+	ctx := context.Background()
+	const quota = 200_000 // small on purpose: a few frames fill it
+	r, err := NewDevTraceRecorder(t.TempDir(), quota)
+	if err != nil {
+		t.Fatalf("NewDevTraceRecorder: %v", err)
+	}
+	regions := []games.Region{{ID: "box", RectX: 0.1, RectY: 0.7, RectW: 0.8, RectH: 0.2}}
+
+	// The committing read, with its crop, at the top of the session.
+	commitTS := int64(0)
+	s, err := r.recordFrame(ctx, solidFrame(color.RGBA{R: 40}, commitTS), regions)
+	if err != nil || s == nil {
+		t.Fatalf("committing read: %v %v", err, s)
+	}
+	if err := r.PinSample(ctx, s); err != nil {
+		t.Fatalf("PinSample: %v", err)
+	}
+	if !r.pinned[s.frame] {
+		t.Fatalf("committing read not pinned after PinSample")
+	}
+	if r.pinnedTotal > int64(float64(quota)*DevTracePinnedQuotaFraction) {
+		t.Fatalf("pinned %d bytes against a %d pinned budget", r.pinnedTotal, int64(float64(quota)*DevTracePinnedQuotaFraction))
+	}
+
+	// A long idle stream after the commit: enough unique frames that the
+	// rolling quota alone would have evicted the committing read.
+	idleFrames := int64(0)
+	for i := int64(1); i <= 300; i++ {
+		f := solidFrame(color.RGBA{R: uint8(60 + i%180), G: uint8(i % 250), B: uint8(i % 240)}, i*1_100_000_000)
+		if _, err := r.recordFrame(ctx, f, regions); err != nil {
+			t.Fatalf("idle frame %d: %v", i, err)
+		}
+		idleFrames++
+	}
+	if r.totalBytes() > quota {
+		t.Fatalf("retained %d bytes, over the %d quota", r.totalBytes(), quota)
+	}
+	if int64(len(r.samples)) >= idleFrames+1 {
+		t.Fatalf("the idle stream did not evict anything: %d samples retained", len(r.samples))
+	}
+
+	// The committing read's crop is still retrievable through the store's read.
+	got, ok := r.lookup(commitTS)
+	if !ok || got.frame != s.frame {
+		t.Fatalf("lookup(commit) = %v ok=%v, want the pinned committing read", got, ok)
+	}
+	if got.crops["box"] != s.crops["box"] {
+		t.Fatalf("crop mismatch on the pinned committing read: %v vs %v", got.crops["box"], s.crops["box"])
+	}
+	if _, _, err := r.asset(ctx, s.crops["box"]); err != nil {
+		t.Fatalf("committed crop not retrievable through the store: %v", err)
+	}
+}
+
+// TestDevTracePinnedBudgetBounds proves the pinned budget is what keeps
+// pinning bounded: once the session's pinned share of the quota overflows, the
+// oldest pinned evidence is evicted first and the newest pinned reads survive.
+func TestDevTracePinnedBudgetBounds(t *testing.T) {
+	ctx := context.Background()
+	const quota = 200_000
+	r, err := NewDevTraceRecorder(t.TempDir(), quota)
+	if err != nil {
+		t.Fatalf("NewDevTraceRecorder: %v", err)
+	}
+	pinnedQuota := int64(float64(quota) * DevTracePinnedQuotaFraction)
+	var firstSHA, lastSHA string
+	for i := 0; i < 400; i++ {
+		s, err := r.recordFrame(ctx, solidFrame(color.RGBA{R: uint8(10 + i%200), G: uint8(i % 250), B: uint8(i % 240)}, int64(i*1_100_000_000)), nil)
+		if err != nil {
+			t.Fatalf("recordFrame %d: %v", i, err)
+		}
+		if s == nil {
+			t.Fatalf("frame %d skipped by the sampling gate", i)
+		}
+		if err := r.PinSample(ctx, s); err != nil {
+			t.Fatalf("PinSample %d: %v", i, err)
+		}
+		lastSHA = s.frame
+		if i == 0 {
+			firstSHA = s.frame
+		}
+	}
+	if r.pinnedTotal > pinnedQuota {
+		t.Fatalf("pinned %d bytes against a %d pinned budget", r.pinnedTotal, pinnedQuota)
+	}
+	if r.pinned[firstSHA] {
+		t.Fatalf("the oldest pinned evidence survived a pinned-budget overflow")
+	}
+	if !r.pinned[lastSHA] {
+		t.Fatalf("the newest pinned evidence was evicted by the pinned budget")
+	}
+}
+
+// TestDevTraceIdleEvictionUnchangedAfterPin proves the pin holds the committing
+// read out of the rolling sweep without switching the sweep off: the idle reads
+// around it still evict oldest-first once the rolling quota is over.
+func TestDevTraceIdleEvictionUnchangedAfterPin(t *testing.T) {
+	ctx := context.Background()
+	const quota = 200_000
+	r, err := NewDevTraceRecorder(t.TempDir(), quota)
+	if err != nil {
+		t.Fatalf("NewDevTraceRecorder: %v", err)
+	}
+	first, err := r.recordFrame(ctx, solidFrame(color.RGBA{R: 10}, 0), nil)
+	if err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+	second, err := r.recordFrame(ctx, solidFrame(color.RGBA{R: 90}, 1_100_000_000), nil)
+	if err != nil || second == nil {
+		t.Fatalf("second read: %v %v", err, second)
+	}
+	if err := r.PinSample(ctx, second); err != nil {
+		t.Fatalf("PinSample: %v", err)
+	}
+	for i := int64(2); i <= 300; i++ {
+		f := solidFrame(color.RGBA{R: uint8(60 + i%180), G: uint8(i % 250), B: uint8(i % 240)}, i*1_100_000_000)
+		if _, err := r.recordFrame(ctx, f, nil); err != nil {
+			t.Fatalf("idle frame %d: %v", i, err)
+		}
+	}
+	if r.totalBytes() > quota {
+		t.Fatalf("retained %d bytes, over the %d quota", r.totalBytes(), quota)
+	}
+	// The pinned read survived the idle sweep.
+	got, ok := r.lookup(second.ts)
+	if !ok || got.frame != second.frame {
+		t.Fatalf("lookup(pinned) = %v ok=%v, want the pinned read", got, ok)
+	}
+	// The unpinned reads before it were still evicted oldest-first.
+	for i := range r.samples {
+		if r.samples[i].frame == first.frame {
+			t.Fatalf("the idle sweep did not evict the oldest unpinned read")
+		}
+	}
+}

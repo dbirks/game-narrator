@@ -36,6 +36,10 @@ type tracePublisher struct {
 	hub       *events.Hub
 	rec       *devTraceRecorder // nil when dev_trace is off
 	sessionID string
+	// lastRead is the most recent read this session resolved evidence for —
+	// the text.observed whose frame_asset / crop_asset the inspector opens —
+	// and so the read the next message.committed answers (issue #46).
+	lastRead *devFrameSample
 }
 
 // Publish implements session.Publisher.
@@ -45,10 +49,35 @@ func (p *tracePublisher) Publish(ctx context.Context, e events.Envelope) (events
 		// the Manager's terminal event is the one the log keeps.
 		return e, nil
 	}
-	if p.rec != nil && e.Name == events.TextObserved {
-		e.Data = p.attach(e.Data)
+	if p.rec != nil {
+		switch e.Name {
+		case events.TextObserved:
+			e.Data = p.attach(e.Data)
+		case events.MessageCommitted:
+			// Issue #46: the read that just committed is the evidence the
+			// operator is asking about — the frame and the crops the OCR read
+			// was made on are "why did OCR read X", and the rolling idle
+			// eviction must not take them while the line is still the one the
+			// session is discussing. The recorder pins the committing read and
+			// the last reads before it, oldest pinned first, under the session's
+			// pinned budget; without a recorder (dev_trace off) there is nothing
+			// to pin.
+			p.pinCommittedRead(ctx)
+		}
 	}
 	return p.hub.Publish(ctx, e)
+}
+
+// pinCommittedRead pins the evidence behind the read a message.committed
+// answered: the read just resolved (the committing read) and the last reads
+// before it. A pin lands on the evidence, not on the policy — a recorder whose
+// store has already evicted the read the commit answered pins nothing and lets
+// the answer fall through, because there is no evidence left to keep.
+func (p *tracePublisher) pinCommittedRead(ctx context.Context) {
+	if p.rec == nil || p.lastRead == nil {
+		return
+	}
+	_ = p.rec.PinSample(ctx, p.lastRead)
 }
 
 // attach resolves the observation's capture timestamp to the nearest stored
@@ -66,6 +95,7 @@ func (p *tracePublisher) attach(data json.RawMessage) json.RawMessage {
 	if !ok {
 		return data
 	}
+	p.lastRead = s
 	return attachDevTraceData(data, s, regionID)
 }
 

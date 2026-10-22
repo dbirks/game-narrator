@@ -14,6 +14,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
+	"sort"
 	"sync"
 	"time"
 
@@ -49,6 +50,19 @@ const (
 	// of the capture, not of the host: a changed picture still gets its sample
 	// within a second, a stable picture costs one encode per second at most.
 	devTraceSampleInterval = time.Second
+	// DevTracePinnedQuotaFraction is the per-session pinned-evidence byte
+	// budget as a fraction of the rolling DevTraceQuota (issue #46): the frame
+	// and crop of a read that committed or that the read-through spoke are held
+	// out of the rolling idle eviction and live under this budget instead, so
+	// pinning stays bounded the same way the rolling quota is. A session that
+	// never pins holds nothing here; a session that pins spends at most this
+	// share of the quota before its oldest pinned evidence is evicted first.
+	DevTracePinnedQuotaFraction float64 = 0.25
+	// devTracePinContextReads bounds the reads pinned alongside a committing
+	// or read-through-spoken read: the committing read itself plus this many
+	// retained reads before it, so the context a commit was made from survives
+	// the same idle sweep (issue #46).
+	devTracePinContextReads = 3
 )
 
 // devFrameSample is the evidence of one captured frame: the stored full-frame
@@ -107,6 +121,19 @@ type devTraceRecorder struct {
 	types    map[string]string // sha → media type, for the inspector's Content-Type
 	total    int64
 
+	// Pinned evidence (issue #46): the frame and crop of a read that committed or
+	// that the read-through spoke are held out of the rolling eviction and live
+	// under the session's pinned budget instead. `pinned` names the retained
+	// blobs the operator asked to keep; `pinnedOrder` is the same set in
+	// oldest-pinned-first order; `pinnedTotal` books the pinned bytes against
+	// `pinnedQuota`. The rolling sweep skips anything in `pinned`, and only evicts
+	// pinned evidence when the pinned budget itself overflows, oldest pinned
+	// first — the mirror image of the rolling oldest-first sweep.
+	pinned      map[string]bool
+	pinnedOrder []devHeldAsset
+	pinnedTotal int64
+	pinnedQuota int64
+
 	lastSampleAtNS int64 // the instant of the last stored sample, on its own clock
 	lastFromSource bool  // that instant was the frame's source clock, not the wall
 	haveSample     bool
@@ -125,10 +152,12 @@ func NewDevTraceRecorder(root string, quota int64) (*devTraceRecorder, error) {
 		return nil, fmt.Errorf("devtrace: open store: %w", err)
 	}
 	return &devTraceRecorder{
-		store:    st,
-		quota:    quota,
-		retained: map[string]bool{},
-		types:    map[string]string{},
+		store:       st,
+		quota:       quota,
+		pinnedQuota: int64(float64(quota) * DevTracePinnedQuotaFraction),
+		retained:    map[string]bool{},
+		types:       map[string]string{},
+		pinned:      map[string]bool{},
 	}, nil
 }
 
@@ -307,23 +336,18 @@ func (r *devTraceRecorder) storeBytes(ctx context.Context, data []byte, mediaTyp
 		r.total += committed.Size
 	}
 	r.types[committed.SHA256] = mediaType
-	evicted := map[string]bool{}
-	for r.total > r.quota && len(r.order) > 0 {
-		oldest := r.order[0]
-		r.order = r.order[1:]
-		if r.retained[oldest.sha] {
-			delete(r.retained, oldest.sha)
-			r.total -= oldest.size
-			evicted[oldest.sha] = true
-		}
-	}
+	evicted := r.evictOldestLocked()
 	// Eviction is a fact about the evidence, not just the ledger: a sample
 	// whose frame blob went is a sample that is gone, and the lookup must not
 	// hand back a reference to bytes that no longer exist.
 	if len(evicted) > 0 {
+		dropped := map[string]bool{}
+		for _, sha := range evicted {
+			dropped[sha] = true
+		}
 		kept := r.samples[:0]
 		for _, s := range r.samples {
-			if evicted[s.frame] {
+			if dropped[s.frame] {
 				continue
 			}
 			kept = append(kept, s)
@@ -342,6 +366,188 @@ func (r *devTraceRecorder) storeBytes(ctx context.Context, data []byte, mediaTyp
 		return "", fmt.Errorf("devtrace: evict oldest samples: %w", err)
 	}
 	return committed.SHA256, nil
+}
+
+// heldSizeLocked returns the booked size of one retained blob, or 0 when the
+// ledger does not hold it. Caller holds r.mu.
+func (r *devTraceRecorder) heldSizeLocked(sha string) int64 {
+	for _, a := range r.order {
+		if a.sha == sha {
+			return a.size
+		}
+	}
+	return 0
+}
+
+// evictOldestLocked drops the oldest unpinned retained blob until the rolling
+// byte total fits the per-session quota again (issue #46: the frame and crop of
+// a committing or spoken read are pinned, so the rolling sweep only reclaims
+// the idle evidence around them). It returns the hashes it dropped; a caller
+// that got some must prune the samples that referenced them. Caller holds r.mu.
+func (r *devTraceRecorder) evictOldestLocked() []string {
+	var evicted []string
+	for r.total > r.quota && len(r.order) > 0 {
+		idx := 0
+		for idx < len(r.order) && r.pinned[r.order[idx].sha] {
+			idx++
+		}
+		if idx >= len(r.order) {
+			break // every retained blob is pinned; the pinned budget owns the bytes
+		}
+		oldest := r.order[idx]
+		if idx == 0 {
+			r.order = r.order[1:]
+		} else {
+			rest := make([]devHeldAsset, 0, len(r.order)-1)
+			for i, a := range r.order {
+				if i != idx {
+					rest = append(rest, a)
+				}
+			}
+			r.order = rest
+		}
+		if r.retained[oldest.sha] {
+			delete(r.retained, oldest.sha)
+			r.total -= oldest.size
+			evicted = append(evicted, oldest.sha)
+		}
+	}
+	return evicted
+}
+
+// pinLocked marks shas as pinned evidence and books their bytes against the
+// per-session pinned budget, evicting the oldest pinned first once that budget
+// overflows. It returns the hashes it had to evict. Caller holds r.mu.
+func (r *devTraceRecorder) pinLocked(shas []string) []string {
+	var evicted []string
+	for _, sha := range shas {
+		if r.pinned[sha] {
+			continue
+		}
+		size := r.heldSizeLocked(sha)
+		r.pinned[sha] = true
+		r.pinnedOrder = append(r.pinnedOrder, devHeldAsset{sha: sha, size: size})
+		r.pinnedTotal += size
+		for r.pinnedTotal > r.pinnedQuota && len(r.pinnedOrder) > 0 {
+			oldest := r.pinnedOrder[0]
+			r.pinnedOrder = r.pinnedOrder[1:]
+			delete(r.pinned, oldest.sha)
+			r.pinnedTotal -= oldest.size
+			evicted = append(evicted, oldest.sha)
+			if r.dropFromOrderLocked(oldest.sha) {
+				delete(r.retained, oldest.sha)
+				r.total -= oldest.size
+			}
+		}
+	}
+	return evicted
+}
+
+// dropFromOrderLocked removes one ledger entry. It reports whether the entry
+// was present. Caller holds r.mu.
+func (r *devTraceRecorder) dropFromOrderLocked(sha string) bool {
+	for i, a := range r.order {
+		if a.sha == sha {
+			r.order = append(r.order[:i], r.order[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// PinSample pins the stored evidence behind one committed or spoken read —
+// the frame and the crops that were stored for it (issue #46) — together with
+// the last reads before it, so the rolling idle eviction cannot take the "why
+// did OCR read X" evidence while the line is still the one the operator is
+// asking about. The caller names the sample that produced the committing or
+// read-through-spoken read; the recorder marks the sample's frame and crop
+// blobs as pinned and books the bytes against the per-session pinned budget,
+// which evicts the oldest pinned first once that budget is full. The last
+// reads before it are pinned alongside the committing read, so the context a
+// commit was made from survives the same idle sweep.
+//
+// A sample whose frame is no longer retained has nothing left to pin: the pin
+// lands on the evidence, not on the policy, and an already-evicted read is gone
+// rather than pinned forever.
+func (r *devTraceRecorder) PinSample(ctx context.Context, s *devFrameSample) error {
+	if s == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.retained[s.frame] {
+		return nil
+	}
+	shas := r.pinnedShasLocked(s)
+	if len(shas) == 0 {
+		return nil
+	}
+	evicted := r.pinLocked(shas)
+	if len(evicted) > 0 {
+		dropped := map[string]bool{}
+		for _, sha := range evicted {
+			dropped[sha] = true
+		}
+		kept := r.samples[:0]
+		for _, s := range r.samples {
+			if dropped[s.frame] {
+				continue
+			}
+			kept = append(kept, s)
+		}
+		r.samples = kept
+		if _, err := r.store.DeleteUnreachable(ctx, func(hash string) bool { return r.retained[hash] }, false); err != nil {
+			return fmt.Errorf("devtrace: evict pinned evidence: %w", err)
+		}
+	}
+	return nil
+}
+
+// pinnedShasLocked returns the evidence hashes to pin for one read: the
+// frame and the crops that were stored for it, plus the last devTracePinContextReads
+// retained reads before it. The hashes come back oldest read first — the
+// order the pinned budget evicts in once it overflows — so the context
+// precedes the committing read it was read alongside of. Caller holds r.mu.
+func (r *devTraceRecorder) pinnedShasLocked(s *devFrameSample) []string {
+	var context []*devFrameSample
+	for i := len(r.samples) - 1; i >= 0; i-- {
+		cand := &r.samples[i]
+		if cand.frame == s.frame && cand.ts == s.ts {
+			break // reached the committing read; the reads before it are context
+		}
+		context = append(context, cand)
+		if len(context) >= devTracePinContextReads {
+			break
+		}
+	}
+	var shas []string
+	// context is newest-first; rebuild it oldest-first, then the committing read.
+	for i := len(context) - 1; i >= 0; i-- {
+		c := context[i]
+		shas = append(shas, c.frame)
+		cIDs := make([]string, 0, len(c.crops))
+		for id := range c.crops {
+			cIDs = append(cIDs, id)
+		}
+		sort.Strings(cIDs)
+		for _, id := range cIDs {
+			shas = append(shas, c.crops[id])
+		}
+	}
+	// The committing read's own evidence, newest of the pinned set.
+	shas = append(shas, s.frame)
+	cropIDs := make([]string, 0, len(s.crops))
+	for id := range s.crops {
+		cropIDs = append(cropIDs, id)
+	}
+	sort.Strings(cropIDs)
+	for _, id := range cropIDs {
+		shas = append(shas, s.crops[id])
+	}
+	return shas
 }
 
 // ── image helpers (stdlib only: no new Go modules, ADR-0008) ───────────────
