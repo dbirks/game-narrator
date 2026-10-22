@@ -128,6 +128,16 @@ func (g *fakeClef) handle(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	body, _ := io.ReadAll(r.Body)
+	if r.Context().Err() != nil {
+		// The client dropped the request while its body (the frame JPEG,
+		// ADR-0154) was still arriving — on a slow runner the role's
+		// deadline can fire before the handler reaches the hold below. That
+		// is the same evidence: record how long the context lived.
+		g.mu.Lock()
+		g.deadlineObs = append(g.deadlineObs, time.Since(start))
+		g.mu.Unlock()
+		return
+	}
 	var req clefWireRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
