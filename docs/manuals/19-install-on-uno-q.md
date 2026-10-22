@@ -671,7 +671,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
 
 — `scp`s it to the board, **backs up the data directory first** (the
 `--user` backup lands at `~/gn-live/data-backup-<ts>.tar.gz`, the `--systemd`
-backup at `/var/lib/game-narrator-data-backup-<ts>.tar.gz`), keeps the
+backup at `/var/lib/game-narrator-data-backup-<ts>.tar.gz`; only the newest
+3 timestamped backups are kept — each is 1–2.5 GB once the speech cache is
+warm, and unpruned they filled the board's home partition to 99% on
+2026-10-22; hand-named `data-backup-pre-*` archives are never pruned), keeps the
 previous binary at `/usr/bin/game-narrator.prev`, stops the old process by
 exact PID, installs with `sudo -n install`, starts, waits up to 30 s for
 `GET /api/v1/health/live`, and prints `game-narrator version` (there is no

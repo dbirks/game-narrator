@@ -155,6 +155,12 @@ if [ -d data ]; then
   tar czf "data-backup-$ts.tar.gz" --exclude=data/dev-trace data 2>tar-backup.log || rc=$?
   if [ "$rc" -gt 1 ]; then echo "backup FAILED (tar rc=$rc): $(tail -n 5 tar-backup.log)"; exit 1; fi
   if [ "$rc" -eq 1 ]; then echo "note: tar rc=1 (file changed as we read it) — expected for a live service, backup usable"; fi
+  # Retention: every deploy writes a full backup (the speech cache makes one
+  # 1–2.5 GB); unpruned they filled the board's 18 GB home to 99% on
+  # 2026-10-22 and the presynth job refused to run. Keep the newest 3
+  # timestamped backups; hand-named ones (data-backup-pre-*) are left alone.
+  ls -1t data-backup-2*.tar.gz 2>/dev/null | tail -n +4 | while read -r old; do rm -f -- "$old" && echo "pruned old backup $old"; done
+  echo "free after backup: $(df -h . | awk 'NR==2{print $4}')"
 else
   echo "note: no data directory yet; nothing to back up"
 fi
@@ -254,6 +260,8 @@ set -eu
 rc=0
 sudo -n sh -c 'set -e; cd /var/lib; ts=$(date -u +%Y%m%dT%H%M%SZ); rc=0; tar czf "game-narrator-data-backup-$ts.tar.gz" --exclude=game-narrator/dev-trace game-narrator 2>backup.log || rc=$?; if [ "$rc" -gt 1 ]; then echo "backup FAILED (tar rc=$rc): $(tail -n 5 backup.log)"; exit 1; fi; if [ "$rc" -eq 1 ]; then echo "note: tar rc=1 (file changed as we read it) — expected for a live service, backup usable"; fi' || rc=$?
 if [ "$rc" -ne 0 ]; then echo "data backup failed"; exit 1; fi
+# Retention (see the user-mode step): keep the newest 3 timestamped backups.
+sudo -n sh -c 'cd /var/lib && ls -1t game-narrator-data-backup-2*.tar.gz 2>/dev/null | tail -n +4 | while read -r old; do rm -f -- "$old" && echo "pruned old backup $old"; done'
 REMOTE
 
   # 6. Stop the unit — it is this install's own port holder.
