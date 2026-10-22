@@ -41,7 +41,7 @@ A route is a `dolphin.Script` run by the existing runner and bridge. There is no
 - **No phantoms.** Walking and idling with the A icon on screen produced 0 phantom utterances.
 - **Aryll's voice reads "high (child)".** The character voice measured 340 Hz, and my independent check matched.
 - **Literal placeholder.** `{player}` reached TTS as written and was spoken "player" (#48).
-- **Early commit.** A box committed mid-typewriter, at a punctuation and colour-word pause, so its speech was the visible prefix "…And I'm sure everyone". The same prefix was spoken again at the next generation. This is the next defect to work with this loop.
+- **Whole box spoken.** Predictive mode committed the box while it was still typing (as designed) and spoke the box's full text in one utterance. A first reading of the event log suggested a truncated box, but that was the analysis script clipping text at 90 characters, not the narrator. Later A presses re-opened the same conversation, so the line was legitimately spoken again. A second request in the same generation was superseded within 0.6 s and never played.
 - **Row pairing.** The harness pairs a row's audio by message ID, so the boxes of one multi-box message mix and show negative latencies. It needs pairing by occurrence.
 
 ## Consequences
