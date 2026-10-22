@@ -1,9 +1,18 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { AuthProvider, RequireAuth } from "./auth-context";
+import { AuthProvider, RequireAuth, useAuth } from "./auth-context";
+
+function SignOutButton() {
+  const { logout } = useAuth();
+  return (
+    <button type="button" onClick={() => void logout()}>
+      sign out
+    </button>
+  );
+}
 
 /**
  * The auth guard against a fake fetch (docs/spec/12 "Unit" mode — synthetic
@@ -57,6 +66,7 @@ function renderAt(path: string) {
               element={
                 <RequireAuth>
                   <p>the library</p>
+                  <SignOutButton />
                 </RequireAuth>
               }
             />
@@ -165,5 +175,37 @@ describe("RequireAuth", () => {
     const alert = await screen.findByTestId("auth-error");
     expect(alert).toHaveTextContent("credential store could not answer");
     expect(screen.queryByText("the sign-in form")).not.toBeInTheDocument();
+  });
+
+  it("lands a deliberate sign-out on the plain form, without remembering the page", async () => {
+    let signedIn = true;
+    installFetch((path) => {
+      if (path === "/api/v1/auth/status")
+        return response(200, { setup_required: false, loopback_setup: true });
+      if (path === "/api/v1/auth/logout") {
+        signedIn = false;
+        return new Response(null, { status: 204 });
+      }
+      if (path === "/api/v1/auth/me")
+        return signedIn
+          ? response(200, { user: admin, csrf_token: "tok", auth_method: "cookie" })
+          : response(401, {
+              type: "urn:game-narrator:error:unauthenticated",
+              title: "Unauthorized",
+              status: 401,
+              detail: "no credential",
+              instance: path,
+              request_id: "r3",
+            });
+      return response(404, {});
+    });
+
+    renderAt("/library?shelf=recent");
+    expect(await screen.findByText("the library")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("sign out"));
+    expect(await screen.findByText("the sign-in form")).toBeInTheDocument();
+    // Not /login?next=…: the a11y walk caught the guard's remembered-page
+    // redirect racing the bar's own navigation after a sign-out.
+    expect(screen.getByTestId("location")).toHaveTextContent(/^\/login$/);
   });
 });

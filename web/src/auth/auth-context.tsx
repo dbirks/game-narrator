@@ -1,5 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { createContext, useCallback, useContext, useEffect, useMemo, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  type ReactNode,
+  useState,
+} from "react";
 import { Navigate, useLocation } from "react-router";
 
 import { ApiError, api, authApi, type AuthMe, type Role, type User } from "../api/client";
@@ -40,6 +48,12 @@ export interface AuthValue {
   login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   reload: () => Promise<void>;
+  /**
+   * The anonymous state came from this tab's own sign-out, not an expired
+   * session: the guard then lands on plain /login instead of remembering the
+   * page as ?next= (the a11y walk caught the two navigations racing).
+   */
+  signedOut: boolean;
 }
 
 const AuthContext = createContext<AuthValue | null>(null);
@@ -106,14 +120,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         expires_at: result.expires_at,
       };
       queryClient.setQueryData<AuthMe | null>(authQueryKey, principal);
+      setSignedOut(false);
       // Whatever /auth/status said a minute ago, the appliance is claimed now.
       queryClient.setQueryData(statusQueryKey, { setup_required: false, loopback_setup: true });
     },
     [queryClient],
   );
 
+  const [signedOut, setSignedOut] = useState(false);
+
   const logout = useCallback(async () => {
     await authApi.logout();
+    setSignedOut(true);
     queryClient.setQueryData<AuthMe | null>(authQueryKey, null);
   }, [queryClient]);
 
@@ -134,8 +152,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login,
       logout,
       reload,
+      signedOut,
     }),
-    [state, me.data, me.error, login, logout, reload],
+    [state, me.data, me.error, login, logout, reload, signedOut],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
@@ -154,7 +173,7 @@ export function useAuth(): AuthValue {
  * session died in another tab.
  */
 export function RequireAuth({ children }: { children: ReactNode }) {
-  const { state, error, reload } = useAuth();
+  const { state, error, reload, signedOut } = useAuth();
   const location = useLocation();
 
   switch (state) {
@@ -181,6 +200,9 @@ export function RequireAuth({ children }: { children: ReactNode }) {
         </p>
       );
     case "anonymous": {
+      // A deliberate sign-out lands on the plain form; only a session that
+      // lapsed under a page remembers where it was.
+      if (signedOut) return <Navigate to="/login" replace />;
       const next = `${location.pathname}${location.search}`;
       return <Navigate to={`/login?next=${encodeURIComponent(next)}`} replace />;
     }
