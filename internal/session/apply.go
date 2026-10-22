@@ -390,7 +390,8 @@ func (r *Reducer) applyDecision(ctx context.Context, m DecisionMsg, res *Result)
 	}
 	reg.decisions = append(reg.decisions, answeredObservation{
 		obsSeq: m.ObservationSeq, msgID: m.MessageID, speaker: m.SpeakerID,
-		known: m.SpeakerKnown, eligible: m.SpeechEligible, accepted: m.Accepted,
+		known: m.SpeakerKnown, speakerConfidence: m.SpeakerConfidence,
+		eligible: m.SpeechEligible, accepted: m.Accepted,
 		provider: m.Provider, model: m.Model,
 	})
 	return nil
@@ -1157,8 +1158,10 @@ func (r *Reducer) candidatesData(reg *region, m RankingMsg) map[string]any {
 func (r *Reducer) committedData(reg *region, rk rankedObservation, messageID string, eligible bool, reason string, predictive bool, trs []recognition.Transition) map[string]any {
 	speaker := ""
 	known := false
+	speakerConfidence := 0.0
 	if ans, ok := reg.decisionFor(rk.obsSeq); ok {
 		speaker, known = ans.speaker, ans.known
+		speakerConfidence = ans.speakerConfidence
 	}
 	return map[string]any{
 		"dialogue_occurrence_id": reg.occurrenceID,
@@ -1178,6 +1181,7 @@ func (r *Reducer) committedData(reg *region, rk rankedObservation, messageID str
 		"text_variant":           reg.text,
 		"speaker_id":             speaker,
 		"speaker_known":          known,
+		"speaker_confidence":     speakerConfidence,
 		"predictive":             predictive,
 		"prediction_misfire":     false,
 		"scene_id":               rk.scene,

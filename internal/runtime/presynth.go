@@ -9,6 +9,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"syscall"
 
 	"github.com/dbirks/game-narrator/internal/games"
+	"github.com/dbirks/game-narrator/internal/games/textnorm"
 	"github.com/dbirks/game-narrator/internal/providers/tts"
 	"github.com/dbirks/game-narrator/internal/speech"
 	"github.com/dbirks/game-narrator/internal/store"
@@ -79,6 +81,61 @@ func profileSpeechMaps(content store.ProfileContent, resolveSpeaker func(string)
 		}
 	}
 	return speakers, aliasByID, texts, pages
+}
+
+// sharedSpeakerSlots is the ADR-0156 speaker-attribution view of a published
+// profile: for each message that carries a speaker, whether that speaker's
+// slot is shared — the slot takes more than one speaker, so the curator's
+// slot→character link is a claim about a slot rather than a per-occurrence
+// identity, and a line on a shared slot must not take its voice from the
+// link alone.
+//
+// A character answers to the speaker keys it is known by — its name plus each
+// alias, folded the way the roster folds labels (the same textnorm the
+// importer uses). A character that answers to more than one key is one the
+// roster reached through a slot link (the Wind Waker's opaque `ww:spk:<n>`
+// keys), which is the shared shape the live play showed: the slot is a shared
+// slot, and the lines that resolved through it are the ones that must be
+// re-attributed per occurrence rather than voiced through the linked
+// character. A character that answers to a single key is a single-speaker
+// attribution and keeps its assignment.
+func sharedSpeakerSlots(content store.ProfileContent, resolveSpeaker func(string) string) map[string]bool {
+	keysByChar := map[string][]string{}
+	for _, c := range content.Characters {
+		if c.ID == "" {
+			continue
+		}
+		seen := map[string]bool{}
+		var keys []string
+		addKey := func(s string) {
+			k := textnorm.Normalize(s, textnorm.Options{})
+			if k == "" || seen[k] {
+				return
+			}
+			seen[k] = true
+			keys = append(keys, k)
+		}
+		addKey(c.Name)
+		if len(c.Aliases) > 0 {
+			var aliases []string
+			_ = json.Unmarshal(c.Aliases, &aliases)
+			for _, a := range aliases {
+				addKey(a)
+			}
+		}
+		keysByChar[c.ID] = keys
+	}
+	out := map[string]bool{}
+	for _, m := range content.Messages {
+		if m.SpeakerID == "" {
+			continue
+		}
+		char := resolveSpeaker(m.SpeakerID)
+		if len(keysByChar[char]) > 1 {
+			out[m.ID] = true
+		}
+	}
+	return out
 }
 
 // PresynthOptions bound one pre-synthesis run.
@@ -149,6 +206,8 @@ func (m *Manager) PresynthesizeProfile(ctx context.Context, profileID string, op
 		speakerByMessage: speakers,
 		narratorFallback: prof.NarratorFallback,
 		speakerAliasByID: aliases,
+		// The shared-slot view the live commit applies (ADR-0156).
+		speakerSlotByMessage: sharedSpeakerSlots(content, speakerLinkResolver(content.Characters)),
 	}
 
 	// One entry per utterance the pre-synthesis fills: a multi-page message
@@ -291,7 +350,13 @@ func (m *Manager) PresynthesizeProfile(ctx context.Context, profileID string, op
 // prewarmWorker's: same speaker resolution, canonical text, voice and
 // backend identity), at background priority. skipped = no approved voice.
 func (w *speechWiring) presynthOne(ctx context.Context, messageID, text string) (hit bool, n int64, skipped bool, err error) {
-	rv, _ := w.resolveVoice(ctx, messageID)
+	// The voice a plain matched commit of this line resolves (ADR-0156): a
+	// line on a shared speaker slot speaks the neutral voice unless the
+	// adjudicator names its speaker, so pre-synthesis voices it that way too
+	// and the commit hits the cache. messageID may be a page key
+	// ("<id>#p<n>", ADR-0155); the slot view is keyed by the message.
+	base, _, _ := strings.Cut(messageID, "#p")
+	rv, _ := w.resolveVoiceForCharacter(ctx, w.commitSpeaker(commitPayload{MessageID: base}))
 	if rv.profile.ID == "" {
 		return false, 0, true, nil
 	}

@@ -680,6 +680,12 @@ type DecisionReply struct {
 	// Speaker is the speaker option id the model chose ("unknown" when it
 	// could not be established).
 	Speaker string
+	// SpeakerConfidence is the model's confidence for the speaker it chose —
+	// the chosen option's probability (docs/spec/06: a raw signal, not a
+	// reliability guarantee). Zero when the answer was missing or the speaker
+	// is unknown; the runtime's speaker gate reads it (ADR-0156) and treats a
+	// speaker named below the floor as unnamed.
+	SpeakerConfidence float64
 	// SpeakerKnown reports the model's speaker verdict.
 	SpeakerKnown bool
 	// SafeToSpeak is the model's safe_to_speak answer (nil when the answer

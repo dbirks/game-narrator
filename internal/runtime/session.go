@@ -534,6 +534,13 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 		speakers, speakerAliasByID, prewarmTexts, prewarmPages := profileSpeechMaps(content, resolveSpeaker)
 		if w := m.newSpeechWiring(id, speakers, published.NarratorFallback, runCtx, runner, idx, prewarmTexts, prewarmPages, sess.voiceLat); w != nil {
 			w.speakerAliasByID = speakerAliasByID
+			// The shared-slot view of the roster (ADR-0156): which of the
+			// published lines resolve through a speaker slot that is shared —
+			// the slot takes more than one speaker, so the curator's link is
+			// a claim about a slot, not a per-occurrence identity. The
+			// speech side reads it to refuse the slot's linked character when
+			// the adjudicator cannot name the speaker.
+			w.speakerSlotByMessage = sharedSpeakerSlots(content, resolveSpeaker)
 			sess.speech = w
 			// The OnAdjudicating hook above reads the wiring through this
 			// pointer; storing it here (before the run starts) is what lets a

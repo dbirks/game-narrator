@@ -230,9 +230,14 @@ type DecisionMsg struct {
 	// MessageID is the candidate the model chose, or UnknownMessage. It may
 	// *narrow* a commit (naming the line the matcher already had) but never
 	// invent one the ranking did not offer; see reducer.applyDecision.
-	MessageID    string
-	SpeakerID    string
-	SpeakerKnown bool
+	MessageID string
+	SpeakerID string
+	// SpeakerConfidence is the adjudicator's confidence for the speaker the
+	// answer named (the chosen option's probability; 0 when the answer is
+	// absent or the speaker is unknown). The commit payload carries it so the
+	// speech side can gate the per-occurrence speaker on it (ADR-0156).
+	SpeakerConfidence float64
+	SpeakerKnown      bool
 	// SpeechEligible is the model's safe-to-speak answer. It may only turn a
 	// would-be utterance *off*: docs/spec/05 allows silence as a degraded mode and
 	// forbids speaking as a named actor without evidence, but a single high

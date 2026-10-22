@@ -172,7 +172,14 @@ type Adjudication struct {
 	IsTextbox *float64
 	// TextKind and Speaker are the chosen option ids.
 	TextKind string
-	Speaker  string
+	// SpeakerConfidence is the adjudicator's confidence for the chosen
+	// speaker option — the chosen option's probability (docs/spec/06: the raw
+	// model signal, not a reliability guarantee). Zero when the answer is
+	// absent or the speaker is unknown, which is what the runtime's speaker
+	// gate reads (ADR-0156): a speaker named below the floor is not a name.
+	SpeakerConfidence float64
+	// Speaker is the chosen option id.
+	Speaker string
 	// Candidate is the message id ("" = none / missing).
 	Candidate string
 	// CandidateProbabilities maps message ids to raw probabilities.
@@ -250,6 +257,14 @@ func Interpret(d Decision, candidates []Candidate, speakers []Speaker) Adjudicat
 	// unknown and unmapped ids pass through (unknown keeps its meaning).
 	if out.Speaker != "" {
 		out.Speaker = mapSpeaker(out.Speaker)
+	}
+	// The confidence of the answer that named the speaker: the chosen
+	// option's probability, carried on the answer the same way the candidate
+	// choice carries its own (both questions are choice questions and share
+	// the answer shape). An absent answer reads as no confidence, so the
+	// runtime's speaker gate falls back rather than guessing (ADR-0156).
+	if a, ok := d.Answers[QSpeaker]; ok && a.Type == TypeChoice {
+		out.SpeakerConfidence = a.Confidence
 	}
 	setNoul(&out.IsComplete, QIsComplete)
 	setNoul(&out.SafeToSpeak, QSafeToSpeak)

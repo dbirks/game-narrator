@@ -181,6 +181,11 @@ type answeredObservation struct {
 	msgID   string
 	speaker string
 	known   bool
+	// speakerConfidence is the adjudicator's confidence for the speaker the
+	// answer named (the chosen option's probability; 0 when absent or unknown).
+	// It is the speaker gate's evidence (ADR-0156), carried onto the commit
+	// payload that decides whether the line's voice is the answer's speaker.
+	speakerConfidence float64
 	// eligible is the model's safe_to_speak answer; vetoOnly means the commit
 	// rules may read it as a way to say "not this", never as a way to say "yes".
 	eligible bool

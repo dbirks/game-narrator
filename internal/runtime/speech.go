@@ -63,6 +63,14 @@ const (
 // voice, is spoken by the narrator voice when one is configured.
 const narratorCharacter = "narrator"
 
+// SpeakerConfidenceFloor is the adjudicator's speaker-answer confidence the
+// runtime treats as naming a speaker (ADR-0156): the chosen speaker option's
+// probability must reach this before the answer is allowed to pick a line's
+// voice. It is the same half-confidence the safe_to_speak gate already applies
+// to the model's utterance permission, so the two "sure" judgements read at
+// one threshold.
+const SpeakerConfidenceFloor = 0.5
+
 // speechReasonUnmatched is the speech.requested reason of the unmatched
 // read-through line (ADR-0136): the trace's answer to "why did a line the
 // corpus cannot name get audio?".
@@ -412,6 +420,14 @@ type speechWiring struct {
 	// speaker character id (the curator's roster from the published
 	// profile); empty means the line is the narrator's.
 	speakerByMessage map[string]string
+	// speakerSlotByMessage maps a committed message id onto whether its
+	// speaker slot is shared (ADR-0156): the slot takes more than one speaker,
+	// so the curator's slot→character link is a claim about a slot, not a
+	// per-occurrence identity, and a shared slot's line must not take its
+	// voice from the link alone. An unset message reads as not shared, which
+	// is the pre-ADR-0156 shape (a slot that maps to a single character keeps
+	// its assignment).
+	speakerSlotByMessage map[string]bool
 	// speakerAliasByID maps a character row id to its display name so
 	// approvedVoice resolves voices keyed by character name (Cast UI /
 	// auto-cast, ADR-0109/ADR-0135) as well as character ID (ADR-0101).
@@ -1075,6 +1091,12 @@ type commitPayload struct {
 	Confidence   float64 `json:"confidence"`
 	SpeakerID    string  `json:"speaker_id"`
 	SpeakerKnown bool    `json:"speaker_known"`
+	// SpeakerConfidence is the adjudicator's confidence for the speaker the
+	// answer named (the chosen option's probability; 0 when the answer is
+	// absent or the speaker is unknown). The speaker gate reads it (ADR-0156):
+	// a speaker named below the floor is not a name, and the line's voice
+	// falls back instead of trusting the slot→character link.
+	SpeakerConfidence float64 `json:"speaker_confidence"`
 }
 
 func (w *speechWiring) onCommit(e events.Envelope) {
@@ -1140,7 +1162,7 @@ func (w *speechWiring) onCommit(e events.Envelope) {
 		generation:  d.Generation,
 		text:        text,
 		traceID:     e.TraceID,
-		character:   w.speakerFor(d.MessageID),
+		character:   w.commitSpeaker(d),
 		committedAt: time.Now().UTC(),
 	}
 	if w.crossRegionDuplicate(pageKey, u) {
@@ -1419,7 +1441,7 @@ func (w *speechWiring) maybeUnmatchedReadThrough(e events.Envelope, d commitPayl
 		return
 	}
 	character := narratorCharacter
-	if d.SpeakerKnown && d.SpeakerID != "" {
+	if d.SpeakerKnown && d.SpeakerID != "" && d.SpeakerConfidence >= SpeakerConfidenceFloor {
 		character = d.SpeakerID
 	}
 	u := &utteranceInfo{
@@ -3102,6 +3124,32 @@ func (w *speechWiring) speakerFor(messageID string) string {
 		return c
 	}
 	return narratorCharacter
+}
+
+// commitSpeaker resolves the speaker for one committed occurrence's voice
+// (ADR-0156): the adjudicator's per-occurrence speaker answer when it is
+// confident — the slot→character link cannot be trusted for a slot that is
+// shared, and the adjudicator is the only source that reads the frame — else
+// the assigned character for a slot that maps to a single character, else the
+// neutral voice for a shared slot the answer could not name.
+//
+// The confidence gate is the same half-threshold the safe_to_speak answer
+// already uses: a speaker named below it is not a name, and the line falls
+// back rather than trusting the slot→character link that produced the
+// mis-attribution in the first place. A slot that maps to a single character
+// keeps its assignment (the pre-ADR-0156 behaviour), because there the link
+// is the identity rather than a guess about a shared slot.
+func (w *speechWiring) commitSpeaker(d commitPayload) string {
+	if d.SpeakerKnown && d.SpeakerID != "" && d.SpeakerConfidence >= SpeakerConfidenceFloor {
+		return d.SpeakerID
+	}
+	if w.speakerSlotByMessage[d.MessageID] {
+		// The slot is shared and the adjudicator could not name the speaker:
+		// do not voice the line through the slot's linked character — speak
+		// the neutral voice instead (ADR-0101's fallback shape, ADR-0156).
+		return narratorCharacter
+	}
+	return w.speakerFor(d.MessageID)
 }
 
 // approvedVoice resolves one character's current approved voice: the
