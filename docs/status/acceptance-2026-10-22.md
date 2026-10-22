@@ -29,7 +29,7 @@ Each problem was reproduced from board events and frames and then fixed on main:
 ## #41 Done-means checklist
 
 - [ ] **The board runs current main, and the owner plays a session where boxes at any height are read and spoken in character voices, within the latency budget.**
-  - The board runs `0.1.0-a566dfa` (user-level install via `scripts/board/deploy.sh --user`), with profile rev 5 and a live v4l2 session.
+  - The board runs `0.1.0-0f44d45` (user-level install via `scripts/board/deploy.sh --user`), with profile rev 5 and a live v4l2 session.
   - Real-frame read on 2026-10-22: the bottom box read exactly. It committed `MATCH_FUZZY` and spoke from the presynth cache 7 ms after commit.
   - It was voiced as the slot-linked character, which is the wrong speaker. Fixed after that observation in `0b5d52c` (ADR 0156 amendment 2); not yet deployed.
   - **Open:** the early speaker question (ADR 0160, worker in flight) and box-anywhere (ADR 0154 step 2, worker in flight), then a redeploy and an owner play-through.
@@ -57,7 +57,7 @@ The large appear→audio p95 comes from the box's own on-screen life, not from n
 
 ## Hardware (UNO Q)
 
-- **Build:** `0.1.0-a566dfa`, user-level unit with linger. Env adds `OMP_THREAD_LIMIT=1`, `OMP_NUM_THREADS=1` and `GAME_NARRATOR_ROLE_DECISION_TIMEOUT=4s`; models use flint.
+- **Build:** `0.1.0-0f44d45`, user-level unit with linger. Env adds `OMP_THREAD_LIMIT=1`, `OMP_NUM_THREADS=1` and `GAME_NARRATOR_ROLE_DECISION_TIMEOUT=4s`; models use flint.
 - **#5:** closed. The HDMI monitor recorded a 440 Hz test tone at RMS 0.177 through the hub's HDMI audio.
 - **#37:** closed. Cast shows 29/29 voiced on the real profile (`artifacts/board-evidence-20261021/`).
 - **Generic kind voices (ADR 0158):** 7 approved on the board, all passing QA.
@@ -68,6 +68,11 @@ The large appear→audio p95 comes from the box's own on-screen life, not from n
   - The earlier whole-message pass ran 4331 lines (4248 synthesized, 4 failed).
   - The per-page, shared-slot-aware pass is queued and runs between sessions.
   - It refused to start at 334 MB free, a refusal that worked as designed. 7.5 GB was freed by pruning 10 stale deploy backups, and deploy now keeps 3.
+- **Shared-slot fix on hardware.** Redeployed `0.1.0-0f44d45`; the same boy NPC's line re-committed as `MATCH_FUZZY` and now routes `voice_route: narrator`, from cache, instead of the slot-linked Aryll. The kind and character route waits on ADR 0160 and the model node.
+- **#49 cache prune on hardware.**
+  - The dry run reported 5,728 unreachable entries (2.35 GB), the old whole-message keys.
+  - The real run pruned the same 5,728 entries, freeing 2.35 GB. Data-partition free space went from 3.7 GB to 5.9 GB; assets went to 1.7 GB.
+  - Deploy keeps 2 backups, and prunes before writing when free space is under twice the newest backup.
 - **Degradation:**
   - Synthetic-stub tests: `internal/runtime/degrade_outage_test.go` (404 then 503: local commits, the decision view reports degraded, cached TTS plays, uncached TTS fails cleanly).
   - Live: during tonight's model-node outages the board's Clef breaker opened and narration continued on local matching plus cached audio.
