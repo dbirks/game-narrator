@@ -1668,6 +1668,13 @@ func cuAssertNoBacklog(t *testing.T, m *cuSpeechModel) {
 			// terminal (the run died before settling it) — accounted, the
 			// batch's fate is the line's fate, but it is logged: the line's
 			// content was dropped, not spoken.
+		case l.TerminalResult == "skipped" && l.TerminalReason == "duplicate_region" && cuSpokenElsewhere(m, occ, l.MessageID):
+			// The same box committed from a second, overlapping region within
+			// the duplicate window: spoken once by its sibling occurrence, the
+			// copy skipped by design. Accounted only when the sibling really
+			// was spoken — a duplicate skip with no spoken sibling would hide
+			// a lost line. (Visible to this model since commits precede their
+			// speech events in the stream.)
 		case l.TerminalResult == "failed":
 			failedLines++
 			t.Logf("catchup e2e: line %s (msg %s) terminalled failed/%s — a named failure (the line's fate is recorded; the deviation is counted below)", shortID(occ), shortID(l.MessageID), l.TerminalReason)
@@ -2057,4 +2064,18 @@ func cuCopyFile(t *testing.T, src, dst string) bool {
 		return false
 	}
 	return true
+}
+
+// cuSpokenElsewhere reports whether another committed occurrence of the same
+// message ended spoken (a duplicate-region skip's sibling).
+func cuSpokenElsewhere(m *cuSpeechModel, occ, messageID string) bool {
+	for _, other := range m.lineSeq {
+		if other == occ {
+			continue
+		}
+		if o := m.Lines[other]; o.MessageID == messageID && o.TerminalResult == "ended" {
+			return true
+		}
+	}
+	return false
 }
