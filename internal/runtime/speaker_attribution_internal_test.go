@@ -347,3 +347,12 @@ func TestSplitCanonicalPagesEllipsis(t *testing.T) {
 		t.Errorf("splitSentences = %q, want 2 sentences", got)
 	}
 }
+
+// TestSpeakable: a punctuation-only box has nothing to say.
+func TestSpeakable(t *testing.T) {
+	for text, want := range map[string]bool{"......": false, "! ? !": false, ": !": false, "": false, "Hm.": true, "2!": true} {
+		if got := speakable(text); got != want {
+			t.Errorf("speakable(%q) = %v, want %v", text, got, want)
+		}
+	}
+}

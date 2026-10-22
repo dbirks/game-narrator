@@ -630,6 +630,9 @@ func (w *speechWiring) presynthOne(ctx context.Context, messageID, text string) 
 	// adjudicator names its speaker, so pre-synthesis voices it that way too
 	// and the commit hits the cache. messageID may be a page key
 	// ("<id>#p<n>", ADR-0155); the slot view is keyed by the message.
+	if !speakable(text) {
+		return false, 0, true, nil // a silent beat: nothing to synthesize
+	}
 	base, _, _ := strings.Cut(messageID, "#p")
 	rv, _ := w.resolveVoiceForCharacter(ctx, w.commitSpeaker(commitPayload{MessageID: base}))
 	if rv.profile.ID == "" {

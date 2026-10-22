@@ -1202,10 +1202,48 @@ func (w *speechWiring) onCommit(e events.Envelope) {
 		voiceRoute:  route,
 		committedAt: time.Now().UTC(),
 	}
+	if !speakable(text) {
+		// A punctuation-only box ("......", "! ? !") is a silent beat in the
+		// game: there is nothing to say, so it ends skipped rather than
+		// sending TTS a text it can only render as silence (which the audio
+		// QA then rejects as a failure). Its one terminal settles the
+		// generation, the same shape the duplicate skip uses.
+		w.mu.Lock()
+		closed := w.closed
+		if !closed {
+			w.localEnded++
+		}
+		w.mu.Unlock()
+		if closed {
+			return
+		}
+		w.settle(u.generation)
+		w.emitSpeech(events.SpeechEnded, u, map[string]any{
+			"dialogue_occurrence_id": u.occurrence,
+			"message_id":             u.messageID,
+			"generation":             u.generation,
+			"region_id":              u.regionID,
+			"result":                 "skipped",
+			"reason":                 "no_speakable_text",
+			"character_id":           u.character,
+			"trace_id":               u.traceID,
+		})
+		return
+	}
 	if w.crossRegionDuplicate(pageKey, u) {
 		return
 	}
 	w.routeUtterance(u)
+}
+
+// speakable reports whether a text has anything to say: a letter or a digit.
+func speakable(text string) bool {
+	for _, r := range text {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return true
+		}
+	}
+	return false
 }
 
 // choosePage picks the display page of one committed message whose text
