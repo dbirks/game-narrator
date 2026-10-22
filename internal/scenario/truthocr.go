@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 
 	"github.com/dbirks/game-narrator/internal/games"
+	"github.com/dbirks/game-narrator/internal/pipeline"
 	"github.com/dbirks/game-narrator/internal/vision"
 	"github.com/dbirks/game-narrator/internal/vision/ocr"
 )
@@ -69,19 +70,33 @@ func newTruthEngine(framesDir string, profile *Profile, truth []Truth) (*truthEn
 			return nil, fmt.Errorf("truth engine: read %s: %w", row.File, err)
 		}
 		for _, reg := range ordered {
-			crop := vision.CropNormalized(img, vision.RectOf(reg), vision.CropOptions{})
-			if crop == nil || crop.Bounds().Empty() {
-				// The region covers nothing at this resolution: the pipeline
-				// reads it as present-but-empty, and so do we.
-				continue
+			// A textbox region is read through the placement-aware crop
+			// (ADR-0137): the pipeline OCRs whichever candidate band (top,
+			// the profile's own, bottom) it selected, so every candidate's
+			// crop must resolve — indexing the base rect alone left every
+			// read of a moved band a "no truth row" harness defect, and the
+			// frame-replay scenarios lost their OCR reads.
+			rects := []vision.Rect{vision.RectOf(reg)}
+			if reg.RegionType == games.RegionTextbox {
+				rects = pipeline.TextBandCandidates(vision.RectOf(reg))
 			}
-			in := vision.Preprocess(crop, vision.DefaultSteps())
-			// Only the primary region answers with the row's text; the others
-			// answer empty so a line is never committed from a region it is not in.
-			if reg.ID == regs[0].ID {
-				e.byHash[vision.ImageHash(in)] = truthOCR(row.Text, row.Full)
-			} else {
-				e.byHash[vision.ImageHash(in)] = truthOCR("", false)
+			for _, rect := range rects {
+				crop := vision.CropNormalized(img, rect, vision.CropOptions{})
+				if crop == nil || crop.Bounds().Empty() {
+					// The region covers nothing at this resolution: the pipeline
+					// reads it as present-but-empty, and so do we.
+					continue
+				}
+				in := vision.Preprocess(crop, vision.DefaultSteps())
+				h := vision.ImageHash(in)
+				// Only the primary region answers with the row's text; the others
+				// answer empty so a line is never committed from a region it is
+				// not in. A hash already answered by the primary region keeps it.
+				if reg.ID == regs[0].ID {
+					e.byHash[h] = truthOCR(row.Text, row.Full)
+				} else if _, taken := e.byHash[h]; !taken {
+					e.byHash[h] = truthOCR("", false)
+				}
 			}
 		}
 	}

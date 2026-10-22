@@ -241,3 +241,9 @@ func scoreTextBands(img image.Image, cands []vision.Rect, crop vision.CropOption
 	}
 	return out
 }
+
+// TextBandCandidates exposes the candidate placements for a textbox region's
+// base rect (top, the profile's own band, bottom) to harnesses that must
+// reproduce the pipeline's crops — the scenario truth engine indexes every
+// candidate so a read of whichever band the placement selected resolves.
+func TextBandCandidates(base vision.Rect) []vision.Rect { return textBandCandidates(base) }
