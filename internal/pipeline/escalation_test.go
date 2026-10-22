@@ -221,7 +221,10 @@ func (c *clockSource) Close() error         { return c.inner.Close() }
 func newEscalationHarness(t *testing.T, eng *garbleOCR, dec *scriptedDecider, controls chan session.Msg,
 	mut func(*pipeline.Config)) (*pipeline.Runner, *events.MemStore, *events.Hub, *clockSource) {
 	t.Helper()
-	src := &replay.Source{Dir: corpusDir(t), Speed: 4}
+	// Speed 1: Clef answers in wall time while the cadence runs on source
+	// time; at 4× a slow race-instrumented runner ran out of stable frames
+	// before the third retry (#50).
+	src := &replay.Source{Dir: corpusDir(t), Speed: 1}
 	cs := &clockSource{inner: src}
 	cfg := pipeline.Config{
 		SessionID:       "synthsession",
