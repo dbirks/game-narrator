@@ -19,6 +19,10 @@ import (
 	"github.com/dbirks/game-narrator/internal/capture/ffmpegpipe"
 )
 
+// DefaultHold is the default hold for an injected button (the inject
+// call's hold when the caller passes none, and the runner's default hold).
+const DefaultHold = 500 * time.Millisecond
+
 // defaultHold is the Inject hold when the caller passes none: the spike's
 // measured 0.5 s spans several llvmpipe frames and was sufficient for START.
 const defaultHold = 500 * time.Millisecond

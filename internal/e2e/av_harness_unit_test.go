@@ -166,7 +166,7 @@ func TestAVHarnessMetricsAndRMSOnset(t *testing.T) {
 	// r2 the top band, r3 the bottom band (the ADR-0137 placement shape).
 	regionGeos := map[string]float64{"r1": 0.50, "r2": 0.20, "r3": 0.80}
 	expectedVoices := avExpectedVoices{Character: "av-voice-char", Narrator: "av-voice-narr"}
-	rep := avBuildTimeline("run-av-unit", "sess-av", recStart, evs, wav, expectedVoices, regionGeos)
+	rep := avBuildTimeline("run-av-unit", "sess-av", recStart, evs, wav, expectedVoices, regionGeos, nil)
 
 	if len(rep.Lines) != 6 {
 		t.Fatalf("timeline: %d lines; want 6 (repeat and read-through commits excluded): %+v", len(rep.Lines), rep)
@@ -242,7 +242,10 @@ func TestAVHarnessMetricsAndRMSOnset(t *testing.T) {
 	if rep.StaleStarts != 1 || rep.DuplicateCommits != 1 || rep.CacheHits != 4 || rep.MissedLines != 0 {
 		t.Fatalf("counters stale=%d dup=%d cache=%d missed=%d; want 1/1/4/0", rep.StaleStarts, rep.DuplicateCommits, rep.CacheHits, rep.MissedLines)
 	}
-	if rep.PhantomUtterances != 2 || rep.PhantomReadThroughs != 1 {
-		t.Fatalf("phantoms = %d (read-through %d); want 2 (1)", rep.PhantomUtterances, rep.PhantomReadThroughs)
+	if rep.PhantomUtterances != 4 || rep.PhantomReadThroughs != 1 {
+		t.Fatalf("phantoms = %d (read-through %d); want 4 (1)", rep.PhantomUtterances, rep.PhantomReadThroughs)
+	}
+	if len(rep.PhantomRows) != 4 {
+		t.Fatalf("phantom rows = %d; want 4: %+v", len(rep.PhantomRows), rep.PhantomRows)
 	}
 }

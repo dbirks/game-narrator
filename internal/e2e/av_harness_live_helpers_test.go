@@ -49,6 +49,15 @@ type avPreconds struct {
 	directURL string
 }
 
+// avBridgeLabel names the bridge for the run's log lines: the play-loop's
+// route-mode bridge ("av-route") or the catch-up harness's own ("av").
+func avBridgeLabel(route *dolphin.Route) string {
+	if route != nil {
+		return "av-route"
+	}
+	return "av"
+}
+
 // avPreconditions runs the A/V harness's gate and prerequisite checks and
 // reports NOT RUN (a skip, never a pass) when any is absent. It belongs to
 // the test-av gate (this harness) and the test-dolphin gate (the phase that
@@ -359,9 +368,145 @@ func avASRScore(t *testing.T, ctx context.Context, asrCfg providers.RoleConfig, 
 		// the gate's spoken-line fidelity rule reads (Amendment 1).
 		l.ASRWERvsScript = rec.WER
 		l.asrScored = true
+		l.ASRTranscript = tr.Text
+		l.CommittedText = exp
 		scored++
+		// The ADR-0162 pitch leg: the median F0 (YIN) over the clip's voiced
+		// frames, and the voice class it names (low/mid/high by the
+		// thresholds) — the "does it sound like a man or a woman" read the
+		// play loop iterates on. An unmeasured clip leaves the row honest
+		// ("unmeasured"), never a guessed class.
+		if wav, rerr := os.ReadFile(l.ClipWAV); rerr == nil {
+			if p, perr := speech.MeasurePitch(wav); perr == nil && p.F0 > 0 {
+				l.F0 = p.F0
+				l.VoiceClass = speech.VoiceClass(p.F0)
+				l.PitchScored = true
+			}
+		}
 	}
 	t.Logf("av asr: scored %d line clips (model %s)", scored, asrCfg.Model)
+}
+
+// avRunRoute runs one scripted play route (ADR-0162) through the bridge via
+// the runner's own Script path — the route adds no second input path, the
+// bridge still owns every controller byte — collecting the session's dev
+// event stream while the script runs and letting the committed lines
+// settle (the last committed lines are the ones the timeline and the gate
+// read). The run fails (the test) on a script error or a run deadline; the
+// partial stream and the press timeline are the evidence a stuck route
+// needs. The A presses the route performed are the script's press steps.
+func avRunRoute(t *testing.T, ctx context.Context, srv http.Handler, token, sessionID string, bridge dolphin.Bridge, route *dolphin.Route) ([]devEnvelope, []cuPress, []avMark) {
+	t.Helper()
+	script, err := route.ToScript()
+	if err != nil {
+		t.Fatalf("route → script: %v", err)
+	}
+	runCtx, runCancel := context.WithTimeout(ctx, 25*time.Minute)
+	defer runCancel()
+	type runResult struct {
+		tr  dolphin.Trace
+		err error
+	}
+	resCh := make(chan runResult, 1)
+	var presses []cuPress
+	var marks []avMark
+	go func() {
+		tr, err := dolphin.RunScript(runCtx, bridge, script)
+		resCh <- runResult{tr, err}
+	}()
+	// fromTrace reads the presses and the segment marks off the finished
+	// trace, on this goroutine (the run's goroutine only sends): each mark at
+	// its step's real start instant (wall clock, the clock utterances are
+	// stamped on), the route's steps and the trace's in the same order.
+	fromTrace := func(tr dolphin.Trace) {
+		for i, st := range tr.Steps {
+			if st.Wire == "A" {
+				presses = append(presses, cuPress{At: st.Start, Reason: st.Name})
+			}
+			if i < len(route.Steps) && route.Steps[i].Mark != "" {
+				marks = append(marks, avMark{Label: route.Steps[i].Mark, At: st.Start})
+			}
+		}
+	}
+	drv := cuNewDriver(time.Now())
+	poll := time.NewTicker(500 * time.Millisecond)
+	defer poll.Stop()
+	var evs []devEnvelope
+	cursor := int64(0)
+	finished := false
+	for !finished {
+		select {
+		case <-poll.C:
+		case res := <-resCh:
+			finished = true
+			if res.err != nil {
+				t.Fatalf("dolphin.RunScript: %v", res.err)
+			}
+			fromTrace(res.tr)
+		}
+		if finished {
+			break
+		}
+		page, next, err := pcPollDevEvents(t, srv, token, sessionID, cursor)
+		if err != nil {
+			t.Fatalf("dev events: %v", err)
+		}
+		evs = append(evs, page...)
+		if len(page) > 0 {
+			cursor = next
+		}
+		drv.observe(page)
+		for _, e := range page {
+			var p struct {
+				Occ    string `json:"dialogue_occurrence_id"`
+				Result string `json:"result"`
+			}
+			if len(e.Data) == 0 {
+				continue
+			}
+			if err := json.Unmarshal(e.Data, &p); err != nil || p.Occ == "" {
+				continue
+			}
+			if (e.Name == "speech.ended" && p.Result != "") || e.Name == "speech.cancelled" {
+				drv.noteTerminal(p.Occ)
+			}
+		}
+	}
+	// The settle phase (every committed line terminal) runs its own deadline.
+	settleArmed := false
+	settleCutoff := time.Now().Add(cuDriveSettle)
+	settledLog := 0
+	for {
+		if !settleArmed {
+			settleArmed = true
+			settleCutoff = time.Now().Add(cuDriveSettle)
+			t.Logf("play-loop: the route finished; settling the committed lines (window %s)", cuDriveSettle)
+		}
+		if time.Now().After(settleCutoff) {
+			settled, total := drv.allSettled()
+			if total > 0 && settled < total {
+				t.Fatalf("session %s: the route's settle deadline passed with %d of %d committed lines unsettled (the batch or a run was still in its TTS round trip or the fence)", sessionID, total-settled, cuDriveSettle)
+			}
+		}
+		settled, total := drv.allSettled()
+		if total > 0 {
+			if settled != settledLog {
+				t.Logf("play-loop: settling: %d/%d committed lines terminal", settled, total)
+				settledLog = settled
+			}
+			if settled == total {
+				break
+			}
+		}
+		if total == 0 {
+			break // nothing committed: nothing to settle
+		}
+		select {
+		case <-poll.C:
+		case <-time.After(2 * time.Second):
+		}
+	}
+	return evs, presses, marks
 }
 
 // avRegionGeos reads the profile's region rows and returns region id →
@@ -496,8 +641,29 @@ func avWriteManifest(t *testing.T, bundle, runID string, pc avPreconds, s cuScen
 //     unattributed line in the character's, is a miswired speaker);
 //   - every spoken line's ASR WER vs script at or under 0.35 (a spoken
 //     line that does not track the script is a bad read or a wrong line).
-func avGateFailures(rep avTimelineReport) []string {
+//
+// The ADR-0162 route mode (GN_AV_ROUTE): the play-loop run — a scripted
+// walk/talk route against the committed starter route — fails only on the
+// phantom detector and the existing latency gate (behind the existing
+// GN_AV_NO_LATENCY_GATE opt-out); the conversation-shape rules above (the
+// multi-box floor, the missed, the stale, the duplicates, the voices, the
+// WER) are the catch-up run's acceptance, not the play loop's iteration.
+func avGateFailures(rep avTimelineReport, routeMode bool) []string {
 	var fails []string
+	if routeMode {
+		if rep.PhantomUtterances > 0 {
+			fails = append(fails, fmt.Sprintf("%d phantom utterance(s) (%d read-through): speech.started events no committed line explains — the board's \"speech with no box\"; the timeline rows are the evidence", rep.PhantomUtterances, rep.PhantomReadThroughs))
+		}
+		if rep.IdleSamples >= 3 {
+			if rep.SettledToAudioP50MS > 500 {
+				fails = append(fails, fmt.Sprintf("settled→audio p50 = %d ms > 500 ms (the ADR-0143 warm-run bound, %d idle samples); the per-line rows are the evidence", rep.SettledToAudioP50MS, rep.IdleSamples))
+			}
+			if rep.SettledToAudioP95MS > 800 {
+				fails = append(fails, fmt.Sprintf("settled→audio p95 = %d ms > 800 ms (the ADR-0143 warm-run bound, %d idle samples); the per-line rows are the evidence", rep.SettledToAudioP95MS, rep.IdleSamples))
+			}
+		}
+		return fails
+	}
 	if len(rep.Lines) < 2 {
 		fails = append(fails, fmt.Sprintf("%d committed lines; want >= 2 (the multi-box conversation)", len(rep.Lines)))
 	}
@@ -555,7 +721,7 @@ func avGateFailures(rep avTimelineReport) []string {
 // failure names.
 func avAssertReport(t *testing.T, rep avTimelineReport) {
 	t.Helper()
-	fails := avGateFailures(rep)
+	fails := avGateFailures(rep, os.Getenv("GN_AV_ROUTE") != "")
 	if os.Getenv("GN_AV_NO_LATENCY_GATE") == "1" {
 		var kept []string
 		for _, f := range fails {

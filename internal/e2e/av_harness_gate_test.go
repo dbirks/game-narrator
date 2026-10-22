@@ -34,7 +34,7 @@ func avGateBaselineReport() avTimelineReport {
 // several of them — a message that names the rule, the number and the line).
 func avGateWantsExactly(t *testing.T, rep avTimelineReport, wantCount int, want []string) {
 	t.Helper()
-	fails := avGateFailures(rep)
+	fails := avGateFailures(rep, false)
 	if len(fails) != wantCount {
 		t.Fatalf("avGateFailures = %d failure(s), want %d:\n%s", len(fails), wantCount, strings.Join(fails, "\n"))
 	}
@@ -53,7 +53,7 @@ func avGateWantsExactly(t *testing.T, rep avTimelineReport, wantCount int, want 
 
 func TestAVHarnessGateRules(t *testing.T) {
 	// The baseline passes: the warm run the gate exists to protect.
-	if fails := avGateFailures(avGateBaselineReport()); len(fails) != 0 {
+	if fails := avGateFailures(avGateBaselineReport(), false); len(fails) != 0 {
 		t.Fatalf("baseline report: %d failure(s), want 0:\n%s", len(fails), strings.Join(fails, "\n"))
 	}
 
@@ -108,7 +108,7 @@ func TestAVHarnessGateRules(t *testing.T) {
 		rep := avGateBaselineReport()
 		rep.Lines[2].ExpectedVoiceID = "" // no expectation: the rule cannot fail it
 		rep.Lines[2].VoiceMatch = false
-		if fails := avGateFailures(rep); len(fails) != 0 {
+		if fails := avGateFailures(rep, false); len(fails) != 0 {
 			t.Fatalf("no-expected-voice line: %d failure(s), want 0:\n%s", len(fails), strings.Join(fails, "\n"))
 		}
 	})
@@ -121,8 +121,31 @@ func TestAVHarnessGateRules(t *testing.T) {
 		rep := avGateBaselineReport()
 		rep.Lines[2].TAudioStartEventMS = 0 // never audible: nothing was misread
 		rep.Lines[2].ASRWERvsScript = 0.40
-		if fails := avGateFailures(rep); len(fails) != 0 {
+		if fails := avGateFailures(rep, false); len(fails) != 0 {
 			t.Fatalf("unspoken line: %d failure(s), want 0:\n%s", len(fails), strings.Join(fails, "\n"))
+		}
+	})
+	t.Run("route mode fails on phantoms and the latency gate only", func(t *testing.T) {
+		// The ADR-0162 play-loop route run: the baseline (no phantoms, the
+		// latency in bounds) passes the route gate; a phantom run fails it.
+		if fails := avGateFailures(avGateBaselineReport(), true); len(fails) != 0 {
+			t.Fatalf("route baseline: %d failure(s), want 0:\n%s", len(fails), strings.Join(fails, "\n"))
+		}
+		rep := avGateBaselineReport()
+		rep.PhantomUtterances = 1
+		rep.PhantomReadThroughs = 1
+		avGateWantsExactly(t, rep, 1, []string{"1 phantom utterance(s) (1 read-through)"})
+	})
+	t.Run("route mode ignores the conversation-shape rules", func(t *testing.T) {
+		// The play loop iterates on audio phantoms and latency, not on the
+		// catch-up conversation's shape: a route run with one committed line
+		// and a thin idle set is not held to the multi-box floor.
+		rep := avGateBaselineReport()
+		rep.Lines = rep.Lines[:1]
+		rep.IdleSamples = 2
+		rep.MissedLines = 1
+		if fails := avGateFailures(rep, true); len(fails) != 0 {
+			t.Fatalf("route run with a thin conversation: %d failure(s), want 0 (phantoms + latency only):\n%s", len(fails), strings.Join(fails, "\n"))
 		}
 	})
 	t.Run("several rules fail together", func(t *testing.T) {
@@ -172,6 +195,16 @@ func TestAVHarnessReportWriter(t *testing.T) {
 	rep.PhantomReadThroughs = 1
 	rep.SkippedLines = 1
 	rep.CacheHits = 2
+	rep.PhantomRows = []avPhantomRow{{
+		OccurredAt:   "2026-10-21T10:00:05.000Z",
+		RouteSegment: "",
+		BoxOnScreen:  false,
+		VoiceID:      "av-voice-char",
+		F0:           440,
+		VoiceClass:   "mid (adult female)",
+		PitchScored:  true,
+		ReadThrough:  true,
+	}}
 	line := &rep.Lines[0]
 	line.TBoxAppearMS, line.TTextSettledMS = 1000, 1500
 	line.TCommitMS, line.TClefDoneMS = 1600, 1550
@@ -200,13 +233,23 @@ func TestAVHarnessReportWriter(t *testing.T) {
 			t.Fatalf("report.md missing %q\n%s", want, s)
 		}
 	}
-	// The per-line table: line 0's full row (every stage cell filled) and
-	// line 1's skipped Clef cell ("-").
-	row0 := "| 0 | middle | 1000 | 1500 | 1600 | 1550 | 1700 | 1800 | 1820 | 320 | 820 | yes | yes | 0.050 | - | ended |"
+	// The phantom section (the top rows when the run carried phantoms) and
+	// the per-line table: line 0's full row (every stage cell filled) and
+	// line 1's skipped Clef cell.
+	if !strings.Contains(s, "## Phantom utterances") || !strings.Contains(s, "## Per-line table") {
+		t.Fatalf("report.md missing the phantom / per-line sections\n%s", s)
+	}
+	if !strings.Contains(s, "| occurred | segment | box on screen | voice | pitch | read-through |") {
+		t.Fatalf("report.md missing the phantom table header\n%s", s)
+	}
+	if !strings.Contains(s, "| 2026-10-21T10:00:05.000Z | - | no | av-voice-char | 440 Hz mid (adult female) | yes |") {
+		t.Fatalf("report.md missing the phantom row (the read-through's flags)\n%s", s)
+	}
+	row0 := "| 0 | - | middle | 1000 | 1500 | 1600 | 1550 | 1700 | 1800 | 1820 | 320 | 820 | yes | yes | av-voice-char | - | - | 0.050 | - | ended |"
 	if !strings.Contains(s, row0) {
 		t.Fatalf("report.md missing line 0's row:\n%s\n(want: %s)", s, row0)
 	}
-	if !strings.Contains(s, "| 1 | top | - | - | - | - | - | 2000 | - | - | - | no | yes | 0.100 | - | ended |") {
+	if !strings.Contains(s, "| 1 | - | top | - | - | - | - | - | 2000 | - | - | - | no | yes | av-voice-char | - | - | 0.100 | - | ended |") {
 		t.Fatalf("report.md missing line 1's row (the unobserved cells are \"-\")\n%s", s)
 	}
 	// Line 2: the batched + queued cell.

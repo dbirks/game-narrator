@@ -21,9 +21,9 @@ LDFLAGS := -X $(PKG).version=$(VERSION) -X $(PKG).commit=$(COMMIT)
 
 # Gate targets that test-full runs, in order.
 RUN_GATES := test-unit test-ui diagnostics release-snapshot bench \
-             test-replay test-dolphin test-av test-models test-hardware secret-scan
+             test-replay test-dolphin test-av play test-models test-hardware secret-scan
 
-.PHONY: bootstrap dev build web-build test-unit test-replay test-ui test-dolphin test-av \
+.PHONY: bootstrap dev build web-build test-unit test-replay test-ui test-dolphin test-av play \
         test-models test-hardware test-full lint release-snapshot verify-apt-pins diagnostics bench soak secret-scan
 
 ## web-build: build the React UI and stage it for go:embed
@@ -352,6 +352,16 @@ test-dolphin:
 ## artifacts/gates/test-av.rc.
 test-av:
 	@scripts/gates/test-av.sh
+
+## play: the play loop (ADR-0162) — the A/V harness in route mode: boot a
+## savestate, drive a scripted route (stick holds, A presses, waits, segment
+## marks), record video+audio on one clock and report every utterance
+## (segment, box on screen?, latency, ASR, voice pitch class) with PHANTOM
+## rows (speech with no box, or during a walk* segment) first. Usage:
+##   make play ROUTE=testdata/routes/outset-deck-walk.json
+play:
+	@test -n "$(ROUTE)" || { echo "usage: make play ROUTE=testdata/routes/<route>.json"; exit 2; }
+	@GN_AV_ROUTE=$(abspath $(ROUTE)) GN_AV_NO_LATENCY_GATE=$${GN_AV_NO_LATENCY_GATE:-1} scripts/gates/test-av.sh
 
 ## test-models: the live provider contract gate (docs/spec/12 "provider
 ## schema — recorded every PR, live conditional") — the -run Live tests in

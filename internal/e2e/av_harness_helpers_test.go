@@ -65,8 +65,32 @@ type avLineRecord struct {
 	// QueuedBehindSpeech: committed while another line was audible, so its
 	// commit→audio is queueing time, kept out of the idle latency gate.
 	QueuedBehindSpeech bool `json:"queued_behind_speech,omitempty"`
-	clipAudioStartMS   int64
-	asrScored          bool
+	// ADR-0162 (the play-loop): the route segment the utterance fell in (the
+	// nearest preceding route mark) and whether a dialogue box was on
+	// screen at the audio start (the harness's box join: the box's appear
+	// was observed before the utterance's audio start). A route-mode
+	// utterance with no box on screen at audio start, or one spoken in a
+	// segment marked walk*, is a PHANTOM.
+	RouteSegment       string `json:"route_segment,omitempty"`
+	BoxOnScreenAtStart bool   `json:"box_on_screen_at_start,omitempty"`
+	// ADR-0162: the ASR leg's read-back (the transcript) and the committed
+	// text it was scored against (the corpus ground truth / the commit's
+	// text). Both ride the run's gitignored bundle (timeline.json) only;
+	// the report stays counts/timings-only (AGENTS.md rule 5).
+	ASRTranscript string `json:"asr_transcript,omitempty"`
+	CommittedText string `json:"committed_text,omitempty"`
+	// ADR-0162: the pitch measurement — the median F0 (Hz) over the clip's
+	// voiced frames (YIN, pure Go, internal/speech) and the voice class it
+	// names (low/mid/high by the ADR-0162 thresholds).
+	F0          float64 `json:"f0_hz,omitempty"`
+	VoiceClass  string  `json:"voice_class,omitempty"`
+	PitchScored bool    `json:"pitch_scored,omitempty"`
+	// Character is the character the utterance's voice resolved for (the
+	// expected side: the commit's speaker when attributed, the narrator's
+	// fallback when not).
+	Character        string `json:"character,omitempty"`
+	clipAudioStartMS int64
+	asrScored        bool
 }
 
 // avTimelineReport is the run's synchronized A/V timeline (ADR 0143): the
@@ -101,6 +125,13 @@ type avTimelineReport struct {
 	// marker (message_id "unknown", ADR 0136) — spoken where the corpus
 	// cannot name the line.
 	PhantomReadThroughs int `json:"phantom_read_throughs"`
+	// PhantomRows are the run's phantom utterances (ADR-0162): one row per
+	// started that failed the phantom predicate (no dialogue box on screen at
+	// the audio start, or spoken in a segment marked walk*), in stream
+	// order — the rows the report's phantom section prints, at the top of
+	// report.md. The count (PhantomUtterances) is the gate's input; the rows
+	// are its readable half.
+	PhantomRows []avPhantomRow `json:"phantoms,omitempty"`
 	// SkippedLines counts lines whose terminal was skipped (stale catch-up,
 	// duplicate region, backpressure). IdleSamples is the number of lines in
 	// the settled→audio gate; the Queued* percentiles are the lines that
@@ -176,6 +207,16 @@ func avPercentileMS(vals []int64, pct float64) int64 {
 	return sorted[rank-1]
 }
 
+// avLineAudioStartAt resolves one line's audio-start instant (the audible
+// onset: the RMS-measured window start, falling back to the event stamp).
+func avLineAudioStartAt(recStart time.Time, l *avLineRecord) time.Time {
+	ms := l.TAudioStartRMSMS
+	if ms == 0 {
+		ms = l.TAudioStartEventMS
+	}
+	return recStart.Add(time.Duration(ms) * time.Millisecond)
+}
+
 // avMS converts one instant to ms from the recording's start (T0); an
 // instant before T0 clamps to 0 (the clock starts with the recorder).
 func avMS(recStart, at time.Time) int64 {
@@ -214,6 +255,7 @@ type avSpeechData struct {
 	Result     string   `json:"result"`
 	StartedAt  string   `json:"started_at"`
 	EndedAt    string   `json:"ended_at"`
+	Character  string   `json:"character_id"`
 }
 
 // avExpectedVoices are the voices the session resolves lines to (the
@@ -225,6 +267,9 @@ type avSpeechData struct {
 type avExpectedVoices struct {
 	Character string
 	Narrator  string
+	// NarratorID is the narrator's character id (the expected side of an
+	// unattributed line's voice): the report's character column for it.
+	NarratorID string
 	// CharacterID and SpeakerByMessage are the profile's own attribution
 	// (message id → speaker character id, after the speaker link): the map
 	// the runtime's speakerFor resolves voices from. When set, a line whose
@@ -236,6 +281,45 @@ type avExpectedVoices struct {
 	// falls back to the commit's attribution (the synthetic unit tests).
 	CharacterID      string
 	SpeakerByMessage map[string]string
+}
+
+// avMark is one route segment boundary (ADR-0162): a route step's mark
+// and that step's start instant — the boundary the segment attribution
+// (nearest preceding mark at/before an utterance's audio start) walks.
+type avMark struct {
+	Label string
+	At    time.Time
+}
+
+// avPhantomRow is one PHANTOM utterance (ADR-0162): a speech.started whose
+// audio had no dialogue box on screen at the audio start, or that fell in a
+// route segment marked walk*, with the attribution the report's phantom
+// section prints (the timeline.json half is the phantom counter itself).
+type avPhantomRow struct {
+	OccurredAt   string  `json:"occurred_at,omitempty"`
+	RouteSegment string  `json:"route_segment,omitempty"`
+	BoxOnScreen  bool    `json:"box_on_screen,omitempty"`
+	VoiceID      string  `json:"voice_id,omitempty"`
+	Character    string  `json:"character,omitempty"`
+	F0           float64 `json:"f0_hz,omitempty"`
+	VoiceClass   string  `json:"voice_class,omitempty"`
+	PitchScored  bool    `json:"pitch_scored,omitempty"`
+	ReadThrough  bool    `json:"read_through,omitempty"`
+}
+
+// avSegmentAt resolves the route segment an instant falls in: the nearest
+// preceding mark at/before it (the segment the utterance's audio start was
+// attributed to); "" when the instant precedes every mark (or the run carried
+// no marks).
+func avSegmentAt(marks []avMark, at time.Time) string {
+	label := ""
+	for _, m := range marks {
+		if m.At.IsZero() || at.Before(m.At) {
+			continue
+		}
+		label = m.Label
+	}
+	return label
 }
 
 // avBuildTimeline correlates the session's dev event stream onto the
@@ -254,7 +338,10 @@ type avExpectedVoices struct {
 // resolveVoice rule), the box position from regionGeos (region id → the
 // region row's centre Y over the frame height) and the phantom-utterance
 // scan over the speech.started events the timeline's lines cannot explain.
-func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvelope, sessionWAV []byte, expectedVoices avExpectedVoices, regionGeos map[string]float64) avTimelineReport {
+// ADR-0162 adds the route segment attribution (the nearest preceding mark
+// over the route the run drove) and the box-on-screen-at-audio-start half
+// of the phantom predicate.
+func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvelope, sessionWAV []byte, expectedVoices avExpectedVoices, regionGeos map[string]float64, marks []avMark) avTimelineReport {
 	rep := avTimelineReport{RunID: runID, SessionID: sessionID, RecordingStartedAt: recStart, Lines: []avLineRecord{}}
 	type obsRec struct {
 		at    time.Time
@@ -367,11 +454,19 @@ func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvel
 			expected = expectedVoices.Character
 		}
 		centreY, geoKnown := regionGeos[c.region]
+		// The line's character: the expected side's character id (the
+		// attributed speaker's character, the narrator's fallback) — the
+		// report's character column (ADR-0162).
+		charID := expectedVoices.NarratorID
+		if expected == expectedVoices.Character {
+			charID = expectedVoices.CharacterID
+		}
 		line := avLineRecord{
 			OccurrenceID: c.occ, TraceID: c.trace, MessageID: c.msg,
 			RegionID: c.region, TCommitMS: avMS(recStart, c.at),
 			ExpectedVoiceID: expected,
 			BoxPosition:     avBoxPosition(centreY, geoKnown),
+			Character:       charID,
 		}
 		// The box's readings at/before the commit: in a live session each page
 		// turn mints its own trace_id on StateAdvancing (internal/session/apply.go),
@@ -427,6 +522,11 @@ func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvel
 		} else if !late.at.IsZero() {
 			line.TClefDoneMS = avMS(recStart, late.at)
 		}
+		// ADR-0162: the box-on-screen half of the phantom predicate — the
+		// box's appear was observed before the line's box window (the settle),
+		// so a line whose box never got an observed appear has no box at the
+		// audio start and speaks into the void when it speaks.
+		line.BoxOnScreenAtStart = line.TBoxAppearMS > 0
 		rep.Lines = append(rep.Lines, line)
 	}
 
@@ -571,16 +671,19 @@ func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvel
 		}
 	}
 
-	// The phantom scan (Amendment 1): every speech.started the timeline's
-	// lines do not explain. A started names the occurrence of the utterance
-	// it begins (the wiring's correlation; the scheduler's raw event falls
-	// back to the utterance id, the same occurrence). It is explained when
-	// the occurrence is a committed line's, or a merged run's that covers
-	// at least one committed line (the run's message_ids joined it onto
-	// them above). Everything else — no committed line at all, or a line
-	// the timeline does not hold (the read-throughs) — is phantom: audio
-	// with no line to account for it (the board's "speech with no box" is
-	// exactly this class).
+	// The phantom scan (Amendment 1, ADR-0162): every speech.started the run
+	// could not account for — no dialogue box on screen at the audio start,
+	// or spoken inside a route segment marked walk* — is PHANTOM, and its row
+	// rides the report's phantom section at the top. A started names the
+	// occurrence of the utterance it begins (the wiring's correlation; the
+	// scheduler's raw event falls back to the utterance id, the same
+	// occurrence). It is explained when the occurrence is a committed line's,
+	// or a merged run's that covers at least one committed line (the run's
+	// message_ids joined it onto them above); the phantom predicate
+	// (ADR-0162) then reads the box half off the target line and the segment
+	// half off the marks: no box on screen at the audio start, or a segment
+	// marked walk*, makes it a phantom — the audio the orchestrator asked for
+	// outside a boxed, spoken moment.
 	for _, e := range evs {
 		if e.Name != "speech.started" {
 			continue
@@ -596,19 +699,58 @@ func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvel
 		if occ == "" {
 			continue
 		}
-		if _, ok := byOcc[occ]; ok {
-			continue
+		startedAt := recStart
+		if at, ok := avParseAt(e.OccurredAt); ok {
+			startedAt = at
 		}
-		if idx, ok := runLines[occ]; ok && len(idx) > 0 {
-			continue
+		if d.StartedAt != "" {
+			if sa, ok := avParseAt(d.StartedAt); ok {
+				startedAt = sa
+			}
+		}
+		lineIdx := -1
+		if i, ok := byOcc[occ]; ok {
+			lineIdx = i
+		} else if idx, ok := runLines[occ]; ok && len(idx) > 0 {
+			lineIdx = idx[0]
+		}
+		boxOnScreen := false
+		seg := ""
+		f0, voiceClass := 0.0, ""
+		pitched := false
+		if lineIdx >= 0 && lineIdx < len(rep.Lines) {
+			boxOnScreen = rep.Lines[lineIdx].BoxOnScreenAtStart
+			seg = avSegmentAt(marks, startedAt)
+			f0, voiceClass, pitched = rep.Lines[lineIdx].F0, rep.Lines[lineIdx].VoiceClass, rep.Lines[lineIdx].PitchScored
+		} else {
+			// No committed line (a read-through, or a bare started) accounts
+			// for this audio: no box was on screen at the audio start.
+			boxOnScreen = false
+			seg = avSegmentAt(marks, startedAt)
+		}
+		if boxOnScreen && !strings.HasPrefix(seg, "walk") {
+			continue // accounted for: a box was on screen and the segment was not a walk
 		}
 		rep.PhantomUtterances++
 		if readThroughOcc[occ] {
 			rep.PhantomReadThroughs++
 		}
+		rep.PhantomRows = append(rep.PhantomRows, avPhantomRow{
+			OccurredAt:   e.OccurredAt,
+			RouteSegment: seg,
+			BoxOnScreen:  boxOnScreen,
+			VoiceID:      d.VoiceID,
+			Character:    d.Character,
+			F0:           f0,
+			VoiceClass:   voiceClass,
+			PitchScored:  pitched,
+			ReadThrough:  readThroughOcc[occ],
+		})
 	}
 	// The acoustic half: the audible onset in the recorded track (the
-	// fallback is the event stamp when the window is silent).
+	// fallback is the event stamp when the window is silent), and with it
+	// the ADR-0162 attribution: the line's route segment (the nearest
+	// preceding mark at/before the utterance's audio start).
 	for i := range rep.Lines {
 		line := &rep.Lines[i]
 		line.Index = i
@@ -623,7 +765,9 @@ func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvel
 				line.TAudioStartRMSMS = line.TAudioStartEventMS // silent window: the event stamp
 			}
 		}
+		line.RouteSegment = avSegmentAt(marks, avLineAudioStartAt(recStart, line))
 	}
+
 	// Queued behind speech: the line committed while ANOTHER line's audio
 	// was audible (the player advanced during playback). Its audio cannot
 	// start until the playing line ends (the catch-up policy keeps the

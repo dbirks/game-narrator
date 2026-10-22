@@ -1,0 +1,28 @@
+{
+  "save_state": "states/windwaker-deck-aryll.state",
+  "steps": [
+    {"mark": "idle-start", "wait_ms": 3000},
+    {"mark": "talk-aryll", "press": "A"},
+    {"wait_ms": 7000},
+    {"press": "A"},
+    {"wait_ms": 7000},
+    {"press": "A"},
+    {"wait_ms": 7000},
+    {"press": "A"},
+    {"wait_ms": 7000},
+    {"press": "A"},
+    {"wait_ms": 7000},
+    {"press": "A"},
+    {"wait_ms": 8000},
+    {"mark": "walk-deck", "stick": [0.0, -1.0], "ms": 1500},
+    {"stick": [1.0, 0.0], "ms": 1500},
+    {"stick": [0.0, 1.0], "ms": 1500},
+    {"stick": [-1.0, 0.0], "ms": 1500},
+    {"wait_ms": 1500},
+    {"stick": [0.0, -1.0], "ms": 1200},
+    {"stick": [-1.0, 0.0], "ms": 1200},
+    {"stick": [0.0, 1.0], "ms": 1200},
+    {"stick": [1.0, 0.0], "ms": 1200},
+    {"mark": "walk-idle-hud", "wait_ms": 10000}
+  ]
+}

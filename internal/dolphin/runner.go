@@ -214,10 +214,26 @@ func runStep(ctx context.Context, b Bridge, s Script, idx int, step Step) StepTr
 			st.Wire = wire
 		}
 		st.Attempts = 1
+		if step.Wait > 0 {
+			// The step's quiet hold (the scripted-route wait, ADR-0162): the
+			// time the step holds before its final state is recorded — for a
+			// wait-only step the hold is the whole step, for a hold-bearing
+			// step it is the quiet time after the input's own hold.
+			if err := sleepCtx(ctx, step.Wait); err != nil {
+				st.End = time.Now()
+				return st.withError(err.Error())
+			}
+		}
 		st.End = time.Now()
 		if herr != nil {
 			return st.withError("inject: " + herr.Error())
 		}
+		// No checkpoint: the attempt (and its quiet hold) is the whole step,
+		// so it succeeded. Without this the trace kept OK false with no error
+		// text and RunScript failed every checkpoint-free step ("script
+		// failed at step …: " with an empty reason) — invisible until the
+		// play routes (ADR-0162) made plain stick/press/wait steps common.
+		st.OK = true
 		finaliseStep(b, ctx, s, idx, step, &st)
 		return st
 	}

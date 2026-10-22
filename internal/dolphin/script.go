@@ -42,6 +42,11 @@ type Step struct {
 	// Stick: the stick position set for the hold (the stick is released to
 	// neutral by the bridge after the hold).
 	Stick *Stick
+	// Wait: the step's quiet hold in wall-clock time: the time the step
+	// holds before its (possibly absent) input and before the finalise
+	// screenshot — the scripted-route wait (docs/adr/0162) expressed on the
+	// runner's own step (zero = immediate; a wait-only step is just this).
+	Wait time.Duration
 	// After: quiet time before the first attempt (lets transitions settle).
 	After time.Duration
 	// Until: the checkpoint polled after each attempt (nil = the step

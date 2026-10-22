@@ -1,6 +1,7 @@
-// Package e2e — the A/V harness report (ADR 0143, Amendment 1): the box
+// Package e2e — the A/V harness report (ADR-0143, Amendment 1; ADR-0162 adds
+// the phantom section and the per-line attribution columns): the box
 // position classification from the profile's placement-aware region rows
-// (ADR 0137) and the run's report.md — the human-readable half of the
+// (ADR-0137) and the run's report.md — the human-readable half of the
 // timeline.json pair, written next to it. Log-safe per AGENTS.md rule 5:
 // ids, counts and timings only — never dialogue text.
 package e2e
@@ -69,15 +70,38 @@ func avReportQueue(l *avLineRecord) string {
 	}
 }
 
+// avReportCell renders one report cell: the route segment / voice / character
+// identifier, or "-" when the run carried none (the timeline's 0 convention is
+// "missing", never "T0").
+func avReportCell(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+// avReportBool renders one report cell: the ADR-0162 flag as yes/no, "-" when
+// the run did not observe it.
+func avReportBool(b bool) string {
+	if !b {
+		return "no"
+	}
+	return "yes"
+}
+
 // avWriteReport writes the run's report.md next to the timeline.json
-// (Amendment 1): the summary numbers the gate reads, then the per-line
-// table — one row per line in stream order, one column per stage, so a
-// failed gate names a line the reader can find in the table (AGENTS.md
-// evidence bundle: the report is the timeline's readable half).
+// (ADR-0143, Amendment 1; ADR-0162 adds the phantom section and the
+// per-line attribution columns): the summary numbers the gate reads, then
+// the PHANTOM rows (when any — at the top of the report, before the
+// per-line table, because a phantom is the run's loudest defect), then the
+// per-line table — one row per line in stream order, one column per stage,
+// so a failed gate names a line the reader can find in the table (AGENTS.md
+// evidence bundle: the report is the timeline's readable half). Log-safe per
+// AGENTS.md rule 5: ids, counts and timings only — never dialogue text.
 func avWriteReport(t *testing.T, path string, rep avTimelineReport) {
 	t.Helper()
 	var b strings.Builder
-	b.WriteString("# A/V harness report (ADR 0143)\n\n")
+	b.WriteString("# A/V harness report (ADR-0143)\n\n")
 	fmt.Fprintf(&b, "Run `%s`, session `%s`.\n\n", rep.RunID, rep.SessionID)
 	b.WriteString("## Summary\n\n")
 	fmt.Fprintf(&b, "- lines: %d\n", len(rep.Lines))
@@ -92,10 +116,26 @@ func avWriteReport(t *testing.T, path string, rep avTimelineReport) {
 	fmt.Fprintf(&b, "- phantom utterances: %d (read-through: %d)\n", rep.PhantomUtterances, rep.PhantomReadThroughs)
 	fmt.Fprintf(&b, "- skipped lines: %d\n", rep.SkippedLines)
 	fmt.Fprintf(&b, "- cache hits: %d\n\n", rep.CacheHits)
+	b.WriteString("## Phantom utterances\n\n")
+	if rep.PhantomUtterances > 0 {
+		b.WriteString("Phantoms (ADR-0162): utterances whose audio had no dialogue box on screen at the audio start, or that were spoken inside a route segment marked `walk*` — the top rows of this report, because a phantom is the run's loudest defect. A route run fails on phantoms (and on the latency gate) behind the same opt-out envs the harness already has.\n\n")
+		b.WriteString("| occurred | segment | box on screen | voice | pitch | read-through |\n")
+		b.WriteString("|----------|---------|--------------|-------|-------|-------------|\n")
+		for _, r := range rep.PhantomRows {
+			pitch := "-"
+			if r.PitchScored {
+				pitch = fmt.Sprintf("%.0f Hz %s", r.F0, r.VoiceClass)
+			}
+			b.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | %s |\n",
+				r.OccurredAt, avReportCell(r.RouteSegment), avReportBool(r.BoxOnScreen), r.VoiceID, pitch, avReportBool(r.ReadThrough)))
+		}
+	} else {
+		b.WriteString("No phantom utterances.\n\n")
+	}
 	b.WriteString("## Per-line table\n\n")
 	b.WriteString("Instants are ms from the shared-clock start (T0); `-` is an instant the run never observed.\n\n")
-	b.WriteString("| # | box | appear | settled | commit | clef | tts_ready | audio_event | audio_rms | settled→audio | appear→audio | cache | voice ok | WER vs script | batched/queued | end |\n")
-	b.WriteString("|---|-----|--------|---------|--------|------|-----------|-------------|-----------|---------------|--------------|-------|----------|---------------|----------------|-----|\n")
+	b.WriteString("| # | seg | box | appear | settled | commit | clef | tts_ready | audio_event | audio_rms | settled→audio | appear→audio | cache | voice ok | voice | char | pitch | WER vs script | batched/queued | end |\n")
+	b.WriteString("|---|-----|-----|--------|---------|--------|------|-----------|-------------|-----------|---------------|--------------|-------|----------|------|-----|--------|------------|-----------------|-----|\n")
 	for i := range rep.Lines {
 		l := &rep.Lines[i]
 		voice := "-"
@@ -117,13 +157,18 @@ func avWriteReport(t *testing.T, path string, rep avTimelineReport) {
 		if box == "" {
 			box = "-"
 		}
-		fmt.Fprintf(&b, "| %d | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
-			l.Index, box,
+		pitch := "-"
+		if l.PitchScored {
+			pitch = fmt.Sprintf("%.0f Hz %s", l.F0, l.VoiceClass)
+		}
+		fmt.Fprintf(&b, "| %d | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
+			l.Index, avReportCell(l.RouteSegment), box,
 			avReportMS(l.TBoxAppearMS), avReportMS(l.TTextSettledMS), avReportMS(l.TCommitMS),
 			avReportMS(l.TClefDoneMS), avReportMS(l.TTSReadyMS),
 			avReportMS(l.TAudioStartEventMS), avReportMS(l.TAudioStartRMSMS),
 			avReportMS(l.SettledToAudioMS), avReportMS(l.AppearToAudioMS),
-			cache, voice, avReportWER(l.asrScored, l.ASRWERvsScript),
+			cache, voice, avReportCell(l.VoiceID), avReportCell(l.Character), pitch,
+			avReportWER(l.asrScored, l.ASRWERvsScript),
 			avReportQueue(l), end)
 	}
 	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {

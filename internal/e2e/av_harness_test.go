@@ -167,10 +167,26 @@ func TestLiveDolphinAVHarness(t *testing.T) {
 	// ── warm the TTS cache (the ADR-0143 design) ──────────────────────────
 	prewarm := avPreSynthesize(t, ctx, st, cuV.service, s.profileID, pc.fdDir, cuV.char, cuV.narr)
 
-	// ── the live session: bridge from the first-dialogue savestate ────────
+	// ── the live session: bridge from the route's savestate (the ADR-0162
+	//    play loop) or the first-dialogue fixture state ─────────────────────
 	launchCtx, launchCancel := context.WithTimeout(context.Background(), cuLaunchTimeout)
 	defer launchCancel()
-	bridge = pcLaunchBridge(t, launchCtx, dataDir, "av", pc.fdState)
+	var route *dolphin.Route
+	routePath := os.Getenv("GN_AV_ROUTE")
+	routeSaveState := pc.fdState
+	if routePath != "" {
+		rb, rerr := os.ReadFile(routePath)
+		if rerr != nil {
+			t.Fatalf("GN_AV_ROUTE: read the route file: %v", rerr)
+		}
+		parsed, rerr := dolphin.ParseRoute(rb)
+		if rerr != nil {
+			t.Fatalf("GN_AV_ROUTE: %s: %v", routePath, rerr)
+		}
+		route = &parsed
+		routeSaveState = filepath.Join(pc.fdDir, "..", route.SaveState)
+	}
+	bridge = pcLaunchBridge(t, launchCtx, dataDir, avBridgeLabel(route), routeSaveState)
 
 	// The shared-clock capture: the display + the sink's monitor, from T0.
 	mediaDir := filepath.Join(bundle, "media")
@@ -181,8 +197,16 @@ func TestLiveDolphinAVHarness(t *testing.T) {
 	sessionID := avStartPredictiveSession(t, srv, token, s.profileID)
 
 	// Drive the conversation (the cuDriver's proven A-press advance loop),
-	// then let the last committed lines settle.
-	evs, presses := cuDriveConversation(t, srv, token, sessionID, bridge)
+	// then let the last committed lines settle — or, in route mode (the
+	// ADR-0162 play loop), run the route's scripted steps and settle.
+	var evs []devEnvelope
+	var presses []cuPress
+	var marks []avMark
+	if route != nil {
+		evs, presses, marks = avRunRoute(t, ctx, srv, token, sessionID, bridge, route)
+	} else {
+		evs, presses = cuDriveConversation(t, srv, token, sessionID, bridge)
+	}
 
 	// Stop the capture (SIGINT → trailer finalize) and read the track.
 	if err := stopRec(); err != nil {
@@ -208,7 +232,7 @@ func TestLiveDolphinAVHarness(t *testing.T) {
 	expectedVoices := avExpectedVoices{Character: cuV.char.VoiceID, Narrator: cuV.narr.VoiceID,
 		CharacterID: s.charID, SpeakerByMessage: avSpeakerByMessage(t, ctx, st, s.profileID)}
 	regionGeos := avRegionGeos(t, ctx, st, s.profileID)
-	rep := avBuildTimeline(runID, sessionID, recStart, evs, sessionWAV, expectedVoices, regionGeos)
+	rep := avBuildTimeline(runID, sessionID, recStart, evs, sessionWAV, expectedVoices, regionGeos, marks)
 	rep.SessionMP4 = filepath.Join(mediaDir, "session.mp4")
 	rep.SessionWAV = filepath.Join(mediaDir, "session.wav")
 	clipsDir := filepath.Join(bundle, "clips")
