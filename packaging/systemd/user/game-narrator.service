@@ -1,0 +1,25 @@
+# Game Narrator as a user-level service (ADR 0150 amendment): the board's
+# "--user" install (~/gn-live). It runs in the login user's systemd instance
+# so it shares that user's PipeWire session (the hub-HDMI sink lives there)
+# and, with lingering enabled (loginctl enable-linger <user>), starts at boot
+# without a login — a hand-run setsid process does not survive a reboot
+# (2026-10-22: the board power-cycled and nothing was narrating).
+[Unit]
+Description=Game Narrator (user-level install, ~/gn-live)
+After=pipewire.service wireplumber.service
+Wants=pipewire.service wireplumber.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/gn-live
+EnvironmentFile=%h/gn-live/env
+ExecStart=/usr/bin/game-narrator serve
+StandardOutput=append:%h/gn-live/serve.log
+StandardError=append:%h/gn-live/serve.log
+# The listen address may be a tailnet address that is not up yet at boot:
+# the bind fails fast and the unit retries.
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

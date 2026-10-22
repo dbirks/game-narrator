@@ -166,6 +166,12 @@ REMOTE
   #    matches the ssh shell running this deploy.
   run_remote "stop the user-level process(es) by exact PID (pgrep -x, never pkill -f)" "" <<'REMOTE'
 set -eu
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+if systemctl --user is-enabled --quiet game-narrator.service 2>/dev/null; then
+  # The user-level unit (packaging/systemd/user/game-narrator.service) owns
+  # the process: stop it through systemd so Restart= does not revive it.
+  systemctl --user stop game-narrator.service || true
+fi
 set -- $(pgrep -x game-narrator || true)
 if [ "$#" -eq 0 ]; then echo "note: no game-narrator process running"; exit 0; fi
 echo "stopping PID(s): $*"
@@ -200,6 +206,16 @@ REMOTE
   # 8. Start the user-level service the way the working recipe does.
   run_remote "start the user-level service (setsid nohup, env sourced)" "" <<'REMOTE'
 cd "$HOME/gn-live"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+if systemctl --user is-enabled --quiet game-narrator.service 2>/dev/null; then
+  # Boot-persistent: the user unit (with lingering) restarts it after a
+  # reboot; a setsid process would not.
+  systemctl --user start game-narrator.service
+  sleep 1
+  echo "started via systemctl --user (pid $(pgrep -x -u "$(id -u)" game-narrator | tr '\n' ' '))"
+  exit 0
+fi
+echo "note: no user unit installed — starting with setsid; it will NOT survive a reboot (install packaging/systemd/user/game-narrator.service, docs/manuals/19)"
 set -a
 . ./env
 set +a

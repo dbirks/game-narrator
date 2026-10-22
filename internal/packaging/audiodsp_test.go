@@ -147,13 +147,18 @@ func fakeAudioDSPHost(t *testing.T, unoQ bool, cardPresent bool, withADSP bool, 
 }
 
 // runAudioDSPHelper runs the real helper script against the fake tree.
-func runAudioDSPHelper(t *testing.T, root, waitSecs string) (code int, out string) {
+func runAudioDSPHelper(t *testing.T, root, waitSecs string, sigWaitOpt ...string) (code int, out string) {
 	t.Helper()
+	sigWait := "0" // the default tests check the signature once, immediately
+	if len(sigWaitOpt) > 0 {
+		sigWait = sigWaitOpt[0]
+	}
 	cmd := exec.Command("sh", audioDSPScript(t))
 	cmd.Env = append(os.Environ(),
 		"GN_AUDIO_PROC_ROOT="+filepath.Join(root, "proc"),
 		"GN_AUDIO_SYS_ROOT="+filepath.Join(root, "sys"),
 		"GN_AUDIO_SETTLE_SECS=0",
+		"GN_AUDIO_SIGNATURE_WAIT_SECS="+sigWait,
 		"GN_AUDIO_WAIT_SECS="+waitSecs,
 		"GN_AUDIO_POLL_SECS=1",
 		"GN_AUDIO_DMESG_FILE="+filepath.Join(root, "dmesg"),
@@ -305,5 +310,42 @@ func TestHelperSucceedsWhenTheCardAppears(t *testing.T) {
 	}
 	if !strings.Contains(out, "success") {
 		t.Fatalf("missing the success log:\n%s", out)
+	}
+}
+
+// TestHelperWaitsForALateSignature is the 2026-10-22 cold boot: the kernel
+// logs the deferred-probe signature only ~40 s after boot, after the settle.
+// The helper polls dmesg while the card is absent, sees the signature land,
+// restarts the ADSP and succeeds when the card appears.
+func TestHelperWaitsForALateSignature(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh simulation")
+	}
+	root, cardsPath := fakeAudioDSPHost(t, true, false, true, false) // ADSP present, signature not yet logged
+	dmesgPath := filepath.Join(root, "dmesg")
+	if err := os.Chmod(dmesgPath, 0o644); err != nil { // the fixture writes it read-only
+		t.Fatal(err)
+	}
+	errCh := make(chan error, 2)
+	go func() {
+		time.Sleep(1200 * time.Millisecond)
+		f, err := os.OpenFile(dmesgPath, os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		_, err = f.WriteString("[   42.015395] platform a7c0000.pinctrl: deferred probe pending: qcom-sm6115-lpass-lpi-pinctrl: Failed to get clk 'audio'\n")
+		f.Close()
+		errCh <- err
+	}()
+	go func() { errCh <- sleepAndWrite(3200*time.Millisecond, cardsPath) }()
+	code, out := runAudioDSPHelper(t, root, "4", "5")
+	for i := 0; i < 2; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("fixture write: %v", err)
+		}
+	}
+	if code != 0 || !strings.Contains(out, "deferred-probe signature present") || !strings.Contains(out, "success") {
+		t.Fatalf("exit = %d, want a recovery after the late signature:\n%s", code, out)
 	}
 }

@@ -29,6 +29,9 @@
 #                           declaring it missing)
 #   GN_AUDIO_WAIT_SECS      (default 20 — bounded wait for the card after
 #                           the restart)
+#   GN_AUDIO_SIGNATURE_WAIT_SECS (default 60 — how long to wait, with the
+#                           card absent, for the kernel's deferred-probe
+#                           signature, which it logs ~40 s after boot)
 #   GN_AUDIO_POLL_SECS      (default 1)
 #   GN_AUDIO_DMESG_FILE     (default: run `dmesg`)
 #
@@ -43,6 +46,7 @@ PROC_ROOT=${GN_AUDIO_PROC_ROOT:-/proc}
 SYS_ROOT=${GN_AUDIO_SYS_ROOT:-/sys}
 SETTLE_SECS=${GN_AUDIO_SETTLE_SECS:-10}
 WAIT_SECS=${GN_AUDIO_WAIT_SECS:-20}
+SIG_WAIT_SECS=${GN_AUDIO_SIGNATURE_WAIT_SECS:-60}
 POLL_SECS=${GN_AUDIO_POLL_SECS:-1}
 DMESG_FILE=${GN_AUDIO_DMESG_FILE:-}
 CARD=ArduinoImolaHPH
@@ -54,6 +58,7 @@ log() { printf 'audiodsp-recover: %s\n' "$*"; }
 # degrade to the defaults, never feed `sleep` garbage).
 case $SETTLE_SECS in ''|*[!0-9]*) SETTLE_SECS=10 ;; esac
 case $WAIT_SECS in ''|*[!0-9]*) WAIT_SECS=20 ;; esac
+case $SIG_WAIT_SECS in ''|*[!0-9]*) SIG_WAIT_SECS=60 ;; esac
 case $POLL_SECS in ''|*[!0-9]*) POLL_SECS=1 ;; esac
 [ "$POLL_SECS" -gt 0 ] || POLL_SECS=1
 
@@ -88,18 +93,35 @@ fi
 log "$CARD card NOT present in $PROC_ROOT/asound/cards"
 
 # --- 3. the deferred-probe signature? ------------------------------------------
-if [ -n "$DMESG_FILE" ]; then
-    dmesg_out=$(cat "$DMESG_FILE" 2>/dev/null || true)
-else
-    dmesg_out=$(dmesg 2>/dev/null || true)
-fi
-case $dmesg_out in
-*"$SIGNATURE"*) ;;
-*)
-    log "card absent but no deferred-probe signature ($SIGNATURE) in dmesg — a different fault; not acting"
-    exit 0
-    ;;
-esac
+# The kernel logs "deferred probe pending: … Failed to get clk 'audio'" only
+# when its deferred-probe timeout fires — ~40 s after boot, well after the
+# settle (2026-10-22 cold boot: checked at ~20 s, signature at 42 s, so the
+# unit gave up on a recoverable boot). Poll dmesg for up to SIG_WAIT_SECS
+# while the card stays absent; a card that appears meanwhile is a slow
+# healthy boot.
+dmesg_text() {
+    if [ -n "$DMESG_FILE" ]; then
+        cat "$DMESG_FILE" 2>/dev/null || true
+    else
+        dmesg 2>/dev/null || true
+    fi
+}
+sig_remaining=$SIG_WAIT_SECS
+while :; do
+    case $(dmesg_text) in
+    *"$SIGNATURE"*) break ;;
+    esac
+    if card_present; then
+        log "$CARD card appeared while waiting for the deferred-probe signature — slow healthy boot, no action"
+        exit 0
+    fi
+    if [ "$sig_remaining" -le 0 ]; then
+        log "card absent but no deferred-probe signature ($SIGNATURE) in dmesg after ${SIG_WAIT_SECS}s — a different fault; not acting"
+        exit 0
+    fi
+    sleep "$POLL_SECS"
+    sig_remaining=$((sig_remaining - POLL_SECS))
+done
 log "deferred-probe signature present in dmesg (the ADSP's APR services never registered)"
 
 # --- 4. find the ADSP remoteproc -----------------------------------------------

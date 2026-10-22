@@ -204,3 +204,11 @@ No data migration.
 - `skills/uno-q-setup/references/audio.md` (board audio facts),
   docs/manuals/19 (install + troubleshooting), docs/manuals/18 (first-boot
   preflight).
+
+## Amendment (2026-10-22): wait for the late deferred-probe signature
+
+On the 2026-10-22 cold boot the card was absent, but the helper exited "no signature, not acting". The kernel logs the deferred-probe line (`Failed to get clk 'audio'`) only when its deferred-probe timeout fires, about 42 s after boot. The helper had checked at about 20 s (unit start plus the 10 s settle).
+
+The helper now polls dmesg while the card is absent, for up to `GN_AUDIO_SIGNATURE_WAIT_SECS` (default 60), then restarts the ADSP once. A card that appears during the wait is treated as a slow healthy boot.
+
+Validation: `TestHelperWaitsForALateSignature` (the signature lands 1.2 s in and recovery succeeds). The existing tests keep immediate checks. The by-hand restart on the board brought the card back at once.

@@ -99,3 +99,7 @@ Constraints: the board is a Debian arm64 appliance with passwordless sudo and ke
 - docs/manuals/19-install-on-uno-q.md — "One install only (systemd unit vs user-level run)" and "Deploying a dev build".
 - ADR-0126 — the sibling warning (stale default data dir) for the "two installs, wrong data dir" half of the incident.
 - docs/spec/13 — the diagnostic state vocabulary this row uses (OK / DEGRADED / BLOCKED / NOT CONFIGURED / FAIL).
+
+## Amendment (2026-10-22): the user-level install starts at boot
+
+A board power-cycle left nothing narrating, because the user-level install was a `setsid` process. `packaging/systemd/user/game-narrator.service` runs it in the user's systemd instance: it shares the PipeWire session the hub-HDMI sink lives in, starts at boot with lingering, and restarts on failure. That covers a tailnet listen address that is not up yet. `deploy.sh --user` stops and starts through the unit when it is enabled. Without the unit it falls back to `setsid` and says the process will not survive a reboot. Manual 19 has a "Starting at boot" section. Verified on the board: the unit is enabled with `Linger=yes`, the narrator runs under it, and a live session started on it.

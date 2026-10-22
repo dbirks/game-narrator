@@ -576,6 +576,28 @@ yours to decide (docs/release.md §5). If you used Step 2's bind mount,
 disable and unmount it afterwards (`sudo systemctl disable --now
 gn-data.mount`).
 
+## Starting at boot (user-level install)
+
+A hand-started `setsid` narrator does not survive a reboot. On 2026-10-22 the board power-cycled, and nothing was narrating until it was started by hand. For the `~/gn-live` user-level install, install the user unit once:
+
+```sh
+loginctl enable-linger "$USER"            # start the user's systemd at boot, without a login
+mkdir -p ~/.config/systemd/user
+install -m 0644 packaging/systemd/user/game-narrator.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now game-narrator.service
+```
+
+The unit runs in the same user session as PipeWire, so the hub-HDMI sink stays reachable. It retries every 5 s while a tailnet listen address is still coming up at boot. `scripts/board/deploy.sh --user` stops and starts through it whenever it is enabled. A live capture session still has to be started after a reboot, from Play or with `POST /api/v1/sessions`.
+
+**Cold boot without sound.** The `ArduinoImolaHPH` card is missing (#24) when the kernel logs `Failed to get clk 'audio'` about 40 s after boot. The recovery unit now waits up to 60 s for that line (ADR 0118 amendment) and restarts the ADSP. To recover by hand:
+
+```sh
+echo stop | sudo tee /sys/class/remoteproc/remoteproc1/state
+echo start | sudo tee /sys/class/remoteproc/remoteproc1/state
+systemctl --user restart pipewire wireplumber
+```
+
 ## One install only (systemd unit vs user-level run)
 
 A board can carry **two** game-narrator installs at once, and both layouts
