@@ -408,3 +408,44 @@ func TestKindVoiceKeyWithoutRosterCharacter(t *testing.T) {
 		t.Fatalf("an unvoiced kind resolved to %q/%q, want the narrator fallback", character, route)
 	}
 }
+
+// TestReachableKeysCoverSharedSlotVoices (ADR-0159 with ADR-0156/0158): the
+// prune's reachable set keeps every key the live path can produce for a
+// shared-slot line — the narrator's, the linked character's and each approved
+// kind voice's — and exactly one key for a single-speaker line.
+func TestReachableKeysCoverSharedSlotVoices(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, store.DBPath(t.TempDir()))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	a, err := assets.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatalf("assets: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	_ = seedFallbackVoice(t, st, a, narratorCharacter)
+	_ = seedFallbackVoice(t, st, a, "character-sister")
+	_ = seedFallbackVoice(t, st, a, "kind:boy")
+	svc := &voices.Service{Store: st, Assets: a, InstanceID: "primary", BaseModelID: "fake-base", BackendDigest: "test-backend-v1"}
+	speakers := map[string]string{"msg-shared": "character-sister", "msg-single": "character-sister"}
+	slots := map[string]bool{"msg-shared": true}
+
+	shared, err := reachableKey(ctx, st, a, svc, "msg-shared", "msg-shared", "A line on a shared slot.", speakers, slots, nil, true)
+	if err != nil {
+		t.Fatalf("reachableKey: %v", err)
+	}
+	if len(shared) != 3 {
+		t.Fatalf("shared-slot keys = %d, want 3 (narrator, linked character, kind:boy)", len(shared))
+	}
+	single, err := reachableKey(ctx, st, a, svc, "msg-single", "msg-single", "A line with one speaker.", speakers, slots, nil, true)
+	if err != nil {
+		t.Fatalf("reachableKey: %v", err)
+	}
+	if len(single) != 1 {
+		t.Fatalf("single-speaker keys = %d, want 1", len(single))
+	}
+}

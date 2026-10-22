@@ -2778,35 +2778,7 @@ func (w *speechWiring) finishLineTerminal(l speech.CatchUpLine, result, reason s
 // id is not in the speaker table, and the speaker is the decision's input,
 // not a lookup).
 func (w *speechWiring) resolveVoiceForCharacter(ctx context.Context, character string) (resolvedVoice, string) {
-	if rv, why := w.approvedVoice(ctx, character); rv.profile.ID != "" || why != "" {
-		return rv, why
-	}
-	if character == narratorCharacter {
-		// The narrator's own line has no fallback question to ask: the
-		// speaker and the fallback are the same voice.
-		return resolvedVoice{}, "no_approved_voice"
-	}
-	if w.narratorFallback {
-		if rv, why := w.approvedVoice(ctx, narratorCharacter); rv.profile.ID != "" || why != "" {
-			return rv, why
-		}
-		return resolvedVoice{}, "no_approved_voice"
-	}
-	nr, nwhy := w.approvedVoice(ctx, narratorCharacter)
-	switch {
-	case nr.profile.ID != "":
-		// The narrator could have spoken; the profile opted out. The skip is
-		// the setting's, not the voice roster's.
-		return resolvedVoice{}, "narrator_fallback_disabled"
-	case nwhy != "":
-		// The narrator's approved reference is broken: a specific fault is
-		// reported on its own terms, not folded into the setting's reason.
-		return resolvedVoice{}, nwhy
-	default:
-		// Even the narrator has no approved voice: the roster is what kept
-		// the line silent, on or off the setting.
-		return resolvedVoice{}, "no_approved_voice"
-	}
+	return resolveLineVoice(ctx, w.voices, w.assets, character, w.speakerAliasByID, w.narratorFallback)
 }
 
 // resolveVoice finds the speaker character's approved voice and its TTS
@@ -3079,16 +3051,7 @@ func (w *speechWiring) prewarmWorker(batch context.Context, messageID string) {
 // identity, so a later box of the same script message is a different utterance
 // under its own key, not a duplicate of the message's first box.
 func (w *speechWiring) lineCacheKey(rv resolvedVoice, messageID, text string) (speech.CacheKey, error) {
-	return speech.CacheKeyOf(speech.KeyInput{
-		UtteranceText:            text,
-		OriginalMessageID:        messageID,
-		SpeechRulesRevision:      1,
-		Language:                 rv.profile.Language,
-		VoiceRevisionFingerprint: rv.profile.Fingerprint,
-		TTSModelID:               rv.profile.ModelID,
-		BackendConfigDigest:      w.voices.BackendDigest,
-		Format:                   "wav/pcm16",
-	})
+	return lineKey(w.voices.BackendDigest, rv.profile.Language, rv.profile.Fingerprint, rv.profile.ModelID, messageID, text)
 }
 
 // prewarmKeyConsumed records that a committed line resolved one of this
@@ -3298,17 +3261,25 @@ func (w *speechWiring) addKindVoiceKeys(ctx context.Context) {
 // a specific fault (the approved reference is unreadable, the name could
 // not be derived).
 func (w *speechWiring) approvedVoice(ctx context.Context, character string) (resolvedVoice, string) {
-	if rv, why := w.approvedVoiceForKey(ctx, character); rv.profile.ID != "" || why != "" {
-		return rv, why
-	}
-	if alias := w.speakerAliasByID[character]; alias != "" && alias != character {
-		return w.approvedVoiceForKey(ctx, alias)
-	}
-	return resolvedVoice{}, ""
+	return approvedVoice(ctx, w.voices, w.assets, character, w.speakerAliasByID)
 }
 
 func (w *speechWiring) approvedVoiceForKey(ctx context.Context, character string) (resolvedVoice, string) {
-	profiles, err := w.voices.Store.ListVoiceProfiles(ctx, character)
+	return approvedVoiceForKey(ctx, w.voices, w.assets, character)
+}
+
+// loadReference reads one approved reference clip from the asset store.
+func (w *speechWiring) loadReference(ctx context.Context, assetID string) ([]byte, error) {
+	return readReference(ctx, w.assets, assetID)
+}
+
+// approvedVoiceForKey resolves one character's current approved voice: the
+// highest approved revision carrying a fingerprint and a reference (internal/
+// voices' approval invariants). The second return is "" only when the character
+// has no approved voice at all; any non-empty value is a specific fault (the
+// approved reference is unreadable, the name could not be derived).
+func approvedVoiceForKey(ctx context.Context, voiceSvc *voices.Service, assets assets.Store, character string) (resolvedVoice, string) {
+	profiles, err := voiceSvc.Store.ListVoiceProfiles(ctx, character)
 	if err != nil {
 		// The store is the appliance's own database: a read failure is a
 		// fault to surface, not a silent "no voice".
@@ -3318,7 +3289,7 @@ func (w *speechWiring) approvedVoiceForKey(ctx context.Context, character string
 		if p.State != store.VoiceStateApproved || p.Fingerprint == "" || p.ReferenceAssetID == "" {
 			continue
 		}
-		reg, regErr := w.voices.Store.GetVoiceRegistration(ctx, p.ID, w.voices.InstanceID)
+		reg, regErr := voiceSvc.Store.GetVoiceRegistration(ctx, p.ID, voiceSvc.InstanceID)
 		if regErr == nil && reg.State == store.VoiceRegReady && reg.RegisteredName != "" {
 			// Ready on this instance: the Base checkpoint speaks the
 			// registered name.
@@ -3326,12 +3297,12 @@ func (w *speechWiring) approvedVoiceForKey(ctx context.Context, character string
 				profile: p,
 				name:    reg.RegisteredName,
 				ready:   true,
-				client:  w.voices.Base,
+				client:  voiceSvc.Base,
 			}, ""
 		}
 		// Not ready (or no row): the call carries the approved reference
 		// inline, speaking the revision's registry name.
-		ref, err := w.loadReference(ctx, p.ReferenceAssetID)
+		ref, err := readReference(ctx, assets, p.ReferenceAssetID)
 		if err != nil {
 			return resolvedVoice{}, "voice_reference_missing"
 		}
@@ -3351,21 +3322,94 @@ func (w *speechWiring) approvedVoiceForKey(ctx context.Context, character string
 			ready:   false,
 			refWAV:  ref,
 			refText: p.RefTranscript,
-			client:  w.voices.Base,
+			client:  voiceSvc.Base,
 		}, ""
 	}
 	return resolvedVoice{}, ""
 }
 
-// loadReference reads one approved reference clip from the asset store.
-func (w *speechWiring) loadReference(ctx context.Context, assetID string) ([]byte, error) {
-	r, _, err := w.assets.Get(ctx, assetID)
+// approvedVoice resolves one character's current approved voice through the
+// roster's speaker-link aliases (ADR-0070/ADR-0101): the character itself
+// first, then the display name it answers to (the Cast UI / auto-cast names,
+// ADR-0109/ADR-0135, and the imported ids, ADR-0101). The second return is "" only
+// when the character has no approved voice at all; any non-empty value is a
+// specific fault.
+func approvedVoice(ctx context.Context, voiceSvc *voices.Service, assets assets.Store, character string, aliasByID map[string]string) (resolvedVoice, string) {
+	if rv, why := approvedVoiceForKey(ctx, voiceSvc, assets, character); rv.profile.ID != "" || why != "" {
+		return rv, why
+	}
+	if alias := aliasByID[character]; alias != "" && alias != character {
+		return approvedVoiceForKey(ctx, voiceSvc, assets, alias)
+	}
+	return resolvedVoice{}, ""
+}
+
+// resolveLineVoice resolves the voice one utterance speaks under: the
+// approved voice of the speaker character, else the narrator voice when the
+// profile's narrator fallback is on (ADR-0101) and the character has none —
+// never a different character's voice, never a builtin. The second return is
+// the skip reason ("" when the line resolves, else what kept it silent:
+// narrator_fallback_disabled, no_approved_voice).
+func resolveLineVoice(ctx context.Context, voiceSvc *voices.Service, assets assets.Store, character string, aliasByID map[string]string, narratorFallback bool) (resolvedVoice, string) {
+	if rv, why := approvedVoice(ctx, voiceSvc, assets, character, aliasByID); rv.profile.ID != "" || why != "" {
+		return rv, why
+	}
+	if character == narratorCharacter {
+		// The narrator's own line has no fallback question to ask: the
+		// speaker and the fallback are the same voice.
+		return resolvedVoice{}, "no_approved_voice"
+	}
+	if narratorFallback {
+		if rv, why := approvedVoice(ctx, voiceSvc, assets, narratorCharacter, aliasByID); rv.profile.ID != "" || why != "" {
+			return rv, why
+		}
+		return resolvedVoice{}, "no_approved_voice"
+	}
+	nr, nwhy := approvedVoice(ctx, voiceSvc, assets, narratorCharacter, aliasByID)
+	switch {
+	case nr.profile.ID != "":
+		// The narrator could have spoken; the profile opted out. The skip is
+		// the setting's, not the voice roster's.
+		return resolvedVoice{}, "narrator_fallback_disabled"
+	case nwhy != "":
+		// The narrator's approved reference is broken: a specific fault is
+		// reported on its own terms, not folded into the setting's reason.
+		return resolvedVoice{}, nwhy
+	default:
+		// Even the narrator has no approved voice: the roster is what kept
+		// the line silent, on or off the setting.
+		return resolvedVoice{}, "no_approved_voice"
+	}
+}
+
+// readReference reads one approved reference clip from the asset store.
+func readReference(ctx context.Context, assets assets.Store, assetID string) ([]byte, error) {
+	r, _, err := assets.Get(ctx, assetID)
 	if err != nil {
 		return nil, err
 	}
 	defer r.Close()
 	out, err := io.ReadAll(r)
 	return out, err
+}
+
+// lineKey computes one utterance's TTS cache key under a resolved voice: the
+// identity the live commit, the successor prewarm and the profile
+// pre-synthesis all compute, so cached audio is found by whichever path
+// speaks it (ADR-0153 "One key identity"; ADR-0155's page-scoped form; ADR-0156's
+// slot-adjusted voice). The voice resolution itself lives with the caller; this
+// is the one place the key materialization happens.
+func lineKey(backendDigest, language, voiceFingerprint, modelID, messageID, text string) (speech.CacheKey, error) {
+	return speech.CacheKeyOf(speech.KeyInput{
+		UtteranceText:            text,
+		OriginalMessageID:        messageID,
+		SpeechRulesRevision:      1,
+		Language:                 language,
+		VoiceRevisionFingerprint: voiceFingerprint,
+		TTSModelID:               modelID,
+		BackendConfigDigest:      backendDigest,
+		Format:                   "wav/pcm16",
+	})
 }
 
 // resolvedVoice is one speaker's resolved TTS identity.

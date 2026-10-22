@@ -28,7 +28,7 @@ JSON structured logs. Default do not log full screenshots, source dialogue or wa
 | Voice missing on replica | Reconcile or switch to known ready backend, never wrong voice | Test gateway routes |
 | ASR down | Mark new clips unverified according to policy, queue QA later | Repair ASR |
 | Asset store offline | Local cache used; new approved assets queued only if safe/durable | Reconnect storage |
-| Disk full | Do not corrupt source DB; refuse new assets, evict safe transient cache | Expand/clean storage |
+| Disk full | Do not corrupt source DB; refuse new assets, evict safe transient cache; prune the entries no current published revision can hit | Expand/clean storage (or run the speech-cache prune) |
 | Power outage | Recover transactions and jobs, stop orphan speech | Check doctor and backup |
 | UI disconnected | Session continues headlessly, events buffered with limit | Reconnect |
 | Agent source prompt injection | Reject instruction as untrusted data, log security event | Review import/source |

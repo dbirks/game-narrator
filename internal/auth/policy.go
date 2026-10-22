@@ -265,6 +265,11 @@ func DefaultPolicy() *Policy {
 		// the wildcard so first-match keeps the boundary in the table, not in
 		// the handler.
 		Grant{Method: http.MethodPost, Pattern: "/api/v1/profiles/{id}/purge", Access: Require(RoleAdmin)},
+		// The speech-cache prune (ADR-0159, issue #49): removes the transient
+		// cache entries no current published profile revision can hit. It is a
+		// content-tier maintenance verb like pre-synthesis, so curator — the
+		// role that published the revision the dead entries belonged to.
+		Grant{Method: http.MethodPost, Pattern: "/api/v1/speech/cache/prune", Access: Require(RoleCurator)},
 		Grant{Method: "", Pattern: "/api/v1/games/{rest...}", Access: Require(RoleCurator)},
 		Grant{Method: "", Pattern: "/api/v1/editions/{rest...}", Access: Require(RoleCurator)},
 		Grant{Method: "", Pattern: "/api/v1/profiles/{rest...}", Access: Require(RoleCurator)},

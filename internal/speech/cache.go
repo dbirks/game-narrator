@@ -523,14 +523,19 @@ func (c *Cache) EvictTransient(ctx context.Context, maxEntries int) (evicted int
 		return 0, 0, err
 	}
 
-	// Snapshot the eviction set under the LRU lock, ordered least-recently
-	// used first. Ties (entries loaded in the same instant) break on the key
-	// so the order is deterministic across runs — eviction order is evidence,
-	// and nondeterministic evidence is hard to audit.
-	type victim struct {
-		key  CacheKey
-		time time.Time
-	}
+	victims := c.snapshotVictims(maxEntries)
+
+	return c.evictVictims(ctx, victims, nil, false)
+}
+
+// snapshotVictims copies the cache's own entries into the ordered victim
+// list an eviction pass walks: least-recently-used first, ties (entries
+// loaded in the same instant) breaking on the key so the order is
+// deterministic across runs — eviction order is evidence, and
+// nondeterministic evidence is hard to audit. maxEntries <= 0 takes the whole
+// set; a positive cap keeps only the maxEntries least-recently-used, which is
+// EvictTransient's quota.
+func (c *Cache) snapshotVictims(maxEntries int) []victim {
 	c.lruMu.Lock()
 	victims := make([]victim, 0, len(c.lru))
 	for k, st := range c.lru {
@@ -546,7 +551,37 @@ func (c *Cache) EvictTransient(ctx context.Context, maxEntries int) (evicted int
 	if maxEntries > 0 && len(victims) > maxEntries {
 		victims = victims[:maxEntries]
 	}
+	return victims
+}
 
+// victim is one cache entry an eviction pass considers, carrying the LRU
+// evidence the ordering reads (accessed time; ties break on the key).
+type victim struct {
+	key  CacheKey
+	time time.Time
+}
+
+// evictVictims runs one eviction pass over an ordered victim list (the LRU
+// snapshot, least-recently-used first). Victims whose key the keep predicate
+// does not accept are evicted: the index entry goes first, then the blob
+// behind it is deleted only when the reference check proves it unshared
+// (ADR-0041 "Reference check before delete") — a shared blob (an approved
+// voice reference, an audition clip, a character portrait or an imported
+// source) keeps its bytes while its entry is dropped, and a checker error or
+// an absent checker keeps the blob and counts the refusal
+// (Stats().RefusedDeletes).
+//
+// The documented quota is the caller's: the runtime (or operator) decides how
+// many entries to release when a write fails with a capacity error; this
+// method is the mechanism, not the policy. Note the consequence for disk-full
+// recovery: on a store whose blobs are all shared with the catalogue,
+// eviction frees index memory but little disk — that is the safe answer.
+//
+// dryRun reports the would-be prune — the entries that would go and the bytes
+// that would free — without mutating anything: no index drop, no blob delete, no
+// LRU move. keep == nil accepts every victim (the EvictTransient shape); a
+// non-nil keep accepts only the keys it names (the PruneUnreachable shape).
+func (c *Cache) evictVictims(ctx context.Context, victims []victim, keep func(CacheKey) bool, dryRun bool) (entries int, bytes int64, err error) {
 	var checkerWarned sync.Once // one log line per call, not per entry
 	for _, v := range victims {
 		e, ok := c.Index.Lookup(v.key)
@@ -554,17 +589,26 @@ func (c *Cache) EvictTransient(ctx context.Context, maxEntries int) (evicted int
 			c.dropLRU(v.key)
 			continue // already evicted (by this process or a persistent index GC)
 		}
+		if keep != nil && keep(v.key) {
+			continue // reachable: the entry stays
+		}
 		size := c.lruSize(v.key)
 		if size <= 0 {
 			if si, serr := c.Assets.Stat(ctx, e.SHA256); serr == nil {
 				size = si.Size
 			}
 		}
+		if dryRun {
+			// The would-be prune: count and report, touch nothing.
+			entries++
+			bytes += size
+			continue
+		}
 		c.dropLRU(v.key)
 		if err := c.Index.Delete(v.key); err != nil {
-			return evicted, freed, fmt.Errorf("speech: evict %s: %w", v.key, err)
+			return entries, bytes, fmt.Errorf("speech: evict %s: %w", v.key, err)
 		}
-		evicted++
+		entries++
 
 		// Reference check before delete (ADR-0041). The hash is the exact
 		// address of the evicted entry's blob, and Delete removes exactly that
@@ -588,13 +632,13 @@ func (c *Cache) EvictTransient(ctx context.Context, maxEntries int) (evicted int
 			default:
 				if derr := c.Assets.Delete(ctx, e.SHA256); derr != nil {
 					if !errors.Is(derr, assets.ErrNotFound) {
-						return evicted, freed, fmt.Errorf("speech: evict %s (blob %s…): %w", v.key, e.SHA256[:12], derr)
+						return entries, bytes, fmt.Errorf("speech: evict %s (blob %s…): %w", v.key, e.SHA256[:12], derr)
 					}
 					// The blob is already gone: the entry is still evicted,
 					// there is simply nothing to free.
 					continue
 				}
-				freed += size
+				bytes += size
 			}
 		default:
 			// No checker configured: the cache cannot prove the blob unshared,
@@ -606,7 +650,42 @@ func (c *Cache) EvictTransient(ctx context.Context, maxEntries int) (evicted int
 			})
 		}
 	}
-	return evicted, freed, nil
+	return entries, bytes, nil
+}
+
+// PruneUnreachable removes the cache's transient entries that the caller
+// considers unreachable: the caller owns the reachable-key set — for every
+// published profile's current revision, the cache keys the live path can
+// produce — and answers per key with a keep predicate, so an entry nobody can
+// hit any more (a superseded profile revision's key, a changed voice or
+// backend identity) is the prune's victim. The entries go through the same
+// reference-checked deletion EvictTransient runs (ADR-0041): the index entry
+// is dropped first, and the blob behind it is deleted only when the checker
+// proves it unshared — a blob still named by the catalogue (an approved voice
+// reference, an audition clip, a character portrait or an imported source)
+// keeps its bytes while its entry is dropped, and a checker error or an
+// absent checker keeps the blob and counts the refusal
+// (Stats().RefusedDeletes).
+//
+// This is the "prune dead cache" half of docs/spec/13's Disk-full row, beside
+// the LRU pass: EvictTransient answers "free N entries now" under a recency
+// policy; PruneUnreachable answers "free what nothing can hit anymore" under a
+// reachability policy. The two share the victim pass; the difference is which
+// keys are evictable (all of the LRU pass's, or only the unreachable ones).
+//
+// dryRun reports the would-be prune — the entries that would go and the bytes
+// that would free — without mutating anything. An entry the keep predicate
+// accepts is not counted at all: it stays, and its bytes are not reported.
+//
+// The method returns the entries it removed and the bytes it actually freed
+// (a shared blob's bytes are not freed: the entry is dropped, the refusal is
+// the decision, and Stats().RefusedDeletes says so).
+func (c *Cache) PruneUnreachable(ctx context.Context, keep func(CacheKey) bool, dryRun bool) (entries int, bytes int64, err error) {
+	if err := c.ensureLoaded(ctx); err != nil {
+		return 0, 0, err
+	}
+	victims := c.snapshotVictims(0)
+	return c.evictVictims(ctx, victims, keep, dryRun)
 }
 
 // dropLRU removes one key's LRU state (evicted or gone from the index).

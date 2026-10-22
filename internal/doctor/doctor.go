@@ -359,6 +359,10 @@ func Run(ctx context.Context, o Options) Report {
 
 	r.add(ctx, "storage.data_dir", r.opts.Timeout, func(ctx context.Context) Check { return r.checkDataDir(ctx) })
 	r.add(ctx, "storage.database", r.opts.Timeout, func(ctx context.Context) Check { return r.checkDatabase(ctx) })
+	// The speech-cache disk row (ADR-0159, issue #49): the free space on the
+	// data partition and the unreachable share the prune would take — the two
+	// numbers that decide whether the operator's `cache prune` has room to run.
+	r.add(ctx, "speech.cache_disk", r.opts.Timeout, func(ctx context.Context) Check { return r.checkSpeechCacheDisk(ctx) })
 	// The listen-address row (ADR-0150): the two-install port collision is
 	// the deploy incident this check names before the crash loop starts.
 	r.add(ctx, "network.listen", r.opts.Timeout, func(ctx context.Context) Check { return r.checkListen(ctx) })

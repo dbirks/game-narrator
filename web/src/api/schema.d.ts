@@ -2519,6 +2519,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/speech/cache/prune": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Queue a background prune of the speech cache's unreachable entries (curator).
+     * @description ADR-0159. Queues a speech.cache_prune job that removes the transient cache entries no current published profile revision can hit, computing the reachable key set (one per display page x resolved voice, the keys the live paths can produce) and evicting the rest through the cache's reference-checked deletion. Reports the entries and bytes freed. Live sessions pause the job queue. Audited as catalog.speech.cache.prune.
+     */
+    post: operations["speechCachePrune"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/profiles/{id}/purge": {
     parameters: {
       query?: never;
@@ -2633,6 +2653,17 @@ export interface components {
       job_id: string;
       job_kind: string;
       profile_id: string;
+      state: string;
+      detail: string;
+    };
+    SpeechCachePruneRequest: {
+      /** @description Report the would-be prune (entries and bytes) without deleting anything; default false prunes. */
+      dry_run?: boolean;
+    };
+    SpeechCachePruneAccepted: {
+      job_id: string;
+      job_kind: string;
+      dry_run: boolean;
       state: string;
       detail: string;
     };
@@ -9783,6 +9814,32 @@ export interface operations {
       400: components["responses"]["Problem"];
       404: components["responses"]["Problem"];
       409: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  speechCachePrune: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["SpeechCachePruneRequest"];
+      };
+    };
+    responses: {
+      /** @description The job was queued; follow /api/v1/jobs/{job_id}. */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SpeechCachePruneAccepted"];
+        };
+      };
+      400: components["responses"]["Problem"];
       default: components["responses"]["Problem"];
     };
   };

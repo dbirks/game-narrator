@@ -16,11 +16,13 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/dbirks/game-narrator/internal/assets"
 	"github.com/dbirks/game-narrator/internal/games"
 	"github.com/dbirks/game-narrator/internal/games/textnorm"
 	"github.com/dbirks/game-narrator/internal/providers/tts"
 	"github.com/dbirks/game-narrator/internal/speech"
 	"github.com/dbirks/game-narrator/internal/store"
+	"github.com/dbirks/game-narrator/internal/voices"
 )
 
 // canonicalSpeechText is the text a matched commit speaks for one message:
@@ -400,6 +402,206 @@ func (m *Manager) PresynthesizeProfile(ctx context.Context, profileID string, op
 		return p, stopErr
 	}
 	return p, ctx.Err()
+}
+
+// SpeechReachableKeys returns the cache keys the live speech path can produce
+// for one published profile's current content: one per display page under the
+// page's resolved voice (ADR-0155), the approved voice of the speaker's
+// character else the narrator voice when the profile's narrator fallback is
+// on (ADR-0101), computed under the same key identity the live commit, the
+// successor prewarm and the pre-synthesis all use (ADR-0153/0156) — so a key
+// the prune may keep is a key the next play of that profile can hit (ADR-0159,
+// issue #49).
+func (m *Manager) SpeechReachableKeys(ctx context.Context, profileID string) ([]speech.CacheKey, error) {
+	if m.opts.Speech == nil || m.opts.Speech.Voices == nil {
+		return nil, errors.New("speech cache prune: no speech pipeline is configured")
+	}
+	return speechReachableKeys(ctx, m.opts.Store, m.opts.Speech.Assets, m.opts.Speech.Voices, profileID)
+}
+
+// PruneSpeechCache removes the speech cache's transient entries that no
+// current published profile revision can hit (ADR-0159, issue #49): the
+// reachable key set is computed over every edition's currently published
+// revision, and the cache's own entries outside that set are evicted through
+// the reference-checked deletion (ADR-0041) — a blob still named by the
+// catalogue (an approved voice reference, an audition clip, a character
+// portrait or an imported source) keeps its bytes while its entry is
+// dropped, and a cache with no reference checker evicts index entries only,
+// safely.
+//
+// It returns the entries pruned and the bytes actually freed; with dryRun it
+// reports the would-be prune without touching anything.
+func PruneSpeechCache(ctx context.Context, st *store.Store, assets assets.Store, voiceSvc *voices.Service, cache *speech.Cache, dryRun bool) (int, int64, error) {
+	if st == nil || cache == nil {
+		return 0, 0, errors.New("speech cache prune: no store or cache to prune against")
+	}
+	if voiceSvc == nil {
+		return 0, 0, errors.New("speech cache prune: no speech pipeline is configured")
+	}
+	reachable := map[string]bool{}
+	published, err := publishedProfiles(ctx, st)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, prof := range published {
+		keys, err := speechReachableKeys(ctx, st, assets, voiceSvc, prof.ID)
+		if err != nil {
+			return 0, 0, err
+		}
+		for _, k := range keys {
+			reachable[string(k)] = true
+		}
+	}
+	return cache.PruneUnreachable(ctx, func(key speech.CacheKey) bool { return reachable[string(key)] }, dryRun)
+}
+
+// publishedProfiles returns every edition's currently published revision: the
+// profiles a live session could run, which is the keep set of the prune's
+// reachability walk. Editions with nothing published are skipped (the live
+// start refuses them; they hold no cache keys).
+func publishedProfiles(ctx context.Context, st *store.Store) ([]games.Profile, error) {
+	var out []games.Profile
+	cursor := ""
+	for {
+		gamesList, next, err := st.ListGames(ctx, cursor, store.MaxListLimit)
+		if err != nil {
+			return nil, err
+		}
+		for _, g := range gamesList {
+			editions, err := st.ListEditions(ctx, g.ID)
+			if err != nil {
+				return nil, err
+			}
+			for _, e := range editions {
+				p, _, err := st.PublishedProfile(ctx, e.ID)
+				if err != nil {
+					if errors.Is(err, store.ErrNotFound) {
+						continue // nothing published for this edition
+					}
+					return nil, err
+				}
+				out = append(out, p)
+			}
+		}
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	return out, nil
+}
+
+// speechReachableKeys returns the cache keys the live speech path can produce
+// for one profile's current content: one per display page under the page's
+// resolved voice (ADR-0155), the approved voice of the speaker's character else
+// the narrator voice when the profile's narrator fallback is on (ADR-0101), under
+// the same key identity the live commit, the successor prewarm and the
+// pre-synthesis all use (ADR-0153/0156). A line whose speaker resolves to no
+// voice at all produces no key (the live path skips it, and a key the live
+// path can never produce is not a key the cache may keep).
+func speechReachableKeys(ctx context.Context, st *store.Store, assets assets.Store, voiceSvc *voices.Service, profileID string) ([]speech.CacheKey, error) {
+	prof, _, err := st.GetProfile(ctx, profileID)
+	if err != nil {
+		return nil, err
+	}
+	content, err := st.GetProfileContent(ctx, profileID)
+	if err != nil {
+		return nil, err
+	}
+	return reachableKeys(ctx, st, assets, voiceSvc, content, prof.NarratorFallback)
+}
+
+// reachableKeys is speechReachableKeys' body over an already-loaded profile
+// content: the per-page × per-voice walk.
+func reachableKeys(ctx context.Context, st *store.Store, assets assets.Store, voiceSvc *voices.Service, content store.ProfileContent, narratorFallback bool) ([]speech.CacheKey, error) {
+	speakers, aliasByID, texts, pages := profileSpeechMaps(content, speakerLinkResolver(content.Characters))
+	slots := sharedSpeakerSlots(content, speakerLinkResolver(content.Characters))
+	var keys []speech.CacheKey
+	for _, msg := range content.Messages {
+		msgPages := pages[msg.ID]
+		if len(msgPages) > 1 {
+			for i, pageText := range msgPages {
+				lk, err := reachableKey(ctx, st, assets, voiceSvc, msg.ID, pageMessageID(msg.ID, i+1), pageText, speakers, slots, aliasByID, narratorFallback)
+				if err != nil {
+					return nil, err
+				}
+				keys = append(keys, lk...)
+			}
+			continue
+		}
+		if t := texts[msg.ID]; t != "" {
+			lk, err := reachableKey(ctx, st, assets, voiceSvc, msg.ID, msg.ID, t, speakers, slots, aliasByID, narratorFallback)
+			if err != nil {
+				return nil, err
+			}
+			keys = append(keys, lk...)
+		}
+	}
+	return keys, nil
+}
+
+// reachableKey computes one utterance's cache keys under every voice the
+// live path could speak it with: the assigned character for a single-speaker
+// line; for a shared slot the narrator, the linked character and each generic
+// kind voice; none for a line no voice resolves. The utterance's identity is the bare
+// message id for a single-box message, or the page-scoped "<message id>#p<n>"
+// for one display page of a multi-box message — the page is part of the
+// identity, so a later box of the same script message is a different utterance
+// under its own key, not a duplicate of the message's first box (ADR-0155).
+func reachableKey(ctx context.Context, st *store.Store, assets assets.Store, voiceSvc *voices.Service, messageID, id, text string, speakers map[string]string, slots map[string]bool, aliasByID map[string]string, narratorFallback bool) ([]speech.CacheKey, error) {
+	base := messageID
+	if i := strings.LastIndexByte(base, '#'); i >= 0 {
+		base = base[:i]
+	}
+	candidates := []string{narratorCharacter}
+	if s, ok := speakers[base]; ok && s != "" {
+		if slots[base] {
+			// A shared-slot line's voice is decided per occurrence (ADR-0156,
+			// ADR-0158): the narrator, the linked character when Clef names
+			// it, or a generic kind voice. Every one of them is a key the
+			// live path can produce, so none of them is pruned.
+			candidates = append(candidates, s)
+			for _, k := range kindVoiceKinds {
+				candidates = append(candidates, kindSpeakerKeyPrefix+k)
+			}
+		} else {
+			candidates = []string{s}
+		}
+	}
+	var keys []speech.CacheKey
+	seen := map[string]bool{}
+	for _, speaker := range candidates {
+		rv, _ := resolveLineVoice(ctx, voiceSvc, assets, speaker, aliasByID, narratorFallback)
+		if rv.profile.ID == "" || seen[rv.profile.ID] {
+			continue // the live path skips voiceless lines: no key
+		}
+		seen[rv.profile.ID] = true
+		key, err := lineKey(voiceSvc.BackendDigest, rv.profile.Language, rv.profile.Fingerprint, rv.profile.ModelID, id, text)
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, nil
+}
+
+// PruneUnreachableSpeechCache removes the speech cache's transient entries
+// that no current published profile revision can hit (ADR-0159, issue #49):
+// the reachable key set is computed over every edition's currently published
+// revision, and the cache's own entries outside that set are evicted through
+// the reference-checked deletion (ADR-0041) — a blob still named by the
+// catalogue (an approved voice reference, an audition clip, a character
+// portrait or an imported source) keeps its bytes while its entry is
+// dropped, and a cache with no reference checker evicts index entries only,
+// safely.
+//
+// It returns the entries pruned and the bytes actually freed; with dryRun it
+// reports the would-be prune without touching anything.
+func (m *Manager) PruneUnreachableSpeechCache(ctx context.Context, dryRun bool) (int, int64, error) {
+	if m.opts.Speech == nil || m.opts.Speech.Voices == nil || m.opts.Speech.Voices.Speech == nil {
+		return 0, 0, errors.New("speech cache prune: no speech pipeline is configured")
+	}
+	return PruneSpeechCache(ctx, m.opts.Store, m.opts.Speech.Assets, m.opts.Speech.Voices, m.opts.Speech.Voices.Speech, dryRun)
 }
 
 // presynthOne is one line under the live commit path's key identity (the

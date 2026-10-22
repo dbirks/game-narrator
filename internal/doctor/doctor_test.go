@@ -273,7 +273,7 @@ func TestRunReportsEveryComponentExactlyOnce(t *testing.T) {
 	rep := h.run()
 
 	want := []string{
-		"storage.data_dir", "storage.database", "network.listen",
+		"storage.data_dir", "storage.database", "speech.cache_disk", "network.listen",
 		"tools.ffmpeg", "tools.v4l2_ctl", "tools.tesseract",
 		"ocr.controlled_image", "capture.devices", "audio.sinks", "audio.selected",
 		"audio.hdmi_bridge", "audio.dsp",
@@ -314,7 +314,7 @@ func TestRunReportsEveryComponentExactlyOnce(t *testing.T) {
 func TestGroupsAreDerivedFromIDs(t *testing.T) {
 	h := newFakeHost(t)
 	want := map[string]string{
-		"storage.data_dir": "Storage", "tools.ffmpeg": "Tools",
+		"storage.data_dir": "Storage", "speech.cache_disk": "Speech", "tools.ffmpeg": "Tools",
 		"ocr.controlled_image": "OCR", "capture.devices": "Capture",
 		"audio.sinks": "Audio", "audio.selected": "Audio", "audio.hdmi_bridge": "Audio",
 		"audio.dsp":          "Audio",

@@ -80,6 +80,7 @@ commands:
   support-bundle  build a redacted diagnostics archive for support (docs/spec/13)
   import-disc import the user's own Wind Waker disc into a local profile
   ocr      run the product's recognition on one live frame or image (issue #1)
+  cache    operator-facing content maintenance (speech-cache prune, ADR-0159)
   version  print build information and exit
   help     show this message
 
@@ -344,7 +345,7 @@ func run(args []string, log *slog.Logger, ring *logbuf.Ring) (int, error) {
 		fmt.Println(bootstrap.Version())
 		return 0, nil
 	case "help", "-h", "--help":
-		fmt.Print(usageText, serveUsageText, migrateUsageText, adminUsageText, doctorUsageText, benchUsageText, importDiscUsageText, supportBundleUsageText, ocrUsageText)
+		fmt.Print(usageText, serveUsageText, migrateUsageText, adminUsageText, doctorUsageText, benchUsageText, importDiscUsageText, supportBundleUsageText, ocrUsageText, cacheUsageText)
 		return 0, nil
 	case "serve":
 		return runServe(args[1:], log, ring)
@@ -362,6 +363,8 @@ func run(args []string, log *slog.Logger, ring *logbuf.Ring) (int, error) {
 		return runImportDisc(args[1:], log)
 	case "ocr":
 		return runOCR(args[1:], log)
+	case "cache":
+		return runCache(args[1:], log)
 	default:
 		fmt.Fprintf(os.Stderr, "game-narrator: unknown command %q\n\n%s%s", cmd, usageText, serveUsageText)
 		return 2, fmt.Errorf("%w: unknown command %q", errUsage, cmd)
@@ -752,6 +755,22 @@ func runServe(args []string, log *slog.Logger, ring *logbuf.Ring) (int, error) {
 			Timeout:     6 * time.Hour,
 		}); err != nil {
 		return 1, fmt.Errorf("registering %s job kind: %w", api.JobKindPresynthProfile, err)
+	}
+
+	// Speech-cache prune (ADR-0159, issue #49): the operator command's job —
+	// removes the transient entries no current published profile revision can
+	// hit. Like the pre-synthesis it runs as a background job, resumable (a
+	// rerun recomputes the reachable set and finds the first run's entries
+	// gone), bounded by the queue's foreground pause while a session is live.
+	// The handler drives the runtime's keep-set prune, so the operator command
+	// and the job answer from one code path.
+	if err := runner.Register(api.JobKindSpeechCachePrune,
+		api.SpeechCachePruneJobHandler(sessions), jobs.RegisterOpts{
+			Concurrency: 1,
+			Resumable:   true,
+			Timeout:     6 * time.Hour,
+		}); err != nil {
+		return 1, fmt.Errorf("registering %s job kind: %w", api.JobKindSpeechCachePrune, err)
 	}
 	// Settle the process-shared OCR pool at startup, before any session
 	// (issue #13, ADR-0100): its warm Tesseract slots and the startup probe
@@ -1599,6 +1618,106 @@ func runMigrate(args []string, log *slog.Logger) (int, error) {
 	)
 
 	fmt.Fprintf(stdout, "schema version %d\n", version)
+	return 0, nil
+}
+
+const cacheUsageText = `usage: game-narrator cache <subcommand> [flags]
+
+subcommands:
+  prune   remove the speech cache's entries no current published revision can hit (docs/spec/13, ADR-0159)
+`
+
+const cachePruneUsageText = `usage: game-narrator cache prune [--dry-run] [--data-dir DIR]
+
+  --dry-run   report the unreachable entries and bytes without deleting them
+  --data-dir DIR   durable data directory; overrides GAME_NARRATOR_DATA_DIR
+`
+
+// runCache dispatches the operator-facing content-maintenance subcommands. Like
+// the admin surface they run locally against the data directory and share the
+// server's own code paths, so an operator's answer is the appliance's answer.
+func runCache(args []string, log *slog.Logger) (int, error) {
+	if len(args) == 0 {
+		fmt.Fprint(os.Stderr, cacheUsageText)
+		return 2, errUsage
+	}
+	switch sub := args[0]; sub {
+	case "prune":
+		return runCachePrune(args[1:], log)
+	case "help", "-h", "--help":
+		fmt.Fprint(os.Stderr, cacheUsageText)
+		return 0, nil
+	default:
+		fmt.Fprintf(os.Stderr, "game-narrator cache: unknown subcommand %q\n\n%s", sub, cacheUsageText)
+		return 2, fmt.Errorf("%w: unknown subcommand %q", errUsage, sub)
+	}
+}
+
+// runCachePrune removes the speech cache's transient entries no current
+// published profile revision can hit (ADR-0159, issue #49): the reachable key
+// set is computed over every edition's currently published revision, and the
+// cache's own entries outside that set are evicted through the reference-checked
+// deletion. It runs the same PruneSpeechCache the API job drives, against the
+// data directory it is pointed at — so the operator command and the
+// /api/v1/speech/cache/prune job answer from one code path.
+func runCachePrune(args []string, log *slog.Logger) (int, error) {
+	fs := flag.NewFlagSet("cache prune", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	fs.Usage = func() { fmt.Fprint(os.Stderr, cachePruneUsageText) }
+	dataDir := fs.String("data-dir", "",
+		"durable data directory; overrides "+bootstrap.EnvDataDir)
+	dryRun := fs.Bool("dry-run", false,
+		"report the would-be prune without deleting anything")
+	if err := fs.Parse(args); err != nil {
+		return 2, fmt.Errorf("%w: %v", errUsage, err)
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "game-narrator cache prune: unexpected argument %q\n", fs.Arg(0))
+		return 2, fmt.Errorf("%w: unexpected argument", errUsage)
+	}
+
+	cfg, err := bootstrap.LoadConfig("", *dataDir, os.LookupEnv)
+	if err != nil {
+		return 2, err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	st, err := openDataStore(ctx, cfg.DataDir, log)
+	if err != nil {
+		return 1, err
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			log.Error("closing store", "error", err)
+		}
+	}()
+
+	assetStore, err := assets.NewLocal(AssetDir(cfg.DataDir), assets.WithMaxSize(maxAssetBlobBytes))
+	if err != nil {
+		return 1, fmt.Errorf("opening the asset store in %s: %w", AssetDir(cfg.DataDir), err)
+	}
+
+	cache := speech.New(assetStore, store.NewSpeechCacheIndex(st), 8, speech.WithReferenceChecker(st))
+	roles, err := providers.LoadRoles(os.LookupEnv)
+	if err != nil {
+		return 1, fmt.Errorf("loading provider roles: %w", err)
+	}
+	cloneCfg := roles[providers.RoleVoiceClone]
+	voiceSvc := &voices.Service{
+		Store:         st,
+		Assets:        assetStore,
+		Speech:        cache,
+		InstanceID:    voices.DefaultInstanceID,
+		BaseModelID:   cloneCfg.Model,
+		BackendDigest: previewBackendDigest(cloneCfg.Model),
+	}
+	entries, bytes, err := runtime.PruneSpeechCache(ctx, st, assetStore, voiceSvc, cache, *dryRun)
+	if err != nil {
+		return 1, fmt.Errorf("pruning the speech cache: %w", err)
+	}
+	fmt.Fprintf(stdout, "speech cache prune: entries=%d bytes=%d dry_run=%t\n", entries, bytes, *dryRun)
 	return 0, nil
 }
 

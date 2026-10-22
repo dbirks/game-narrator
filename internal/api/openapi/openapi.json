@@ -7362,6 +7362,45 @@
         }
       }
     },
+    "/api/v1/speech/cache/prune": {
+      "post": {
+        "operationId": "speechCachePrune",
+        "tags": [
+          "profiles"
+        ],
+        "summary": "Queue a background prune of the speech cache's unreachable entries (curator).",
+        "description": "ADR-0159. Queues a speech.cache_prune job that removes the transient cache entries no current published profile revision can hit, computing the reachable key set (one per display page x resolved voice, the keys the live paths can produce) and evicting the rest through the cache's reference-checked deletion. Reports the entries and bytes freed. Live sessions pause the job queue. Audited as catalog.speech.cache.prune.",
+        "x-required-role": "curator",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeechCachePruneRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "The job was queued; follow /api/v1/jobs/{job_id}.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpeechCachePruneAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
     "/api/v1/profiles/{id}/purge": {
       "post": {
         "operationId": "purgeProfile",
@@ -7862,6 +7901,43 @@
           },
           "profile_id": {
             "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          }
+        }
+      },
+      "SpeechCachePruneRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "description": "Report the would-be prune (entries and bytes) without deleting anything; default false prunes."
+          }
+        }
+      },
+      "SpeechCachePruneAccepted": {
+        "type": "object",
+        "required": [
+          "job_id",
+          "job_kind",
+          "dry_run",
+          "state",
+          "detail"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "job_kind": {
+            "type": "string"
+          },
+          "dry_run": {
+            "type": "boolean"
           },
           "state": {
             "type": "string"

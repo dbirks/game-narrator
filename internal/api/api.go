@@ -875,6 +875,12 @@ func (s *Server) Handler() http.Handler {
 	routes.register(mux, http.MethodDelete, "/api/v1/profiles/{id}", s.handleProfileDelete)
 	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/purge", s.handleProfilePurge)
 	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/presynthesize", s.handleProfilePresynthesize)
+	// The speech-cache prune (ADR-0159, issue #49): the operator command to
+	// remove the transient entries no current published profile revision can
+	// hit. The work is the runtime's reachable-key walk plus the cache's
+	// reference-checked deletion, run as a background job like pre-synthesis;
+	// live sessions pause the queue, so it runs between play sessions.
+	routes.register(mux, http.MethodPost, "/api/v1/speech/cache/prune", s.handleSpeechCachePrune)
 	routes.register(mux, http.MethodPost, "/api/v1/games/{id}/disable", s.handleGameDisableRoute)
 	routes.register(mux, http.MethodPost, "/api/v1/games/{id}/enable", s.handleGameEnableRoute)
 	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/messages", s.handleMessagesList)
