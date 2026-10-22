@@ -857,7 +857,32 @@ func TestDecisionDeadlineIsTheRoleTimeout(t *testing.T) {
 	// deadline (or the fake's own sleep) would have observed ~2 s.
 	obs := g.deadlines()
 	if len(obs) == 0 {
-		t.Fatal("the gateway never saw a cancelled request: the call did not carry the role's deadline")
+		// On a slow race-instrumented runner the role's 300 ms can expire
+		// while the client is still encoding the frame JPEG (ADR-0154), so
+		// no request reaches the fake at all (#52). The deadline is then
+		// proven on the client side: the decision resolved inside ~1 s
+		// rather than at the fake's 2 s answer.
+		var lat []int64
+		all := e.waitDecisionEvents(t, sid, "the session's events", 10*time.Second, func([]events.Envelope) bool { return true })
+		for _, ev := range all {
+			if ev.Name != events.DecisionResolved {
+				continue
+			}
+			var d struct {
+				LatencyMS int64 `json:"latency_ms"`
+			}
+			_ = json.Unmarshal(ev.Data, &d)
+			lat = append(lat, d.LatencyMS)
+		}
+		if len(lat) == 0 {
+			t.Fatal("the gateway never saw a cancelled request and no decision resolved: the call did not carry the role's deadline")
+		}
+		for i, ms := range lat {
+			if ms > 1000 {
+				t.Fatalf("decision %d resolved after %d ms, want ≤~1 s (the role's 300 ms budget, not the fake's 2 s hold)", i+1, ms)
+			}
+		}
+		t.Logf("no request reached the fake (cancelled client-side); %d decision(s) resolved within the deadline: %v ms", len(lat), lat)
 	}
 	for i, d := range obs {
 		if d > time.Second {
