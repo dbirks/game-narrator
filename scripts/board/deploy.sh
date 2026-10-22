@@ -151,15 +151,27 @@ set -eu
 cd "$HOME/gn-live"
 if [ -d data ]; then
   ts=$(date -u +%Y%m%dT%H%M%SZ)
+  # Space guard: a backup is about the size of the newest one. When free
+  # space is under twice that, prune to the newest backup BEFORE writing,
+  # so the new archive cannot fill the partition.
+  newest=$(ls -1t data-backup-2*.tar.gz 2>/dev/null | head -n 1)
+  if [ -n "$newest" ]; then
+    need_kb=$(( $(stat -c %s "$newest") / 1024 * 2 ))
+    avail_kb=$(df --output=avail -k . | tail -n 1)
+    if [ "$avail_kb" -lt "$need_kb" ]; then
+      ls -1t data-backup-2*.tar.gz | tail -n +2 | while read -r old; do rm -f -- "$old" && echo "pruned old backup $old (low space)"; done
+    fi
+  fi
   rc=0
   tar czf "data-backup-$ts.tar.gz" --exclude=data/dev-trace data 2>tar-backup.log || rc=$?
   if [ "$rc" -gt 1 ]; then echo "backup FAILED (tar rc=$rc): $(tail -n 5 tar-backup.log)"; exit 1; fi
   if [ "$rc" -eq 1 ]; then echo "note: tar rc=1 (file changed as we read it) — expected for a live service, backup usable"; fi
   # Retention: every deploy writes a full backup (the speech cache makes one
   # 1–2.5 GB); unpruned they filled the board's 18 GB home to 99% on
-  # 2026-10-22 and the presynth job refused to run. Keep the newest 3
-  # timestamped backups; hand-named ones (data-backup-pre-*) are left alone.
-  ls -1t data-backup-2*.tar.gz 2>/dev/null | tail -n +4 | while read -r old; do rm -f -- "$old" && echo "pruned old backup $old"; done
+  # 2026-10-22 and the presynth job refused to run. Keep the newest 2
+  # timestamped backups (each ~3 GB once the cache is warm); hand-named ones
+  # (data-backup-pre-*) are left alone.
+  ls -1t data-backup-2*.tar.gz 2>/dev/null | tail -n +3 | while read -r old; do rm -f -- "$old" && echo "pruned old backup $old"; done
   echo "free after backup: $(df -h . | awk 'NR==2{print $4}')"
 else
   echo "note: no data directory yet; nothing to back up"
@@ -260,8 +272,8 @@ set -eu
 rc=0
 sudo -n sh -c 'set -e; cd /var/lib; ts=$(date -u +%Y%m%dT%H%M%SZ); rc=0; tar czf "game-narrator-data-backup-$ts.tar.gz" --exclude=game-narrator/dev-trace game-narrator 2>backup.log || rc=$?; if [ "$rc" -gt 1 ]; then echo "backup FAILED (tar rc=$rc): $(tail -n 5 backup.log)"; exit 1; fi; if [ "$rc" -eq 1 ]; then echo "note: tar rc=1 (file changed as we read it) — expected for a live service, backup usable"; fi' || rc=$?
 if [ "$rc" -ne 0 ]; then echo "data backup failed"; exit 1; fi
-# Retention (see the user-mode step): keep the newest 3 timestamped backups.
-sudo -n sh -c 'cd /var/lib && ls -1t game-narrator-data-backup-2*.tar.gz 2>/dev/null | tail -n +4 | while read -r old; do rm -f -- "$old" && echo "pruned old backup $old"; done'
+# Retention (see the user-mode step): keep the newest 2 timestamped backups.
+sudo -n sh -c 'cd /var/lib && ls -1t game-narrator-data-backup-2*.tar.gz 2>/dev/null | tail -n +3 | while read -r old; do rm -f -- "$old" && echo "pruned old backup $old"; done'
 REMOTE
 
   # 6. Stop the unit — it is this install's own port holder.
