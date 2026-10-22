@@ -217,7 +217,20 @@ type PresynthProgress struct {
 	Failed      int   `json:"failed"`
 	Skipped     int   `json:"skipped"` // no approved voice for the speaker (and no narrator voice)
 	Bytes       int64 `json:"bytes"`   // bytes newly synthesized
+	// FailedSamples names up to presynthFailureSamples failed utterances
+	// (message or page id plus the error), so a deterministic failure class
+	// is diagnosable from the job result alone.
+	FailedSamples []PresynthFailure `json:"failed_samples,omitempty"`
 }
+
+// PresynthFailure is one failed utterance in a run's sample.
+type PresynthFailure struct {
+	ID    string `json:"id"`
+	Error string `json:"error"`
+}
+
+// presynthFailureSamples caps PresynthProgress.FailedSamples.
+const presynthFailureSamples = 10
 
 // ErrPresynthDiskBudget stops a run whose projected cache growth would eat
 // into the reserve.
@@ -369,6 +382,10 @@ func (m *Manager) PresynthesizeProfile(ctx context.Context, profileID string, op
 					return
 				}
 				p.Failed++
+				if len(p.FailedSamples) < presynthFailureSamples {
+					p.FailedSamples = append(p.FailedSamples, PresynthFailure{ID: id, Error: err.Error()})
+				}
+				m.log.Warn("presynth: utterance failed", "id", id, "error", err)
 				consec++
 				if consec >= maxFail {
 					stop(fmt.Errorf("presynth: %d consecutive provider failures (last: %s); the gateway may be down", consec, providerErrorKind(err)))
