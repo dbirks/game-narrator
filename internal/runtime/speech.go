@@ -1310,22 +1310,47 @@ func splitCanonicalPages(canon string) []string {
 }
 
 // splitSentences splits on sentence-final punctuation, keeping the terminator;
-// a trailing fragment without one is its own sentence.
+// a trailing fragment without one is its own sentence. A run of terminators
+// ("...", "?!", "…!") ends one sentence, not several, and a fragment with no
+// letters or digits (a stray closing quote, a lone dot) joins the sentence
+// before it: an ellipsis must not turn into dot-only "sentences" that pack
+// into a page TTS can only render as silence (the board's presynth found 147
+// such pages, all rejected as all-silent audio).
 func splitSentences(s string) []string {
-	var out []string
-	rs := []rune(s)
-	start := 0
-	for i, r := range rs {
-		if r == '.' || r == '!' || r == '?' || r == '…' {
-			if t := strings.TrimSpace(string(rs[start : i+1])); t != "" {
-				out = append(out, t)
+	isTerm := func(r rune) bool { return r == '.' || r == '!' || r == '?' || r == '…' }
+	hasWord := func(t string) bool {
+		for _, r := range t {
+			if unicode.IsLetter(r) || unicode.IsDigit(r) {
+				return true
 			}
-			start = i + 1
 		}
+		return false
 	}
-	if t := strings.TrimSpace(string(rs[start:])); t != "" {
+	var out []string
+	add := func(t string) {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			return
+		}
+		if !hasWord(t) && len(out) > 0 {
+			out[len(out)-1] += t
+			return
+		}
 		out = append(out, t)
 	}
+	rs := []rune(s)
+	start := 0
+	for i := 0; i < len(rs); i++ {
+		if !isTerm(rs[i]) {
+			continue
+		}
+		for i+1 < len(rs) && isTerm(rs[i+1]) {
+			i++
+		}
+		add(string(rs[start : i+1]))
+		start = i + 1
+	}
+	add(string(rs[start:]))
 	return out
 }
 

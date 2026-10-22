@@ -7,7 +7,9 @@ package runtime
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/dbirks/game-narrator/internal/games"
 	"github.com/dbirks/game-narrator/internal/providers/systemone"
@@ -309,5 +311,39 @@ func TestCommitVoiceSingleCharacterSlotUnchanged(t *testing.T) {
 	}
 	if route != voiceRouteAssigned {
 		t.Fatalf("commitVoice route = %q, want %q", route, voiceRouteAssigned)
+	}
+}
+
+// TestSplitCanonicalPagesEllipsis: an ellipsis is one sentence end, so no
+// page of the runtime's fallback split is punctuation only (the board's
+// presynth rendered such pages as all-silent audio). Invented text.
+func TestSplitCanonicalPagesEllipsis(t *testing.T) {
+	for _, canon := range []string{
+		"Well, umm... Umm...",
+		"Oh! Oh, thank... Thank the tides! You made it! When the gull dropped you here, I thought for sure you'd...",
+		"Wait?! Really...? Yes!",
+	} {
+		pages := splitCanonicalPages(canon)
+		if len(pages) == 0 {
+			t.Fatalf("%q: no pages", canon)
+		}
+		for i, p := range pages {
+			letters := false
+			for _, r := range p {
+				if unicode.IsLetter(r) {
+					letters = true
+					break
+				}
+			}
+			if !letters {
+				t.Errorf("%q: page %d = %q has no words", canon, i+1, p)
+			}
+		}
+		if got := strings.Join(pages, " "); strings.Join(strings.Fields(got), " ") != strings.Join(strings.Fields(canon), " ") {
+			t.Errorf("%q: pages rejoin to %q, want the canonical text", canon, got)
+		}
+	}
+	if got := splitSentences("Well, umm... Umm..."); len(got) != 2 {
+		t.Errorf("splitSentences = %q, want 2 sentences", got)
 	}
 }
