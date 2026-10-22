@@ -76,7 +76,13 @@ func newVisionProbe() (*visionProbe, error) {
 	if url == "" || token == "" {
 		return nil, fmt.Errorf("vision probe: %s and the %s token are not configured (the probe degrades to structural-only measurement)", providers.EnvGatewayURL, tokenEnv)
 	}
-	model := strings.TrimSpace(os.Getenv("GAME_NARRATOR_LIVE_MODEL"))
+	// The probe sends frames, so it needs an image-capable model: the vision
+	// model when one is configured (flint takes no images, ADR-0161), else
+	// the general live model.
+	model := strings.TrimSpace(os.Getenv("GAME_NARRATOR_LIVE_VISION_MODEL"))
+	if model == "" {
+		model = strings.TrimSpace(os.Getenv("GAME_NARRATOR_LIVE_MODEL"))
+	}
 	if model == "" {
 		model = "flint" // the collective replaced qwen3-8-27b with flint on 2026-10-21
 	}
