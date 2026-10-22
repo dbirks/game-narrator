@@ -688,6 +688,20 @@ type DecisionReply struct {
 	SpeakerConfidence float64
 	// SpeakerKnown reports the model's speaker verdict.
 	SpeakerKnown bool
+	// SpeakerKind is the adjudicator's apparent-kind answer for the line
+	// (ADR-0158): the chosen speaker_kind option's id — one of the
+	// systemone.SpeakerKind* kind ids, or the "unknown" fallback when the
+	// kind could not be established from the frame. Empty when the answer was
+	// absent. The kind is the neutral ground the generic voice rides when the
+	// shared-slot speaker gate falls back (ADR-0156): a kind named below the
+	// floor is not a kind, and the line's voice falls back to the narrator.
+	SpeakerKind string
+	// SpeakerKindConfidence is the model's confidence for the speaker_kind it
+	// chose — the chosen option's probability (docs/spec/06: a raw signal, not a
+	// reliability guarantee). Zero when the answer was missing; the runtime's
+	// kind gate reads it (ADR-0158) and treats a kind named below the floor as
+	// unnamed, keeping the narrator fallback.
+	SpeakerKindConfidence float64
 	// SafeToSpeak is the model's safe_to_speak answer (nil when the answer
 	// was missing).
 	SafeToSpeak *bool

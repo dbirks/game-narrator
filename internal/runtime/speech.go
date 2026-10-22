@@ -23,6 +23,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/games"
 	"github.com/dbirks/game-narrator/internal/matcher"
 	"github.com/dbirks/game-narrator/internal/pipeline"
+	"github.com/dbirks/game-narrator/internal/providers/systemone"
 	"github.com/dbirks/game-narrator/internal/providers/tts"
 	ses "github.com/dbirks/game-narrator/internal/session"
 	"github.com/dbirks/game-narrator/internal/speech"
@@ -70,6 +71,15 @@ const narratorCharacter = "narrator"
 // to the model's utterance permission, so the two "sure" judgements read at
 // one threshold.
 const SpeakerConfidenceFloor = 0.5
+
+// kindSpeakerKeyPrefix is the opaque roster alias prefix the adjudicator's
+// apparent-kind answers resolve through (ADR-0158): a kind the adjudicator
+// reads off the frame ("adult_male") becomes the opaque roster key
+// "kind:adult_male", which a character row's aliases may carry — the generic
+// voice for an unnamed speaker of that apparent kind. The prefix is the same
+// one the Wind Waker's opaque speaker keys use shape-wise ("ww:spk:<n>", ADR-0070)
+// but names a different axis: identity vs apparent kind.
+const kindSpeakerKeyPrefix = "kind:"
 
 // speechReasonUnmatched is the speech.requested reason of the unmatched
 // read-through line (ADR-0136): the trace's answer to "why did a line the
@@ -432,6 +442,13 @@ type speechWiring struct {
 	// approvedVoice resolves voices keyed by character name (Cast UI /
 	// auto-cast, ADR-0109/ADR-0135) as well as character ID (ADR-0101).
 	speakerAliasByID map[string]string
+	// kindSpeakerByKey maps an opaque apparent-kind key (the adjudicator's
+	// kind answer carried through the roster's "kind:<kind>" prefix, ADR-0158)
+	// onto the character whose aliases include it — the generic voice for an
+	// unnamed speaker of that apparent kind. Empty when the profile carries no
+	// such generic kind voices. A nil map answers no kind, which is the
+	// narrator fallback.
+	kindSpeakerByKey map[string]string
 
 	// narratorFallback is the profile's narrator fallback (ADR-0101): a line
 	// whose speaker has no approved voice is spoken by the narrator voice
@@ -597,7 +614,14 @@ type utteranceInfo struct {
 	// or the narrator when unattributed. It rides on every speech event so a
 	// skip (no approved voice) names whose voice was missing (issue #6).
 	character string
-	voiceID   string // the voice profile spoken ("" until resolved)
+	// voiceRoute is how this utterance's voice was resolved (ADR-0158): the
+	// adjudicator's confident speaker ("speaker"), the confident apparent-kind
+	// routed through the roster's generic kind character ("speaker_kind"), the
+	// neutral narrator fallback ("narrator"), or the roster's own assignment
+	// ("assigned"). It rides the speech.ready the worker emits, so the dev UI
+	// and the A/V harness can tell a kind-routed line from a narrator line.
+	voiceRoute string
+	voiceID    string // the voice profile spoken ("" until resolved)
 	// committedAt is the wall clock the line reached the speech side
 	// (issue #25, ADR-0122): the catch-up window and the max age measure
 	// from it.
@@ -1097,6 +1121,17 @@ type commitPayload struct {
 	// a speaker named below the floor is not a name, and the line's voice
 	// falls back instead of trusting the slot→character link.
 	SpeakerConfidence float64 `json:"speaker_confidence"`
+	// SpeakerKind is the adjudicator's apparent-kind answer (ADR-0158): the
+	// chosen speaker_kind option's id (the kind ids are the option ids, and
+	// the roster's opaque kind keys are the same ids under "kind:"), or ""
+	// when the answer is absent. SpeakerKindConfidence is that answer's
+	// confidence (the chosen option's probability; 0 when absent). The kind
+	// gate reads both (ADR-0158): a kind named below the floor is not a kind,
+	// and the line's voice — which the speaker gate already sent to the
+	// narrator fallback for a shared slot — may instead ride the generic kind
+	// voice the profile's roster carries for that apparent kind.
+	SpeakerKind           string  `json:"speaker_kind"`
+	SpeakerKindConfidence float64 `json:"speaker_kind_confidence"`
 }
 
 func (w *speechWiring) onCommit(e events.Envelope) {
@@ -1155,6 +1190,7 @@ func (w *speechWiring) onCommit(e events.Envelope) {
 		text = canon
 	}
 
+	character, route := w.commitVoice(d)
 	u := &utteranceInfo{
 		occurrence:  d.Occurrence,
 		messageID:   pageKey,
@@ -1162,7 +1198,8 @@ func (w *speechWiring) onCommit(e events.Envelope) {
 		generation:  d.Generation,
 		text:        text,
 		traceID:     e.TraceID,
-		character:   w.commitSpeaker(d),
+		character:   character,
+		voiceRoute:  route,
 		committedAt: time.Now().UTC(),
 	}
 	if w.crossRegionDuplicate(pageKey, u) {
@@ -1440,10 +1477,7 @@ func (w *speechWiring) maybeUnmatchedReadThrough(e events.Envelope, d commitPayl
 			"reason", "readthrough_implausible", "text", cleaned)
 		return
 	}
-	character := narratorCharacter
-	if d.SpeakerKnown && d.SpeakerID != "" && d.SpeakerConfidence >= SpeakerConfidenceFloor {
-		character = d.SpeakerID
-	}
+	character, route := w.commitVoice(d)
 	u := &utteranceInfo{
 		occurrence:  d.Occurrence,
 		messageID:   d.MessageID,
@@ -1452,6 +1486,7 @@ func (w *speechWiring) maybeUnmatchedReadThrough(e events.Envelope, d commitPayl
 		text:        cleaned,
 		traceID:     e.TraceID,
 		character:   character,
+		voiceRoute:  route,
 		committedAt: time.Now().UTC(),
 		reason:      speechReasonUnmatched,
 		confidence:  d.Confidence,
@@ -2246,6 +2281,7 @@ func (w *speechWiring) speak(u *utteranceInfo) {
 		"voice_revision":         rv.profile.Revision,
 		"from_cache":             res.FromCache,
 		"character_id":           u.character,
+		"voice_route":            u.voiceRoute,
 		"trace_id":               u.traceID,
 	})
 
@@ -2617,6 +2653,7 @@ func (w *speechWiring) speakMerged(u *utteranceInfo, run speech.CatchUpRun) {
 		"voice_revision":         rv.profile.Revision,
 		"from_cache":             res.FromCache,
 		"character_id":           u.character,
+		"voice_route":            u.voiceRoute,
 		"trace_id":               u.traceID,
 	})
 
@@ -3127,8 +3164,8 @@ func (w *speechWiring) speakerFor(messageID string) string {
 }
 
 // commitSpeaker resolves the speaker for one committed occurrence's voice
-// (ADR-0156): the adjudicator's per-occurrence speaker answer when it is
-// confident — the slot→character link cannot be trusted for a slot that is
+// (ADR-0156, ADR-0158): the adjudicator's per-occurrence speaker answer when it
+// is confident — the slot→character link cannot be trusted for a slot that is
 // shared, and the adjudicator is the only source that reads the frame — else
 // the assigned character for a slot that maps to a single character, else the
 // neutral voice for a shared slot the answer could not name.
@@ -3139,17 +3176,119 @@ func (w *speechWiring) speakerFor(messageID string) string {
 // mis-attribution in the first place. A slot that maps to a single character
 // keeps its assignment (the pre-ADR-0156 behaviour), because there the link
 // is the identity rather than a guess about a shared slot.
+//
+// ADR-0158: when the gate falls back (a shared slot whose answer could not
+// name the speaker, or an unattributed line) the adjudicator's apparent-kind
+// answer may still route the line: a kind named at or above the same floor is
+// a kind, and the profile's roster may carry a character whose aliases hold
+// the opaque "kind:<kind>" key — the generic voice for an unnamed speaker of
+// that apparent kind. A confident kind voices the line through that character;
+// otherwise the narrator fallback stands exactly as before. The resolution is
+// recorded by commitVoice alongside the character it chose.
 func (w *speechWiring) commitSpeaker(d commitPayload) string {
+	character, _ := w.commitVoice(d)
+	return character
+}
+
+// voiceRoute names how one committed occurrence's voice was resolved (ADR-0158):
+// the adjudicator's confident speaker answer ("speaker"), the confident
+// apparent-kind answer routed through the roster's generic kind character
+// ("speaker_kind"), the neutral narrator fallback ("narrator"), or the
+// roster's own assignment ("assigned" — a slot that maps to a single
+// character, where the link is the identity). The route is the
+// distinguishable half of the ADR-0156/0158 voice decision: the dev UI and the
+// A/V harness read it to tell a kind-routed line from a narrator line without
+// parsing which character was spoken.
+const (
+	voiceRouteSpeaker     = "speaker"
+	voiceRouteSpeakerKind = "speaker_kind"
+	voiceRouteNarrator    = "narrator"
+	voiceRouteAssigned    = "assigned"
+)
+
+// commitVoice resolves one committed occurrence's voice and the route it
+// took: the character the line speaks with, and the route that character was
+// reached by (ADR-0156's gate, ADR-0158's kind fallback).
+func (w *speechWiring) commitVoice(d commitPayload) (character string, route string) {
 	if d.SpeakerKnown && d.SpeakerID != "" && d.SpeakerConfidence >= SpeakerConfidenceFloor {
-		return d.SpeakerID
+		return d.SpeakerID, voiceRouteSpeaker
 	}
 	if w.speakerSlotByMessage[d.MessageID] {
 		// The slot is shared and the adjudicator could not name the speaker:
 		// do not voice the line through the slot's linked character — speak
-		// the neutral voice instead (ADR-0101's fallback shape, ADR-0156).
-		return narratorCharacter
+		// the neutral voice instead (ADR-0101's fallback shape, ADR-0156), or,
+		// when the frame did establish the speaker's apparent kind (ADR-0158),
+		// the generic kind voice for that kind.
+		if ch, ok := w.kindSpeakerFor(d); ok {
+			return ch, voiceRouteSpeakerKind
+		}
+		return narratorCharacter, voiceRouteNarrator
 	}
-	return w.speakerFor(d.MessageID)
+	character = w.speakerFor(d.MessageID)
+	if character == narratorCharacter {
+		// Unattributed (no assignment the slot did not settle): the kind may
+		// still route the line before the neutral fallback does (ADR-0158).
+		if ch, ok := w.kindSpeakerFor(d); ok {
+			return ch, voiceRouteSpeakerKind
+		}
+		return narratorCharacter, voiceRouteNarrator
+	}
+	// A slot that maps to a single character keeps its assignment (the
+	// pre-ADR-0156 behaviour): the link is the identity there.
+	return character, voiceRouteAssigned
+}
+
+// kindSpeakerFor resolves a committed occurrence's confident apparent-kind
+// answer onto the character that owns the generic kind voice (ADR-0158): the
+// kind the adjudicator chose, carried through the roster's opaque
+// "kind:<kind>" key, onto the character whose aliases include it. It reports
+// ok only when the kind is named (not the unknown fallback), is at or above
+// the speaker-confidence floor, and the roster carries such a character;
+// the caller then voices the line with that character's voice, which
+// resolveVoiceForCharacter resolves (falling back to the narrator when that
+// character has no approved voice — the degraded mode, not a substitute).
+func (w *speechWiring) kindSpeakerFor(d commitPayload) (string, bool) {
+	kind := d.SpeakerKind
+	if kind == "" || kind == systemone.SpeakerUnknown || d.SpeakerKindConfidence < SpeakerConfidenceFloor {
+		return "", false
+	}
+	id, ok := w.kindSpeakerByKey[kindSpeakerKeyPrefix+kind]
+	if !ok || id == "" {
+		return "", false
+	}
+	return id, true
+}
+
+// kindVoiceKinds are the adjudicator's named apparent kinds (ADR-0158), the
+// unknown fallback excluded.
+var kindVoiceKinds = []string{
+	systemone.SpeakerKindAdultMale, systemone.SpeakerKindAdultFemale,
+	systemone.SpeakerKindBoy, systemone.SpeakerKindGirl,
+	systemone.SpeakerKindElderMale, systemone.SpeakerKindElderFemale,
+	systemone.SpeakerKindCreature,
+}
+
+// addKindVoiceKeys lets a kind that no roster character claims still route
+// when an approved voice exists under the opaque key itself ("kind:boy"):
+// the operator auditions and approves the generic kind voices through the
+// voices API with the key as the character, with no profile edit (ADR-0158
+// amendment). A roster character carrying the kind alias keeps precedence.
+func (w *speechWiring) addKindVoiceKeys(ctx context.Context) {
+	if w.voices == nil || w.voices.Store == nil {
+		return
+	}
+	if w.kindSpeakerByKey == nil {
+		w.kindSpeakerByKey = map[string]string{}
+	}
+	for _, k := range kindVoiceKinds {
+		key := kindSpeakerKeyPrefix + k
+		if _, ok := w.kindSpeakerByKey[key]; ok {
+			continue
+		}
+		if rv, _ := w.approvedVoiceForKey(ctx, key); rv.profile.ID != "" {
+			w.kindSpeakerByKey[key] = key
+		}
+	}
 }
 
 // approvedVoice resolves one character's current approved voice: the

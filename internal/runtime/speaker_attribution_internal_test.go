@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/dbirks/game-narrator/internal/games"
+	"github.com/dbirks/game-narrator/internal/providers/systemone"
 	"github.com/dbirks/game-narrator/internal/store"
 )
 
@@ -20,6 +21,18 @@ func newSpeakerGateWiring(speakerByMessage map[string]string, shared map[string]
 		id:                   "speaker-gate-test",
 		speakerByMessage:     speakerByMessage,
 		speakerSlotByMessage: shared,
+	}
+}
+
+// newKindGateWiring builds a speechWiring with just enough of the ADR-0158
+// kind tables the gate reads — the shared-slot view, the kind-key view, no
+// store, no scheduler, no fence.
+func newKindGateWiring(speakerByMessage map[string]string, shared map[string]bool, kind map[string]string) *speechWiring {
+	return &speechWiring{
+		id:                   "speaker-kind-test",
+		speakerByMessage:     speakerByMessage,
+		speakerSlotByMessage: shared,
+		kindSpeakerByKey:     kind,
 	}
 }
 
@@ -117,5 +130,160 @@ func TestSharedSpeakerSlots(t *testing.T) {
 	// A name plus aliases is not sharing: one slot key reaches the baker.
 	if shared["msg-3"] || shared["msg-4"] {
 		t.Fatalf("shared = %v, want the single-slot character's lines not marked shared", shared)
+	}
+}
+
+// ── ADR-0158: the apparent-kind fallback (the generic voice) -----------------
+
+// TestCommitVoiceKindConfidentRouted is the ADR-0158 happy path: a shared BMG
+// slot the adjudicator could not name, answered with a confident apparent
+// kind, whose roster carries a generic kind character — the line's voice is
+// the kind character, not the narrator.
+func TestCommitVoiceKindConfidentRouted(t *testing.T) {
+	w := newKindGateWiring(map[string]string{"msg-1": "character-aryll"}, map[string]bool{"msg-1": true},
+		map[string]string{"kind:adult_male": "character-adult-male"})
+	d := commitPayload{
+		MessageID:             "msg-1",
+		SpeakerID:             "character-villager",
+		SpeakerKnown:          true,
+		SpeakerConfidence:     0.2, // the slot answer could not name the speaker
+		SpeakerKind:           systemone.SpeakerKindAdultMale,
+		SpeakerKindConfidence: 0.9,
+	}
+	character, route := w.commitVoice(d)
+	if character != "character-adult-male" {
+		t.Fatalf("commitVoice character = %q, want the kind character %q", character, "character-adult-male")
+	}
+	if route != voiceRouteSpeakerKind {
+		t.Fatalf("commitVoice route = %q, want %q (the kind-routed line)", route, voiceRouteSpeakerKind)
+	}
+}
+
+// TestCommitVoiceKindUnconfidentFallsBackToNarrator: a kind below the
+// confidence floor is not a kind — the narrator fallback stands (ADR-0158).
+func TestCommitVoiceKindUnconfidentFallsBackToNarrator(t *testing.T) {
+	w := newKindGateWiring(map[string]string{"msg-1": "character-aryll"}, map[string]bool{"msg-1": true},
+		map[string]string{"kind:adult_male": "character-adult-male"})
+	d := commitPayload{
+		MessageID:             "msg-1",
+		SpeakerID:             "character-villager",
+		SpeakerKnown:          true,
+		SpeakerConfidence:     0.2,
+		SpeakerKind:           systemone.SpeakerKindAdultMale,
+		SpeakerKindConfidence: 0.2,
+	}
+	character, route := w.commitVoice(d)
+	if character != narratorCharacter {
+		t.Fatalf("commitVoice character = %q, want the neutral voice %q when the kind is unconfident", character, narratorCharacter)
+	}
+	if route != voiceRouteNarrator {
+		t.Fatalf("commitVoice route = %q, want %q", route, voiceRouteNarrator)
+	}
+}
+
+// TestCommitVoiceKindUnknownFallsBackToNarrator: the unknown kind option is
+// the answer the kind question's fallback carries — no kind is routed.
+func TestCommitVoiceKindUnknownFallsBackToNarrator(t *testing.T) {
+	w := newKindGateWiring(map[string]string{"msg-1": "character-aryll"}, map[string]bool{"msg-1": true},
+		map[string]string{"kind:adult_male": "character-adult-male"})
+	d := commitPayload{
+		MessageID:             "msg-1",
+		SpeakerID:             "character-villager",
+		SpeakerKnown:          true,
+		SpeakerConfidence:     0.2,
+		SpeakerKind:           systemone.SpeakerUnknown,
+		SpeakerKindConfidence: 0.9,
+	}
+	character, _ := w.commitVoice(d)
+	if character != narratorCharacter {
+		t.Fatalf("commitVoice character = %q, want the neutral voice %q when the kind is unknown", character, narratorCharacter)
+	}
+}
+
+// TestCommitVoiceKindWithoutRosterCharacterFallsBackToNarrator: no roster
+// character carries the kind key — the profile has no generic kind voice for
+// that kind, and the narrator fallback stands.
+func TestCommitVoiceKindWithoutRosterCharacterFallsBackToNarrator(t *testing.T) {
+	w := newKindGateWiring(map[string]string{"msg-1": "character-aryll"}, map[string]bool{"msg-1": true},
+		map[string]string{"kind:adult_female": "character-adult-female"})
+	d := commitPayload{
+		MessageID:             "msg-1",
+		SpeakerID:             "character-villager",
+		SpeakerKnown:          true,
+		SpeakerConfidence:     0.2,
+		SpeakerKind:           systemone.SpeakerKindAdultMale,
+		SpeakerKindConfidence: 0.9,
+	}
+	character, _ := w.commitVoice(d)
+	if character != narratorCharacter {
+		t.Fatalf("commitVoice character = %q, want the neutral voice %q when the roster has no kind character", character, narratorCharacter)
+	}
+}
+
+// TestCommitVoiceKindUnattributedLineRouted: an unattributed line (no speaker
+// answer at all) with a confident kind and a roster kind character speaks the
+// kind character — the kind is the only identity the frame established.
+func TestCommitVoiceKindUnattributedLineRouted(t *testing.T) {
+	w := newKindGateWiring(map[string]string{}, map[string]bool{}, map[string]string{"kind:adult_male": "character-adult-male"})
+	d := commitPayload{
+		MessageID:             "msg-1",
+		SpeakerKind:           systemone.SpeakerKindAdultMale,
+		SpeakerKindConfidence: 0.9,
+	}
+	character, route := w.commitVoice(d)
+	if character != "character-adult-male" {
+		t.Fatalf("commitVoice character = %q, want the kind character %q", character, "character-adult-male")
+	}
+	if route != voiceRouteSpeakerKind {
+		t.Fatalf("commitVoice route = %q, want %q", route, voiceRouteSpeakerKind)
+	}
+}
+
+// TestCommitVoiceKindUnattributedWithoutKindFallsBackToNarrator: an
+// unattributed line with no confident kind answers the neutral voice.
+func TestCommitVoiceKindUnattributedWithoutKindFallsBackToNarrator(t *testing.T) {
+	w := newKindGateWiring(map[string]string{}, map[string]bool{}, map[string]string{})
+	d := commitPayload{MessageID: "msg-1", SpeakerKind: systemone.SpeakerKindAdultMale, SpeakerKindConfidence: 0.2}
+	character, _ := w.commitVoice(d)
+	if character != narratorCharacter {
+		t.Fatalf("commitVoice character = %q, want the neutral voice %q when the kind is unconfident", character, narratorCharacter)
+	}
+}
+
+// TestCommitVoiceConfidentNamedSpeakerWinsOverKind: a confident named speaker
+// answer still wins over the kind (ADR-0158): the kind is the fallback, and a
+// name the adjudicator was sure of is the name.
+func TestCommitVoiceConfidentNamedSpeakerWinsOverKind(t *testing.T) {
+	w := newKindGateWiring(map[string]string{"msg-1": "character-aryll"}, map[string]bool{"msg-1": true},
+		map[string]string{"kind:adult_male": "character-adult-male"})
+	d := commitPayload{
+		MessageID:             "msg-1",
+		SpeakerID:             "character-villager",
+		SpeakerKnown:          true,
+		SpeakerConfidence:     0.95,
+		SpeakerKind:           systemone.SpeakerKindAdultMale,
+		SpeakerKindConfidence: 0.9,
+	}
+	character, route := w.commitVoice(d)
+	if character != "character-villager" {
+		t.Fatalf("commitVoice character = %q, want the confident named speaker %q", character, "character-villager")
+	}
+	if route != voiceRouteSpeaker {
+		t.Fatalf("commitVoice route = %q, want %q", route, voiceRouteSpeaker)
+	}
+}
+
+// TestCommitVoiceSingleCharacterSlotUnchanged: a slot that maps to a single
+// character keeps its assignment (the pre-ADR-0156 behaviour) — the kind does
+// not reach it, and the route is the assignment's own.
+func TestCommitVoiceSingleCharacterSlotUnchanged(t *testing.T) {
+	w := newKindGateWiring(map[string]string{"msg-1": "character-aryll"}, map[string]bool{},
+		map[string]string{"kind:adult_male": "character-adult-male"})
+	character, route := w.commitVoice(commitPayload{MessageID: "msg-1"})
+	if character != "character-aryll" {
+		t.Fatalf("commitVoice character = %q, want the assigned character %q", character, "character-aryll")
+	}
+	if route != voiceRouteAssigned {
+		t.Fatalf("commitVoice route = %q, want %q", route, voiceRouteAssigned)
 	}
 }

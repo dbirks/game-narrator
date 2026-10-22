@@ -8,6 +8,7 @@ import (
 
 	"github.com/dbirks/game-narrator/internal/events"
 	"github.com/dbirks/game-narrator/internal/matcher"
+	"github.com/dbirks/game-narrator/internal/providers/systemone"
 	"github.com/dbirks/game-narrator/internal/recognition"
 )
 
@@ -1169,6 +1170,26 @@ func TestDecisionCanRefuseButNeverInvent(t *testing.T) {
 			t.Fatalf("reason = %q, want %q so the calibration data can tell which evidence decided", got, ReasonClefDisambiguated)
 		}
 	})
+}
+
+// TestCommitPayloadCarriesSpeakerKind is the ADR-0158 plumbing half: the
+// kind answer rides the same path as the speaker confidence — DecisionMsg →
+// the commit payload's speaker_kind / speaker_kind_confidence — so the
+// speech side can gate the kind and, when the speaker gate falls back, voice
+// the line through the generic kind character.
+func TestCommitPayloadCarriesSpeakerKind(t *testing.T) {
+	h := newHarness(t, DefaultConfig())
+	h.settle("A LINE THE MODEL WOULD NOT SAY", 0.9)
+	obs := h.lastObs
+	h.decideKind(obs, 0, "", "narrator", systemone.SpeakerKindAdultMale, 0.9, true, true)
+	res := h.rank("demo-kind", 0.5, false)
+	ev := res.Events[len(res.Events)-1]
+	if got := fieldStr(t, ev, "speaker_kind"); got != systemone.SpeakerKindAdultMale {
+		t.Fatalf("speaker_kind = %q, want the decision's kind %q", got, systemone.SpeakerKindAdultMale)
+	}
+	if got := fieldFloat(t, ev, "speaker_kind_confidence"); got != 0.9 {
+		t.Fatalf("speaker_kind_confidence = %v, want the decision's kind confidence 0.9", got)
+	}
 }
 
 // TestPublishFailureIsReportedAndCounted: a session that cannot write its events is

@@ -391,6 +391,7 @@ func (r *Reducer) applyDecision(ctx context.Context, m DecisionMsg, res *Result)
 	reg.decisions = append(reg.decisions, answeredObservation{
 		obsSeq: m.ObservationSeq, msgID: m.MessageID, speaker: m.SpeakerID,
 		known: m.SpeakerKnown, speakerConfidence: m.SpeakerConfidence,
+		speakerKind: m.SpeakerKind, speakerKindConfidence: m.SpeakerKindConfidence,
 		eligible: m.SpeechEligible, accepted: m.Accepted,
 		provider: m.Provider, model: m.Model,
 	})
@@ -1159,35 +1160,41 @@ func (r *Reducer) committedData(reg *region, rk rankedObservation, messageID str
 	speaker := ""
 	known := false
 	speakerConfidence := 0.0
+	speakerKind := ""
+	speakerKindConfidence := 0.0
 	if ans, ok := reg.decisionFor(rk.obsSeq); ok {
 		speaker, known = ans.speaker, ans.known
 		speakerConfidence = ans.speakerConfidence
+		speakerKind = ans.speakerKind
+		speakerKindConfidence = ans.speakerKindConfidence
 	}
 	return map[string]any{
-		"dialogue_occurrence_id": reg.occurrenceID,
-		"message_id":             messageID,
-		"speech_eligible":        eligible,
-		"generation":             r.st.Generation,
-		"reason":                 reason,
-		"matcher_reason":         rk.rank.Reason,
-		"margin":                 rk.rank.Margin,
-		"region_id":              reg.id,
-		"lifetime":               reg.lifetime,
-		"observation_seq":        rk.obsSeq,
-		"text":                   reg.text,
-		"raw_text":               reg.tr.Snapshot().Raw,
-		"normalized_text":        reg.key,
-		"text_state":             reg.tr.State().String(),
-		"text_variant":           reg.text,
-		"speaker_id":             speaker,
-		"speaker_known":          known,
-		"speaker_confidence":     speakerConfidence,
-		"predictive":             predictive,
-		"prediction_misfire":     false,
-		"scene_id":               rk.scene,
-		"transitions":            trs,
-		"confidence":             reg.tr.Confidence(),
-		"text_kind":              r.commitKind(messageID),
+		"dialogue_occurrence_id":  reg.occurrenceID,
+		"message_id":              messageID,
+		"speech_eligible":         eligible,
+		"generation":              r.st.Generation,
+		"reason":                  reason,
+		"matcher_reason":          rk.rank.Reason,
+		"margin":                  rk.rank.Margin,
+		"region_id":               reg.id,
+		"lifetime":                reg.lifetime,
+		"observation_seq":         rk.obsSeq,
+		"text":                    reg.text,
+		"raw_text":                reg.tr.Snapshot().Raw,
+		"normalized_text":         reg.key,
+		"text_state":              reg.tr.State().String(),
+		"text_variant":            reg.text,
+		"speaker_id":              speaker,
+		"speaker_known":           known,
+		"speaker_confidence":      speakerConfidence,
+		"speaker_kind":            speakerKind,
+		"speaker_kind_confidence": speakerKindConfidence,
+		"predictive":              predictive,
+		"prediction_misfire":      false,
+		"scene_id":                rk.scene,
+		"transitions":             trs,
+		"confidence":              reg.tr.Confidence(),
+		"text_kind":               r.commitKind(messageID),
 	}
 }
 

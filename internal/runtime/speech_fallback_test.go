@@ -22,6 +22,7 @@ import (
 
 	"github.com/dbirks/game-narrator/internal/assets"
 	"github.com/dbirks/game-narrator/internal/games"
+	"github.com/dbirks/game-narrator/internal/providers/systemone"
 	"github.com/dbirks/game-narrator/internal/speech"
 	"github.com/dbirks/game-narrator/internal/store"
 	"github.com/dbirks/game-narrator/internal/voices"
@@ -282,5 +283,128 @@ func TestResolveVoiceByCharacterNameAlias(t *testing.T) {
 	if rv.profile.ID != aryllVoiceID {
 		t.Fatalf("resolved voice ID = %s (character %q), want Aryll's voice %s (not narrator fallback)",
 			rv.profile.ID, rv.profile.Character, aryllVoiceID)
+	}
+}
+
+// TestResolveVoiceKindCharacter is the ADR-0158 end-to-end half of the kind
+// gate: a confident apparent-kind answer on a line whose speaker gate fell
+// back voices through the roster's generic kind character — and that
+// character's own approved voice is the line's voice, not the narrator's.
+// The kind character without a usable voice keeps the narrator fallback.
+func TestResolveVoiceKindCharacter(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, store.DBPath(t.TempDir()))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	a, err := assets.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatalf("assets: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	const kindChar = "character-adult-male"
+	kindVoiceID := seedFallbackVoice(t, st, a, kindChar)
+	_ = seedFallbackVoice(t, st, a, narratorCharacter)
+
+	w := newFallbackWiring(t, st, a, map[string]string{"line-1": "character-aryll"}, true)
+	w.speakerSlotByMessage = map[string]bool{"line-1": true} // the shared-slot shape
+	w.kindSpeakerByKey = map[string]string{"kind:adult_male": kindChar}
+
+	// The speaker gate fell back (unconfident speaker on a shared slot) and
+	// the kind was confident: the line voices the kind character, whose voice
+	// is the kind character's own approved voice.
+	d := commitPayload{
+		MessageID:             "line-1",
+		SpeakerID:             "character-aryll",
+		SpeakerKnown:          true,
+		SpeakerConfidence:     0.2, // the slot answer could not name the speaker
+		SpeakerKind:           systemone.SpeakerKindAdultMale,
+		SpeakerKindConfidence: 0.9,
+	}
+	character, route := w.commitVoice(d)
+	if character != kindChar {
+		t.Fatalf("commitVoice character = %q, want the kind character %q", character, kindChar)
+	}
+	if route != voiceRouteSpeakerKind {
+		t.Fatalf("commitVoice route = %q, want %q", route, voiceRouteSpeakerKind)
+	}
+	rv, why := w.resolveVoiceForCharacter(ctx, character)
+	if why != "" {
+		t.Fatalf("the kind character's voice resolved with reason %q, want none", why)
+	}
+	if rv.profile.ID != kindVoiceID {
+		t.Fatalf("resolved voice = %s (character %q), want the kind character's voice %s", rv.profile.ID, rv.profile.Character, kindVoiceID)
+	}
+
+	// An unconfident kind keeps the narrator fallback for the same line.
+	w2 := newFallbackWiring(t, st, a, map[string]string{"line-1": "character-aryll"}, true)
+	w2.speakerSlotByMessage = map[string]bool{"line-1": true}
+	w2.kindSpeakerByKey = map[string]string{"kind:adult_male": kindChar}
+	d2 := commitPayload{
+		MessageID:             "line-1",
+		SpeakerID:             "character-aryll",
+		SpeakerKnown:          true,
+		SpeakerConfidence:     0.2,
+		SpeakerKind:           systemone.SpeakerKindAdultMale,
+		SpeakerKindConfidence: 0.2,
+	}
+	character2, route2 := w2.commitVoice(d2)
+	if character2 != narratorCharacter || route2 != voiceRouteNarrator {
+		t.Fatalf("an unconfident kind resolved to %q/%q, want the narrator fallback", character2, route2)
+	}
+}
+
+// TestKindVoiceKeyWithoutRosterCharacter is the ADR-0158 amendment: no roster
+// character claims the kind, but a voice is approved under the opaque key
+// itself ("kind:adult_male") — the line routes to that voice. A kind with no
+// such voice keeps the narrator fallback.
+func TestKindVoiceKeyWithoutRosterCharacter(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, store.DBPath(t.TempDir()))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	a, err := assets.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatalf("assets: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	kindVoiceID := seedFallbackVoice(t, st, a, "kind:adult_male")
+	_ = seedFallbackVoice(t, st, a, narratorCharacter)
+
+	w := newFallbackWiring(t, st, a, map[string]string{"line-1": "character-aryll"}, true)
+	w.speakerSlotByMessage = map[string]bool{"line-1": true}
+	w.kindSpeakerByKey = map[string]string{} // no roster kind character
+	w.addKindVoiceKeys(ctx)
+
+	d := commitPayload{
+		MessageID:             "line-1",
+		SpeakerID:             "character-aryll",
+		SpeakerKnown:          true,
+		SpeakerConfidence:     0.2,
+		SpeakerKind:           systemone.SpeakerKindAdultMale,
+		SpeakerKindConfidence: 0.9,
+	}
+	character, route := w.commitVoice(d)
+	if character != "kind:adult_male" || route != voiceRouteSpeakerKind {
+		t.Fatalf("commitVoice = %q/%q, want the kind voice key via %q", character, route, voiceRouteSpeakerKind)
+	}
+	rv, why := w.resolveVoiceForCharacter(ctx, character)
+	if why != "" || rv.profile.ID != kindVoiceID {
+		t.Fatalf("resolved voice = %s (reason %q), want the kind voice %s", rv.profile.ID, why, kindVoiceID)
+	}
+
+	// A kind nobody voiced stays on the narrator.
+	d.SpeakerKind = systemone.SpeakerKindGirl
+	if character, route := w.commitVoice(d); character != narratorCharacter || route != voiceRouteNarrator {
+		t.Fatalf("an unvoiced kind resolved to %q/%q, want the narrator fallback", character, route)
 	}
 }

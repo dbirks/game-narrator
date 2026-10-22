@@ -305,6 +305,7 @@ func (s *Server) handleDevFixtureRecord(w http.ResponseWriter, r *http.Request) 
 				"voice_id":       payloadStr(ready, "voice_id"),
 				"voice_revision": ready["voice_revision"],
 				"from_cache":     ready["from_cache"],
+				"voice_route":    payloadStr(ready, "voice_route"),
 			}
 			if hasEnded {
 				speechJSON["ended_event_id"] = endedEvent.EventID
@@ -905,8 +906,9 @@ func (s *Server) handleDevTraceEvidence(w http.ResponseWriter, r *http.Request) 
 		if readyEvent, ready, hasReady := lastEventOf(trace, events.SpeechReady); hasReady {
 			_ = readyEvent
 			speechJSON := map[string]any{
-				"cache_key": payloadStr(ready, "cache_key"),
-				"voice_id":  payloadStr(ready, "voice_id"),
+				"cache_key":   payloadStr(ready, "cache_key"),
+				"voice_id":    payloadStr(ready, "voice_id"),
+				"voice_route": payloadStr(ready, "voice_route"),
 			}
 			entries["speech.json"] = marshalIndent(speechJSON)
 			if wav, ok := s.speechAudioBytes(ctx, payloadStr(ready, "cache_key")); ok {

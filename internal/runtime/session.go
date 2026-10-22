@@ -541,6 +541,12 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 			// speech side reads it to refuse the slot's linked character when
 			// the adjudicator cannot name the speaker.
 			w.speakerSlotByMessage = sharedSpeakerSlots(content, resolveSpeaker)
+			// The ADR-0158 kind view: the opaque kind keys the adjudicator's
+			// kind answers resolve through onto the characters that own the
+			// generic kind voices — the fallback the shared-slot speaker gate
+			// runs when the adjudicator could not name the speaker.
+			w.kindSpeakerByKey = kindSpeakerByKey(content)
+			w.addKindVoiceKeys(runCtx)
 			sess.speech = w
 			// The OnAdjudicating hook above reads the wiring through this
 			// pointer; storing it here (before the run starts) is what lets a

@@ -188,18 +188,29 @@ func (h *harness) reuse(hash string) Result {
 // because the late-answer tests must be able to name a generation the session has
 // already left behind.
 func (h *harness) decide(obsSeq int64, gen int64, messageID, speaker string, eligible, accepted bool) Result {
+	return h.decideKind(obsSeq, gen, messageID, speaker, "", 0, eligible, accepted)
+}
+
+// decideKind delivers an advisory decision that also names the speaker's
+// apparent kind (ADR-0158): the kind the frame established for the speaker,
+// with its own confidence. The kind is optional — an empty kind and a zero
+// confidence read as no kind, which the speech side's kind gate treats as
+// unnamed.
+func (h *harness) decideKind(obsSeq int64, gen int64, messageID, speaker string, kind string, kindConfidence float64, eligible, accepted bool) Result {
 	h.seq++
 	res, err := h.r.Apply(h.ctx, DecisionMsg{
-		Header:         Header{SessionID: h.r.st.SessionID, Seq: h.seq, Generation: gen, ProfileRevision: h.profile},
-		RegionID:       h.region,
-		ObservationSeq: obsSeq,
-		MessageID:      messageID,
-		SpeakerID:      speaker,
-		SpeakerKnown:   speaker != "",
-		SpeechEligible: eligible,
-		Accepted:       accepted,
-		Provider:       "systemone",
-		Model:          "clef-omni",
+		Header:                Header{SessionID: h.r.st.SessionID, Seq: h.seq, Generation: gen, ProfileRevision: h.profile},
+		RegionID:              h.region,
+		ObservationSeq:        obsSeq,
+		MessageID:             messageID,
+		SpeakerID:             speaker,
+		SpeakerKnown:          speaker != "",
+		SpeakerKind:           kind,
+		SpeakerKindConfidence: kindConfidence,
+		SpeechEligible:        eligible,
+		Accepted:              accepted,
+		Provider:              "systemone",
+		Model:                 "clef-omni",
 	})
 	if err != nil {
 		h.t.Fatalf("Apply(decision): %v", err)

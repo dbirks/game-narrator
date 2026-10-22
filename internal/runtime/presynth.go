@@ -9,6 +9,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -125,6 +126,38 @@ func sharedSpeakerSlots(content store.ProfileContent, resolveSpeaker func(string
 	return out
 }
 
+// kindSpeakerByKey is the ADR-0158 roster view of a published profile: the
+// opaque apparent-kind keys — the adjudicator's kind answers carried through
+// the "kind:" prefix (the kind option ids are the opaque keys' suffixes, the
+// same grammar the speaker-link aliases use, ADR-0072) — onto the character
+// whose aliases include them. A character that answers to a kind key is one
+// the roster reached through its generic kind voice: the voice an unnamed
+// speaker of that apparent kind speaks with (ADR-0158), so a shared BMG slot
+// the adjudicator cannot name still voices an unnamed villager as the kind
+// of person they are.
+func kindSpeakerByKey(content store.ProfileContent) map[string]string {
+	out := map[string]string{}
+	for _, c := range content.Characters {
+		if c.ID == "" {
+			continue
+		}
+		var aliases []string
+		if len(c.Aliases) > 0 {
+			_ = json.Unmarshal(c.Aliases, &aliases)
+		}
+		for _, a := range aliases {
+			if a == "" || !strings.HasPrefix(a, kindSpeakerKeyPrefix) {
+				continue
+			}
+			k := kindSpeakerKeyPrefix + strings.TrimPrefix(a, kindSpeakerKeyPrefix)
+			if _, taken := out[k]; !taken {
+				out[k] = c.ID
+			}
+		}
+	}
+	return out
+}
+
 // PresynthOptions bound one pre-synthesis run.
 type PresynthOptions struct {
 	// Limit caps the lines considered (profile order); 0 = all.
@@ -195,6 +228,10 @@ func (m *Manager) PresynthesizeProfile(ctx context.Context, profileID string, op
 		speakerAliasByID: aliases,
 		// The shared-slot view the live commit applies (ADR-0156).
 		speakerSlotByMessage: sharedSpeakerSlots(content, speakerLinkResolver(content.Characters)),
+		// The ADR-0158 kind view: the opaque kind keys the adjudicator's kind
+		// answers resolve through onto the characters that own the generic kind
+		// voices.
+		kindSpeakerByKey: kindSpeakerByKey(content),
 	}
 
 	// One entry per utterance the pre-synthesis fills: a multi-page message

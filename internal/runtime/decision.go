@@ -306,6 +306,8 @@ func (w *decisionWiring) Decide(ctx context.Context, req pipeline.DecisionReques
 	reply.Speaker = adj.Speaker
 	reply.SpeakerConfidence = adj.SpeakerConfidence
 	reply.SpeakerKnown = adj.Speaker != "" && adj.Speaker != systemone.SpeakerUnknown
+	reply.SpeakerKind = adj.SpeakerKind
+	reply.SpeakerKindConfidence = adj.SpeakerKindConfidence
 	if adj.SafeToSpeak != nil {
 		// The provider's safe_to_speak is a 0..1 confidence; the session's
 		// speech_eligible is a flag, so the conversion is a half: a model
@@ -338,16 +340,18 @@ func (w *decisionWiring) Decide(ctx context.Context, req pipeline.DecisionReques
 			ProfileRevision: req.ProfileRevision,
 			Generation:      req.Generation,
 		},
-		RegionID:          req.RegionID,
-		ObservationSeq:    req.ObservationSeq,
-		MessageID:         msgID,
-		SpeakerID:         speakerID,
-		SpeakerConfidence: adj.SpeakerConfidence,
-		SpeakerKnown:      reply.SpeakerKnown,
-		SpeechEligible:    eligible,
-		Accepted:          true,
-		Provider:          "systemone",
-		Model:             dec.Model,
+		RegionID:              req.RegionID,
+		ObservationSeq:        req.ObservationSeq,
+		MessageID:             msgID,
+		SpeakerID:             speakerID,
+		SpeakerConfidence:     adj.SpeakerConfidence,
+		SpeakerKnown:          reply.SpeakerKnown,
+		SpeakerKind:           adj.SpeakerKind,
+		SpeakerKindConfidence: adj.SpeakerKindConfidence,
+		SpeechEligible:        eligible,
+		Accepted:              true,
+		Provider:              "systemone",
+		Model:                 dec.Model,
 	}
 	return reply
 }

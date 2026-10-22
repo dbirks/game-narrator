@@ -238,6 +238,20 @@ type DecisionMsg struct {
 	// speech side can gate the per-occurrence speaker on it (ADR-0156).
 	SpeakerConfidence float64
 	SpeakerKnown      bool
+	// SpeakerKind is the adjudicator's apparent-kind answer for the line
+	// (ADR-0158): the chosen speaker_kind option's id — one of the kind ids
+	// (the systemone package's SpeakerKind* constants), or the "unknown"
+	// fallback when the kind could not be established from the frame. Empty
+	// when the answer is absent. It rides the same path as the speaker
+	// confidence: the commit payload carries it so the speech side can gate
+	// the kind and, when the shared-slot speaker gate falls back, voice the
+	// line through the generic kind character.
+	SpeakerKind string
+	// SpeakerKindConfidence is the adjudicator's confidence for the kind it
+	// chose — the chosen option's probability (docs/spec/06: a raw signal, not
+	// a reliability guarantee). Zero when the answer is absent or the kind is
+	// unknown, which is what the runtime's kind gate reads (ADR-0158).
+	SpeakerKindConfidence float64
 	// SpeechEligible is the model's safe-to-speak answer. It may only turn a
 	// would-be utterance *off*: docs/spec/05 allows silence as a degraded mode and
 	// forbids speaking as a named actor without evidence, but a single high

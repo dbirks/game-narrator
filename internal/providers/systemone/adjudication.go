@@ -20,6 +20,7 @@ const (
 	QIsTextbox   = "is_textbox"
 	QTextKind    = "text_kind"
 	QSpeaker     = "speaker"
+	QSpeakerKind = "speaker_kind"
 	QCandidate   = "candidate_message"
 	QIsComplete  = "is_complete"
 	QSafeToSpeak = "safe_to_speak"
@@ -37,6 +38,38 @@ const (
 	SpeakerUnknown = "unknown"
 	CandidateNone  = "none"
 )
+
+// The speaker_kind options (ADR-0158): the adjudicator's apparent-kind
+// answer for a line whose speaker the shared BMG slot could not name. The
+// kind is the neutral ground the generic voice rides: a man must not hear a
+// woman's voice, a child must not hear an old man's. The ids are the wire
+// option ids ([a-z0-9_]{1,32}) and the roster's opaque kind keys are the same
+// ids under the "kind:" prefix (docs/spec/06's option grammar).
+const (
+	SpeakerKindAdultMale   = "adult_male"
+	SpeakerKindAdultFemale = "adult_female"
+	SpeakerKindBoy         = "boy"
+	SpeakerKindGirl        = "girl"
+	SpeakerKindElderMale   = "elder_male"
+	SpeakerKindElderFemale = "elder_female"
+	SpeakerKindCreature    = "creature"
+)
+
+// SpeakerKindOptions renders the speaker_kind question's declared options,
+// in the order the criteria object is serialised in. The last option is the
+// question's own fallback: the kind could not be established from the frame.
+func SpeakerKindOptions() []Option {
+	return []Option{
+		{ID: SpeakerKindAdultMale, Description: "an adult man"},
+		{ID: SpeakerKindAdultFemale, Description: "an adult woman"},
+		{ID: SpeakerKindBoy, Description: "a boy"},
+		{ID: SpeakerKindGirl, Description: "a girl"},
+		{ID: SpeakerKindElderMale, Description: "an elderly man"},
+		{ID: SpeakerKindElderFemale, Description: "an elderly woman"},
+		{ID: SpeakerKindCreature, Description: "a creature or other non-human speaker"},
+		{ID: SpeakerUnknown, Description: "cannot be established from the frame"},
+	}
+}
 
 // Context is the observation context sent as the request's "state"
 // (free-form; the spec example uses scene / ocr / last_message).
@@ -83,10 +116,10 @@ const maxBundleCandidates = MaxOptions - 1
 
 // BuildAdjudication builds the bundled decision request for one observation:
 // is_textbox (noul), text_kind (choice), speaker (choice incl. unknown, with
-// deterministic speaker ids sp1..spN), candidate_message (choice incl. none,
-// with deterministic candidate ids c1..cN), is_complete (noul),
-// safe_to_speak (noul) — in that order, which is the order the questions
-// object is serialised in.
+// deterministic speaker ids sp1..spN), speaker_kind (choice incl. unknown, with
+// the apparent-kind options), candidate_message (choice incl. none, with
+// deterministic candidate ids c1..cN), is_complete (noul), safe_to_speak (noul)
+// — in that order, which is the order the questions object is serialised in.
 //
 // The returned Request has an empty Model; Decide fills it from the client's
 // model. Candidates beyond maxBundleCandidates are dropped (the ranking is
@@ -96,7 +129,7 @@ const maxBundleCandidates = MaxOptions - 1
 // example the windwaker dump key "ww:spk:2", ADR-0070) may be assumed to fit
 // it — the caller's ids stay the mapping keys, the wire never carries them.
 func BuildAdjudication(obs Context, candidates []Candidate, speakers []Speaker) Request {
-	questions := make([]Question, 0, 6)
+	questions := make([]Question, 0, 7)
 	questions = append(questions, Question{
 		ID:           QIsTextbox,
 		Type:         TypeNoul,
@@ -124,6 +157,12 @@ func BuildAdjudication(obs Context, candidates []Candidate, speakers []Speaker) 
 		Type:         TypeChoice,
 		Instructions: "Who is speaking, if anyone is?",
 		Criteria:     speakerOpts,
+	})
+	questions = append(questions, Question{
+		ID:           QSpeakerKind,
+		Type:         TypeChoice,
+		Instructions: "What apparent kind is the speaker?",
+		Criteria:     SpeakerKindOptions(),
 	})
 	n := len(candidates)
 	if n > maxBundleCandidates {
@@ -180,6 +219,17 @@ type Adjudication struct {
 	SpeakerConfidence float64
 	// Speaker is the chosen option id.
 	Speaker string
+	// SpeakerKind is the adjudicator's apparent-kind answer for the line
+	// (ADR-0158): the chosen speaker_kind option's id — one of the
+	// SpeakerKind* kind ids, or SpeakerUnknown when the kind could not be
+	// established from the frame. Empty when the answer is absent.
+	SpeakerKind string
+	// SpeakerKindConfidence is the adjudicator's confidence for the chosen
+	// speaker_kind option — the chosen option's probability (docs/spec/06: the
+	// raw model signal, not a reliability guarantee). Zero when the answer is
+	// absent, which is what the runtime's kind gate reads (ADR-0158): a kind
+	// named below the floor is not a kind.
+	SpeakerKindConfidence float64
 	// Candidate is the message id ("" = none / missing).
 	Candidate string
 	// CandidateProbabilities maps message ids to raw probabilities.
@@ -265,6 +315,14 @@ func Interpret(d Decision, candidates []Candidate, speakers []Speaker) Adjudicat
 	// runtime's speaker gate falls back rather than guessing (ADR-0156).
 	if a, ok := d.Answers[QSpeaker]; ok && a.Type == TypeChoice {
 		out.SpeakerConfidence = a.Confidence
+	}
+	// The confidence of the answer that named the speaker's apparent kind
+	// (ADR-0158): the chosen speaker_kind option's probability. An absent
+	// answer reads as no confidence, so the runtime's kind gate falls back
+	// rather than guessing.
+	if a, ok := d.Answers[QSpeakerKind]; ok && a.Type == TypeChoice {
+		out.SpeakerKind = a.Choice
+		out.SpeakerKindConfidence = a.Confidence
 	}
 	setNoul(&out.IsComplete, QIsComplete)
 	setNoul(&out.SafeToSpeak, QSafeToSpeak)

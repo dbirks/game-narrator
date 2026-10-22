@@ -558,3 +558,54 @@ func TestAdjudicationBundleOpaqueSpeakerKeys(t *testing.T) {
 		t.Fatalf("Interpret.Speaker = %q, want %q", adj.Speaker, SpeakerUnknown)
 	}
 }
+
+// TestAdjudicationBundleSpeakerKind (ADR-0158): the Wind Waker's BMG speaker
+// slot is shared by many NPCs (ADR-0156), so a line the adjudicator cannot
+// confidently name still needs a voice. The bundle carries a speaker_kind
+// choice question whose options are the apparent-kind ids plus the unknown
+// fallback; the kind is the neutral ground the generic voice rides, and the
+// wire option ids are the kind ids themselves (the roster's opaque kind keys
+// are the same ids under the "kind:" prefix).
+func TestAdjudicationBundleSpeakerKind(t *testing.T) {
+	bundle := BuildAdjudication(
+		Context{Scene: "outset", OCR: "the villager says something", LastMessage: "m-7"},
+		[]Candidate{{ID: "m-8", Text: "the villager says something"}},
+		[]Speaker{{ID: "ww:spk:11", Description: "a shared slot"}},
+	)
+	bundle.Model = "clef-omni"
+	if err := bundle.validate(limits{}.defaults()); err != nil {
+		t.Fatalf("the bundle with the speaker_kind question is not wire-valid: %v", err)
+	}
+	var kindQ *Question
+	var ids []string
+	for i := range bundle.Questions {
+		if bundle.Questions[i].ID == QSpeakerKind {
+			kindQ = &bundle.Questions[i]
+		}
+	}
+	if kindQ == nil {
+		t.Fatalf("no speaker_kind question in the bundle")
+	}
+	for _, o := range kindQ.Criteria {
+		ids = append(ids, o.ID)
+	}
+	wantIDs := []string{
+		SpeakerKindAdultMale, SpeakerKindAdultFemale, SpeakerKindBoy, SpeakerKindGirl,
+		SpeakerKindElderMale, SpeakerKindElderFemale, SpeakerKindCreature, SpeakerUnknown,
+	}
+	if len(kindQ.Criteria) != len(wantIDs) {
+		t.Fatalf("speaker_kind options = %d, want %d (%+v)", len(kindQ.Criteria), len(wantIDs), kindQ.Criteria)
+	}
+	for i, o := range kindQ.Criteria {
+		if o.ID != wantIDs[i] {
+			t.Fatalf("speaker_kind option %d id = %q, want %q", i, o.ID, wantIDs[i])
+		}
+	}
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if seen[id] {
+			t.Fatalf("speaker_kind option id %q is not unique", id)
+		}
+		seen[id] = true
+	}
+}

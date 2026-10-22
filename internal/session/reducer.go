@@ -186,6 +186,14 @@ type answeredObservation struct {
 	// It is the speaker gate's evidence (ADR-0156), carried onto the commit
 	// payload that decides whether the line's voice is the answer's speaker.
 	speakerConfidence float64
+	// speakerKind is the adjudicator's apparent-kind answer (ADR-0158): the
+	// chosen speaker_kind option's id, or "" when the answer was absent. It is
+	// the kind gate's evidence on the same fall-back path the speaker
+	// confidence gates, so a kind the frame did not establish stays unnamed.
+	speakerKind string
+	// speakerKindConfidence is the adjudicator's confidence for the kind it
+	// chose (the chosen option's probability; 0 when absent or unknown).
+	speakerKindConfidence float64
 	// eligible is the model's safe_to_speak answer; vetoOnly means the commit
 	// rules may read it as a way to say "not this", never as a way to say "yes".
 	eligible bool
