@@ -381,16 +381,27 @@ func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvel
 		if len(obsList) == 0 {
 			obsList = obsGroups[avObsKey(c.region, c.lifetime)]
 		}
+		// The settle is the LAST ready at/before the commit, and the appear is
+		// the first reading after the box's last dismissal: a region whose
+		// lifetime spans a scene transition (junk reads that went "ready",
+		// dismissed, then the real box) would otherwise date the line from
+		// the junk — run av-20261022T023133Z reported a 9.3 s settled→audio
+		// for a line that committed 7 ms after its real settle.
 		var appear, settled, lastPre time.Time
 		for _, o := range obsList {
 			if o.at.After(c.at) {
+				continue
+			}
+			if strings.EqualFold(o.state, "dismissed") || strings.EqualFold(o.state, "absent") {
+				appear = time.Time{}
+				settled = time.Time{}
 				continue
 			}
 			if appear.IsZero() {
 				appear = o.at
 			}
 			lastPre = o.at
-			if settled.IsZero() && strings.EqualFold(o.state, "ready") {
+			if strings.EqualFold(o.state, "ready") {
 				settled = o.at
 			}
 		}
