@@ -167,8 +167,7 @@ type PresenceConfig struct {
 	// 2026-10-21 board capture (ADR-0137, Amendment: the sea false positive).
 	MinTextShare float64
 	// MaxSaturatedDarkShare is the ceiling on the share of the crop's dark
-	// pixels that are saturated. Zero is a legitimate value (no saturated
-	// dark at all); negative takes the default. Measured 0.93–0.97 on the
+	// pixels that are saturated; zero (unset) takes the default. Measured 0.93–0.97 on the
 	// dark sea bands and 0.000–0.053 on the box fixtures, the ceiling sits
 	// at 0.5 an order of magnitude from either side.
 	MaxSaturatedDarkShare float64
@@ -205,7 +204,13 @@ func (p PresenceConfig) normalize() PresenceConfig {
 	if p.MinTextShare > 1 {
 		p.MinTextShare = 1
 	}
-	if p.MaxSaturatedDarkShare < 0 { // unset is negative; 0 is legitimate
+	// Zero is UNSET, like every other field here: the runtime builds the
+	// pipeline config with a zero PresenceConfig and relies on normalize for
+	// the defaults. Treating 0 as a legitimate ceiling made every crop with
+	// any saturated dark pixel read absent — on the UNO Q capture card the
+	// Wind Waker box's dark share is ~1% saturated, so the board read nothing
+	// for a whole play session (2026-10-22; Dolphin's 0.000 hid it).
+	if !(p.MaxSaturatedDarkShare > 0) {
 		p.MaxSaturatedDarkShare = DefaultPresence().MaxSaturatedDarkShare
 	}
 	if p.MaxSaturatedDarkShare > 1 {
@@ -226,11 +231,11 @@ func (p PresenceConfig) Present(pp vision.PanelPresence) bool {
 		p.SaturatedDarkCeiling() >= pp.SaturatedDark
 }
 
-// SaturatedDarkCeiling is MaxSaturatedDarkShare for the gate: normalize maps
-// the unset negative value to the default, so a zero-value config reads the
-// default ceiling rather than rejecting everything with dark pixels.
+// SaturatedDarkCeiling is MaxSaturatedDarkShare for the gate, with the
+// unset (zero) value reading the default — a zero-value config gets the
+// default gate, never a ceiling of 0 that rejects every real panel.
 func (p PresenceConfig) SaturatedDarkCeiling() float64 {
-	if p.MaxSaturatedDarkShare < 0 {
+	if !(p.MaxSaturatedDarkShare > 0) {
 		return DefaultPresence().MaxSaturatedDarkShare
 	}
 	return p.MaxSaturatedDarkShare

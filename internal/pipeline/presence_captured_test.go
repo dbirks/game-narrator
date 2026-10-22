@@ -293,3 +293,22 @@ func mathMaxF(a, b float64) float64 {
 	}
 	return a
 }
+
+// TestZeroPresenceConfigTakesTheDefaults is the 2026-10-22 board regression:
+// the runtime builds the pipeline with a zero PresenceConfig, and a ceiling
+// of 0 read as "no saturated dark allowed" rejected the real Wind Waker box
+// (saturated-dark share 0.010 on the capture card) for a whole session.
+func TestZeroPresenceConfigTakesTheDefaults(t *testing.T) {
+	cfg := PresenceConfig{}.normalize()
+	if cfg != DefaultPresence() {
+		t.Fatalf("zero config normalizes to %+v, want the defaults %+v", cfg, DefaultPresence())
+	}
+	board := vision.PanelPresence{Dark: 0.870, Text: 0.0208, SaturatedDark: 0.010}
+	if !cfg.Present(board) || !(PresenceConfig{}).Present(board) {
+		t.Fatal("the board's measured box crop reads absent under a zero (default) config")
+	}
+	sea := vision.PanelPresence{Dark: 0.84, Text: 0.0003, SaturatedDark: 0.95}
+	if cfg.Present(sea) {
+		t.Fatal("the sea reads present under the defaults")
+	}
+}
