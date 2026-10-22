@@ -33,7 +33,7 @@ import (
 const liveSkipMessage = "NOT RUN: set " + providers.EnvGatewayURL + " and the token env named by " +
 	providers.EnvGatewayTokenEnv + " (default " + providers.EnvGatewayToken + ") to run live recorded-provider tests"
 
-const defaultLiveModel = "qwen3-8-27b"
+const defaultLiveModel = "flint" // the collective replaced qwen3-8-27b with flint on 2026-10-21
 
 // liveHarness holds a recording client against the real gateway plus a factory
 // for a replay client that reads back what was recorded.

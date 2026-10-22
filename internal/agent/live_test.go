@@ -43,7 +43,7 @@ func TestLiveAgentSmokeTwoTools(t *testing.T) {
 		model = strings.TrimSpace(cfg.Model)
 	}
 	if model == "" {
-		model = "qwen3-8-27b"
+		model = "flint" // the collective replaced qwen3-8-27b with flint on 2026-10-21
 	}
 	cfg.Model = model
 	roleReg := providers.NewRegistry(map[providers.Role]providers.RoleConfig{

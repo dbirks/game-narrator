@@ -90,7 +90,7 @@ func TestLiveOCRFallbackSession(t *testing.T) {
 		model = strings.TrimSpace(os.Getenv("GAME_NARRATOR_LIVE_MODEL"))
 	}
 	if model == "" {
-		model = "qwen3-8-27b"
+		model = "flint" // the collective replaced qwen3-8-27b with flint on 2026-10-21
 	}
 	// The client is built the way production builds it (openai.NewFromRole,
 	// the runtime's wiring): the role's reasoning-effort default ("none")

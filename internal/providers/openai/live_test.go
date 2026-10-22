@@ -32,7 +32,7 @@ import (
 // Nothing here may print a URL, host or token. Log lines carry the model id,
 // latency and token counts only.
 
-const defaultLiveModel = "qwen3-8-27b"
+const defaultLiveModel = "flint" // the collective replaced qwen3-8-27b with flint on 2026-10-21
 
 const liveSkipMessage = "NOT RUN: set GAME_NARRATOR_GATEWAY_URL and the token env named by " +
 	providers.EnvGatewayTokenEnv + " (default " + providers.EnvGatewayToken + ") to run live provider contract tests"

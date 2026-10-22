@@ -84,7 +84,7 @@ func e2eEnv(t *testing.T) (providers.RoleConfig, providers.RoleConfig, providers
 	}
 	agentCfg := roles[providers.RoleAgentReasoning]
 	if model == "" {
-		model = "qwen3-8-27b"
+		model = "flint" // the collective replaced qwen3-8-27b with flint on 2026-10-21
 	}
 	agentCfg.Model = model
 	// Calibrate the agent round-trip deadline for onboarding-scale prompts

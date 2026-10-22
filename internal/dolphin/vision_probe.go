@@ -78,7 +78,7 @@ func newVisionProbe() (*visionProbe, error) {
 	}
 	model := strings.TrimSpace(os.Getenv("GAME_NARRATOR_LIVE_MODEL"))
 	if model == "" {
-		model = "qwen3-8-27b"
+		model = "flint" // the collective replaced qwen3-8-27b with flint on 2026-10-21
 	}
 	c, err := openai.New(url, token, model)
 	if err != nil {
