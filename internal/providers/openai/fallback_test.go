@@ -476,3 +476,57 @@ func TestCombinedJSONAndToolChoiceDegradationFromCacheIsOneRequest(t *testing.T)
 		t.Errorf("request must carry BOTH fallback instructions, got %q", sys)
 	}
 }
+
+// The "none" reasoning effort also asks the gateway's chat template to disable
+// thinking (chat_template_kwargs.enable_thinking), which the vLLM Qwen/GLM-style
+// templates honour; other efforts send no template flags.
+func TestChatReasoningNoneSendsChatTemplateParams(t *testing.T) {
+	g := newScriptedGateway(t, []int{http.StatusOK}, []string{pingAccept200})
+	c := g.client()
+	if _, err := c.Chat(context.Background(), ChatRequest{
+		Messages:        []Message{{Role: "user", Text: "pong?"}},
+		MaxTokens:       32,
+		ReasoningEffort: "none",
+	}); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	reqs := g.snapshot()
+	if len(reqs) != 1 {
+		t.Fatalf("made %d requests, want 1", len(reqs))
+	}
+	tp, ok := reqs[0]["chat_template_kwargs"].(map[string]any)
+	if !ok {
+		t.Fatalf("chat_template_kwargs missing or wrong shape: %v", reqs[0]["chat_template_kwargs"])
+	}
+	enabled, ok := tp["enable_thinking"].(bool)
+	if !ok || enabled {
+		t.Errorf("chat_template_kwargs.enable_thinking = %v, want false", tp["enable_thinking"])
+	}
+	if eff, _ := reqs[0]["reasoning_effort"].(string); eff != "none" {
+		t.Errorf("reasoning_effort = %v, want none", reqs[0]["reasoning_effort"])
+	}
+}
+
+// A non-"none" reasoning effort must not send the thinking-disable template
+// flag; it is specific to the "none" (no thinking) budget.
+func TestChatReasoningLowSendsNoChatTemplateParams(t *testing.T) {
+	g := newScriptedGateway(t, []int{http.StatusOK}, []string{pingAccept200})
+	c := g.client()
+	if _, err := c.Chat(context.Background(), ChatRequest{
+		Messages:        []Message{{Role: "user", Text: "pong?"}},
+		MaxTokens:       32,
+		ReasoningEffort: "low",
+	}); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	reqs := g.snapshot()
+	if len(reqs) != 1 {
+		t.Fatalf("made %d requests, want 1", len(reqs))
+	}
+	if _, ok := reqs[0]["chat_template_kwargs"]; ok {
+		t.Errorf("chat_template_kwargs must be absent for a low effort, got %v", reqs[0]["chat_template_kwargs"])
+	}
+	if eff, _ := reqs[0]["reasoning_effort"].(string); eff != "low" {
+		t.Errorf("reasoning_effort = %v, want low", reqs[0]["reasoning_effort"])
+	}
+}

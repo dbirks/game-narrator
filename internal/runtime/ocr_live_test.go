@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/color"
 	_ "image/png"
 	"net/http"
 	"os"
@@ -201,6 +202,23 @@ func TestLiveOCRFallbackSession(t *testing.T) {
 
 	// --- the session: real Tesseract primary, the role's real VLM secondary.
 	capture := &liveCapture{client: client}
+	// Vision capability gate: the live VLM fallback cannot run on a model that
+	// refuses image input (the collective gateway's flint answers
+	// image_input_unsupported), so the live fallback cannot be proven on the
+	// resolved vision model. A text-only model is an environment capability
+	// gap, not a build gap: skip with the NOT RUN setup instruction and never
+	// fail the gate on it.
+	probeEng := ocr.NewVLMEngine(capture)
+	probeImg := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	probeImg.Set(0, 0, color.RGBA{R: 255, A: 255})
+	probeImg.Set(1, 1, color.RGBA{B: 255, A: 255})
+	if _, err := probeEng.Recognize(context.Background(), probeImg); err != nil {
+		var pe *providers.Error
+		if errors.As(err, &pe) && pe.Kind == providers.KindUnsupportedCapability {
+			t.Skipf("NOT RUN: the live gateway refuses image input for model %s (%s); set GAME_NARRATOR_LIVE_VISION_MODEL to an image-capable model and re-run the gate", client.Model, pe)
+		}
+		t.Fatalf("vision capability probe: %v", err)
+	}
 	e := newEnv(t, withOCRFallback(&pipeline.OCRFallback{
 		Secondary: ocr.NewVLMEngine(capture),
 		// The generous budget is about the session wiring, not the limiter:

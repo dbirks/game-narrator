@@ -62,6 +62,12 @@ func TestLiveVLMOCRFallbackHardFontCrop(t *testing.T) {
 	if model == "" {
 		model = "flint" // the collective replaced qwen3-8-27b with flint on 2026-10-21
 	}
+	// The vision legs resolve the model through GAME_NARRATOR_LIVE_VISION_MODEL
+	// (default: GAME_NARRATOR_LIVE_MODEL); a text-only model cannot serve the
+	// VLM, and the refusal is a NOT RUN, never a failure.
+	if v := strings.TrimSpace(os.Getenv("GAME_NARRATOR_LIVE_VISION_MODEL")); v != "" {
+		model = v
+	}
 	client, err := openai.New(cfg.BaseURL, cfg.Token(), model)
 	if err != nil {
 		t.Fatalf("openai.New: %v", err)

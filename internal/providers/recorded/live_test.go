@@ -42,9 +42,9 @@ type liveHarness struct {
 	recorder    *Transport
 	recordProbe *originProbe
 
-	replayFactory func() (*openai.Client, *originProbe, *neverDials)
-	host          string
-	dir           string
+	host  string
+	dir   string
+	model string
 }
 
 // newLiveHarness resolves the role through the production configuration path, so
@@ -93,21 +93,27 @@ func newLiveHarness(t *testing.T, role providers.Role, timeout time.Duration) *l
 		recordProbe: probe,
 		host:        u.Host,
 		dir:         dir,
-		replayFactory: func() (*openai.Client, *originProbe, *neverDials) {
-			probe := &neverDials{t: t}
-			replayer, err := New(Options{Role: role, Mode: ModeReplay, Dir: dir, Base: probe, Secrets: []string{token}})
-			if err != nil {
-				t.Fatalf("New(replay): %v", err)
-			}
-			origin := &originProbe{next: replayer}
-			c, err := openai.New(cfg.BaseURL, token, model)
-			if err != nil {
-				t.Fatalf("openai.New(replay): %v", err)
-			}
-			c.HTTP = &http.Client{Transport: origin}
-			return c, origin, probe
-		},
+		model:       model,
 	}
+}
+
+// replayFactory builds the offline replay client against the recorded
+// cassette: same base URL, token and model the recording leg used, so a
+// recorded vision leg replays on the model it was recorded with.
+func (h *liveHarness) replayFactory(t *testing.T) (*openai.Client, *originProbe, *neverDials) {
+	t.Helper()
+	probe := &neverDials{t: t}
+	replayer, err := New(Options{Role: h.recorder.Role, Mode: ModeReplay, Dir: h.dir, Base: probe, Secrets: h.recorder.Secrets})
+	if err != nil {
+		t.Fatalf("New(replay): %v", err)
+	}
+	origin := &originProbe{next: replayer}
+	c, err := openai.New(h.client.BaseURL, h.client.Token, h.model)
+	if err != nil {
+		t.Fatalf("openai.New(replay): %v", err)
+	}
+	c.HTTP = &http.Client{Transport: origin}
+	return c, origin, probe
 }
 
 // maxLiveAttempts bounds retries of a *transient* gateway failure while
@@ -149,12 +155,43 @@ func (h *liveHarness) chatWithRetry(t *testing.T, ctx context.Context, req opena
 	return openai.ChatResponse{}, 0
 }
 
+// chatVision records a vision chat completion, tolerating a capacity blip,
+// and skips with the NOT RUN setup instruction when the gateway refuses image
+// input (a text-only model cannot serve the vision leg): the capability gap is
+// an environment fact, never a suite failure.
+func (h *liveHarness) chatVision(t *testing.T, ctx context.Context, req openai.ChatRequest, label string) openai.ChatResponse {
+	t.Helper()
+	var lastErr error
+	for attempt := 1; attempt <= maxLiveAttempts; attempt++ {
+		got, err := h.client.Chat(ctx, req)
+		if err == nil {
+			return got
+		}
+		lastErr = err
+		var pe *providers.Error
+		if errors.As(err, &pe) && pe.Kind == providers.KindUnsupportedCapability {
+			t.Skipf("NOT RUN: the live gateway refused the %s request (%s); set GAME_NARRATOR_LIVE_VISION_MODEL to an image-capable model and re-run the gate", label, pe)
+		}
+		if !errors.As(err, &pe) || !pe.Retryable || attempt == maxLiveAttempts {
+			t.Fatalf("live %s Chat (record): %v", label, err)
+		}
+		t.Logf("live %s Chat attempt %d failed transiently (%s); retrying while the request is unchanged", label, attempt, pe.Kind)
+		select {
+		case <-ctx.Done():
+			t.Fatalf("live %s Chat: %v (context: %v)", label, lastErr, ctx.Err())
+		case <-time.After(time.Duration(attempt) * 3 * time.Second):
+		}
+	}
+	t.Fatalf("live %s Chat: %v", label, lastErr)
+	return openai.ChatResponse{}
+}
+
 // replayAndCompare replays the recorded attempts offline, in order, and asserts
 // the client sees exactly what the gateway answered — including the transient
 // failures that preceded the answer — then checks the cassette is portable.
 func (h *liveHarness) replayAndCompare(t *testing.T, ctx context.Context, req openai.ChatRequest, want openai.ChatResponse, attempts int) {
 	t.Helper()
-	replayClient, origins, probe := h.replayFactory()
+	replayClient, origins, probe := h.replayFactory(t)
 	for attempt := 1; attempt <= attempts; attempt++ {
 		got, err := replayClient.Chat(ctx, req)
 		if attempt < attempts {
@@ -235,8 +272,12 @@ func TestLiveRecordThenReplayTextChat(t *testing.T) {
 	defer cancel()
 
 	req := openai.ChatRequest{
-		Messages:  []openai.Message{{Role: "user", Text: "Reply with exactly: pong"}},
-		MaxTokens: 200,
+		Messages: []openai.Message{{Role: "user", Text: "Reply with exactly: pong"}},
+		// A thinking model spends its whole output budget on reasoning before
+		// the answer (observed live on flint: max_tokens=8 ended finish=length
+		// with the block as the only content); the budget has to clear the
+		// thinking pass so the answer lands inside it.
+		MaxTokens: 1024,
 	}
 	want, attempts := harness.chatWithRetry(t, ctx, req, "text")
 	if strings.TrimSpace(want.Text) == "" {
@@ -260,6 +301,18 @@ func TestLiveRecordThenReplayTextChat(t *testing.T) {
 
 func TestLiveRecordThenReplayVisionChat(t *testing.T) {
 	harness := newLiveHarness(t, providers.RoleVisionOCRFallback, 4*time.Minute)
+	// The vision legs resolve the model through GAME_NARRATOR_LIVE_VISION_MODEL
+	// (default: GAME_NARRATOR_LIVE_MODEL); a text-only model cannot serve the
+	// vision leg, and the refusal is a NOT RUN, never a failure.
+	visionModel := strings.TrimSpace(os.Getenv("GAME_NARRATOR_LIVE_VISION_MODEL"))
+	if visionModel == "" {
+		visionModel = strings.TrimSpace(os.Getenv("GAME_NARRATOR_LIVE_MODEL"))
+	}
+	if visionModel == "" {
+		visionModel = defaultLiveModel
+	}
+	harness.model = visionModel
+	harness.client.Model = visionModel
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 
@@ -272,8 +325,8 @@ func TestLiveRecordThenReplayVisionChat(t *testing.T) {
 		}},
 		MaxTokens: 300,
 	}
-	want, attempts := harness.chatWithRetry(t, ctx, req, "vision")
-	harness.replayAndCompare(t, ctx, req, want, attempts)
+	want := harness.chatVision(t, ctx, req, "vision")
+	harness.replayAndCompare(t, ctx, req, want, 1)
 
 	// The image must be represented by its digest and nowhere by its bytes.
 	cassette := recorderCassette(t, harness.dir)

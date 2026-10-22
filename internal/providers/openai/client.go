@@ -148,6 +148,12 @@ type ChatRequest struct {
 	// client was built from a role, the role's configured effort is the
 	// sensible default to pass here (request override > role default).
 	ReasoningEffort string
+	// ChatTemplateParams sends gateway-specific chat-template flags for this
+	// one request (for example {"enable_thinking": false} for the vLLM Qwen/GLM
+	// style templates). Nil sends nothing; the resolved reasoning effort drives
+	// when it is filled in (buildBody), because the flag only makes sense for a
+	// request that resolved to the "none" effort.
+	ChatTemplateParams *chatTemplateParams
 }
 
 // Usage reports token counts. Reasoning is populated when the gateway returns
@@ -660,6 +666,19 @@ type chatRequestBody struct {
 	// budget fields are ignored by the serving stacks we tested). The value is
 	// dropped for the retry attempt when the gateway rejects the field.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// ChatTemplateParams is sent only when the resolved reasoning effort is
+	// "none", as {"chat_template_kwargs":{"enable_thinking":false}} — the
+	// vLLM Qwen/GLM-style templates honour it, and the gateways that do not
+	// simply ignore the flag. The gateway may still reject the whole field; the
+	// reasoning_effort degradation below is then the fallback.
+	ChatTemplateParams *chatTemplateParams `json:"chat_template_kwargs,omitempty"`
+}
+
+// chatTemplateParams is the gateway-specific chat-template flag subset the
+// adapter sends. Kept as a pointer so an unset flag serialises to nothing and
+// an unset enable_thinking serialises to null-free JSON only when set.
+type chatTemplateParams struct {
+	EnableThinking *bool `json:"enable_thinking"`
 }
 
 type responseFormat struct {
@@ -787,6 +806,16 @@ func (c *Client) buildBody(req ChatRequest, messages []chatMessage, tools []wire
 	}
 	if strings.TrimSpace(req.ReasoningEffort) != "" {
 		body.ReasoningEffort = strings.TrimSpace(req.ReasoningEffort)
+	}
+	// The "none" effort is the latency-critical "think hard" switch: the
+	// gateway is asked to disable its reasoning template (vLLM Qwen/GLM-style
+	// templates honour chat_template_kwargs.enable_thinking; gateways that do
+	// not simply ignore the flag). Harmless where unsupported, so it is sent
+	// whenever the resolved effort is "none" rather than only when the effort
+	// field itself was accepted.
+	if strings.EqualFold(strings.TrimSpace(req.ReasoningEffort), "none") {
+		f := false
+		body.ChatTemplateParams = &chatTemplateParams{EnableThinking: &f}
 	}
 	return body
 }
@@ -1157,6 +1186,7 @@ type chatResponsePayload struct {
 			Role             string          `json:"role"`
 			Content          *string         `json:"content"`
 			ReasoningContent *string         `json:"reasoning_content"`
+			Thinking         *string         `json:"reasoning"`
 			ToolCalls        json.RawMessage `json:"tool_calls"`
 		} `json:"message"`
 		Text *string `json:"text"`
@@ -1171,6 +1201,45 @@ type chatResponsePayload struct {
 		} `json:"completion_tokens_details"`
 	} `json:"usage"`
 	ErrorField json.RawMessage `json:"error"`
+}
+
+// The think-tag pair a reasoning model wraps its thinking in. Observed live on
+// the collective gateway (flint, 2026-10-22): the server's reasoning parser
+// does not always split thinking out of the content, so the content arrives
+// either as "<think>…</think>answer" (nothing split) or as "…</think>answer"
+// (the parser took the opening tag and part of the block, leaving the tail and
+// an orphan closing tag in the content).
+const (
+	thinkOpenTag  = "<think>"
+	thinkCloseTag = "</think>"
+)
+
+// splitThinkBlock separates leaked thinking from the answer of a completion
+// content, by the think tags only — never by layout, so a multi-paragraph
+// answer is never cut:
+//
+//   - content leading (after whitespace) with "<think>" and closing it: the
+//     block is the thinking, the text after "</think>" the answer;
+//   - content leading with "<think>" that never closes (the budget ran out
+//     mid-thought): all of it is thinking and there is no answer, so the
+//     caller's "length, no text" classification reports budget exhaustion;
+//   - content with a "</think>" and no "<think>" before it (the orphan tail of
+//     a partly split block): the text before the tag is thinking, the rest
+//     the answer;
+//   - anything else (including "<think>" mid-answer): returned unchanged.
+func splitThinkBlock(content string) (thinking string, answer string) {
+	body := strings.TrimLeft(content, " \t\r\n\f\v")
+	if strings.HasPrefix(body, thinkOpenTag) {
+		rest := body[len(thinkOpenTag):]
+		if k := strings.Index(rest, thinkCloseTag); k >= 0 {
+			return strings.TrimSpace(rest[:k]), strings.TrimSpace(rest[k+len(thinkCloseTag):])
+		}
+		return strings.TrimSpace(rest), ""
+	}
+	if k := strings.Index(body, thinkCloseTag); k >= 0 && !strings.Contains(body[:k], thinkOpenTag) {
+		return strings.TrimSpace(body[:k]), strings.TrimSpace(body[k+len(thinkCloseTag):])
+	}
+	return "", content
 }
 
 func (p chatResponsePayload) toChatResponse(requestedModel string) (ChatResponse, error) {
@@ -1201,8 +1270,32 @@ func (p chatResponsePayload) toChatResponse(requestedModel string) (ChatResponse
 		// A few compatible servers answer completions-style responses.
 		text = *choice.Text
 	}
+	// The reasoning field: the gateway spells it "reasoning_content" (the
+	// OpenAI-compatible convention recorded in the cassettes) and the
+	// vLLM-family builds spell it "reasoning" (observed live on the collective
+	// gateway's flint, 2026-10-22). The first spelling that is present wins;
+	// the split below moves a leaked leading think block into this field too.
+	thinking := ""
 	if choice.Message.ReasoningContent != nil {
-		out.Reasoning = strings.TrimSpace(*choice.Message.ReasoningContent)
+		thinking = strings.TrimSpace(*choice.Message.ReasoningContent)
+	} else if choice.Message.Thinking != nil {
+		thinking = strings.TrimSpace(*choice.Message.Thinking)
+	}
+	// A completion content that leads with a think block (the gateway's
+	// reasoning parser did not split thinking from the answer) has the block
+	// moved into the reasoning field and the remainder returned as the content.
+	// An unterminated block (no answer after it) leaves the content empty, so
+	// the budget-exhausted classification below sees "no text, no tool call".
+	if blockThinking, answer := splitThinkBlock(text); blockThinking != "" || answer != text {
+		if thinking == "" {
+			thinking = blockThinking
+		} else if blockThinking != "" {
+			thinking = thinking + "\n" + blockThinking
+		}
+		text = answer
+	}
+	if thinking != "" {
+		out.Reasoning = thinking
 	}
 	calls, err := parseToolCalls(choice.Message.ToolCalls)
 	if err != nil {
@@ -1222,19 +1315,17 @@ func (p chatResponsePayload) toChatResponse(requestedModel string) (ChatResponse
 	// max_tokens on reasoning and emits an empty answer) — a distinct,
 	// actionable failure (raise the budget or lower the reasoning effort) that
 	// callers must not confuse with a schema-less empty message. A
-	// reasoning-only answer on "stop" stays a normal response.
+	// reasoning-only answer on "stop" stays a normal response. The split above
+	// makes a leaked thinking block land here as reasoning with no answer, so
+	// the exhaustion is recognised instead of surfacing as a bare answer.
 	if strings.EqualFold(choice.FinishReason, "length") && strings.TrimSpace(text) == "" && len(calls) == 0 {
-		reasoning := ""
-		if choice.Message.ReasoningContent != nil {
-			reasoning = strings.TrimSpace(*choice.Message.ReasoningContent)
-		}
 		e := providers.NewError(providers.KindBudgetExhausted, http.StatusOK,
 			fmt.Sprintf("openai: output budget exhausted: finish_reason=length with no text and no tool calls (usage prompt=%d completion=%d reasoning=%d)",
 				usage.Prompt, usage.Completion, usage.Reasoning))
 		e.Err = ErrOutputBudgetExhausted
 		e.Model = p.Model
 		e.RequestID = p.ID
-		resp := ChatResponse{FinishReason: choice.FinishReason, Model: out.Model, Reasoning: reasoning, Usage: usage, RequestID: p.ID}
+		resp := ChatResponse{FinishReason: choice.FinishReason, Model: out.Model, Reasoning: thinking, Usage: usage, RequestID: p.ID}
 		return resp, e
 	}
 	if strings.TrimSpace(text) == "" && out.Reasoning == "" && len(calls) == 0 {

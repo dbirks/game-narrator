@@ -488,6 +488,104 @@ func TestChatRecordedLengthFinishWithToolCallIsNotAnError(t *testing.T) {
 	}
 }
 
+// The live collective gateway (flint, 2026-10-22) leaks thinking into the
+// completion content when its reasoning parser does not split it out: either
+// the whole "<think>…</think>" block leads the content, or the parser took the
+// opening tag and left the tail with an orphan "</think>". The adapter moves
+// the thinking to the reasoning field and returns the answer as the content.
+func TestChatLeakedThinkBlockMovesToReasoning(t *testing.T) {
+	for _, tc := range []struct {
+		name, content, reasoning, wantText, wantReasoning string
+	}{
+		{"whole block", `<think>The user wants pong.</think>pong`, ``, "pong", "The user wants pong."},
+		{"orphan close", `exactly that, no extra text.</think>pong`, `Check: the instruction says pong;`, "pong", "Check: the instruction says pong;\nexactly that, no extra text."},
+		{"block then paragraphs", "<think>plan</think>First paragraph.\n\nSecond paragraph.", ``, "First paragraph.\n\nSecond paragraph.", "plan"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reasoningField := ""
+			if tc.reasoning != "" {
+				b, _ := json.Marshal(tc.reasoning)
+				reasoningField = `,"reasoning":` + string(b)
+			}
+			cb, _ := json.Marshal(tc.content)
+			srv, _ := recordedServer(t, http.StatusOK,
+				`{"model":"`+recordedModel+`","choices":[{"index":0,"message":{"role":"assistant","content":`+string(cb)+reasoningField+`},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":4}}`)
+			c := newTestClient(t, srv)
+			resp, err := c.Chat(context.Background(), ChatRequest{Messages: []Message{{Role: "user", Text: "Reply with exactly: pong"}}, MaxTokens: 200})
+			if err != nil {
+				t.Fatalf("Chat: %v", err)
+			}
+			if resp.Text != tc.wantText {
+				t.Errorf("Text = %q, want %q", resp.Text, tc.wantText)
+			}
+			if resp.Reasoning != tc.wantReasoning {
+				t.Errorf("Reasoning = %q, want %q", resp.Reasoning, tc.wantReasoning)
+			}
+		})
+	}
+}
+
+// An unterminated think block — the budget ran out mid-thought — leaves no
+// answer, so the completion is the budget exhaustion the adapter classifies.
+func TestChatUnterminatedThinkBlockIsBudgetExhausted(t *testing.T) {
+	srv, _ := recordedServer(t, http.StatusOK,
+		`{"model":"`+recordedModel+`","choices":[{"index":0,"message":{"role":"assistant","content":"<think>We are thinking about the harbour bell..."},"finish_reason":"length"}],"usage":{"prompt_tokens":65,"completion_tokens":48}}`)
+	c := newTestClient(t, srv)
+	resp, err := c.Chat(context.Background(), ChatRequest{Messages: []Message{{Role: "user", Text: "hi"}}, MaxTokens: 48})
+	if !errors.Is(err, ErrOutputBudgetExhausted) {
+		t.Fatalf("error = %v (%T), want ErrOutputBudgetExhausted", err, err)
+	}
+	if resp.Text != "" {
+		t.Errorf("resp.Text = %q, want no answer for an unterminated block", resp.Text)
+	}
+	if resp.Reasoning != "We are thinking about the harbour bell..." {
+		t.Errorf("resp.Reasoning = %q, want the unterminated block", resp.Reasoning)
+	}
+}
+
+// Content without think tags is the answer verbatim — a multi-paragraph
+// answer is never cut at its blank line, and a "<think>" that appears
+// mid-answer is never stripped.
+func TestChatContentWithoutThinkTagsIsNotStripped(t *testing.T) {
+	for _, content := range []string{
+		"First paragraph.\n\nSecond paragraph.",
+		"The tag <think> is literal here, and so is </think> after it.",
+	} {
+		cb, _ := json.Marshal(content)
+		srv, _ := recordedServer(t, http.StatusOK,
+			`{"model":"`+recordedModel+`","choices":[{"index":0,"message":{"role":"assistant","content":`+string(cb)+`,"reasoning_content":"a thinking trail"},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":4}}`)
+		c := newTestClient(t, srv)
+		resp, err := c.Chat(context.Background(), ChatRequest{Messages: []Message{{Role: "user", Text: "hi"}}, MaxTokens: 64})
+		if err != nil {
+			t.Fatalf("Chat: %v", err)
+		}
+		if resp.Text != content {
+			t.Errorf("Text = %q, want the content verbatim", resp.Text)
+		}
+		if resp.Reasoning != "a thinking trail" {
+			t.Errorf("Reasoning = %q, want the reasoning field", resp.Reasoning)
+		}
+	}
+}
+
+// A tool turn whose content holds think + JSON (no tool_calls) keeps the JSON
+// as the content the executor receives.
+func TestChatToolTurnContentWithThinkBlockYieldsJSONAnswer(t *testing.T) {
+	srv, _ := recordedServer(t, http.StatusOK,
+		`{"model":"`+recordedModel+`","choices":[{"index":0,"message":{"role":"assistant","content":"<think>Let me call the tool.</think>\n{\"text\": \"ping\"}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":6}}`)
+	c := newTestClient(t, srv)
+	resp, err := c.Chat(context.Background(), ChatRequest{Messages: []Message{{Role: "user", Text: "ping"}}, MaxTokens: 256})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if resp.Text != `{"text": "ping"}` {
+		t.Errorf("Text = %q, want the JSON answer after the think block", resp.Text)
+	}
+	if resp.Reasoning != "Let me call the tool." {
+		t.Errorf("Reasoning = %q, want the moved think block", resp.Reasoning)
+	}
+}
+
 func TestChatTimeoutContextDeadlineIsClassifiedTimeout(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
