@@ -1,5 +1,7 @@
 # Acceptance report — 2026-10-21 — **#41 close-out: live narration made fast and reliable**
 
+> **Superseded by `docs/status/acceptance-2026-10-22.md`** (the 2026-10-22 close-out; this file is history).
+
 **Supersedes the 2026-10-20 DRAFT** (`docs/status/acceptance-2026-10-20.md` is kept as
 history; this file is the 2026-10-21 close-out — the 10-20 report carries an add-one-line
 pointer at its top). Per-milestone status for this close-out: `docs/status/milestones-2026-10-21.md`.
