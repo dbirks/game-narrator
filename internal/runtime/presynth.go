@@ -9,7 +9,6 @@ package runtime
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -90,48 +89,36 @@ func profileSpeechMaps(content store.ProfileContent, resolveSpeaker func(string)
 // identity, and a line on a shared slot must not take its voice from the
 // link alone.
 //
-// A character answers to the speaker keys it is known by — its name plus each
-// alias, folded the way the roster folds labels (the same textnorm the
-// importer uses). A character that answers to more than one key is one the
-// roster reached through a slot link (the Wind Waker's opaque `ww:spk:<n>`
-// keys), which is the shared shape the live play showed: the slot is a shared
-// slot, and the lines that resolved through it are the ones that must be
-// re-attributed per occurrence rather than voiced through the linked
-// character. A character that answers to a single key is a single-speaker
-// attribution and keeps its assignment.
+// A slot is judged shared from the script itself: a character that the
+// profile's lines reach through more than one distinct speaker key (on the
+// live board Aryll was linked from both `ww:spk:11` and `ww:spk:3`) is a
+// curator's merge of slots, and a slot the curator merged onto one character
+// is one that several speakers use. A character reached through a single
+// speaker key — however many names and aliases it carries — is a
+// single-speaker attribution and keeps its assignment. (The first cut counted
+// names plus aliases, so every slot-linked character, name + one alias, read
+// as shared and the A/V harness's character spoke as the narrator.)
 func sharedSpeakerSlots(content store.ProfileContent, resolveSpeaker func(string) string) map[string]bool {
-	keysByChar := map[string][]string{}
-	for _, c := range content.Characters {
-		if c.ID == "" {
+	keysByChar := map[string]map[string]bool{}
+	for _, m := range content.Messages {
+		if m.SpeakerID == "" {
 			continue
 		}
-		seen := map[string]bool{}
-		var keys []string
-		addKey := func(s string) {
-			k := textnorm.Normalize(s, textnorm.Options{})
-			if k == "" || seen[k] {
-				return
-			}
-			seen[k] = true
-			keys = append(keys, k)
+		char := resolveSpeaker(m.SpeakerID)
+		if char == "" {
+			continue
 		}
-		addKey(c.Name)
-		if len(c.Aliases) > 0 {
-			var aliases []string
-			_ = json.Unmarshal(c.Aliases, &aliases)
-			for _, a := range aliases {
-				addKey(a)
-			}
+		if keysByChar[char] == nil {
+			keysByChar[char] = map[string]bool{}
 		}
-		keysByChar[c.ID] = keys
+		keysByChar[char][textnorm.Normalize(m.SpeakerID, textnorm.Options{})] = true
 	}
 	out := map[string]bool{}
 	for _, m := range content.Messages {
 		if m.SpeakerID == "" {
 			continue
 		}
-		char := resolveSpeaker(m.SpeakerID)
-		if len(keysByChar[char]) > 1 {
+		if len(keysByChar[resolveSpeaker(m.SpeakerID)]) > 1 {
 			out[m.ID] = true
 		}
 	}

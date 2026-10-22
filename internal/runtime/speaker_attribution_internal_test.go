@@ -89,43 +89,33 @@ func TestCommitSpeakerUnattributedLineIsTheNarrator(t *testing.T) {
 }
 
 // TestSharedSpeakerSlots is the ADR-0156 roster half of the gate: which of a
-// published profile's lines resolve through a speaker slot that is shared
-// (the character answered by more than one speaker key — the slot-link shape
-// the live play showed), so the speech side knows when the slot→character link
-// must not speak for the line.
+// published profile's lines resolve through a speaker slot that is shared —
+// a character the script reaches through more than one distinct speaker key
+// (the curator's merge of slots the live play showed) — so the speech side
+// knows when the slot→character link must not speak for the line.
 func TestSharedSpeakerSlots(t *testing.T) {
-	resolve := func(id string) string { return id }
+	// The curator's links: two slot keys onto one character, one slot key
+	// onto another (which also carries a display alias).
+	links := map[string]string{"ww:spk:11": "char-sister", "ww:spk:3": "char-sister", "ww:spk:7": "char-baker"}
+	resolve := func(id string) string { return links[id] }
 	content := store.ProfileContent{
 		Characters: []games.Character{
-			// One character, reached through its own name and through a slot
-			// key: the shared-slot shape (the curator's link of an opaque
-			// `ww:spk:<n>` onto a real character).
-			{ID: "char-aryll", Name: "Aryll"},
-			{ID: "char-villager", Name: "Villager", Aliases: json.RawMessage(`["ww:spk:11"]`)},
+			{ID: "char-sister", Name: "Sister", Aliases: json.RawMessage(`["ww:spk:11","ww:spk:3"]`)},
+			{ID: "char-baker", Name: "Baker", Aliases: json.RawMessage(`["ww:spk:7","the baker"]`)},
 		},
 		Messages: []games.Message{
-			{ID: "msg-1", SpeakerID: "char-aryll"},
-			{ID: "msg-2", SpeakerID: "char-villager"},
+			{ID: "msg-1", SpeakerID: "ww:spk:11"},
+			{ID: "msg-2", SpeakerID: "ww:spk:3"},
+			{ID: "msg-3", SpeakerID: "ww:spk:7"},
+			{ID: "msg-4", SpeakerID: "ww:spk:7"},
 		},
 	}
 	shared := sharedSpeakerSlots(content, resolve)
-	if !shared["msg-2"] {
-		t.Fatalf("shared = %v, want msg-2 (the linked slot) marked shared", shared)
+	if !shared["msg-1"] || !shared["msg-2"] {
+		t.Fatalf("shared = %v, want msg-1 and msg-2 (two slots merged onto one character) marked shared", shared)
 	}
-	if shared["msg-1"] {
-		t.Fatalf("shared = %v, want msg-1 (a single-speaker character) not marked shared", shared)
-	}
-
-	// A roster with a single-speaker character per line keeps no shared slot.
-	single := store.ProfileContent{
-		Characters: []games.Character{
-			{ID: "char-arya", Name: "Aryll"},
-		},
-		Messages: []games.Message{
-			{ID: "msg-1", SpeakerID: "char-arya"},
-		},
-	}
-	if got := sharedSpeakerSlots(single, resolve); len(got) != 0 {
-		t.Fatalf("shared = %v, want none for a single-speaker roster", got)
+	// A name plus aliases is not sharing: one slot key reaches the baker.
+	if shared["msg-3"] || shared["msg-4"] {
+		t.Fatalf("shared = %v, want the single-slot character's lines not marked shared", shared)
 	}
 }

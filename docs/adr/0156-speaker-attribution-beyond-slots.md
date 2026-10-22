@@ -115,3 +115,15 @@ migration is needed.
 ## Links / references
 
 - ADR-0070, ADR-0101, ADR-0154.
+
+## Amendment 2026-10-22: what makes a slot "shared"
+
+The first cut judged a line's slot shared when its resolved character answered to more than one key (its name plus its aliases). Every slot-linked character carries a name plus at least one `ww:spk:<n>` alias, so every slot-linked line counted as shared. Without a confident adjudicator answer, each one fell back to the narrator.
+
+`make test-av` on 6f75ea6 caught this: 9 of 12 lines spoke in the narrator voice instead of the character's. The latency gate still passed, at p50/p95 7/404 ms.
+
+A slot is now shared when the profile's lines reach the resolved character through **more than one distinct speaker key**. That is the curator merging slots onto one character, as on the board, where Aryll is linked from both `ww:spk:11` and `ww:spk:3`.
+
+A character reached through a single key keeps its assignment, however many names and aliases it carries.
+
+**Limitation:** a single slot used by several NPCs but linked to one character is not detectable from the script. It still voices through the link, unless the adjudicator confidently names someone else.
