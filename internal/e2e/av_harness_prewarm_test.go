@@ -15,6 +15,7 @@ package e2e
 
 import (
 	"context"
+	"github.com/dbirks/game-narrator/internal/runtime"
 	"strings"
 	"testing"
 	"time"
@@ -68,7 +69,7 @@ func avResolvePrewarmVoice(t *testing.T, ctx context.Context, st *store.Store, s
 // candidates; the runtime speaks the tracker's normalized reading, which is
 // the corpus's normalized form for a clean box) are synthesised under both
 // voices so whichever the session resolves has a warm entry.
-func avPreSynthesize(t *testing.T, ctx context.Context, st *store.Store, svc *voices.Service, profileID, fdDir string, char, narr pcVoiceOutcome) int {
+func avPreSynthesize(t *testing.T, ctx context.Context, st *store.Store, svc *voices.Service, profileID, fdDir string, char, narr pcVoiceOutcome) (int, map[string]bool) {
 	t.Helper()
 	prof := pcLoadFixtureProfile(t, fdDir)
 
@@ -170,8 +171,8 @@ func avPreSynthesize(t *testing.T, ctx context.Context, st *store.Store, svc *vo
 		// Warm the mapped fixture line plus its contiguous conversation block
 		// in corpus order (the first-dialogue fixture records the opening
 		// pages; cuDriveConversation drives the rest of the same watchtower
-		// conversation).
-		for off := 0; off <= 6 && target.idx+off < len(all); off++ {
+		// conversation, which can run 20 messages past a recorded line).
+		for off := 0; off <= 20 && target.idx+off < len(all); off++ {
 			m := &all[target.idx+off]
 			if warmedIDs[m.ID] {
 				continue
@@ -211,7 +212,25 @@ func avPreSynthesize(t *testing.T, ctx context.Context, st *store.Store, svc *vo
 		}
 	}
 	t.Logf("prewarm: warmed %d (voice, line-text) cache entries across %d conversation lines (the live run's latency gate now measures the session, not TTS)", inserted, len(targets))
-	return inserted
+	ids := make(map[string]bool, len(targets))
+	for _, tg := range targets {
+		ids[tg.id] = true
+	}
+	return inserted, ids
+}
+
+// avRuntimePresynth warms the conversation's messages through the runtime's
+// own pre-synthesis (ADR-0153): the exact keys the live commit computes,
+// display pages (ADR-0155) and shared-slot voices (ADR-0156) included — the
+// per-line warm above keys whole messages only, so a multi-box line missed.
+func avRuntimePresynth(t *testing.T, ctx context.Context, m *runtime.Manager, profileID string, ids map[string]bool) {
+	t.Helper()
+	p, err := m.PresynthesizeProfile(ctx, profileID, runtime.PresynthOptions{MessageIDs: ids, Concurrency: 2}, func(runtime.PresynthProgress) {})
+	if err != nil {
+		t.Logf("prewarm: runtime presynth: %v (lines it missed are cold misses live)", err)
+		return
+	}
+	t.Logf("prewarm: runtime presynth over %d messages: %d utterances, %d synthesized, %d cache hits, %d failed, %d skipped", len(ids), p.Total, p.Synthesized, p.CacheHits, p.Failed, p.Skipped)
 }
 
 // storeMessage is the corpus row's prewarm-relevant fields (id + the two

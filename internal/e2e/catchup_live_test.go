@@ -362,7 +362,8 @@ func TestLiveCatchUpRapidDialogue(t *testing.T) {
 	// ADR-0153) and the A/V harness does: without it the catch-up timing
 	// measured the TTS backend's raw synthesis (2-3 s per uncached line on
 	// 2026-10-22), not the session's catch-up pacing the assertions are about.
-	warmed := avPreSynthesize(t, ctx, st, cuV.service, cuScene.profileID, fdDir, cuV.char, cuV.narr)
+	warmed, warmedIDs := avPreSynthesize(t, ctx, st, cuV.service, cuScene.profileID, fdDir, cuV.char, cuV.narr)
+	avRuntimePresynth(t, ctx, sessions, cuScene.profileID, warmedIDs)
 	t.Logf("catchup e2e: prewarm: %d (voice, line-text) cache entries", warmed)
 
 	// ── the live session: bridge from the first-dialogue savestate ───────

@@ -196,6 +196,10 @@ func kindSpeakerByKey(content store.ProfileContent) map[string]string {
 type PresynthOptions struct {
 	// Limit caps the lines considered (profile order); 0 = all.
 	Limit int
+	// MessageIDs restricts the run to these messages (all their pages);
+	// nil = every message. A harness warming one conversation uses it to
+	// get the live path's exact keys without synthesizing the whole profile.
+	MessageIDs map[string]bool
 	// Concurrency is the parallel syntheses (default 1, max 4): the remote
 	// TTS is shared with live play.
 	Concurrency int
@@ -291,6 +295,9 @@ func (m *Manager) PresynthesizeProfile(ctx context.Context, profileID string, op
 		text string
 	}, 0, len(content.Messages))
 	for _, msg := range content.Messages {
+		if opt.MessageIDs != nil && !opt.MessageIDs[msg.ID] {
+			continue
+		}
 		msgPages := pages[msg.ID]
 		if len(msgPages) > 1 {
 			for i, pageText := range msgPages {

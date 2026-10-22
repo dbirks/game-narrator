@@ -165,7 +165,8 @@ func TestLiveDolphinAVHarness(t *testing.T) {
 		s.charID, cuV.char.Registered, "narrator", cuV.narr.Registered)
 
 	// ── warm the TTS cache (the ADR-0143 design) ──────────────────────────
-	prewarm := avPreSynthesize(t, ctx, st, cuV.service, s.profileID, pc.fdDir, cuV.char, cuV.narr)
+	prewarm, prewarmIDs := avPreSynthesize(t, ctx, st, cuV.service, s.profileID, pc.fdDir, cuV.char, cuV.narr)
+	avRuntimePresynth(t, ctx, sessions, s.profileID, prewarmIDs)
 
 	// ── the live session: bridge from the route's savestate (the ADR-0162
 	//    play loop) or the first-dialogue fixture state ─────────────────────
