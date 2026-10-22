@@ -3774,7 +3774,17 @@ type commitWatcher struct {
 func (p *commitWatcher) Publish(ctx context.Context, e events.Envelope) (events.Envelope, error) {
 	switch e.Name {
 	case events.MessageCommitted:
-		p.w.onCommit(e)
+		// Publish the commit first, then route it: the speech events onCommit
+		// emits synchronously (speech.requested, a duplicate's skipped
+		// terminal) are effects of the commit and must follow it in the
+		// stream. Routing first put them ahead of their own commit, and a
+		// consumer that builds lines from commits lost the terminal of a
+		// duplicate-region skip (the live catch-up test's claim rule).
+		out, err := p.inner.Publish(ctx, e)
+		if err == nil {
+			p.w.onCommit(out)
+		}
+		return out, err
 	case events.SessionSceneChanged:
 		// A scene change invalidates the in-flight prewarm batch (docs/spec/07
 		// "...capped by scenes"): the committed line's successors were computed

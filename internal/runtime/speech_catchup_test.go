@@ -635,3 +635,50 @@ func TestSpeechCatchUpIdleBatchFlushesFast(t *testing.T) {
 		t.Fatalf("the idle batch took %s to speak; it waited for the window", d)
 	}
 }
+
+// TestCommitPrecedesItsSpeechEvents: through the commit watcher (the real
+// publisher chain), a commit is in the stream before the speech events it
+// causes — the speech.requested of a spoken line and the skipped terminal of
+// a cross-region duplicate. Routing first put them ahead of their commit, and
+// the live catch-up test lost a duplicate's terminal.
+func TestCommitPrecedesItsSpeechEvents(t *testing.T) {
+	e := newCatchUpEnv(t, 0.2, "catch_up", 0, 0, nil)
+	pub := &commitWatcher{w: e.w, inner: e.hub}
+	commit := func(occ, region string, gen int64) {
+		data, _ := json.Marshal(map[string]any{
+			"dialogue_occurrence_id": occ, "message_id": "m-order", "region_id": region,
+			"generation": gen, "text": "A line spoken once.", "speech_eligible": true,
+		})
+		if _, err := pub.Publish(context.Background(), events.Envelope{
+			SchemaVersion: 1, SessionID: e.w.id, Name: events.MessageCommitted,
+			OccurredAt: time.Now().UTC(), Data: data,
+		}); err != nil {
+			t.Fatalf("publish: %v", err)
+		}
+	}
+	commit("occ-a", "bottom", 1)
+	commit("occ-b", "middle", 2) // the same line from another region: a duplicate
+	evs := e.waitEvents(t, "the duplicate's terminal", 5*time.Second, func(evs []events.Envelope) bool {
+		for _, ev := range evs {
+			if ev.Name == events.SpeechEnded && strings.Contains(string(ev.Data), "occ-b") {
+				return true
+			}
+		}
+		return false
+	})
+	seen := map[string]bool{}
+	for _, ev := range evs {
+		var d struct {
+			Occ string `json:"dialogue_occurrence_id"`
+		}
+		_ = json.Unmarshal(ev.Data, &d)
+		switch ev.Name {
+		case events.MessageCommitted:
+			seen[d.Occ] = true
+		case events.SpeechRequested, events.SpeechEnded:
+			if d.Occ != "" && !seen[d.Occ] {
+				t.Fatalf("%s for %s precedes its message.committed in the stream (%s)", ev.Name, d.Occ, namesOf(evs))
+			}
+		}
+	}
+}
