@@ -148,3 +148,17 @@ jobs:
           make test-replay || rc=$?
           scripts/gates/annotate-go.sh artifacts/gates/test-replay.json "go test (replay)"
           exit "$rc"
+
+      # A -race failure's report lives in the go test -json Output events,
+      # which the annotators truncate to 3 lines and the runner discards: a
+      # rare CI-only race (2026-10-22, gn-t025-catch-up) could not be
+      # diagnosed. On failure, print every DATA RACE report in full.
+      - name: print data race reports
+        if: failure()
+        run: |
+          for f in artifacts/gates/*.json artifacts/ci/*.json; do
+            [ -f "$f" ] || continue
+            jq -r 'select(.Action=="output") | .Output' "$f" 2>/dev/null \
+              | awk '/WARNING: DATA RACE/{p=1} p{print} p && /^==================$/{p=0}' \
+              | head -400
+          done
