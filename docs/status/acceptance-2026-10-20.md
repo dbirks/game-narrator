@@ -1,5 +1,7 @@
 # Acceptance report — 2026-10-20 — **DRAFT — final numbers pending**
 
+> **Superseded by the 2026-10-21 close-out:** `docs/status/acceptance-2026-10-21.md`.
+
 **Audit update 2026-10-21 ~04:30, revised ~04:55** (per-milestone/per-gap
 claims re-verified against the code — routes, tests, scenario YAMLs,
 Makefile gates — and against CI/gate-run state; see
