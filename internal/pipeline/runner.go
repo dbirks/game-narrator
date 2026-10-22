@@ -543,6 +543,7 @@ func (r *Runner) rankWorker(ctx context.Context, ranks <-chan rankJob, replies c
 					Ranking:         askRank,
 					Speakers:        r.cfg.Speakers,
 					LastMessage:     r.lastCommitted(),
+					Frame:           r.latestImage(),
 				})
 				// The verdict is the reply's own reason: the bounded enum the
 				// telemetry catalog names (answered / provider_error / not

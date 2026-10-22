@@ -612,6 +612,13 @@ type DecisionRequest struct {
 	// LastMessage is the id of the last committed message, when known; the
 	// request's context carries it the way docs/spec/05's example context does.
 	LastMessage string
+	// Frame is the newest full frame when the request was made (the box is
+	// still on screen: the request follows the settled reading), nil when the
+	// source has delivered none. The Decider attaches it to the adjudication
+	// (ADR-0154): the model reads the whole screenshot, so a box the ROI
+	// cropped badly — or found at a placement no region covers — is still
+	// decided from what the player sees.
+	Frame image.Image
 }
 
 // DecisionReply is the Decider's answer to one DecisionRequest. The pipeline

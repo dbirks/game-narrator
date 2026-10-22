@@ -58,6 +58,17 @@ func (r *Runner) LatestFrame() (f capture.Frame, ok bool) {
 	return r.liveView.frame, r.liveView.hasFrame
 }
 
+// latestImage is the newest frame's picture for the Decider (ADR-0154), nil
+// before the first frame. Frames are immutable (capture.Frame), so the
+// picture may be read after the lock is released.
+func (r *Runner) latestImage() image.Image {
+	f, ok := r.LatestFrame()
+	if !ok {
+		return nil
+	}
+	return f.Image
+}
+
 // noteCrop records one region's last crop box (the frame-coordinate box the
 // ROI stage's cut used) after the ROI stage computed it. An empty box
 // records nothing: a region that crops nothing has no last crop, and the

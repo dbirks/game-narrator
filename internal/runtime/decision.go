@@ -222,6 +222,13 @@ func (w *decisionWiring) Decide(ctx context.Context, req pipeline.DecisionReques
 		LastMessage: req.LastMessage,
 	}
 	bundle := systemone.BuildAdjudication(obs, scands, speakers)
+	// The screenshot (ADR-0154): the model reads the whole frame, not only the
+	// OCR'd text, so a misplaced crop or a misread box is still decided from
+	// the picture. No frame (a source that delivered none yet) keeps the
+	// historic text-only request.
+	if jpg := encodeDecisionFrame(req.Frame); jpg != nil {
+		bundle.Images = [][]byte{jpg}
+	}
 	if len(speakers) == 0 {
 		// The profile declares no speakers: the bundle's speaker question
 		// would carry a single "unknown" option, which the protocol's choice

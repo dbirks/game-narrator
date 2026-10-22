@@ -60,6 +60,7 @@ type fakeClef struct {
 	reqIDs      []string        // the X-Request-Id the gateway assigned, in order
 	deadlineObs []time.Duration // request contexts cancelled before the scripted sleep finished
 	ocrTexts    []string        // the state.ocr of each request (the text adjudicated)
+	images      [][]string      // the images of each request (ADR-0154: the screenshot)
 
 	pick       string // the candidate option to answer ("" = the protocol's c2-or-first)
 	failStatus int    // 0 = answer; >0 = fail every request with this status
@@ -96,8 +97,9 @@ func clefFail(status int) func(*fakeClef) { return func(g *fakeClef) { g.failSta
 func clefSleep(d time.Duration) func(*fakeClef) { return func(g *fakeClef) { g.sleep = d } }
 
 type clefWireRequest struct {
-	Model string `json:"model"`
-	State struct {
+	Model  string   `json:"model"`
+	Images []string `json:"images"`
+	State  struct {
 		OCR string `json:"ocr"`
 	} `json:"state"`
 	Questions map[string]struct {
@@ -133,6 +135,7 @@ func (g *fakeClef) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	g.mu.Lock()
 	g.ocrTexts = append(g.ocrTexts, req.State.OCR)
+	g.images = append(g.images, req.Images)
 	g.mu.Unlock()
 
 	if g.failStatus > 0 {
@@ -519,6 +522,15 @@ func TestDecisionAdjudicatesAmbiguousCommit(t *testing.T) {
 	if got := g.hitsCount(); got < 2 {
 		t.Fatalf("gateway hits = %d, want ≥2 (both lines were adjudicated)", got)
 	}
+	// --- the screenshot (ADR-0154): every adjudication carried the frame. ---
+	g.mu.Lock()
+	for i, imgs := range g.images {
+		if len(imgs) != 1 || !strings.HasPrefix(imgs[0], "data:image/jpeg;base64,") {
+			g.mu.Unlock()
+			t.Fatalf("request %d carried %d images (%.40q…), want the frame as one JPEG", i, len(imgs), imgs)
+		}
+	}
+	g.mu.Unlock()
 
 	// --- the counters and the session's decision view. ---
 	decisions, applied, fenced := decisionStats(t, e, sid)
