@@ -530,7 +530,12 @@ test("the Traces screen: the line list, the strip, the actions and the UX-05 wal
     // revision the operator would review — the flow's contract here is that
     // the correction triggers the agent walk and the gate verifies the staged
     // action before any write, and the agent reports the outcome honestly.
-    const thread = await (async () => {
+    type Thread = {
+      state: string;
+      questions: { id: string; kind: string; answer?: string }[];
+      tool_cards: { name: string; state: string; result_preview: string }[];
+    };
+    const readThread = async (): Promise<Thread> => {
       const list = (await (await request.get(`${origin}/api/v1/assistant/threads`)).json()) as {
         threads: { id: string }[];
       };
@@ -538,12 +543,16 @@ test("the Traces screen: the line list, the strip, the actions and the UX-05 wal
       if (!newestId) throw new Error("no assistant thread for the walk");
       return (await (
         await request.get(`${origin}/api/v1/assistant/threads/${newestId}`)
-      ).json()) as {
-        state: string;
-        questions: { id: string; kind: string; answer?: string }[];
-        tool_cards: { name: string; state: string; result_preview: string }[];
-      };
-    })();
+      ).json()) as Thread;
+    };
+    // The confirmed apply lands after the operator's confirm: under the full
+    // suite's load a single read could see only the staged card, so the
+    // thread is read until the run is terminal (bounded), not once.
+    let thread = await readThread();
+    for (let i = 0; i < 30 && thread.state !== "succeeded" && thread.state !== "failed"; i++) {
+      await page.waitForTimeout(500);
+      thread = await readThread();
+    }
     // The confirmation card was answered by the operator's confirm.
     const confirmation = thread.questions.find((q) => q.kind === "confirmation");
     expect(confirmation, "the bulk fix staged a confirmation card").toBeTruthy();
