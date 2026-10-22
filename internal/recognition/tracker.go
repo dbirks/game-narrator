@@ -462,6 +462,13 @@ func (t *Tracker) progress(o Observation) []Transition {
 		elapsed = 0
 		t.changed = o.CaptureTimestampNS
 	}
+	if o.OCRLagging && t.state != StateCommitted {
+		// The crop moved but the text is an older read (OCRLagging): restart
+		// the stability window — a typewriter still revealing under a slow
+		// OCR must not be declared finished on a stale prefix.
+		t.changed = o.CaptureTimestampNS
+		elapsed = 0
+	}
 	stable := elapsed >= t.cfg.StableWindow
 	// The game's reveal-complete marker (ADR-0152, Wind Waker's advance
 	// prompt): when it is on screen the typewriter has finished, so text

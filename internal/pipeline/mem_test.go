@@ -73,7 +73,14 @@ func TestPeakHeapBoundedDuringReplay(t *testing.T) {
 				}
 			}()
 
-			st, evs, err := h.run(t, h.source(0, false))
+			// Live plays the clip at its real 10 fps cadence: at speed 0 a
+			// live run is a race between the OCR and a clip that has already
+			// finished (CI's slower runners lost the first line to it).
+			speed := 0.0
+			if m.mode == pipeline.ModeLive {
+				speed = 1
+			}
+			st, evs, err := h.run(t, h.source(speed, false))
 			if err != nil {
 				t.Fatalf("Run: %v", err)
 			}

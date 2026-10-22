@@ -547,6 +547,7 @@ func (rs *regionState) accept(r *Runner, ctx context.Context, f capture.Frame, i
 			// re-reads), which is how a slow growth still reaches OCR one frame a
 			// time.
 			p.job = rs.inflight
+			p.lagging = true
 			r.cnt.ocrDeferred()
 		} else {
 			// Quiet but the settle is not armed and nothing is in flight: this is
@@ -576,6 +577,7 @@ func (rs *regionState) accept(r *Runner, ctx context.Context, f capture.Frame, i
 			// the change: whatever settles next re-anchors it.
 			rs.quietRun = 0
 			p.job = rs.inflight
+			p.lagging = true
 			r.cnt.ocrDeferred()
 		} else {
 			p.job = rs.startJob(r, ctx, f.Seq, a, jobs)
@@ -780,6 +782,7 @@ func (rs *regionState) emit(r *Runner, ctx context.Context, in chan<- *obsIn, p 
 		OCR:                p.ready,
 		RevealDetector:     p.a.revealDetector,
 		RevealComplete:     p.a.revealComplete,
+		OCRLagging:         p.lagging,
 	}
 	if err := o.Validate(); err != nil {
 		// An unusable observation is not fed to the tracker — recognition would put

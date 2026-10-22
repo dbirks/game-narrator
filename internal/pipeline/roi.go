@@ -169,6 +169,11 @@ type pending struct {
 	// hash-skip path does not need the flag: its pixels are identical, so the
 	// lastOK-reuse condition in emit matches on the hash alone.
 	phashSkip bool
+	// lagging marks a frame whose crop CHANGED but that rides a read already
+	// in flight for an older crop: the text it will carry describes the past,
+	// not this frame, so it is no evidence the text stopped changing (the
+	// tracker's stability clock must not run on it).
+	lagging bool
 	// ready holds the recognition result once the job resolves. It is a copy of
 	// the engine's Result because recognition.Observation carries a pointer that
 	// the reducer reads later, and the worker's stack frame is not a place to

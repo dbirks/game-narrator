@@ -196,6 +196,14 @@ type Observation struct {
 	// both false and the tracker settles on the stability window alone.
 	RevealDetector bool
 	RevealComplete bool
+	// OCRLagging reports that this frame's crop changed but its text is an
+	// older crop's read (the pipeline rode a read already in flight). The
+	// text is still evidence of what the box said; it is NOT evidence that
+	// the text stopped changing — the stability window restarts on it. With
+	// an OCR slower than the frame interval (the UNO Q's 1–2 s Tesseract)
+	// every frame of a typewriter reveal rides the previous read, and the
+	// window otherwise expired on a stale prefix, committing it unmatched.
+	OCRLagging bool
 }
 
 // Validate enforces the input contract. It returns a descriptive error rather

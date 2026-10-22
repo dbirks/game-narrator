@@ -312,3 +312,26 @@ its hold budget; live-mode belt tests
   `reduce.go` grace arming) and the flag in `internal/bench/run.go` — the
   bench returns to the load-sensitive replay of issue #17, the live path is
   unaffected either way.
+
+## Amendment (2026-10-22): a ridden read is not evidence of stability
+
+**Context.** Riding the in-flight read (the livelock fix) has a side effect. With an OCR slower than the frame interval, as on the UNO Q (Tesseract 1–2 s per crop), every frame of a typewriter reveal carries the *previous* read's text. The tracker saw the same text for many frames and its stability window expired on a stale prefix, so the prefix committed as an unmatched line ("the", "the harbour bell"). The real line was then lost or doubled. Measured on the synthetic clip at real speed:
+
+| Fake OCR latency | Before (commits) | After (commits) |
+|---|---|---|
+| 200 ms | an abstained "the harbour bell", then the 2 real lines | the 2 real lines |
+| 400 ms | 2 abstained prefixes | the 2 real lines |
+
+CI's slower runners hit the same race in `TestPeakHeapBoundedDuringReplay/live`, whose clip played at speed 0.
+
+**Decision.**
+- A frame whose crop changed (or changed within tolerance without the settle armed) but rides a read in flight for an older crop is marked `OCRLagging`.
+- The tracker restarts its stability window on such frames. The text still counts as evidence of what the box says; it no longer counts as evidence that the text stopped changing.
+- Frames with identical pixels, or an armed perceptual skip, are unaffected.
+
+**Validation.**
+- `TestSlowOCRCommitsTheFullLinesNotAPrefix` (150 and 250 ms OCR at real speed): no abstained prefix, and exactly the two lines.
+- The heap test's live leg now plays at real speed.
+- Recognition, pipeline, runtime, scenario and session pass under `-race`; `make test-replay` is 142 PASS, 0 NOT RUN.
+
+**Consequence.** A line settles one stability window after the reveal's last *read* rather than its last frame. For Wind Waker the advance-prompt settle (ADR 0152) shortcuts this.
