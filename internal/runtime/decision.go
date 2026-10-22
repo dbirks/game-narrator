@@ -259,6 +259,16 @@ func (w *decisionWiring) Decide(ctx context.Context, req pipeline.DecisionReques
 		dec, err = client.Decide(ctx, bundle)
 		return struct{}{}, err
 	})
+	if callErr != nil && errors.Is(ctx.Err(), context.Canceled) {
+		// The caller withdrew the question (a newer generation superseded
+		// the read, or the session stopped): our own cancellation, not the
+		// provider failing. Marking the role degraded here flashed
+		// "decision degraded" on every fast advance and failed the live
+		// play test with a decision answered a second earlier.
+		reply.Reason = "cancelled"
+		reply.Model = w.opts.Role.Model
+		return reply
+	}
 	if callErr != nil {
 		if dctx.Err() == context.DeadlineExceeded {
 			callErr = budgetTimeoutError(callErr)

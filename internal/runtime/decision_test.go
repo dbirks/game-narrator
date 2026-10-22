@@ -1048,3 +1048,41 @@ func TestDecisionLateReplyFencedBySession(t *testing.T) {
 		t.Fatalf("duplicate reply: applied=%v reason=%q, want fenced as duplicate_seq", res.Applied, res.Reason)
 	}
 }
+
+// TestDecisionCancelledByTheSessionIsNotDegradation: a question the session
+// withdraws itself (here: the session stops while Clef is still holding its
+// answer) is not the provider failing. The live play test saw a decision
+// cancelled 200 ms after it was asked marked provider.degraded, a second after
+// a successful answer.
+func TestDecisionCancelledByTheSessionIsNotDegradation(t *testing.T) {
+	corpusPresent(t)
+	g := newFakeClef(t, clefSleep(5*time.Second))
+	src := newManualSource(64)
+	e := newDecisionEnvWithTimeout(t, g, 10*time.Second,
+		withFakeOCR(truthScript(t), 0), withManualSource(func() (capture.Source, error) {
+			return src, nil
+		}))
+	profileID, _ := seedSyntheticProfile(t, e.st, true)
+	info, err := e.mgr.Start(e.ctx, runtime.StartRequest{
+		ProfileID:   profileID,
+		FrameSource: runtime.FrameSource{Kind: runtime.SourceKindManual},
+		Mode:        runtime.ModeConservative,
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	for n := 4; n <= 18; n++ {
+		src.push(t, manualClipFrame(t, n))
+	}
+	e.waitDecisionEvents(t, info.ID, "a decision in flight", 60*time.Second, func(evs []events.Envelope) bool {
+		return hasName(evs, events.DecisionRequested)
+	})
+	if _, err := e.mgr.Stop(info.ID); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	waitState(t, e.mgr, info.ID, 60*time.Second)
+	evs := e.waitDecisionEvents(t, info.ID, "the stream after the stop", 10*time.Second, func([]events.Envelope) bool { return true })
+	if hasName(evs, events.ProviderDegraded) {
+		t.Fatal("provider.degraded on a decision the session itself withdrew, want none")
+	}
+}
