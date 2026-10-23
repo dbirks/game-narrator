@@ -58,3 +58,25 @@ None — the change is harness-local (test helpers); no persisted state, protoco
 ## Follow-ups
 
 None known. Re-validate with `make test-dolphin` (the real-Dolphin catch-up gate) when the fixture is available.
+
+## Amendment 1 (2026-10-23): silence is ambiguous — look at the screen
+
+Evidence: the `make test-av` run in the a83aa1b gate sweep (2026-10-23 04:36Z) ended the conversation after 2 presses
+with Aryll's box still on screen for the remaining ~25 s of the recording. The rapid press had landed while the
+typewriter was still running (it completed the text instead of advancing), and once the box sat fully typed the
+session emitted no `text.observed` at all (it reads the region only when it changes). Rule 3 above treated that
+silence as a closed box: the lost-A retry was suppressed and, after `cuConvGone`, the drive ended.
+
+Decision: silence alone no longer means "gone". When the session has been silent for `cuPressStable`, the driver
+grabs the Dolphin screen through the bridge (`Bridge.Screenshot`) and runs the drive's own `dolphin.BoxPresent`
+checkpoint (at most every `cuPressStable/3`). A fresh check that sees a box makes the silence a static box: the
+stall / lost-A fallbacks run and the conversation is not over. A check that sees no box (or a failed grab) keeps
+rule 3's behaviour. Rules 1 and 2 (empty or absent readings) are unchanged.
+
+Validation: `TestCuDecidePressSilentStaticBoxOnScreenStillPresses`, `TestCuDecidePressSilentNoBoxOnScreenEndsTheDrive`;
+`BoxPresent` checked against frames of the failing run (static box at 30 s and 40 s → box; the opening scene → no
+box); the next `make test-av` run.
+
+Tradeoff: `BoxPresent` is tuned for the lower box band, so a silent top-of-screen box still reads as no box and
+behaves as before this amendment (no fallback press, drive ends after `cuConvGone`). Reversal: drop the screen
+check; rule 3 applies again.

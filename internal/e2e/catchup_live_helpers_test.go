@@ -462,6 +462,8 @@ type cuDriver struct {
 	instAppeared      time.Time       // when the current box instance's text appeared
 	lastObs           time.Time       // when the session's text.observed events last arrived (the box-gone / stale-observation signal; zero: never)
 	lastRegionPresent bool            // the region presence the newest text.observed reported (the box-gone signal when false)
+	screenAt          time.Time       // when the driver last checked the Dolphin screen itself (zero: never)
+	screenBox         bool            // that check's verdict: a dialogue box is on screen (dolphin.BoxPresent)
 	commits           []cuCommitInfo  // the ELIGIBLE matched lines (the press accounting's evidence: the lines the session will speak)
 	matched           []cuCommitInfo  // every MATCHED commit, eligible or abstained (the rapid-press driver: a matched commit is box progress — the box moved, press to advance while the speech is still busy)
 	routed            map[string]bool // every Routed line's occurrence (the settle accounting: the eligible commits plus the read-through lines the wiring routed from the speech.requested's without message_ids — a fenced or still-in-flight line that never terminalled is a lost line, not a settled one)
@@ -636,6 +638,21 @@ func (d *cuDriver) noteTerminal(occ string) {
 	}
 }
 
+// noteScreen records the driver's own look at the Dolphin screen. The session
+// emits text.observed only when the box region's reading changes, so a box
+// that sits fully typed and unchanged is as silent as a box that closed
+// (ADR 0163 amendment): the screen check is the positive signal that tells
+// the two apart.
+func (d *cuDriver) noteScreen(now time.Time, box bool) {
+	d.screenAt, d.screenBox = now, box
+}
+
+// needsScreen reports whether the session has been silent long enough that
+// the driver should look at the screen before deciding.
+func (d *cuDriver) needsScreen(now time.Time) bool {
+	return !d.done && now.Sub(d.lastObs) >= cuPressStable && now.Sub(d.screenAt) >= cuPressStable/3
+}
+
 // cuDecidePress reports whether the driver presses A now and why (the
 // reason lands in the log and the bundle's timeline). The rules, in
 // priority order:
@@ -666,7 +683,10 @@ func (d *cuDriver) decidePress(evs []devEnvelope, now time.Time) (bool, string) 
 	// between-box gap and must not end the drive (that cut a run to 2 presses);
 	// it only suppresses the stall / lost-A fallback presses below, which must
 	// never fire on stale text (the 2026-10-22 run pressed A into gameplay).
-	boxGone := (!d.boxEmpty.IsZero() && now.Sub(d.boxEmpty) >= cuConvGone) || now.Sub(d.lastObs) >= cuConvGone
+	// A silent session with a box visibly on screen (the driver's own fresh
+	// screen check) is a static, fully typed box, not a closed one.
+	screenShowsBox := d.screenBox && !d.screenAt.IsZero() && now.Sub(d.screenAt) < cuPressStable
+	boxGone := (!d.boxEmpty.IsZero() && now.Sub(d.boxEmpty) >= cuConvGone) || (now.Sub(d.lastObs) >= cuConvGone && !screenShowsBox)
 	if boxGone {
 		if len(d.commits) >= 1 {
 			d.done = true // the conversation is over
@@ -697,9 +717,10 @@ func (d *cuDriver) decidePress(evs []devEnvelope, now time.Time) (bool, string) 
 			return true, "rapid: line " + shortID(c.MessageID) + " (gen " + itoa(c.Generation) + ") committed — press while the speech is still busy"
 		}
 	}
-	if !d.lastRegionPresent || now.Sub(d.lastObs) >= cuPressStable {
+	if !d.lastRegionPresent || (now.Sub(d.lastObs) >= cuPressStable && !screenShowsBox) {
 		// The box region is not being observed right now (absent, or no fresh
-		// reading): the stale lastText is not a still-stable box.
+		// reading and no box on the screen check): the stale lastText is not
+		// a still-stable box.
 		return false, "box not observed (no fallback press on stale text)"
 	}
 	textStable := now.Sub(d.textChanged) >= cuPressStable
@@ -815,6 +836,18 @@ func cuDriveConversation(t *testing.T, srv http.Handler, token, sessionID string
 			if now.After(driveCutoff) {
 				cuWritePartialBundle(t, sessionID, evs, "the drive deadline passed: the conversation did not end (the box never cleared or the presses never landed — the partial stream and the press timeline in the bundle are the evidence)")
 				t.Fatalf("session %s: the rapid-A drive did not finish the conversation within 10m (the box was still on screen or the presses were lost; the partial stream is in the bundle)", sessionID)
+			}
+			if drv.needsScreen(now) {
+				sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
+				img, err := bridge.Screenshot(sctx)
+				scancel()
+				if err == nil {
+					box, _ := dolphin.BoxPresent()(context.Background(), img, nil)
+					if box != drv.screenBox || drv.screenAt.IsZero() {
+						t.Logf("catchup e2e: the session is silent; screen check: dialogue box on screen = %v", box)
+					}
+					drv.noteScreen(now, box)
+				}
 			}
 			want, why := drv.decidePress(page, now)
 			if want {

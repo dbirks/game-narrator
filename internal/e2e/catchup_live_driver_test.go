@@ -115,3 +115,51 @@ func TestCuDecidePressBetweenBoxGapDoesNotEndTheConversation(t *testing.T) {
 		t.Fatalf("a 5 s between-box gap: press %v (%s), done %v; want no press and the conversation still on", press, why, drv.done)
 	}
 }
+
+// TestCuDecidePressSilentStaticBoxOnScreenStillPresses: a fully typed box
+// that sits unchanged produces no text.observed at all; when the driver's own
+// screen check sees the box, the silence is a static box and the lost-A retry
+// fires (the 2026-10-23 sweep run stopped pressing on such a box and ended
+// the conversation with the box still on screen).
+func TestCuDecidePressSilentStaticBoxOnScreenStillPresses(t *testing.T) {
+	t0 := time.Date(2026, 10, 23, 4, 46, 0, 0, time.UTC)
+	drv := cuStubObs(t, t0, cuStubBoxText)
+	drv.boxRegion = "box"
+	drv.commits = append(drv.commits, cuCommitInfo{})
+	drv.instPresses = 1 // the rapid press landed while the typewriter ran
+	at := t0.Add(cuLostA + time.Second)
+	if !drv.needsScreen(at) {
+		t.Fatal("needsScreen = false after a silent stretch; want a screen check")
+	}
+	drv.noteScreen(at, true)
+	press, why := drv.decidePress(nil, at)
+	if !press || !strings.Contains(why, "lost-A") {
+		t.Fatalf("decidePress on a silent box the screen still shows = %v (%q); want the lost-A retry", press, why)
+	}
+	// Past cuConvGone of silence the box on screen still keeps the drive on.
+	late := t0.Add(cuConvGone + time.Second)
+	drv.noteScreen(late, true)
+	if _, why := drv.decidePress(nil, late); drv.done {
+		t.Fatalf("the drive ended (%q) with the box still on screen", why)
+	}
+}
+
+// TestCuDecidePressSilentNoBoxOnScreenEndsTheDrive: silence with no box on
+// the screen check is the closed box: no fallback press, and the drive ends
+// after cuConvGone.
+func TestCuDecidePressSilentNoBoxOnScreenEndsTheDrive(t *testing.T) {
+	t0 := time.Date(2026, 10, 23, 4, 46, 0, 0, time.UTC)
+	drv := cuStubObs(t, t0, cuStubBoxText)
+	drv.boxRegion = "box"
+	drv.commits = append(drv.commits, cuCommitInfo{})
+	at := t0.Add(cuStallGap + time.Second)
+	drv.noteScreen(at, false)
+	if press, why := drv.decidePress(nil, at); press {
+		t.Fatalf("decidePress pressed (%q) with no box on screen", why)
+	}
+	late := t0.Add(cuConvGone + time.Second)
+	drv.noteScreen(late, false)
+	if _, why := drv.decidePress(nil, late); !drv.done {
+		t.Fatalf("the drive did not end (%q) after %s of silence with no box on screen", why, cuConvGone)
+	}
+}
