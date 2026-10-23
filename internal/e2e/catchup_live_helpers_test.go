@@ -454,26 +454,28 @@ func cuIsMesaNoise(text string) bool {
 // (the bounded retry): a press that leaves the box text unchanged for
 // cuLostA is a lost A, retried up to cuMaxPresses per box instance.
 type cuDriver struct {
-	started      time.Time
-	boxRegion    string // the region that commits real lines (learned)
-	lastText     string // the newest observed box text
-	textChanged  time.Time
-	boxEmpty     time.Time       // when the box region last read empty (zero: never)
-	instAppeared time.Time       // when the current box instance's text appeared
-	commits      []cuCommitInfo  // the ELIGIBLE matched lines (the press accounting's evidence: the lines the session will speak)
-	matched      []cuCommitInfo  // every MATCHED commit, eligible or abstained (the rapid-press driver: a matched commit is box progress — the box moved, press to advance while the speech is still busy)
-	routed       map[string]bool // every Routed line's occurrence (the settle accounting: the eligible commits plus the read-through lines the wiring routed from the speech.requested's without message_ids — a fenced or still-in-flight line that never terminalled is a lost line, not a settled one)
-	terminal     map[string]bool // the routed occurrences that reached a terminal (speech.ended with a result, the wiring's one-settle-terminal rule)
-	pressedMsgs  map[string]bool // message ids already pressed for (one press per line)
-	instPresses  int             // presses made on the current box instance
-	done         bool
+	started           time.Time
+	boxRegion         string // the region that commits real lines (learned)
+	lastText          string // the newest observed box text
+	textChanged       time.Time
+	boxEmpty          time.Time       // when the box region last read empty (zero: never)
+	instAppeared      time.Time       // when the current box instance's text appeared
+	lastObs           time.Time       // when the session's text.observed events last arrived (the box-gone / stale-observation signal; zero: never)
+	lastRegionPresent bool            // the region presence the newest text.observed reported (the box-gone signal when false)
+	commits           []cuCommitInfo  // the ELIGIBLE matched lines (the press accounting's evidence: the lines the session will speak)
+	matched           []cuCommitInfo  // every MATCHED commit, eligible or abstained (the rapid-press driver: a matched commit is box progress — the box moved, press to advance while the speech is still busy)
+	routed            map[string]bool // every Routed line's occurrence (the settle accounting: the eligible commits plus the read-through lines the wiring routed from the speech.requested's without message_ids — a fenced or still-in-flight line that never terminalled is a lost line, not a settled one)
+	terminal          map[string]bool // the routed occurrences that reached a terminal (speech.ended with a result, the wiring's one-settle-terminal rule)
+	pressedMsgs       map[string]bool // message ids already pressed for (one press per line)
+	instPresses       int             // presses made on the current box instance
+	done              bool
 }
 
 // cuNewDriver arms the driver at the session's start (the box text is
 // "unchanged" from the start: the first observation changes it).
 func cuNewDriver(now time.Time) *cuDriver {
 	return &cuDriver{
-		started: now, textChanged: now, instAppeared: now,
+		started: now, textChanged: now, instAppeared: now, lastObs: now, lastRegionPresent: true,
 		pressedMsgs: map[string]bool{},
 		routed:      map[string]bool{},
 		terminal:    map[string]bool{},
@@ -502,14 +504,15 @@ func (d *cuDriver) observe(evs []devEnvelope) {
 	now := time.Now()
 	for _, e := range evs {
 		var d2 struct {
-			Occurrence string   `json:"dialogue_occurrence_id"`
-			MessageID  string   `json:"message_id"`
-			MessageIDs []string `json:"message_ids"`
-			Region     string   `json:"region_id"`
-			Generation int64    `json:"generation"`
-			Text       string   `json:"text"`
-			Eligible   bool     `json:"speech_eligible"`
-			Result     string   `json:"result"`
+			Occurrence    string   `json:"dialogue_occurrence_id"`
+			MessageID     string   `json:"message_id"`
+			MessageIDs    []string `json:"message_ids"`
+			Region        string   `json:"region_id"`
+			Generation    int64    `json:"generation"`
+			Text          string   `json:"text"`
+			Eligible      bool     `json:"speech_eligible"`
+			Result        string   `json:"result"`
+			RegionPresent bool     `json:"region_present"`
 		}
 		if len(e.Data) == 0 {
 			continue
@@ -519,6 +522,19 @@ func (d *cuDriver) observe(evs []devEnvelope) {
 		}
 		switch e.Name {
 		case "text.observed":
+			// The box-gone / stale-observation signals: any text.observed for the
+			// session refreshes the last-observation clock and records the
+			// presence the newest reading reported (a conversation that ends stops
+			// producing observations; the stale lastText must not read as a
+			// still-stable box).
+			// Presence is the box region's own: the profile has several
+			// textbox regions (top/middle/bottom), and the others report
+			// absent while the box sits in one of them. Until the box region is
+			// learned, any region's reading counts.
+			if d.boxRegion == "" || d2.Region == d.boxRegion {
+				d.lastObs = now
+				d.lastRegionPresent = d2.RegionPresent
+			}
 			count := false
 			if d.boxRegion != "" {
 				count = d2.Region == d.boxRegion
@@ -644,11 +660,20 @@ func (d *cuDriver) decidePress(evs []devEnvelope, now time.Time) (bool, string) 
 	if d.done {
 		return false, ""
 	}
-	// The box must be absent this long before the conversation is called
-	// over: a between-box transition reads empty for ~1-9 s and a late
-	// commit of the just-advanced box can land inside it — 8 s fired
-	// mid-conversation on the 2026-10-21 runs' margin.
-	if !d.boxEmpty.IsZero() && now.Sub(d.boxEmpty) >= cuConvGone {
+	// The box is gone when the region last read empty (the closing box / the
+	// between-box gap), when the newest observation reported the region absent,
+	// or when no fresh observation arrived within the press-stability window: a
+	// conversation that ends stops producing observations, and the stale
+	// lastText must not read as a still-stable box (the 2026-10-22 run pressed A
+	// into gameplay off that stale text). The empty reads keep the box-gone
+	// threshold (cuConvGone); the freshness and the absence are the signals.
+	boxGone := false
+	if !d.boxEmpty.IsZero() {
+		boxGone = now.Sub(d.boxEmpty) >= cuConvGone // the empty reads keep their own gone gap
+	} else if !d.lastRegionPresent || now.Sub(d.lastObs) >= cuPressStable {
+		boxGone = true // the newest observation reported the box absent, or none arrived within the press window
+	}
+	if boxGone {
 		if len(d.commits) >= 1 {
 			d.done = true // the conversation is over
 			return false, "box gone: the conversation ended"
