@@ -272,6 +272,135 @@ func TestRecordedCassetteRoundTrip(t *testing.T) {
 	t.Logf("bundle round trip: live=%s", decisionDescribe(dLive))
 }
 
+// TestRecordedCassetteEmptyShortlistAbstains is the recorded-cassette proof
+// for the System One empty-shortlist finding (2026-10-22 live run: 768 of
+// 2,637 Clef decisions ended provider_error:bad_schema, all with an empty
+// candidate shortlist and a latency of 0 — a local, pre-network rejection of
+// a degenerate bundle, not a model answer):
+//
+//   - an adjudication bundle built for an empty escalation shortlist must
+//     omit the candidate_message question instead of rendering a choice
+//     with only the "none" fallback (a choice needs at least two options);
+//   - the bundle it builds must therefore pass local request validation and
+//     reach the answer envelope;
+//   - through the recorded harness (record into a temp cassette, replay it,
+//     no dial) the same Decide call must return the same abstaining decision,
+//     and the abstention must be the absent-candidate answer, not a schema
+//     failure.
+func TestRecordedCassetteEmptyShortlistAbstains(t *testing.T) {
+	gw := newFakeSystemOneGateway(t)
+	ctx := context.Background()
+
+	req := BuildAdjudication(
+		Context{Scene: "outset", OCR: "junk read from the frame", LastMessage: "m-11"},
+		[]Candidate{}, // empty escalation shortlist: the local policy abstained
+		[]Speaker{{ID: "npc_a", Description: "the blacksmith"}},
+	)
+	req.Model = cassetteModel
+	candidateAsked := false
+	for _, q := range req.Questions {
+		if q.ID == QCandidate {
+			candidateAsked = true
+		}
+	}
+	if candidateAsked {
+		t.Fatalf("the empty-shortlist bundle must omit the candidate_message question, got questions %v", idsOf(req.Questions))
+	}
+	if err := req.validate(limits{}.defaults()); err != nil {
+		t.Fatalf("the empty-shortlist bundle must be wire-valid, got: %v", err)
+	}
+
+	// 1. Live fake-gateway path.
+	client, err := New(gw.URL, cassetteToken, cassetteModel)
+	if err != nil {
+		t.Fatalf("New (live): %v", err)
+	}
+	dLive, err := client.Decide(ctx, req)
+	if err != nil {
+		t.Fatalf("live Decide on the empty-shortlist bundle: %v", err)
+	}
+	if _, ok := dLive.Answers[QCandidate]; ok {
+		t.Fatalf("the empty-shortlist bundle answered the candidate question: %v", answerIDs(dLive.Answers))
+	}
+
+	// 2. Record into a temp cassette, then replay it back: no dial, identical
+	// decision.
+	recDir := t.TempDir()
+	rec, err := recorded.New(recorded.Options{
+		Role:      providers.RoleDecision,
+		Mode:      recorded.ModeRecord,
+		Dir:       recDir,
+		Base:      http.DefaultTransport,
+		Secrets:   []string{cassetteToken},
+		Now:       func() time.Time { return time.Date(2026, 10, 17, 9, 0, 0, 0, time.UTC) },
+		LatencyMS: func(time.Duration) int64 { return 1234 },
+	})
+	if err != nil {
+		t.Fatalf("recorded.New (record): %v", err)
+	}
+	recClient, err := New(gw.URL, cassetteToken, cassetteModel)
+	if err != nil {
+		t.Fatalf("New (record client): %v", err)
+	}
+	recClient.HTTP = rec.Client()
+	dRec, err := recClient.Decide(ctx, req)
+	if err != nil {
+		t.Fatalf("record Decide on the empty-shortlist bundle: %v", err)
+	}
+	replay, err := recorded.New(recorded.Options{
+		Role:    providers.RoleDecision,
+		Mode:    recorded.ModeReplay,
+		Dir:     recDir,
+		Base:    &rejectTransport{t: t},
+		Secrets: []string{cassetteToken},
+	})
+	if err != nil {
+		t.Fatalf("recorded.New (replay): %v", err)
+	}
+	replayClient, err := New("http://gateway.invalid", cassetteToken, cassetteModel)
+	if err != nil {
+		t.Fatalf("New (replay client): %v", err)
+	}
+	replayClient.HTTP = &http.Client{Transport: replay}
+	dReplay, err := replayClient.Decide(ctx, req)
+	if err != nil {
+		t.Fatalf("replay Decide on the empty-shortlist bundle: %v", err)
+	}
+	if hits, misses, dials := replay.Stats(); dials != 0 {
+		t.Fatalf("replay dialled %d times (hits=%d misses=%d)", dials, hits, misses)
+	}
+	if decisionDescribe(dLive) != decisionDescribe(dReplay) {
+		t.Fatalf("live and replay disagree on the empty-shortlist decision:\n live  : %s\n replay: %s", decisionDescribe(dLive), decisionDescribe(dReplay))
+	}
+	if decisionDescribe(dRec) != decisionDescribe(dLive) {
+		t.Fatalf("record and live disagree:\n record: %s\n live : %s", decisionDescribe(dRec), decisionDescribe(dLive))
+	}
+	if dLive.Origin != "live" || dRec.Origin != "live" || dReplay.Origin != "recorded" {
+		t.Fatalf("origins = live:%q record:%q replay:%q, want live/live/recorded", dLive.Origin, dRec.Origin, dReplay.Origin)
+	}
+	t.Logf("empty-shortlist bundle round trip: live=%s", decisionDescribe(dLive))
+}
+
+// idsOf renders a sorted set of question ids for failure messages.
+func idsOf(qs []Question) []string {
+	keys := make([]string, 0, len(qs))
+	for _, q := range qs {
+		keys = append(keys, q.ID)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// answerIDs renders a sorted set of answer ids for failure messages.
+func answerIDs(m map[string]Answer) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // TestCassetteMissFailsLoudly: a request with no recorded interaction is an
 // error naming the key digest, never an invented answer.
 func TestCassetteMissFailsLoudly(t *testing.T) {

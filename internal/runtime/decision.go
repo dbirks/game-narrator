@@ -175,6 +175,15 @@ func (w *decisionWiring) Decide(ctx context.Context, req pipeline.DecisionReques
 	// candidate question always carries the "none" option, so the cap
 	// leaves one slot — the same cap BuildAdjudication applies).
 	cands := req.Ranking.Candidates
+	if len(cands) == 0 {
+		// Nothing to choose between: an empty shortlist is a locally
+		// abstaining junk read (no script line shares its words). Asking
+		// would only spend a gateway call on a question with no options —
+		// on the board 768 such asks (29% of all) failed client-side as
+		// bad_schema and flipped the role degraded each time.
+		reply.Reason = "no_candidates"
+		return reply
+	}
 	if len(cands) > systemone.MaxOptions-1 {
 		cands = cands[:systemone.MaxOptions-1]
 	}

@@ -204,6 +204,19 @@ All in-repo and reproducible; live tests SKIP with `NOT RUN: …` offline.
 
 ## Follow-ups
 
+- **Empty escalation shortlist (completed 2026-10-22).** Live run of
+  2026-10-22 (UNO Q, `clef-omni` over `systemone`): 768 of 2,637 Clef decisions
+  ended `provider_error:bad_schema` — 29.1% — and every one of them carried an
+  **empty candidate shortlist**, with a decision latency of 0 ms: the failure was
+  local and pre-network, so no gateway answer was ever produced to be judged.
+  The cause was the request half of the contract: `BuildAdjudication` rendered the
+  `candidate_message` choice question with only the implicit `none` fallback for
+  a shortlist it was told was empty, and a choice question needs at least two
+  declared options, so the response validator's bad_schema was the right answer to
+  a genuinely malformed request. Fix: an empty escalation shortlist now omits the
+  `candidate_message` question; the adjudication abstains on the absent answer.
+  Recorded-cassette regression test `TestRecordedCassetteEmptyShortlistAbstains`
+  added in this package.
 - **Request correlation id (completed 2026-10-18).** The live gateway returns no request-id response header on `/systemone` (the first live Dolphin E2E left `decision.requested`/`decision.resolved` with an empty `request_id`), so every request now carries a client-minted ULID as `X-Request-Id` and the effective id — the provider's when present, otherwise the client's, `RequestIDSource` = `provider`/`client` (`RecordRequestID`) — is surfaced on `Decision`/`Adjudication` and on every classified `*providers.Error` (mirroring the TTS fix, ADR-0050; tests `TestDecisionSendsClientRequestID`, `TestDecisionPrefersProviderRequestID`, `TestDecisionRequestIDUniquePerRequest`, `TestDecisionRequestIDRetryRecordsSuccessfulAttempt`).
 - Record a live `score` round-trip (or drop the type) and close the
   spec-only gap; update this ADR with the observed wire shape.

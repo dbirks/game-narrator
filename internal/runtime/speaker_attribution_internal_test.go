@@ -6,7 +6,9 @@ package runtime
 // is the whole decision the live play's mis-attribution came from.
 
 import (
+	"context"
 	"encoding/json"
+	"github.com/dbirks/game-narrator/internal/pipeline"
 	"strings"
 	"testing"
 	"time"
@@ -413,5 +415,18 @@ func TestBoxPagesFromOriginal(t *testing.T) {
 	ord, page, ok := choosePage(w, pages, commitPayload{RawText: "this one, all right? 4 = ae"})
 	if !ok || ord != 1 || page != want[0] {
 		t.Errorf("choosePage(junk-suffixed read) = %d %q %v, want page 1", ord, page, ok)
+	}
+}
+
+// TestDecideSkipsAnEmptyShortlist: a junk read with no candidates is not a
+// Clef question (the board's 768 client-side bad_schema failures).
+func TestDecideSkipsAnEmptyShortlist(t *testing.T) {
+	w := &decisionWiring{roleOK: true}
+	reply := w.Decide(context.Background(), pipeline.DecisionRequest{})
+	if reply.Reason != "no_candidates" {
+		t.Fatalf("reply = %+v, want reason no_candidates and no request", reply)
+	}
+	if w.calls != 0 {
+		t.Fatalf("calls = %d, want 0", w.calls)
 	}
 }

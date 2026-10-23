@@ -128,6 +128,14 @@ const maxBundleCandidates = MaxOptions - 1
 // [a-z0-9_]{1,32}, and neither message ids nor adapter speaker keys (for
 // example the windwaker dump key "ww:spk:2", ADR-0070) may be assumed to fit
 // it — the caller's ids stay the mapping keys, the wire never carries them.
+//
+// An empty candidate shortlist (a locally abstaining ranking the commitment
+// policy sent here, docs/spec/05 "the shortlist is the question") renders no
+// candidate_message question at all: a choice question needs at least two
+// declared options and the "none" fallback is the only one such a shortlist
+// could ever offer, which the wire contract rejects as bad_schema. Omitting the
+// question keeps the bundle valid and lets the adjudication abstain on the
+// absent answer instead of failing the whole request.
 func BuildAdjudication(obs Context, candidates []Candidate, speakers []Speaker) Request {
 	questions := make([]Question, 0, 7)
 	questions = append(questions, Question{
@@ -168,17 +176,19 @@ func BuildAdjudication(obs Context, candidates []Candidate, speakers []Speaker) 
 	if n > maxBundleCandidates {
 		n = maxBundleCandidates
 	}
-	candOpts := make([]Option, 0, n+1)
-	for i := 0; i < n; i++ {
-		candOpts = append(candOpts, Option{ID: fmt.Sprintf("c%d", i+1), Description: candidates[i].Text})
+	if n > 0 {
+		candOpts := make([]Option, 0, n+1)
+		for i := 0; i < n; i++ {
+			candOpts = append(candOpts, Option{ID: fmt.Sprintf("c%d", i+1), Description: candidates[i].Text})
+		}
+		candOpts = append(candOpts, Option{ID: CandidateNone, Description: "none of the candidates matches the visible text"})
+		questions = append(questions, Question{
+			ID:           QCandidate,
+			Type:         TypeChoice,
+			Instructions: "Which candidate matches the visible text?",
+			Criteria:     candOpts,
+		})
 	}
-	candOpts = append(candOpts, Option{ID: CandidateNone, Description: "none of the candidates matches the visible text"})
-	questions = append(questions, Question{
-		ID:           QCandidate,
-		Type:         TypeChoice,
-		Instructions: "Which candidate matches the visible text?",
-		Criteria:     candOpts,
-	})
 	questions = append(questions, Question{
 		ID:           QIsComplete,
 		Type:         TypeNoul,
