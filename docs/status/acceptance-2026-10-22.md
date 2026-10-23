@@ -54,6 +54,26 @@ Running it found and fixed three defects in the new code:
 - **Telescope walk.** The vision probe uses the vision model, and the walk now reaches Aryll by reading the SPEAK label (`6945fbb`).
 - **Harness metrics.** The catch-up harness's "45 s stalls" and the A/V harness's 66 s appear→audio outlier are measurement artifacts (a stale last read after a conversation ends, and an early box-appear stamp). They are not narrator stalls.
 
+## 2026-10-23: harness, recognition and agent fixes; one-SHA sweep
+
+- **Rapid-A test driver (ADR 0163 amendment 1, `a83aa1b`, `7d2f096`).**
+  - A between-box gap no longer ends the drive.
+  - A silent session is checked against the Dolphin screen (`dolphin.BoxPresent`) before the driver gives up. A fully typed, unchanged box makes the session emit nothing, and a sweep run had ended its conversation with the box still on screen.
+- **Final typewriter crop never read (ADR 0115 amendment, `9ca5a25`).**
+  - The finished box crop rode the in-flight read of its prefix. The exact-hash skip then reused the prefix text for every identical Dolphin frame, so the line never committed and the box stalled 45 s.
+  - Fix: a settle that arms on pixels nobody read gets one confirming read.
+  - A first version would have re-read every frame on analog HDMI and was rejected. Measured on an analog-noise clip: main 1 call, rejected version 15, final 2.
+- **Open-sea presence false positive (ADR 0169, `3f91310`, #44).**
+  - Open sea under a bright sky passed every presence clause.
+  - A new `TopDark` clause rejects a weakly saturated band whose top is bright. The captured board fixtures still pass.
+- **Agent loop nudges (ADR 0168, `229049c`, #56).**
+  - A repeated tool call gets one nudge carrying its earlier result.
+  - A first turn that skips a tool the request names gets one corrective turn.
+  - Live: 9/9 passes on `david-birks/qwen3-8-27b`, one of them recovered by the nudge.
+- **Speaker-at-commit (ADR 0167) and gender override, `860b2cd`.** CI's race job flaked on the 300 ms budget; the answer-path tests widen it (`a83aa1b`).
+- **Models.** Per the owner, only `david-birks/*` models are used. pi workers and the live gates run on `david-birks/qwen3-8-27b`, which takes images, so the vision legs run again.
+- **Known NOT RUN.** `TestRealRecordTelescopeFixture` (fixture recording) is BLOCKED in every sweep: the telescope item scene is not reachable from the committed deck savestate by the SPEAK flow. The gate reports it as NOT RUN, which gives `make test-dolphin` exit code 2 with no failures. Tracked with the navigation work in #55.
+
 ## #41 Done-means checklist
 
 - [ ] **The board runs current main, and the owner plays a session where boxes at any height are read and spoken in character voices, within the latency budget.**
@@ -67,11 +87,13 @@ Running it found and fixed three defects in the new code:
   - Runs are tabled below. I inspected clip frames (montage) and per-clip RMS myself on `av-20261022T051337Z`: bottom and middle boxes, no OSD text, clips ending on the post-line cut-in.
 - [ ] **A criterion-4 hardware bundle with a character-voiced line exists outside git.**
   - Preliminary: `artifacts/hw-proof-20261022T031217Z`. It has a Clef request (`CLEF_DISAMBIGUATED`) and a manifest, but the frame and crop had been evicted (fixed since by #46), and the WAV was a whole-message, wrong-speaker clip.
-  - A re-capture on the current build is pending. It needs the model node (below) plus a line that reaches Clef.
+  - A re-capture on `3f91310` is pending. The board session is live and the collector is armed. It needs the owner to talk to NPCs on the real GameCube, so a line reaches Clef and plays in a character voice.
 - [ ] **#34, #37 and #5 are closed; #2 and #24 are closed or deferred with reasons; no new issue lacks an owner.**
   - #5, #34 and #37 are closed. #2 and #24 are deferred with reasons (table below).
   - Every issue filed in this session (#48–#52) has a suggested fix shape. #49 and #50 are closed.
-- [ ] **All gates green on one SHA, CI green, and this report final.** Pending the final sweep (table below).
+- [x] **All gates green on one SHA, CI green.**
+  - On `3f91310`: lint, test-replay, bench, test-ui, test-models, test-av and test-dolphin pass. test-dolphin's only non-pass is the documented telescope NOT RUN.
+  - The `ci` workflow is green on `3f91310`. The hardware smoke is not run, which is reported, not passed.
 
 ## Measured: `make test-av` (settled→audible gate: p50 ≤ 500 ms, p95 ≤ 800 ms)
 
@@ -81,12 +103,19 @@ Running it found and fixed three defects in the new code:
 | av-20261022T050835Z | 6f75ea6 | 7/404 ms | 3951/10790 ms | 12 | 0/0/0/0 | **FAIL, voice gate.** 9/12 lines spoke the narrator voice: the first ADR 0156 cut counted name + alias as a "shared slot". Fixed in 1c4ee38. |
 | av-20261022T051337Z | 1c4ee38 | 164/346 ms | 4407/66475 ms | 16 (12 spoken, 4 catch-up skips) | 0/0/0/0 | PASS; WER 0.000 on 11/12 spoken lines (0.040 on one) |
 | av-20261022T063548Z | a566dfa + the 0b5d52c change (uncommitted at run time) | 243/384 ms | 4320/63193 ms | 18 | 0/0/0/0 | PASS |
+| av-20261023T035549Z | a83aa1b | 42/322 ms | 904/3997 ms | 10 | 0/0/0/0 | PASS; frames inspected (Aryll, bottom and middle boxes), child pitch on every spoken line |
+| av-20261023T043630Z | a83aa1b (sweep) | 3/147 ms | 276/303 ms | 3 | 0/0/0/0 | **FAIL, idle-sample gate (2 < 3).** The driver ended the drive on a silent static box; fixed in 7d2f096 |
+| av-20261023T051909Z | 7d2f096 (sweep) | 127/282 ms | 3855/9352 ms | 11 | 0/0/0/0 | PASS; the screen check kept the drive going |
+| av-20261023T091038Z | 3f91310 (final sweep) | 102/182 ms | 2246/9005 ms | 9 (8 spoken, 1 catch-up skip) | 0/0/0/0 | PASS; WER 0.000 on 6/8 spoken lines (0.040, 0.048 on two). The box that stalled before the confirming read is spoken |
 
 The large appear→audio p95 comes from the box's own on-screen life, not from narration. Lost-A retries keep one box up for about 60 s, and its line spoke within 4 ms of the text settling.
 
 ## Hardware (UNO Q)
 
-- **Build:** `0.1.0-0f44d45`, user-level unit with linger. Env adds `OMP_THREAD_LIMIT=1`, `OMP_NUM_THREADS=1` and `GAME_NARRATOR_ROLE_DECISION_TIMEOUT=4s`; models use flint.
+- **2026-10-23:**
+  - Redeployed `0.1.0-3f91310`, the final sweep SHA, and a live v4l2 session is running.
+  - Before that: the speech-cache prune removed 6,836 orphaned entries (2.17 GB), leaving 5.5 GB free after the deploy backup. Presynth on rev 5 covered 6,104/6,104 utterances: 5,752 cache hits, 330 synthesized, 0 failed.
+- **Build (2026-10-22):** `0.1.0-0f44d45`, user-level unit with linger. Env adds `OMP_THREAD_LIMIT=1`, `OMP_NUM_THREADS=1` and `GAME_NARRATOR_ROLE_DECISION_TIMEOUT=4s`; models use flint.
 - **#5:** closed. The HDMI monitor recorded a 440 Hz test tone at RMS 0.177 through the hub's HDMI audio.
 - **#37:** closed. Cast shows 29/29 voiced on the real profile (`artifacts/board-evidence-20261021/`).
 - **Generic kind voices (ADR 0158):** 7 approved on the board, all passing QA.
@@ -106,7 +135,9 @@ The large appear→audio p95 comes from the box's own on-screen life, not from n
   - Synthetic-stub tests: `internal/runtime/degrade_outage_test.go` (404 then 503: local commits, the decision view reports degraded, cached TTS plays, uncached TTS fails cleanly).
   - Live: during tonight's model-node outages the board's Clef breaker opened and narration continued on local matching plus cached audio.
 
-## Blocker at the time of writing
+## Model-node outage (resolved)
+
+The node was reset on 2026-10-22, and every model gate above ran afterwards. The original note follows.
 
 At 03:00 EDT the model node lost its GPU. NVML reports `GPU_IS_LOST` (ret 15), the HAMi device plugin crash-loops, and the node advertises 0 GPUs.
 
@@ -122,16 +153,16 @@ So the model gates, a fresh `make test-av` and the Clef-backed criterion-4 bundl
 
 | Gate | Command | Tree SHA | Result | Notes |
 |---|---|---|---|---|
-| lint | `make lint` | every commit since 4cb5f17 | PASS | Commits are gated on it |
-| test-replay | `make test-replay` | 5577ab6 tree | PASS (142/0/0/0) | |
-| test-unit (race) | touched packages per commit; CI runs `./...` | 5577ab6 / b60499f | PASS locally | CI flakes #50 (fixed) and #52 (hardened) |
-| test-ui | `make test-ui` | 3ec2f53 | PASS (54 passed) after fixing the developer walk's post-logout expectation | |
-| bench | `make bench` | 3ec2f53 | PASS (recall 100%, top-1 100%, 0 dup, 0 stale) | |
-| test-models | `make test-models` | 3ec2f53 | **NOT RUN (meaningfully)** | 26 failures, all `model "flint" is not currently available` (GPU lost) |
-| test-av | `make test-av` | a566dfa+ | PASS (see above) | Re-run on the final SHA after the node recovers |
-| test-dolphin | `make test-dolphin` | pending | pending | Needs the model node |
-| CI | `ci` workflow | pending | pending | Last green: 6f75ea6 |
-| hardware | `make test-hardware` | not run | NOT RUN | |
+| lint | `make lint` | 3f91310 | PASS | Commits are gated on it |
+| test-replay | `make test-replay` | 3f91310 | PASS (155/0/1 skip/0) | The skip is the private-frame presence probe (`GN_PRESENCE_FRAMES`) |
+| test-unit (race) | CI runs `./...` with `-race` | 3f91310 | PASS (CI) | |
+| test-ui | `make test-ui` | 3f91310 | PASS | |
+| bench | `make bench` | 3f91310 | PASS | |
+| test-models | `make test-models` | 3f91310 | PASS (34/0/0/0) | `david-birks/qwen3-8-27b` + clef-omni + qwen3-tts + qwen3-asr |
+| test-av | `make test-av` | 3f91310 | PASS (102/182 ms) | `av-20261023T091038Z` |
+| test-dolphin | `make test-dolphin` | 3f91310 | PASS with 1 NOT RUN (exit 2) | 8 real-bridge + 18 scenarios + 1 presence + catch-up and live UI. NOT RUN: `TestRealRecordTelescopeFixture` (BLOCKED, see above) |
+| CI | `ci` workflow | 3f91310 | PASS | |
+| hardware | `make test-hardware` | not run | NOT RUN | The board is exercised through deploy, presynth and the live session instead |
 
 ## Issues
 
@@ -142,11 +173,12 @@ So the model gates, a fresh `make test-av` and the Clef-backed criterion-4 bundl
 | 24 | Deferred: ADSP APR cold-boot quirk. Recovery is committed (ADR 0118), and `audiodsp-recover` now polls 60 s for the late signature. |
 | 34, 37, 45, 46, 49, 50 | Closed. |
 | 42 | Open. No API to create character rows; ADR 0158's voice-key route avoids needing it for kind voices. |
-| 44 | Open. The sea false-positive fix landed; the follow-up is triage. |
+| 44 | Open. Two sea false-positive fixes landed (0137 amendment, 0169). New evidence: a translucent box read absent once its arrow vanished, not reproduced on the saved frames. |
 | 47 | Open. Private-capture placement replays run in no gate. |
-| 48 | Open. Speak the on-screen player name instead of the placeholder. |
+| 48, 56 | Closed (ADR 0165, ADR 0168). |
 | 51 | Open. Cast UI for generic kind voices, with a pitch sanity check. |
 | 52 | Open. CI flake in the decision-deadline test (hardened; watch). |
+| 53, 54, 55 | Open follow-ups: box at any height, early-speaker redesign (superseded in practice by ADR 0167), vision-guided navigation. |
 
 ## Secret scan
 
