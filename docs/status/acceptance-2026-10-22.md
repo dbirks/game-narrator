@@ -114,6 +114,7 @@ The large appear→audio p95 comes from the box's own on-screen life, not from n
 
 - **2026-10-23:**
   - Redeployed `0.1.0-3f91310`, the final sweep SHA, and a live v4l2 session is running.
+  - The agent role is switched to `david-birks/qwen3-8-27b`. On the board, `game-narrator doctor` reports `providers.agent_reasoning` OK: the chat probe answered in 428 ms.
   - Before that: the speech-cache prune removed 6,836 orphaned entries (2.17 GB), leaving 5.5 GB free after the deploy backup. Presynth on rev 5 covered 6,104/6,104 utterances: 5,752 cache hits, 330 synthesized, 0 failed.
 - **Build (2026-10-22):** `0.1.0-0f44d45`, user-level unit with linger. Env adds `OMP_THREAD_LIMIT=1`, `OMP_NUM_THREADS=1` and `GAME_NARRATOR_ROLE_DECISION_TIMEOUT=4s`; models use flint.
 - **#5:** closed. The HDMI monitor recorded a 440 Hz test tone at RMS 0.177 through the hub's HDMI audio.
