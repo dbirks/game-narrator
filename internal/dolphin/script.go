@@ -62,6 +62,18 @@ type Step struct {
 	Timeout time.Duration
 	// MaxRepeats: extra input attempts after the first (the repeat cap).
 	MaxRepeats int
+	// Approach: the pixel-only "approach" step (ADR-0166): screenshot → the
+	// largest olive-arrow cluster → hold toward it (300 ms lateral / 400 ms
+	// forward) → stop after MaxSteps or when the arrow's area stops growing
+	// for three samples. The arrow's own pixels are the whole signal (no vision
+	// model), so the step owns its loop instead of riding the Until checkpoint:
+	// a hold/press/wait step cannot re-aim its stick from a fresh frame per
+	// iteration, and the approach's stop conditions are its own (the step
+	// count and the area stall).
+	Approach bool
+	// MaxSteps bounds the approach loop (the route's "approach_max_steps";
+	// the loop's own step budget on top of the runner's step deadline).
+	MaxSteps int
 }
 
 // Script is a run: steps in order, one poll cadence, an optional evidence

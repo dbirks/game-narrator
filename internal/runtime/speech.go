@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"io"
 	"math"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -459,6 +461,22 @@ type speechWiring struct {
 	// absence of voices — is what kept the line silent.
 	narratorFallback bool
 
+	// The ADR-0167 speaker-at-commit ask: the decision wiring this session's
+	// committed shared-slot lines ask (the ADR-0160 redesign's successor — the
+	// ask fired at commit time instead of at the first read of a typing box),
+	// plus the bounded wait the utterance holds while the answer is in flight
+	// (the ADR-0167 budget, the ADR-0160 proposal's 300 ms). The runtime's
+	// speech side owns the wait; the decision path's ask goroutine feeds it.
+	// Nil-safe without a decision path wired.
+	decision *decisionWiring
+	// askMu guards askPending / askBudget / askTimes: the registry the routing
+	// workers read the bounded wait from, the budget the wait is bounded by,
+	// and the ask timestamps the per-minute cap counts.
+	askMu      sync.Mutex
+	askPending map[string]*askWait
+	askBudget  time.Duration
+	askTimes   []time.Time
+
 	// sem bounds the concurrent TTS workers (explicit backpressure).
 	sem chan struct{}
 
@@ -493,7 +511,11 @@ type speechWiring struct {
 	// (text + when), the reference the read-through echo check compares a
 	// garbled re-read against. Guarded by mu.
 	recentSpoken []spokenMark
-	prewarmCfg   prewarmConfig
+	// voiceLow caches, per assigned character, whether its approved voice is
+	// a low (adult male) voice — measured once from the reference WAV
+	// (warmVoiceClasses). An absent entry is unknown. Guarded by mu.
+	voiceLow   map[string]bool
+	prewarmCfg prewarmConfig
 	// prewarmCancel cancels the in-flight batch; the next batch replaces it
 	// (and cancels it) on a new speakable commit or a scene change. w.mu.
 	prewarmCancel context.CancelFunc
@@ -638,6 +660,13 @@ type utteranceInfo struct {
 	// and the A/V harness can tell a kind-routed line from a narrator line.
 	voiceRoute string
 	voiceID    string // the voice profile spoken ("" until resolved)
+	// speakerAskKey is the ADR-0167 speaker-at-commit ask's occurrence key —
+	// the box (region, generation) plus the committed message — when a shared-
+	// slot commit owed a speaker-at-commit ask for this utterance, "" when it
+	// did not (no decision path wired, not a shared slot, already attributed,
+	// over the ask cap). Set by onCommit before routing; the routing worker
+	// reads it to wait for the answer before resolving the voice.
+	speakerAskKey string
 	// committedAt is the wall clock the line reached the speech side
 	// (issue #25, ADR-0122): the catch-up window and the max age measure
 	// from it.
@@ -680,6 +709,203 @@ type utteranceInfo struct {
 // the fence and the worker compare the registration by identity.
 type synthSlot struct {
 	cancel context.CancelFunc
+}
+
+// DefaultSpeakerAskBudget bounds how long a committed shared-slot line may
+// hold its voice resolution for the ADR-0167 speaker-at-commit answer before
+// the commit proceeds on the local evidence alone and the line speaks the
+// assigned voice (the ADR-0160 proposal's 300 ms). A session may tighten or
+// widen it through the ask's own options; zero takes this default.
+const DefaultSpeakerAskBudget = 300 * time.Millisecond
+
+// maxSpeakerAsksPerMinute caps the speaker-at-commit asks per session per
+// minute: the global ask rate the ADR-0167 design bounds (the issue's "cap it
+// at a few requests per minute"), so a session that keeps committing shared-
+// slot lines cannot spend the decision budget's worth of GPU round trips a
+// minute.
+const maxSpeakerAsksPerMinute = 20
+
+// askKey is the ADR-0167 speaker-at-commit occurrence key — the box (region,
+// generation) plus the committed message the occurrence's line speaks — the
+// runtime's ask registry and the routing worker hold the bounded wait under.
+func askKey(region string, gen int64, messageID string) string {
+	return region + "\x00" + strconv.FormatInt(gen, 10) + "\x00" + messageID
+}
+
+// askWait is one committed occurrence's in-flight speaker-at-commit ask
+// (ADR-0167): the bounded wait for the adjudicator's speaker answer while the
+// commit-time ask is in flight, closed when the answer lands or the ask gives
+// up — so a wait is bounded and never blocks forever.
+type askWait struct {
+	done chan struct{}
+	// attribution holds the answer that closed the wait, written under the
+	// registry's lock before done is closed (the mutex orders the write before
+	// the close, the same way it orders every other registry step).
+	speakerID       string
+	speakerKnown    bool
+	speakerConf     float64
+	speakerKind     string
+	speakerKindConf float64
+}
+
+// attributionAsk is the speaker-at-commit answer's attribution half as the
+// speech side reads it back: the speaker the adjudicator named and the
+// apparent kind it read, with the confidences the runtime's gates read
+// (ADR-0156, ADR-0158).
+type attributionAsk struct {
+	speakerID       string
+	speakerKnown    bool
+	speakerConf     float64
+	speakerKind     string
+	speakerKindConf float64
+}
+
+// beginAsk registers one committed occurrence's speaker-at-commit ask wait
+// (ADR-0167) and returns its handle; the runtime's speech side owns the wait,
+// and the decision path's ask goroutine feeds it. The wait is bounded by the
+// budget the caller passes (the ADR-0167 budget), and a nil handle means no
+// ask is owed for the key (not a shared slot, already attributed, over the
+// ask cap, or no decision path wired). At most one ask per occurrence: the
+// key's pending is the occurrence's one wait, and the cap bounds how many
+// occurrences a session may owe an ask in a minute.
+func (w *speechWiring) beginAsk(key string, budget time.Duration) *askWait {
+	w.askMu.Lock()
+	defer w.askMu.Unlock()
+	if w.askPending == nil {
+		w.askPending = map[string]*askWait{}
+	}
+	if _, owed := w.askPending[key]; owed {
+		return nil // at most one ask per occurrence: the key already owes one
+	}
+	now := time.Now()
+	// The ask rate cap: a minute sliding window of the asks sent, so a burst
+	// of committed shared-slot lines spends the decision budget's worth of
+	// round trips at most once a minute.
+	kept := w.askTimes[:0]
+	for _, t := range w.askTimes {
+		if now.Sub(t) < time.Minute {
+			kept = append(kept, t)
+		}
+	}
+	w.askTimes = kept
+	if len(w.askTimes) >= maxSpeakerAsksPerMinute {
+		return nil
+	}
+	w.askTimes = append(w.askTimes, now)
+	if budget > 0 {
+		w.askBudget = budget
+	}
+	p := &askWait{done: make(chan struct{})}
+	w.askPending[key] = p
+	return p
+}
+
+// resolveAsk closes the occurrence's speaker-at-commit wait with the answer
+// the ask produced and returns it. res is the answer the decision side read
+// back from the adjudication's reply (the attribution half); the pending's own
+// stored fields are what a wait that observed the close reads. The caller that
+// resolves with no answer (the ask gave up, or the session stopped) passes the
+// zero attribution, so a bound wait falls back to the local evidence.
+func (w *speechWiring) resolveAsk(key string, res attributionAsk) attributionAsk {
+	w.askMu.Lock()
+	defer w.askMu.Unlock()
+	out := attributionAsk{}
+	if p, ok := w.askPending[key]; ok && p != nil {
+		out = res
+		p.speakerID = res.speakerID
+		p.speakerKnown = res.speakerKnown
+		p.speakerConf = res.speakerConf
+		p.speakerKind = res.speakerKind
+		p.speakerKindConf = res.speakerKindConf
+		delete(w.askPending, key)
+		close(p.done)
+	}
+	return out
+}
+
+// waitAsk waits up to the speaker-at-commit budget for the answer to "who is
+// speaking" of one committed occurrence (ADR-0167). It reports whether an ask
+// was in flight for the key and whether the answer resolved inside the budget; a
+// wait that outlives the budget — or the run — resolves empty, so the commit
+// proceeds on the local evidence alone and the line speaks the assigned voice,
+// as today, without stalling.
+func (w *speechWiring) waitAsk(ctx context.Context, key string, budget time.Duration) (attributionAsk, bool) {
+	w.askMu.Lock()
+	p, ok := w.askPending[key]
+	b := w.askBudget
+	w.askMu.Unlock()
+	if !ok || p == nil {
+		return attributionAsk{}, false
+	}
+	if budget > 0 && budget < b {
+		b = budget
+	}
+	if b <= 0 {
+		b = DefaultSpeakerAskBudget
+	}
+	select {
+	case <-p.done:
+		// The answer closed the wait: the fields were written under the
+		// registry's lock before the close, and receiving from done is
+		// ordered after that write, so reading them here needs no lock.
+		return attributionAsk{
+			speakerID:       p.speakerID,
+			speakerKnown:    p.speakerKnown,
+			speakerConf:     p.speakerConf,
+			speakerKind:     p.speakerKind,
+			speakerKindConf: p.speakerKindConf,
+		}, true
+	case <-ctx.Done():
+		w.resolveAsk(key, attributionAsk{})
+		return attributionAsk{}, false
+	case <-time.After(b):
+		w.resolveAsk(key, attributionAsk{})
+		return attributionAsk{}, false
+	}
+}
+
+// hasConfidentSpeaker reports whether one committed occurrence's commit
+// payload already carries a confident adjudicator speaker answer — the gate the
+// ADR-0167 ask is not owed for (ADR-0156): a speaker named at or above the floor
+// is a name, and the line's voice is already the adjudicator's.
+func (w *speechWiring) hasConfidentSpeaker(d commitPayload) bool {
+	return d.SpeakerKnown && d.SpeakerID != "" && d.SpeakerConfidence >= SpeakerConfidenceFloor
+}
+
+// askSpeakerFor runs one speaker-at-commit ask (ADR-0167) for one committed
+// shared-slot occurrence: it asks the decision role through the decision
+// wiring's own client — the speaker + speaker_kind questions only, the frame
+// included — and when the answer lands (or the ask gives up) resolves the
+// occurrence's bounded wait, so the routing worker that waits on it sees the
+// attribution, or the fallback when the answer never came inside the budget.
+// The ask itself is bounded by the decision wiring's own budget; the wait the
+// utterance holds is bounded separately (the ADR-0167 budget), and the
+// session stop cancels the ask through the run context.
+func (w *speechWiring) askSpeakerFor(d commitPayload, key string) {
+	ctx := context.Background()
+	if w.endCtx != nil {
+		ctx = w.endCtx
+	}
+	frame := image.Image(nil)
+	if w.runner != nil {
+		if f, ok := w.runner.LatestFrame(); ok {
+			frame = f.Image
+		}
+	}
+	var res attributionAsk
+	if w.decision != nil {
+		speakerID, kind, conf, kindConf, err := w.decision.AskSpeaker(ctx, frame, d.MessageID, w.decision.speakers)
+		if err == nil {
+			res = attributionAsk{
+				speakerID:       speakerID,
+				speakerKnown:    speakerID != "",
+				speakerKind:     kind,
+				speakerConf:     conf,
+				speakerKindConf: kindConf,
+			}
+		}
+	}
+	w.resolveAsk(key, res)
 }
 
 // newSpeechWiring builds the per-session speech pipeline. It returns nil
@@ -1363,6 +1589,26 @@ func (w *speechWiring) onCommit(e events.Envelope) {
 	}
 	if w.crossRegionDuplicate(pageKey, u) {
 		return
+	}
+	// ADR-0167 (speaker-at-commit): a committed line whose speaker slot is
+	// shared (the session's shared-slot view, ADR-0156) and whose payload
+	// carries no confident speaker — the shape a confident local commit
+	// produces for a shared slot, which never asked Clef — owes the
+	// adjudicator's speaker answer before the line speaks: the slot's linked
+	// character is a claim about a slot, not a per-occurrence identity, and
+	// the adjudicator is the only source that reads the frame. The ask fires
+	// here, at commit time, in its own goroutine, and the utterance's voice
+	// resolution waits for it — bounded by the ADR-0167 budget — and falls back
+	// to the assigned voice when the answer is late or never came. The wait
+	// lives in the routing worker (speak), never onCommit's path, and the
+	// answer that lands inside the budget is the attribution the confidence
+	// gates read (ADR-0156, ADR-0158).
+	if w.decision != nil && w.speakerSlotByMessage[d.MessageID] && !w.hasConfidentSpeaker(d) {
+		key := askKey(d.RegionID, d.Generation, d.MessageID)
+		if p := w.beginAsk(key, DefaultSpeakerAskBudget); p != nil {
+			u.speakerAskKey = key
+			go w.askSpeakerFor(d, key)
+		}
 	}
 	w.noteSpoken(text)
 	w.routeUtterance(u)
@@ -2612,7 +2858,32 @@ func (w *speechWiring) speak(u *utteranceInfo) {
 	// nameplate — or the narrator when unattributed. Resolving on the
 	// message id would lose the read-through's attribution, because the line
 	// has no message id in the corpus to look up.
-	rv, why := w.resolveVoiceForCharacter(ctx, u.character)
+	// ADR-0167 (speaker-at-commit): a committed shared-slot line that owed a
+	// speaker-at-commit ask waits — bounded by the ADR-0167 budget — for the
+	// adjudicator's answer before resolving its voice, and falls back to the
+	// assigned voice when the answer is late or never came. The wait is in the
+	// routing worker (this goroutine), never onCommit's path, and the ask that
+	// answers it was started at commit time (onCommit).
+	character := u.character
+	if u.speakerAskKey != "" {
+		var attribution attributionAsk
+		if res, pending := w.waitAsk(ctx, u.speakerAskKey, DefaultSpeakerAskBudget); pending {
+			attribution = res
+			// The answer overlays the committed line's own voice resolution:
+			// the adjudicator's confident speaker, else the confident apparent
+			// kind, else the assigned character the local evidence committed
+			// with (the ADR-0156/ADR-0158 gates read the attribution).
+			character, _ = w.commitVoice(commitPayload{
+				MessageID:             u.messageID,
+				SpeakerID:             attribution.speakerID,
+				SpeakerKnown:          attribution.speakerKnown,
+				SpeakerConfidence:     attribution.speakerConf,
+				SpeakerKind:           attribution.speakerKind,
+				SpeakerKindConfidence: attribution.speakerKindConf,
+			})
+		}
+	}
+	rv, why := w.resolveVoiceForCharacter(ctx, character)
 	if rv.profile.ID == "" {
 		// Silence with the reason: no approved voice for the speaker and no
 		// configured narrator voice — or the approved reference is missing.
@@ -3678,9 +3949,74 @@ func (w *speechWiring) commitVoice(d commitPayload) (character string, route str
 		}
 		return narratorCharacter, voiceRouteNarrator
 	}
+	// A shared slot whose assigned voice plainly contradicts the speaker the
+	// frame shows — a confident apparent kind on the other side of the
+	// male / not-male line from the assigned voice's measured pitch — takes
+	// the generic kind voice instead (ADR-0167 amendment): the male villager
+	// on a slot the curator linked to Rose spoke in her voice on the board.
+	if w.speakerSlotByMessage[d.MessageID] {
+		if ch, ok := w.kindSpeakerFor(d); ok && w.kindContradictsVoice(d.SpeakerKind, character) {
+			return ch, voiceRouteSpeakerKind
+		}
+	}
 	// A slot that maps to a single character keeps its assignment (the
 	// pre-ADR-0156 behaviour): the link is the identity there.
 	return character, voiceRouteAssigned
+}
+
+// kindContradictsVoice reports whether an apparent kind and a character's
+// measured voice disagree on male versus not male. Unknown voices and the
+// creature kind never contradict.
+func (w *speechWiring) kindContradictsVoice(kind, character string) bool {
+	if kind == "" || kind == systemone.SpeakerKindCreature || kind == systemone.SpeakerUnknown {
+		return false
+	}
+	w.mu.Lock()
+	low, known := w.voiceLow[character]
+	w.mu.Unlock()
+	if !known {
+		return false
+	}
+	kindLow := kind == systemone.SpeakerKindAdultMale || kind == systemone.SpeakerKindElderMale
+	return kindLow != low
+}
+
+// warmVoiceClasses measures each assigned character's approved voice once
+// (median F0 of the reference WAV, speech.MeasurePitch) and records whether
+// it is a low adult-male voice. It runs off the commit path, at session
+// start: a character not yet measured simply never contradicts a kind.
+func (w *speechWiring) warmVoiceClasses(ctx context.Context) {
+	seen := map[string]bool{}
+	for _, ch := range w.speakerByMessage {
+		if ch == "" || ch == narratorCharacter || seen[ch] {
+			continue
+		}
+		seen[ch] = true
+		if ctx.Err() != nil {
+			return
+		}
+		rv, _ := w.approvedVoice(ctx, ch)
+		if rv.profile.ID == "" {
+			continue
+		}
+		ref := rv.refWAV
+		if len(ref) == 0 {
+			var err error
+			if ref, err = readReference(ctx, w.assets, rv.profile.ReferenceAssetID); err != nil {
+				continue
+			}
+		}
+		p, err := speech.MeasurePitch(ref)
+		if err != nil || p.VoicedFrames == 0 {
+			continue
+		}
+		w.mu.Lock()
+		if w.voiceLow == nil {
+			w.voiceLow = map[string]bool{}
+		}
+		w.voiceLow[ch] = p.F0 < speech.PitchLowAdultMaleHz
+		w.mu.Unlock()
+	}
 }
 
 // kindSpeakerFor resolves a committed occurrence's confident apparent-kind

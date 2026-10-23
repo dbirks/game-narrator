@@ -21,6 +21,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/games/adapter"
 	"github.com/dbirks/game-narrator/internal/matcher"
 	"github.com/dbirks/game-narrator/internal/pipeline"
+	"github.com/dbirks/game-narrator/internal/providers/systemone"
 	"github.com/dbirks/game-narrator/internal/recognition"
 	ses "github.com/dbirks/game-narrator/internal/session"
 	"github.com/dbirks/game-narrator/internal/store"
@@ -395,7 +396,13 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 		cfg.Reducer.Adjudicate = true
 		cfg.Reducer.AdjudicateMargin = m.opts.Decision.Margin
 		cfg.Speakers = speakers
-		if w := m.newDecisionWiring(id, texts); w != nil {
+		// The ADR-0167 speaker-at-commit ask passes the committed line's speaker
+		// candidates to the decision wiring's AskSpeaker.
+		var sysSpeakers []systemone.Speaker
+		for _, sp := range speakers {
+			sysSpeakers = append(sysSpeakers, systemone.Speaker{ID: sp.ID, Description: sp.Description})
+		}
+		if w := m.newDecisionWiring(id, texts, sysSpeakers); w != nil {
 			cfg.Decider = w
 		}
 	}
@@ -547,6 +554,7 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 			// runs when the adjudicator could not name the speaker.
 			w.kindSpeakerByKey = kindSpeakerByKey(content)
 			w.addKindVoiceKeys(runCtx)
+			go w.warmVoiceClasses(runCtx)
 			sess.speech = w
 			// The OnAdjudicating hook above reads the wiring through this
 			// pointer; storing it here (before the run starts) is what lets a
@@ -561,6 +569,13 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 	// before the runner above.
 	if w, ok := cfg.Decider.(*decisionWiring); ok && w != nil {
 		sess.decision = w
+		// The ADR-0167 speaker-at-commit ask reads the decision wiring's
+		// client (the speaker + speaker_kind questions) for the committed
+		// shared-slot lines; the speech side owns the bounded wait and asks
+		// through this pointer.
+		if sess.speech != nil {
+			sess.speech.decision = w
+		}
 	}
 
 	go sess.run(runCtx, obs, pub)

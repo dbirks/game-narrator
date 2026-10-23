@@ -1,0 +1,8 @@
+{
+  "save_state": "states/windwaker-deck-aryll.state",
+  "steps": [
+    {"mark": "walk-away", "stick": [0.0, 1.0], "ms": 3000},
+    {"mark": "approach-aryll", "approach": true, "max_steps": 6},
+    {"mark": "talk-aryll", "press": "A"}
+  ]
+}

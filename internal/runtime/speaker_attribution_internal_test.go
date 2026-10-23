@@ -430,3 +430,38 @@ func TestDecideSkipsAnEmptyShortlist(t *testing.T) {
 		t.Fatalf("calls = %d, want 0", w.calls)
 	}
 }
+
+// TestCommitVoiceGenderConflictTakesKindVoice: a shared slot assigned to a
+// character with a measured higher voice, and a confident "adult man" from
+// the frame, speaks the generic adult-male voice (the board's male villager
+// on a slot linked to a female character). Agreement keeps the assignment;
+// an unmeasured voice never overrides. Invented ids.
+func TestCommitVoiceGenderConflictTakesKindVoice(t *testing.T) {
+	w := &speechWiring{
+		speakerByMessage:     map[string]string{"m1": "char-lady"},
+		speakerSlotByMessage: map[string]bool{"m1": true},
+		kindSpeakerByKey: map[string]string{
+			"kind:adult_male":   "kind:adult_male",
+			"kind:adult_female": "kind:adult_female",
+		},
+		voiceLow: map[string]bool{"char-lady": false},
+	}
+	man := commitPayload{MessageID: "m1", SpeakerKind: systemone.SpeakerKindAdultMale, SpeakerKindConfidence: 0.9}
+	if ch, route := w.commitVoice(man); ch != "kind:adult_male" || route != voiceRouteSpeakerKind {
+		t.Errorf("male villager on a female-voiced slot = %q/%q, want the adult-male kind voice", ch, route)
+	}
+	woman := man
+	woman.SpeakerKind = systemone.SpeakerKindAdultFemale
+	if ch, _ := w.commitVoice(woman); ch != "char-lady" {
+		t.Errorf("an agreeing kind = %q, want the assigned character", ch)
+	}
+	unsure := man
+	unsure.SpeakerKindConfidence = 0.2
+	if ch, _ := w.commitVoice(unsure); ch != "char-lady" {
+		t.Errorf("an unconfident kind = %q, want the assigned character", ch)
+	}
+	delete(w.voiceLow, "char-lady")
+	if ch, _ := w.commitVoice(man); ch != "char-lady" {
+		t.Errorf("an unmeasured voice = %q, want the assigned character", ch)
+	}
+}

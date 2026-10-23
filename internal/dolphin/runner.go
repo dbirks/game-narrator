@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,6 +40,14 @@ const (
 	defaultStepTimeout = 90 * time.Second
 	defaultPoll        = 2 * time.Second
 )
+
+// arrowStallSamples is how many consecutive approach samples the arrow
+// cluster's area may stop growing before the approach step ends (the "arrived"
+// stop of the ADR-0166 approach step: the arrow is a fixed world-space object
+// whose screen area grows as the camera closes in, so a stall of this many
+// samples means the hold has converged — the step stops instead of burning its
+// max_steps budget on a walk that is no longer moving).
+const arrowStallSamples = 3
 
 // buttonsFromTokens maps Script step buttons onto the bridge's Buttons.
 func buttonsFromTokens(ps []Button) Buttons {
@@ -206,6 +215,25 @@ func runStep(ctx context.Context, b Bridge, s Script, idx int, step Step) StepTr
 	}
 	deadline := time.Now().Add(timeout)
 
+	// An approach step (ADR-0166): the pixel-only walk toward the interaction
+	// arrow — screenshot → the LARGEST qualifying olive-arrow cluster → hold the
+	// stick toward it → stop after MaxSteps or when the arrow's area stops
+	// growing. It owns its loop (the stop conditions are the step count and the
+	// area stall, not a screen predicate), so it never consults the Until
+	// checkpoint; a hold/press/wait step cannot re-aim its stick from a fresh
+	// frame per iteration anyway.
+	if step.Approach {
+		ok, detail := runApproachStep(ctx, b, step, &st, deadline)
+		st.OK = ok
+		st.End = time.Now()
+		st.Details = append(st.Details, detail)
+		if !ok {
+			st.lastErr = detail
+		}
+		finaliseStep(b, ctx, s, idx, step, &st)
+		return st
+	}
+
 	// A step with no checkpoint succeeds after (at most) one attempt.
 	if step.Until == nil {
 		st.Attempts, st.Wire = 0, ""
@@ -351,6 +379,83 @@ func runStep(ctx context.Context, b Bridge, s Script, idx int, step Step) StepTr
 	}
 	return st.withError(fmt.Sprintf("checkpoint not met within %s (%d attempt(s)); last: %s",
 		timeout, st.Attempts, last))
+}
+
+// runApproachStep runs one approach step (ADR-0166): the bounded pixel-only
+// loop — screenshot → the LARGEST qualifying olive-arrow cluster → hold the
+// stick toward it (300 ms lateral / 400 ms forward) → stop after MaxSteps, or
+// when the arrow's cluster area stops growing for three consecutive samples.
+// The arrow's own pixels are the whole signal (the detector moved to
+// internal/dolphin/arrow.go for exactly this — no vision model), so the step
+// is deterministic and synthetic-frame-testable. Returns (ok, detail): ok is
+// the stop verdict, detail the trace line (the stall reason, the max_steps
+// reason, or the failure text).
+func runApproachStep(ctx context.Context, b Bridge, step Step, st *StepTrace, deadline time.Time) (bool, string) {
+	maxSteps := step.MaxSteps
+	if maxSteps < 1 {
+		return false, "approach: max_steps < 1"
+	}
+	const (
+		holdForward = 400 * time.Millisecond // the centred hold: walk straight at the arrow
+		holdLateral = 300 * time.Millisecond // the off-centre hold: steer toward the arrow
+	)
+	prevArea := -1 // the previous sample's largest-cluster area; -1 = the first sample grows
+	stalled := 0
+	for i := 0; i < maxSteps; i++ {
+		if time.Now().After(deadline) {
+			return false, fmt.Sprintf("approach: deadline exceeded after %d step(s)", i)
+		}
+		img, err := b.Screenshot(ctx)
+		if err != nil {
+			return false, "approach screenshot: " + err.Error()
+		}
+		clusters := oliveArrowClusters(img)
+		if len(clusters) == 0 {
+			// The arrow never qualified (off-frame / no olive fill): there is
+			// nothing to aim at, and the step ends here rather than burning the
+			// budget on a walk that cannot find a target.
+			detail := "approach: no qualifying olive cluster (the arrow is not on screen) — ended"
+			st.Details = append(st.Details, detail)
+			return true, detail
+		}
+		ar := clusters[0] // the list is densest-first: the largest cluster is the arrow
+		if ar.count > prevArea {
+			stalled = 0
+		} else {
+			stalled++
+			if stalled >= arrowStallSamples {
+				detail := fmt.Sprintf("approach: the arrow's area stopped growing at %d px — arrived", ar.count)
+				st.Details = append(st.Details, detail)
+				return true, detail
+			}
+		}
+		prevArea = ar.count
+		// Aim: off-centre by more than the 0.08 alignment floor → hold the stick
+		// that way (lateral); centred → hold forward.
+		// Stick Y +1 is forward (away from the camera), measured on the
+		// play-loop routes (ADR-0162): a lateral correction is a forward
+		// diagonal, so Link closes in while turning toward the arrow.
+		sx, sy := 0.0, 1.0
+		hold := holdForward
+		if ar.ok && math.Abs(ar.cx-0.5) > 0.08 {
+			sx = -1.0
+			if ar.cx > 0.5 {
+				sx = 1.0
+			}
+			sy = 0.5
+			hold = holdLateral
+		}
+		step.Stick = &Stick{X: sx, Y: sy}
+		step.Hold = hold
+		wire, ierr := attemptInput(ctx, b, step)
+		if ierr != nil {
+			return false, "approach inject: " + ierr.Error()
+		}
+		if st.Wire == "" {
+			st.Wire = wire // the trace records the hold the approach sent
+		}
+	}
+	return true, fmt.Sprintf("approach: max_steps %d reached", maxSteps)
 }
 
 // maxInt64Duration is the time.Duration ceiling; the "no window end" sentinel.

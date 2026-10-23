@@ -67,6 +67,41 @@ func TestParseRouteAndToScript(t *testing.T) {
 	}
 }
 
+// TestParseRouteApproachStep pins the ADR-0166 route → Script mapping: the
+// `{"approach": true, "max_steps": N}` step becomes the runner's own
+// approach step (screenshot → largest olive cluster → hold toward it → stop
+// after max_steps / when the area stalls) — never a plain hold/press/wait step.
+func TestParseRouteApproachStep(t *testing.T) {
+	r, err := ParseRoute([]byte(`{"save_state":"states/windwaker-deck-aryll.state","steps":[
+		{"mark":"walk-to-aryll","approach":true,"max_steps":6},
+		{"press":"A","mark":"talk-aryll"}]}`))
+	if err != nil {
+		t.Fatalf("ParseRoute: %v", err)
+	}
+	s, err := r.ToScript()
+	if err != nil {
+		t.Fatalf("ToScript: %v", err)
+	}
+	if len(s.Steps) != 2 {
+		t.Fatalf("script steps = %d; want 2", len(s.Steps))
+	}
+	// The approach step is the runner's own approach step (the hold-only walk).
+	if got := s.Steps[0]; !got.Approach || got.MaxSteps != 6 || got.Stick != nil || got.Press != nil || got.Wait != 0 {
+		t.Fatalf("script step 0 = %+v; want the approach step (max_steps 6, no stick/press/wait)", got)
+	}
+	// The talk-aryll step after the approach is the ordinary A press.
+	if got := s.Steps[1]; got.Approach || got.Press == nil || len(got.Press) != 1 || got.Press[0] != ButtonA {
+		t.Fatalf("script step 1 = %+v; want the talk-aryll press", got)
+	}
+	// Invalid routes are rejected, never guessed.
+	if _, err := ParseRoute([]byte(`{"save_state":"states/x.state","steps":[{"approach":true}]}`)); err == nil {
+		t.Fatalf("ParseRoute: an approach step without max_steps must be rejected")
+	}
+	if _, err := ParseRoute([]byte(`{"save_state":"states/x.state","steps":[{"approach":true,"stick":[0,-1]}]}`)); err == nil {
+		t.Fatalf("ParseRoute: an approach step must not carry a stick")
+	}
+}
+
 // TestRunScriptCheckpointFreeStepsSucceed: a route's plain stick hold,
 // press and wait (no checkpoint) each succeed after their one attempt. The
 // runner used to leave OK false on this path, so the first route step failed

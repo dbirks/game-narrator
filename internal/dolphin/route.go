@@ -40,6 +40,16 @@ type RouteStep struct {
 	WaitMS *int64 `json:"wait_ms"`
 	// Mark names the route segment this step begins; "" = no mark.
 	Mark string `json:"mark"`
+	// Approach runs the pixel-only "approach" step (ADR-0166): screenshot →
+	// the largest olive-arrow cluster → hold toward it (300 ms lateral / 400 ms
+	// forward) → stop after max_steps or when the arrow's area stops growing.
+	// The vision-free half of the telescope's approach, promoted into the
+	// play loop's route vocabulary so a route can walk to a character without a
+	// hand-tuned stick vector or a vision-model ask.
+	Approach bool `json:"approach"`
+	// MaxSteps bounds the approach loop (the approach's own step count; the
+	// runner's step deadline bounds it wall-clock on top).
+	MaxSteps int `json:"max_steps"`
 }
 
 // Route is one scripted play route: the savestate to boot from (relative
@@ -64,10 +74,16 @@ func ParseRoute(b []byte) (Route, error) {
 	}
 	for i := range r.Steps {
 		s := &r.Steps[i]
+		if s.Approach && s.MaxSteps < 1 {
+			return r, fmt.Errorf("dolphin: route step %d: approach needs max_steps >= 1", i)
+		}
+		if s.Approach && (s.Stick != nil || s.Press != nil) {
+			return r, fmt.Errorf("dolphin: route step %d: approach is a hold-only step (no stick, no press)", i)
+		}
 		switch {
 		case s.Stick != nil && s.Press != nil:
 			return r, fmt.Errorf("dolphin: route step %d: stick and press are mutually exclusive", i)
-		case s.Stick == nil && s.Press == nil && s.WaitMS == nil && s.Mark == "":
+		case s.Stick == nil && s.Press == nil && s.WaitMS == nil && s.Mark == "" && !s.Approach:
 			return r, fmt.Errorf("dolphin: route step %d: no input, no wait, no mark", i)
 		}
 	}
@@ -101,6 +117,11 @@ func (r Route) ToScript() (Script, error) {
 // numbers).
 func (s RouteStep) Step() (Step, error) {
 	st := Step{}
+	if s.Approach {
+		st.Approach = true
+		st.MaxSteps = s.MaxSteps
+		return st, nil
+	}
 	switch {
 	case s.Stick != nil:
 		if len(s.Stick) != 2 {

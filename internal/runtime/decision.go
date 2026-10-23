@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"sync"
 	"time"
 
@@ -95,6 +96,10 @@ type decisionWiring struct {
 	id    string // the session id the events are stamped with
 	opts  DecisionOptions
 	texts map[string]string // message id → the text the model sees (display text)
+	// speakers are the declared speaker options for the adjudication's speaker
+	// and speaker_kind questions — the ADR-0167 speaker-at-commit ask passes
+	// the committed line's speaker candidates to AskSpeaker.
+	speakers []systemone.Speaker
 	// roleOK is the session's degraded mode up front: the decision workflow
 	// is wired in this process, but the role behind it is not configured
 	// (or does not speak System One). Sessions run local — every
@@ -118,16 +123,17 @@ type decisionWiring struct {
 // the candidate options are rendered with (the canonical original text,
 // falling back to the speech text); an empty map renders the stable
 // placeholder instead, which must never happen for a published message.
-func (m *Manager) newDecisionWiring(id string, texts map[string]string) *decisionWiring {
+func (m *Manager) newDecisionWiring(id string, texts map[string]string, speakers []systemone.Speaker) *decisionWiring {
 	opts := m.opts.Decision
 	if opts == nil || opts.Router == nil {
 		return nil
 	}
 	w := &decisionWiring{
-		m:     m,
-		id:    id,
-		opts:  *opts,
-		texts: texts,
+		m:        m,
+		id:       id,
+		opts:     *opts,
+		texts:    texts,
+		speakers: speakers,
 	}
 	w.roleOK = w.opts.Role.Configured() && w.opts.Role.Protocol == providers.ProtocolSystemOne
 	if !w.roleOK {
@@ -373,6 +379,103 @@ func (w *decisionWiring) Decide(ctx context.Context, req pipeline.DecisionReques
 		Model:                 dec.Model,
 	}
 	return reply
+}
+
+// AskSpeaker asks the decision role who is speaking for one committed line
+// the local evidence could not attribute (ADR-0167): the speaker-at-commit
+// ask. It is the ADR-0160 shape redone at commit time — for a committed
+// shared-slot line whose payload carries no confident speaker, the line the
+// local policy committed confidently and therefore never adjudicated about —
+// rendered as the speaker + speaker_kind questions only (the attribution
+// questions; the candidate / eligibility / completeness questions are the
+// caller's business and stay on the local evidence). The full frame rides the
+// request the way the decision path's own bundle does (ADR-0154): the model
+// reads the box the player is looking at, not only the OCR text.
+//
+// The answer is attribution only: it never narrows a candidate — the caller
+// already holds the line. AskSpeaker returns the adjudicator's speaker
+// attribution (the speaker id it named, the apparent-kind answer, and the
+// chosen option's probabilities as the confidences), or the error that kept it
+// from answering. The caller gates on the confidences (ADR-0156, ADR-0158) — a
+// speaker named below the floor is not a name, a kind named below the floor is
+// not a kind — exactly as the commit payload's own gates read them.
+func (w *decisionWiring) AskSpeaker(ctx context.Context, frame image.Image, candidateMessageID string, speakers []systemone.Speaker) (speakerID string, kind string, conf float64, kindConf float64, err error) {
+	if !w.roleOK {
+		return "", "", 0, 0, errors.New("runtime: the speaker-at-commit ask needs a configured decision role")
+	}
+	if len(speakers) == 0 {
+		return "", "", 0, 0, errors.New("runtime: the speaker-at-commit ask needs at least one declared speaker")
+	}
+	w.mu.Lock()
+	w.calls++
+	w.mu.Unlock()
+
+	// The whole ask — retries included — stays inside the decision budget
+	// (docs/spec/06 "Timeout and cancellation defaults"): the router gives each
+	// attempt the role's per-attempt timeout, and this context bounds the
+	// attempts collectively.
+	deadline := w.opts.Timeout
+	if deadline <= 0 {
+		deadline = w.opts.Role.Timeout
+	}
+	if deadline <= 0 {
+		deadline = 1500 * time.Millisecond
+	}
+	dctx, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
+
+	obs := systemone.Context{
+		LastMessage: candidateMessageID,
+	}
+	bundle := systemone.BuildAdjudicationSpeakerOnly(obs, speakers)
+	// The screenshot (ADR-0154): the model reads the whole frame, not only the
+	// OCR'd text, so a misplaced crop or a misread box is still decided from
+	// the picture. No frame (a source that delivered none yet) keeps the
+	// text-only request.
+	if jpg := encodeDecisionFrame(frame); jpg != nil {
+		bundle.Images = [][]byte{jpg}
+	}
+	var dec systemone.Decision
+	_, callErr := router.Do(dctx, w.opts.Router, providers.RoleDecision, router.CallOptions{
+		Idempotent: true,
+	}, func(ctx context.Context, target router.Target) (struct{}, error) {
+		client, err := systemone.New(target.BaseURL, w.opts.Role.Token(), target.Model)
+		if err != nil {
+			return struct{}{}, err
+		}
+		dec, err = client.Decide(ctx, bundle)
+		return struct{}{}, err
+	})
+	if callErr != nil {
+		if errors.Is(dctx.Err(), context.Canceled) {
+			// The caller withdrew the ask (the session stopped): not a
+			// degradation, the wait falls back to the local evidence.
+			return "", "", 0, 0, callErr
+		}
+		w.noteFailure(callErr)
+		return "", "", 0, 0, callErr
+	}
+
+	adj := systemone.Interpret(dec, nil, speakers)
+	w.mu.Lock()
+	w.answered++
+	recovered := w.degraded
+	w.degraded = false
+	if recovered {
+		w.reason = "recovered"
+	}
+	w.mu.Unlock()
+	if recovered {
+		w.emitDegraded(false, "recovered")
+	}
+	speakerID = adj.Speaker
+	if speakerID == "" || speakerID == systemone.SpeakerUnknown {
+		speakerID = ""
+	}
+	kind = adj.SpeakerKind
+	conf = adj.SpeakerConfidence
+	kindConf = adj.SpeakerKindConfidence
+	return speakerID, kind, conf, kindConf, nil
 }
 
 // textFor renders one candidate option's description: the canonical original
