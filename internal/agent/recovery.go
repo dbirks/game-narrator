@@ -43,10 +43,10 @@ import (
 )
 
 // maxRecoveries is the number of corrective observations one run may be
-// given before the repetition guard stops it. Deliberately small: the step
-// and tool-call budgets still cap the run, and a model that repeats a call
-// after two explicit warnings has looped for good.
-const maxRecoveries = 2
+// given before the repetition guard stops it. One (ADR-0168, issue #56):
+// the first repeat of an executed call gets a single nudge; an identical
+// repeat after the nudge has looped for good and the guard blocks the run.
+const maxRecoveries = 1
 
 // repetitionMarker prefixes the error line of a synthesized repetition
 // refusal. Resume counts the refused rows carrying it to re-derive the
@@ -64,6 +64,7 @@ const recoveryTemperature = 0.8
 type callOutcome struct {
 	status string
 	err    string
+	result string // canonical result payload ("" when the call produced none)
 }
 
 // sourceURL returns the top-level "url" argument of a tool call, or ""
@@ -92,10 +93,12 @@ func isSourceRefusal(err string) bool {
 }
 
 // recordOutcome remembers the last two outcomes of one (name, args)
-// request. Bounded by design: at most two entries per distinct call, and
-// the number of distinct calls is capped by the run's tool budget.
-func (l *loop) recordOutcome(key string, status ToolResultStatus, err string) {
-	out := callOutcome{status: string(status), err: clipErr(err)}
+// request, including the canonical result payload so the repeat nudge can
+// quote it (recovery.go). Bounded by design: at most two entries per
+// distinct call, and the number of distinct calls is capped by the run's
+// tool budget.
+func (l *loop) recordOutcome(key string, status ToolResultStatus, res Result) {
+	out := callOutcome{status: string(status), err: clipErr(res.Error), result: canonicalResultText(res.Results)}
 	prev := l.outcomes[key]
 	if len(prev) >= 2 {
 		prev = prev[len(prev)-1:]
@@ -103,9 +106,31 @@ func (l *loop) recordOutcome(key string, status ToolResultStatus, err string) {
 	l.outcomes[key] = append(prev, out)
 }
 
-// outcomesOf returns the remembered outcomes of one (name, args) request.
-func (l *loop) outcomesOf(key string) []callOutcome {
-	return l.outcomes[key]
+// lastOutcome returns the most recent remembered outcome of one
+// (name, args) request, or an empty outcome when there is none.
+func (l *loop) lastOutcome(key string) callOutcome {
+	os := l.outcomes[key]
+	if len(os) == 0 {
+		return callOutcome{}
+	}
+	return os[len(os)-1]
+}
+
+// canonicalResultText renders the result payload for the repeat nudge:
+// compact JSON so quoted material stays stable and bounded.
+func canonicalResultText(results json.RawMessage) string {
+	if len(results) == 0 {
+		return ""
+	}
+	v := any(results)
+	if err := json.Unmarshal(results, &v); err != nil {
+		return string(results)
+	}
+	compact, err := json.Marshal(v)
+	if err != nil {
+		return string(results)
+	}
+	return string(compact)
 }
 
 // skipFeedback synthesizes the refused envelope for a call that targets a
@@ -132,31 +157,46 @@ func skipNote(url, reason string) string {
 		shortReason(reason), url)
 }
 
+// previousResultText renders one (name, args) outcome for the repeat nudge:
+// the previous result payload (canonical JSON), or the status/error line
+// when the previous call produced no payload (failed, refused, ...).
+func previousResultText(o callOutcome) string {
+	if o.result != "" {
+		return o.result
+	}
+	if o.err != "" {
+		return fmt.Sprintf("(%s: %s)", o.status, o.err)
+	}
+	return string(o.status)
+}
+
+// nudgeResultClip bounds the previous result quoted inside the repeat
+// nudge (~1 KB per issue #56): large payloads would otherwise dominate the
+// conversation. The full result stays on the executed call's durable row.
+const nudgeResultClip = 1024
+
+// clipNudgeResult clips the quoted previous result to nudgeResultClip.
+func clipNudgeResult(s string) string {
+	if len(s) <= nudgeResultClip {
+		return s
+	}
+	return s[:nudgeResultClip] + "…"
+}
+
 // repetitionFeedback synthesizes the corrective observation for a call the
-// model has already made twice in this run: the count, the previous
-// attempts' outcomes, the sources skipped so far, the tools that remain,
-// and what to do instead. It is a refused envelope because the call will
-// not be executed.
+// model has already made in this run (the repeat nudge, ADR-0168, issue
+// #56): the model is told the exact call was already executed, shown the
+// previous result (truncated), and steered to a different next step. It is
+// a refused envelope because the call will not be re-executed.
 func (l *loop) repetitionFeedback(name, key string) Result {
 	var b strings.Builder
 	b.WriteString(repetitionMarker)
-	fmt.Fprintf(&b, " this exact call (%s with the same arguments) has now been requested %d times in this run and it will not be re-executed.",
-		name, l.seen[key])
-	if prev := l.outcomesOf(key); len(prev) > 0 {
-		b.WriteString("\nPrevious attempts:")
-		for _, o := range prev {
-			if o.err == "" {
-				fmt.Fprintf(&b, " %s;", o.status)
-			} else {
-				fmt.Fprintf(&b, " %s (%s);", o.status, o.err)
-			}
-		}
-	}
+	fmt.Fprintf(&b, " you already called %s with these arguments; it was not re-executed. Its result was: %s.",
+		name, clipNudgeResult(previousResultText(l.lastOutcome(key))))
+	b.WriteString(" Do not repeat it; choose a different next step or give your answer.")
 	if s := skippedSourceSummary(l.skipped); s != "" {
 		fmt.Fprintf(&b, "\nSkipped sources this run: %s.", s)
 	}
-	fmt.Fprintf(&b, "\nTools still available: %s.", strings.Join(l.reg.Names(), ", "))
-	b.WriteString("\nCorrective guidance: change what you ask for — a different query or a different source — or continue with the evidence you already have. Do not repeat a call that has already been made or refused, and only call tools from the enabled-tools list.")
 	return Result{
 		SchemaVersion: ResultSchemaVersion,
 		Name:          name,

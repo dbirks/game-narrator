@@ -478,14 +478,11 @@ func TestRunRepetitionGuardBlocks(t *testing.T) {
 	reg := testRegistry(t, echoTool(t, ech.handler))
 	model := &scriptedModel{responses: []scriptedResponse{
 		{toolCalls: []openai.ToolCall{{ID: "c1", Name: "echo_tool", Arguments: json.RawMessage(`{"text":"x"}`)}}},
+		// Second identical call: the repeat nudge (recovery 1); not executed.
 		{toolCalls: []openai.ToolCall{{ID: "c2", Name: "echo_tool", Arguments: json.RawMessage(`{"text":"x"}`)}}},
-		// Third identical call: the first corrective observation (recovery 1).
-		{toolCalls: []openai.ToolCall{{ID: "c3", Name: "echo_tool", Arguments: json.RawMessage(`{"text":"x"}`)}}},
-		// Fourth identical call: the second corrective observation (recovery 2).
-		{toolCalls: []openai.ToolCall{{ID: "c4", Name: "echo_tool", Arguments: json.RawMessage(`{"text":"x"}`)}}},
-		// Fifth identical call: the recovery budget is spent; the run stops
+		// Third identical call: the recovery budget is spent; the run stops
 		// with the original reason.
-		{toolCalls: []openai.ToolCall{{ID: "c5", Name: "echo_tool", Arguments: json.RawMessage(`{"text":"x"}`)}}},
+		{toolCalls: []openai.ToolCall{{ID: "c3", Name: "echo_tool", Arguments: json.RawMessage(`{"text":"x"}`)}}},
 		{text: "should not reach"},
 	}}
 	out, err := Run(testCtx(), runOpts("run-repeat", model, reg, es, nil))
@@ -495,32 +492,41 @@ func TestRunRepetitionGuardBlocks(t *testing.T) {
 	if out.State != StateBlocked || out.StopReason != StopReasonRepetition {
 		t.Fatalf("outcome = %+v, want blocked/repetition", out)
 	}
-	// The model executed the call twice, then repeated it three more times;
-	// none of the repeats was executed.
-	if got := ech.count(`{"text":"x"}`); got != 2 {
-		t.Fatalf("echo executed %d times, want 2 (repeats are refused, never re-executed)", got)
+	// The model executed the call once, then repeated it twice; neither
+	// repeat was executed.
+	if got := ech.count(`{"text":"x"}`); got != 1 {
+		t.Fatalf("echo executed %d times, want 1 (repeats are refused, never re-executed)", got)
 	}
 	rows, _ := es.ListAgentToolCalls(testCtx(), "run-repeat")
-	if len(rows) != 5 {
-		t.Fatalf("tool rows = %d, want 5 (two executed + three durable refusals keep the resume worklist total)", len(rows))
+	if len(rows) != 3 {
+		t.Fatalf("tool rows = %d, want 3 (one executed + two durable refusals keep the resume worklist total)", len(rows))
+	}
+	if rows[0].Status != store.AgentToolSucceeded {
+		t.Fatalf("row 1 = %s, want succeeded", rows[0].Status)
 	}
 	var refused int
-	for i, r := range rows {
-		if i < 2 {
-			if r.Status != store.AgentToolSucceeded {
-				t.Fatalf("rows %d,%d = %s,%s, want succeeded", i, i+1, rows[i].Status, rows[i+1].Status)
-			}
-			continue
-		}
+	for i := 1; i < 3; i++ {
 		var env Result
-		_ = json.Unmarshal(r.ResultJSON, &env)
-		if r.Status != store.AgentToolRefused || !strings.Contains(r.Error, "repetition detected:") {
-			t.Fatalf("row %d = status %s error %q, want a durable repetition refusal", i, r.Status, r.Error)
+		_ = json.Unmarshal(rows[i].ResultJSON, &env)
+		if rows[i].Status != store.AgentToolRefused || !strings.Contains(rows[i].Error, "repetition detected:") {
+			t.Fatalf("row %d = status %s error %q, want a durable repetition refusal", i+1, rows[i].Status, rows[i].Error)
 		}
 		refused++
 	}
-	if refused != 3 {
-		t.Fatalf("refused repetition rows = %d, want 3", refused)
+	if refused != 2 {
+		t.Fatalf("refused repetition rows = %d, want 2 (repeat nudge + bound stop)", refused)
+	}
+	// The first refusal is the repeat nudge with the previous result quoted.
+	var nudge Result
+	_ = json.Unmarshal(rows[1].ResultJSON, &nudge)
+	for _, want := range []string{
+		"you already called echo_tool with these arguments",
+		"Its result was:",
+		"Do not repeat it; choose a different next step or give your answer.",
+	} {
+		if !strings.Contains(nudge.Error, want) {
+			t.Fatalf("nudge envelope lacks %q (got: %s)", want, nudge.Error)
+		}
 	}
 }
 
@@ -530,13 +536,10 @@ func TestRepetitionRecoversWithCorrectiveFeedback(t *testing.T) {
 	reg := testRegistry(t, echoTool(t, ech.handler))
 	model := &scriptedModel{responses: []scriptedResponse{
 		{toolCalls: []openai.ToolCall{{ID: "c1", Name: "echo_tool", Arguments: json.RawMessage(`{"text":"x"}`)}}},
+		// The loop: the second identical call is not executed; the model gets
+		// the repeat nudge instead.
 		{toolCalls: []openai.ToolCall{{ID: "c2", Name: "echo_tool", Arguments: json.RawMessage(`{"text":"x"}`)}}},
-		// The loop: the third identical call is not executed; the model gets
-		// the corrective observation instead.
-		{toolCalls: []openai.ToolCall{{ID: "c3", Name: "echo_tool", Arguments: json.RawMessage(`{"text":"x"}`)}}},
-		// Recovered: the model varies its behaviour and makes a different
-		// call, then answers.
-		{toolCalls: []openai.ToolCall{{ID: "c4", Name: "echo_tool", Arguments: json.RawMessage(`{"text":"y"}`)}}},
+		// Recovered: the model heeds the nudge and answers.
 		{text: "done"},
 	}}
 	out, err := Run(testCtx(), runOpts("run-recover", model, reg, es, nil))
@@ -544,45 +547,39 @@ func TestRepetitionRecoversWithCorrectiveFeedback(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	if out.State != StateSucceeded || out.Answer != "done" {
-		t.Fatalf("outcome = %+v, want succeeded via recovery", out)
+		t.Fatalf("outcome = %+v, want succeeded via the repeat nudge", out)
 	}
-	if got := ech.count(`{"text":"x"}`); got != 2 {
-		t.Fatalf("echo(x) executed %d times, want 2 (the repeat was refused)", got)
-	}
-	if got := ech.count(`{"text":"y"}`); got != 1 {
-		t.Fatalf("echo(y) executed %d times, want 1", got)
+	if got := ech.count(`{"text":"x"}`); got != 1 {
+		t.Fatalf("echo(x) executed %d times, want 1 (the repeat was refused)", got)
 	}
 
-	// The third call is a durable refusal carrying the corrective
-	// observation: the failed calls, the tools that remain, and the
-	// guidance.
+	// The second call is a durable refusal carrying the nudge: the previous
+	// result quoted (truncated) and the instruction to move on.
 	rows, _ := es.ListAgentToolCalls(testCtx(), "run-recover")
-	if len(rows) != 4 {
-		t.Fatalf("tool rows = %d, want 4", len(rows))
+	if len(rows) != 2 {
+		t.Fatalf("tool rows = %d, want 2", len(rows))
 	}
 	var env Result
-	if err := json.Unmarshal(rows[2].ResultJSON, &env); err != nil {
-		t.Fatalf("recovery envelope: %v", err)
+	if err := json.Unmarshal(rows[1].ResultJSON, &env); err != nil {
+		t.Fatalf("nudge envelope: %v", err)
 	}
-	if rows[2].Status != store.AgentToolRefused || env.Status != StatusRefused {
-		t.Fatalf("row 3 = %s/%s, want a durable refused envelope", rows[2].Status, env.Status)
+	if rows[1].Status != store.AgentToolRefused || env.Status != StatusRefused {
+		t.Fatalf("row 2 = %s/%s, want a durable refused envelope", rows[1].Status, env.Status)
 	}
 	for _, want := range []string{
 		"repetition detected:",
-		"has now been requested 3 times",
-		"Previous attempts:",
-		"Tools still available:",
-		"echo_tool",
-		"will not be re-executed",
+		"you already called echo_tool with these arguments",
+		"Its result was:",
+		"Do not repeat it; choose a different next step or give your answer.",
 	} {
 		if !strings.Contains(env.Error, want) {
-			t.Fatalf("recovery observation lacks %q (got: %s)", want, env.Error)
+			t.Fatalf("nudge observation lacks %q (got: %s)", want, env.Error)
 		}
 	}
 
-	// The observation reached the model in the next request, and that turn
+	// The nudge reached the model in the next request, and that turn
 	// varied its sampling (the recovery temperature) to break the loop.
-	req := model.requestTexts(3)
+	req := model.requestTexts(2)
 	found := false
 	for _, txt := range req {
 		if strings.Contains(txt, "repetition detected:") {
@@ -590,10 +587,10 @@ func TestRepetitionRecoversWithCorrectiveFeedback(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatal("the corrective observation was not fed back to the model")
+		t.Fatal("the repeat nudge was not fed back to the model")
 	}
 	model.mu.Lock()
-	afterTemp, beforeTemp := model.requests[3].Temperature, model.requests[2].Temperature
+	afterTemp, beforeTemp := model.requests[2].Temperature, model.requests[1].Temperature
 	model.mu.Unlock()
 	if beforeTemp != nil {
 		t.Fatalf("pre-recovery request carried a temperature (%v); only the recovery turn varies sampling", *beforeTemp)
@@ -710,15 +707,14 @@ func TestRecoveryBudgetSurvivesResume(t *testing.T) {
 	ech := newCountingEcho()
 	reg := testRegistry(t, echoTool(t, ech.handler))
 
-	// Attempt 1: the model loops; the third call triggers the first
-	// recovery, then the run is stopped (context cancelled) before the next
-	// round-trip.
+	// Attempt 1: the model loops; the second identical call triggers the
+	// repeat nudge, then the run is stopped (context cancelled) before the
+	// next round-trip.
 	cancelCtx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	first := &scriptedModel{responses: []scriptedResponse{
 		{toolCalls: []openai.ToolCall{{ID: "c1", Name: "echo_tool", Arguments: json.RawMessage(`{"text":"x"}`)}}},
 		{toolCalls: []openai.ToolCall{{ID: "c2", Name: "echo_tool", Arguments: json.RawMessage(`{"text":"x"}`)}}},
-		{toolCalls: []openai.ToolCall{{ID: "c3", Name: "echo_tool", Arguments: json.RawMessage(`{"text":"x"}`)}}},
 		{cancelRun: true},
 	}}
 	first.cancelRun = cancel
@@ -731,12 +727,11 @@ func TestRecoveryBudgetSurvivesResume(t *testing.T) {
 	}
 
 	// Attempt 2 (the restart): the recovery state must be re-derived from
-	// the durable log — one recovery already spent — so the model gets
-	// exactly one more corrective observation, then the run stops with the
-	// original reason. A restart must not refund the budget.
+	// the durable log — one recovery (the repeat nudge) already spent — so
+	// the third identical call blocks the run with the original reason.
+	// A restart must not refund the budget.
 	second := &scriptedModel{responses: []scriptedResponse{
-		{toolCalls: []openai.ToolCall{{ID: "c4", Name: "echo_tool", Arguments: json.RawMessage(`{"text":"x"}`)}}},
-		{toolCalls: []openai.ToolCall{{ID: "c5", Name: "echo_tool", Arguments: json.RawMessage(`{"text":"x"}`)}}},
+		{toolCalls: []openai.ToolCall{{ID: "c3", Name: "echo_tool", Arguments: json.RawMessage(`{"text":"x"}`)}}},
 		{text: "should not reach"},
 	}}
 	out2, err := Run(testCtx(), runOpts("run-resume", second, reg, es, nil))
@@ -746,21 +741,21 @@ func TestRecoveryBudgetSurvivesResume(t *testing.T) {
 	if out2.State != StateBlocked || out2.StopReason != StopReasonRepetition {
 		t.Fatalf("attempt 2 = %+v, want blocked/repetition (budget not refunded by the restart)", out2)
 	}
-	if got := ech.count(`{"text":"x"}`); got != 2 {
-		t.Fatalf("echo(x) executed %d times across both attempts, want 2 (never re-executed)", got)
+	if got := ech.count(`{"text":"x"}`); got != 1 {
+		t.Fatalf("echo(x) executed %d times across both attempts, want 1 (never re-executed)", got)
 	}
 	rows, _ := es.ListAgentToolCalls(testCtx(), "run-resume")
-	if len(rows) != 5 {
-		t.Fatalf("tool rows = %d, want 5 (two executed + three durable repetition refusals)", len(rows))
+	if len(rows) != 3 {
+		t.Fatalf("tool rows = %d, want 3 (one executed + two durable repetition refusals)", len(rows))
 	}
 	marked := 0
-	for _, r := range rows[2:] {
+	for _, r := range rows[1:] {
 		if r.Status == store.AgentToolRefused && strings.Contains(r.Error, "repetition detected:") {
 			marked++
 		}
 	}
-	if marked != 3 {
-		t.Fatalf("durable repetition refusals = %d, want 3 (one per observation, incl. the bound stop)", marked)
+	if marked != 2 {
+		t.Fatalf("durable repetition refusals = %d, want 2 (repeat nudge + bound stop)", marked)
 	}
 	// The resumed model saw the first attempt's observation: the durable
 	// log is what it resumed from.
@@ -782,8 +777,7 @@ func TestSamplingVariationDegradesWhenProviderRefusesTemperature(t *testing.T) {
 	model := &tempRefusingModel{responses: []scriptedResponse{
 		{toolCalls: []openai.ToolCall{{ID: "c1", Name: "echo_tool", Arguments: json.RawMessage(`{"text":"x"}`)}}},
 		{toolCalls: []openai.ToolCall{{ID: "c2", Name: "echo_tool", Arguments: json.RawMessage(`{"text":"x"}`)}}},
-		{toolCalls: []openai.ToolCall{{ID: "c3", Name: "echo_tool", Arguments: json.RawMessage(`{"text":"x"}`)}}},
-		// The recovery turn: the first attempt (with the recovery
+		// The nudge turn: the first attempt (with the recovery
 		// temperature) is rejected by the provider; the degraded retry
 		// (without it) answers.
 		{text: "done"},
@@ -815,8 +809,8 @@ func TestSamplingVariationDegradesWhenProviderRefusesTemperature(t *testing.T) {
 			assistants++
 		}
 	}
-	if assistants != 4 {
-		t.Fatalf("persisted assistant messages = %d, want 4 (the rejected attempt must not duplicate the turn)", assistants)
+	if assistants != 3 {
+		t.Fatalf("persisted assistant messages = %d, want 3 (the rejected attempt must not duplicate the turn)", assistants)
 	}
 }
 
@@ -901,6 +895,127 @@ func TestRunParallelCallsExecuteInOrder(t *testing.T) {
 	for i := range want {
 		if ech.order[i] != want[i] {
 			t.Fatalf("execution order = %v, want %v", ech.order, want)
+		}
+	}
+}
+
+// --- missing-tool nudge (ADR-0168, issue #56) ------------------------------
+
+// getTimeTool is a trivial registered tool the missing-tool tests name in
+// the user request.
+func getTimeTool() Tool {
+	return Tool{
+		Name:        "get_time",
+		Description: "Return the current time.",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+		MinRole:     auth.RoleViewer,
+		SideEffect:  SideEffectNone,
+		Handler: func(ctx context.Context, call Call) (Result, error) {
+			return Result{Results: json.RawMessage(`{"now":"2026-10-23T12:00:00Z"}`), SourceIDs: []string{}}, nil
+		},
+	}
+}
+
+func TestMissingToolNudgeRecovers(t *testing.T) {
+	_, es := openAgentStore(t)
+	reg := testRegistry(t, getTimeTool())
+	model := &scriptedModel{responses: []scriptedResponse{
+		// First assistant turn: the model answers without calling the tool
+		// the user request named.
+		{text: "it is noon"},
+		// After the corrective turn, the model calls the tool.
+		{toolCalls: []openai.ToolCall{{ID: "c1", Name: "get_time", Arguments: json.RawMessage(`{}`)}}},
+		// Then answers, grounded.
+		{text: "the time is 12:00"},
+	}}
+	opts := runOpts("run-missed-tool", model, reg, es, nil)
+	opts.UserRequest = "what time is it now? use get_time"
+	out, err := Run(testCtx(), opts)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out.State != StateSucceeded || out.Answer != "the time is 12:00" {
+		t.Fatalf("outcome = %+v, want succeeded via the missing-tool nudge", out)
+	}
+	if got := out.ToolCalls; got != 1 {
+		t.Fatalf("tool calls = %d, want 1 (get_time was called after the nudge)", got)
+	}
+
+	// Exactly one corrective user turn was sent, naming the tool.
+	corrective := 0
+	for _, txt := range model.requestTexts(1) {
+		if strings.Contains(txt, "Call get_time before answering.") {
+			corrective++
+		}
+	}
+	if corrective != 1 {
+		t.Fatalf("corrective turn %q in the second request: found %d times, want exactly 1", "Call get_time before answering.", corrective)
+	}
+	hasRequest := false
+	for _, txt := range model.requestTexts(0) {
+		if txt == "what time is it now? use get_time" {
+			hasRequest = true
+		}
+	}
+	if !hasRequest {
+		t.Fatal("first request does not carry the original user request")
+	}
+
+	// The corrective turn is durable: one user message in the log besides
+	// the original request.
+	msgs, _ := es.ListAgentMessages(testCtx(), "run-missed-tool")
+	users := 0
+	for _, m := range msgs {
+		if m.Role != RoleUser {
+			continue
+		}
+		users++
+		var pm persistedMessage
+		_ = json.Unmarshal(m.ContentJSON, &pm)
+		if pm.Content != "what time is it now? use get_time" && pm.Content != "Call get_time before answering." {
+			t.Fatalf("unexpected user message persisted: %q", pm.Content)
+		}
+	}
+	if users != 2 {
+		t.Fatalf("user messages = %d, want 2 (request + one corrective turn)", users)
+	}
+
+	// Both the answer turn and the nudge round-trip count against the step
+	// budget (no separate budget was granted).
+	if out.Steps != 3 {
+		t.Fatalf("steps = %d, want 3 (first turn + nudge turn + tool turn)", out.Steps)
+	}
+}
+
+func TestMissingToolNudgeNotSentWhenRequestNamesNoTool(t *testing.T) {
+	_, es := openAgentStore(t)
+	reg := testRegistry(t, getTimeTool())
+	model := &scriptedModel{responses: []scriptedResponse{
+		// The request does not name get_time, so the first turn is accepted
+		// as-is.
+		{text: "i would need a time source for that"},
+	}}
+	opts := runOpts("run-missed-none", model, reg, es, nil)
+	opts.UserRequest = "what time is it now?"
+	out, err := Run(testCtx(), opts)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out.State != StateSucceeded || out.Answer != "i would need a time source for that" {
+		t.Fatalf("outcome = %+v, want succeeded as-is", out)
+	}
+	if len(model.requests) != 1 {
+		t.Fatalf("model requests = %d, want 1 (no corrective turn)", len(model.requests))
+	}
+	if out.Steps != 1 {
+		t.Fatalf("steps = %d, want 1", out.Steps)
+	}
+	msgs, _ := es.ListAgentMessages(testCtx(), "run-missed-none")
+	for _, m := range msgs {
+		var pm persistedMessage
+		_ = json.Unmarshal(m.ContentJSON, &pm)
+		if strings.Contains(pm.Content, " before answering.") {
+			t.Fatalf("corrective turn persisted although the request named no tool: %q", pm.Content)
 		}
 	}
 }

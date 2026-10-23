@@ -8,10 +8,15 @@ package agent
 //   - final answer            -> state succeeded
 //   - max_steps               -> state blocked, reason max_steps
 //   - global tool budget      -> state blocked, reason budget_exhausted
-//   - identical call 3 times  -> bounded recovery (recovery.go): a
-//                                corrective observation and a varied
-//                                sampling on the next turn; state blocked,
-//                                reason repetition only after maxRecoveries
+//   - identical call repeated  -> bounded recovery (recovery.go, ADR-0168):
+//                                  the first repeat gets a nudge quoting the
+//                                  previous result (not re-executed); a
+//                                  second identical repeat after the nudge ->
+//                                  state blocked, reason repetition
+//   - missing named tool        -> one corrective user turn when the request
+//                                  names a registered tool and the first
+//                                  assistant turn answers with no call
+//                                  (ADR-0168; counts against the step budget)
 //   - source HTTP 401/403     -> skipped for the run: further calls to it
 //                                are refused without execution (recovery.go)
 //   - tool review_required    -> state review,  reason review_required
@@ -187,6 +192,14 @@ type loop struct {
 	// restart cannot "refund" step or tool-call budget.
 	resumedSteps int
 	resumedCalls int
+	// missedToolNudged is set once the missing-tool corrective user turn
+	// (ADR-0168, issue #56) has been sent; it is re-derived from the durable
+	// log on resume so a restart cannot send the corrective turn twice.
+	missedToolNudged bool
+	// assistantTurns counts the assistant turns persisted for this run, so
+	// the missing-tool nudge fires only on the run's first assistant turn
+	// (seeding resumedConv on a resume keeps the count honest).
+	assistantTurns int
 }
 
 // persistCtx derives a short-lived context for durable writes and reads.
@@ -301,12 +314,35 @@ func (l *loop) run(ctx context.Context) (Outcome, error) {
 			return out, err
 		}
 		conv = append(conv, assistant)
+		l.assistantTurns++
 		l.emitEvent(events.AgentStep, map[string]any{
 			"run_id": l.opts.RunID, "step": steps,
 			"finish_reason": resp.FinishReason, "tool_calls": len(resp.ToolCalls),
 		})
 
 		if len(resp.ToolCalls) == 0 {
+			// Missing-tool nudge (ADR-0168, issue #56): when the user request
+			// literally names a registered tool and the model's first assistant
+			// turn ends with no tool call at all, give the model one chance to
+			// correct itself before accepting the answer. One corrective user
+			// turn per run; never if any tool was already called; the next
+			// round-trip counts against the existing step budget.
+			if l.assistantTurns == 1 && calls == 0 && !l.missedToolNudged {
+				if tool := namedTool(firstUserText(conv), l.reg); tool != "" {
+					l.missedToolNudged = true
+					note := fmt.Sprintf("Call %s before answering.", tool)
+					msg := openai.Message{Role: RoleUser, Text: note}
+					if err := l.persistMessage(msg); err != nil {
+						return out, err
+					}
+					conv = append(conv, msg)
+					l.emitEvent(events.AgentStep, map[string]any{
+						"run_id": l.opts.RunID, "step": steps,
+						"missing_tool_nudge": tool, "tool_calls": 0,
+					})
+					continue
+				}
+			}
 			out.Answer = resp.Text
 			out.Steps, out.ToolCalls = steps, calls
 			return l.finish(&out, StateSucceeded, "")
@@ -338,7 +374,7 @@ func (l *loop) run(ctx context.Context) (Outcome, error) {
 			}
 
 			l.seen[key]++
-			if l.seen[key] >= 3 {
+			if l.seen[key] >= 2 {
 				if l.recoveries >= maxRecoveries {
 					// Recovery budget spent: record the call as a durable
 					// refusal so the resume worklist stays total (it can only
@@ -391,7 +427,7 @@ func (l *loop) run(ctx context.Context) (Outcome, error) {
 				l.opts.SetupStages(l.opts.RunID, l.opts.ProfileID, tc.Name, res)
 			}
 
-			l.recordOutcome(key, res.Status, res.Error)
+			l.recordOutcome(key, res.Status, res)
 			if res.Status == StatusFailed && url != "" && isSourceRefusal(res.Error) {
 				// The source itself refused access: skip it for the run so the
 				// model's next attempt at it is a refusal, not a re-fetch.
@@ -529,8 +565,8 @@ func (l *loop) loadConversation() (bool, error) {
 		conv = append(conv, pm.toMessage())
 	}
 	// Seed the repetition counter from the persisted tool calls so the guard
-	// survives a resume (three identical calls split across a restart still
-	// count as three). The recovery state (recovery.go) is re-derived from
+	// survives a resume (two identical calls split across a restart still
+	// count as two). The recovery state (recovery.go) is re-derived from
 	// the same rows: refused rows carrying the repetition marker count the
 	// recovery budget already spent, failed rows with a URL argument and a
 	// source-refusal error re-mark the skipped sources, and every finished
@@ -544,7 +580,12 @@ func (l *loop) loadConversation() (bool, error) {
 		key := repeatKey(r.Name, r.ArgsJSON)
 		l.seen[key]++
 		if r.Status != store.AgentToolPending {
-			l.recordOutcome(key, ToolResultStatus(r.Status), r.Error)
+			var env Result
+			if r.ResultJSON != nil {
+				_ = json.Unmarshal(r.ResultJSON, &env)
+			}
+			env.Status = ToolResultStatus(r.Status) // the row is the source of truth
+			l.recordOutcome(key, env.Status, env)
 		}
 		if r.Status == store.AgentToolFailed {
 			if u := sourceURL(r.ArgsJSON); u != "" && isSourceRefusal(r.Error) {
@@ -557,6 +598,17 @@ func (l *loop) loadConversation() (bool, error) {
 	}
 	if l.recoveries > maxRecoveries {
 		l.recoveries = maxRecoveries
+	}
+	// Re-derive the missing-tool nudge state (ADR-0168): the corrective
+	// user turn is persisted like any other message, so a resume sees it in
+	// the conversation and never sends it again.
+	for _, m := range conv {
+		switch {
+		case m.Role == RoleUser && strings.Contains(m.Text, " before answering."):
+			l.missedToolNudged = true
+		case m.Role == RoleAssistant:
+			l.assistantTurns++
+		}
 	}
 	// The rebuilt conversation cannot be returned through the signature
 	// without restructuring; stash it for executePending/run.
@@ -576,6 +628,59 @@ func (l *loop) toolOrUnknown(name string) Tool {
 		return t
 	}
 	return Tool{Name: name, UntrustedOutput: false}
+}
+
+// firstUserText returns the text of the first user message in the
+// conversation (the run's original request), or "" when there is none.
+func firstUserText(conv []openai.Message) string {
+	for _, m := range conv {
+		if m.Role == RoleUser {
+			return m.Text
+		}
+	}
+	return ""
+}
+
+// namedTool returns the registered tool whose name literally appears in the
+// user request text, or "" when none does. Tool names are [a-z0-9_] (see
+// registry.go), so a name counts only when it is not glued to other word
+// characters ("get_time" in the request names get_time, not a tool
+// registered as "get"). Among several matches the longest name wins.
+// (ADR-0168, issue #56.)
+func namedTool(request string, reg *Registry) string {
+	best := ""
+	for _, name := range reg.Names() {
+		if len(name) <= len(best) {
+			continue
+		}
+		if namedInText(request, name) {
+			best = name
+		}
+	}
+	return best
+}
+
+// namedInText reports whether name appears in text as a standalone token
+// (not embedded in a longer word-character run).
+func namedInText(text, name string) bool {
+	for i := 0; i+len(name) <= len(text); i++ {
+		if text[i:i+len(name)] != name {
+			continue
+		}
+		beforeOK := i == 0 || !isWordChar(text[i-1])
+		after := i + len(name)
+		afterOK := after == len(text) || !isWordChar(text[after])
+		if beforeOK && afterOK {
+			return true
+		}
+	}
+	return false
+}
+
+// isWordChar is the [a-z0-9_] alphabet tool names live in (case-folded,
+// so an uppercase mention still names the tool).
+func isWordChar(c byte) bool {
+	return c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 }
 
 // repeatKey canonicalises (name, args) for the repetition guard. The args are
