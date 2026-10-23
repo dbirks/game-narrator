@@ -191,6 +191,12 @@ type Stats struct {
 	// be applied at all. It must stay distinct from DecisionApplied: a
 	// discarded answer never narrows a commit.
 	DecisionFenced uint64 `json:"decision_fenced"`
+	// DecisionsSkippedJunk counts adjudication requests skipped by the
+	// clef-junk-gate (ADR-0164): the read was not dialogue-like (fewer than two
+	// words of three or more letters — the OCR noise of a screen with no
+	// dialogue box), so the decision never went out. It is the skip the gate
+	// made, counted beside Decisions, which only ever sees offers that went.
+	DecisionsSkippedJunk uint64 `json:"decisions_skipped_junk"`
 
 	// Commits counts message.committed events this pipeline's reducer emitted.
 	Commits uint64 `json:"commits"`
@@ -351,15 +357,16 @@ func (c *counters) replayDegraded(frameSeq int64) {
 // maxReplayDegradedSeqs bounds the retained list of degraded frame sequences.
 const maxReplayDegradedSeqs = 64
 
-func (c *counters) ranking()          { c.add(func(s *Stats) { s.Rankings++ }) }
-func (c *counters) rankingStale()     { c.add(func(s *Stats) { s.RankingStale++ }) }
-func (c *counters) rankingAbstained() { c.add(func(s *Stats) { s.RankingsAbstained++ }) }
-func (c *counters) decisions()        { c.add(func(s *Stats) { s.Decisions++ }) }
-func (c *counters) decisionApplied()  { c.add(func(s *Stats) { s.DecisionApplied++ }) }
-func (c *counters) decisionFenced()   { c.add(func(s *Stats) { s.DecisionFenced++ }) }
-func (c *counters) commits(n uint64)  { c.add(func(s *Stats) { s.Commits += n }) }
-func (c *counters) events(n uint64)   { c.add(func(s *Stats) { s.Events += n }) }
-func (c *counters) staleApplied()     { c.add(func(s *Stats) { s.StaleApplied++ }) }
+func (c *counters) ranking()              { c.add(func(s *Stats) { s.Rankings++ }) }
+func (c *counters) rankingStale()         { c.add(func(s *Stats) { s.RankingStale++ }) }
+func (c *counters) rankingAbstained()     { c.add(func(s *Stats) { s.RankingsAbstained++ }) }
+func (c *counters) decisions()            { c.add(func(s *Stats) { s.Decisions++ }) }
+func (c *counters) decisionsSkippedJunk() { c.add(func(s *Stats) { s.DecisionsSkippedJunk++ }) }
+func (c *counters) decisionApplied()      { c.add(func(s *Stats) { s.DecisionApplied++ }) }
+func (c *counters) decisionFenced()       { c.add(func(s *Stats) { s.DecisionFenced++ }) }
+func (c *counters) commits(n uint64)      { c.add(func(s *Stats) { s.Commits += n }) }
+func (c *counters) events(n uint64)       { c.add(func(s *Stats) { s.Events += n }) }
+func (c *counters) staleApplied()         { c.add(func(s *Stats) { s.StaleApplied++ }) }
 
 // audioUnderrun books one started playback that ended in a sink failure
 // (docs/spec/13 "playback underruns", ADR-0074).

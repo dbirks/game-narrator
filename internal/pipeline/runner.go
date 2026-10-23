@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/dbirks/game-narrator/internal/capture"
 	"github.com/dbirks/game-narrator/internal/events"
@@ -466,6 +468,31 @@ func (r *Runner) ocrRecognize(ctx context.Context, job *ocrJob) (ocr.Result, err
 	return r.cfg.OCR.Recognize(ctx, job.input)
 }
 
+// readIsDialogueLike reports whether a read carries enough alphabetic
+// substance to be dialogue rather than the OCR noise of a screen with no
+// dialogue box on it (ADR-0164, the clef-junk-gate): two words of three or
+// more letters each, counted on Unicode letters. Fewer than two such words is
+// the not-dialogue-like shape — HUD icons, rocks, borders a crop lands on with
+// no box — and the adjudication gate (the Clef decision before the commit for
+// one observation) refuses to ask about it. A real box whose OCR is garbled
+// still usually draws two words the letters can hold, so the gate does not
+// swallow the full-frame rescue (ADR-0154).
+func readIsDialogueLike(text string) bool {
+	words := 0
+	for _, tok := range strings.Fields(text) {
+		letters := 0
+		for _, r := range tok {
+			if unicode.IsLetter(r) {
+				letters++
+			}
+		}
+		if letters >= 3 {
+			words++
+		}
+	}
+	return words >= 2
+}
+
 // rankWorker ranks observations off the reducer goroutine. matcher.Rank is pure
 // CPU over a shared immutable Index and never touches session state: the answer
 // comes back as a message the reducer is free to refuse (docs/spec/01 "candidate
@@ -493,7 +520,22 @@ func (r *Runner) rankWorker(ctx context.Context, ranks <-chan rankJob, replies c
 			// timeout) and the breaker; a failure is an honest abstain (a nil Msg
 			// with its reason), never a guess.
 			var reply DecisionReply
-			if r.cfg.Decider != nil && r.cfg.Reducer.NeedsAdjudication(rank) {
+			shouldAsk := r.cfg.Decider != nil && r.cfg.Reducer.NeedsAdjudication(rank)
+			// The clef-junk-gate (ADR-0164, issue #44 follow-up): before the
+			// adjudication goes out, screen the read for dialogue-ness — a settled
+			// read of a screen with no dialogue box on it is OCR noise (HUD icons,
+			// rocks), and the board's 2026-10-22 decision traffic spent ~98% of its
+			// calls on reads shorter than 12 characters, the junk half of that. A
+			// read with fewer than two words of three or more letters is not
+			// dialogue-like and is skipped the way a local abstain is: the reply
+			// stays the zero DecisionReply with its reason ("skipped_junk"), the
+			// commit proceeds on the local evidence, and the skip is counted
+			// (ADR-0164). A real box whose OCR is garbled still usually carries two
+			// such words, so the full-frame Clef rescue (ADR-0154) keeps its footing.
+			if shouldAsk && !readIsDialogueLike(j.raw) {
+				reply = DecisionReply{Reason: "skipped_junk"}
+				r.cnt.decisionsSkippedJunk()
+			} else if shouldAsk {
 				r.cnt.decisions()
 				r.metrics.Decision(r.mLabels)
 				asked := r.cfg.Now()
