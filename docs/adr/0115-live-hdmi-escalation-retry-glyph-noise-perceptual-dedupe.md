@@ -75,3 +75,36 @@ The pipeline turns the property into a bounded retry:
 
 - New: `internal/vision/phash.go` (+ tests), `CropOptions.Inset`, `matcher.TrimEdgeNoise` and the Rank-with-trim pass, `pipeline.Config`'s `EscalationRetryAfter` / `EscalationMaxAttempts` / `PerceptualSkipTolerance` / `PerceptualSkipSettle` / `DecisionCandidates`, `session.Config.AdjudicateFuzzyBelow` and the `NeedsAdjudication` clause, the per-source fallback threshold (runtime + `cmd/game-narrator` env), the source-clock dev_trace gate.
 - Reversal: the new config fields are additive (zero/defaults restore the prior behaviour — the fuzzy clause disabled by a negative `AdjudicateFuzzyBelow`, the retry by `EscalationMaxAttempts = 1`, the perceptual skip by a tolerance of 0 or the settle by an arbitrarily long quiet-run demand, the inset by 0, the threshold by leaving the env unset); `phash.go` and the inset delete cleanly; the dev_trace gate reverts to the wall-clock 250 ms rule by restoring the one line in `recordFrame`. Nothing durable changes shape: no schema migration, no event-name change, the OpenAPI surface gains nothing.
+
+## Amendment, 2026-10-23 — §3: a settled box whose newest pixels were never read gets exactly one confirming read
+
+### Evidence
+
+A local Dolphin run (2026-10-23, `TestLiveCatchUpRapidDialogue`) ended with a fully typed box on screen that the session emitted nothing for 45 s. The last `text.observed` read the typewriter prefix (the final characters missing); Tesseract read the final crop correctly when given it, but the final pixels never reached the engine. The mechanism, in §3's own machinery: the final crop differed from the prefix crop by a couple of characters — inside `PerceptualSkipTolerance`, so it took the perceptual-skip case; while the prefix read was still in flight the crop RODE that read (`p.job = rs.inflight`) and got the prefix's text, and once the settle armed (or was already armed) the perceptually-quiet repeats skipped on the anchor's text — pixels nobody had read. Every later frame was pixel-identical to the final crop, but the exact-hash dedupe never matched it (the anchor was the prefix), so the region never re-read and reused the prefix forever. §3's rule as written — "the perceptual memory is the same claim on a tolerant key" — let a crop whose *exact* hash was never read inherit the "already read" claim of pixels it is only perceptually close to.
+
+### Decision
+
+The dedupe key must describe the pixels that were actually READ. The fix is bounded — **at most one extra read per settled box** — because on the UNO Q's analog feed no two crops are ever pixel-identical (the `PerceptualSkipTolerance` comment in config.go), so "the settle armed on pixels that were never read" is true there on *every* settle period; re-confirming each time would put the static box back on the engine's cadence, which is the per-frame cost §3 exists to remove (the board is CPU-bound already).
+
+A first cut of the fix — `owedRead`: any crop within tolerance whose exact hash differed from the anchor read's hash owed a read, `quietRun` reset to 0 on every such crop, and the crop read as soon as nothing was in flight — was **rejected**. It broke the analog feed by construction: every analog crop carries a distinct exact hash, so the debt was always set, the quiet run was reset on every frame, the settle never armed, and the region re-read at the engine's cadence forever. Measured on the synthetic analog clip below, that version settles **15 OCR calls in 60 frames with a skip counter of 0** (45 rides); the main code settles 1.
+
+The final design:
+
+- The quiet-run counting is unchanged from §3: `quietRun` runs on every crop within tolerance of the anchor (identical-crop frames included) and resets with the anchor (new read, failed read, cancelled read, box dismissal, change beyond tolerance).
+- The perceptual-skip case only runs when the crop's exact hash is NOT the anchor read's hash (an identical crop is the exact-hash case, which skips exactly as before — a settle that arms on the read's own pixels is untouched). There, at the moment the settle ARMS (the first crop with `quietRun > PerceptualSkipSettle`):
+  - if a read is in flight, the crop rides it (`ocrDeferred`) and the next quiet crop after it settles does the confirming read;
+  - else, if the anchor is not yet confirmed, the region starts **one confirming read** of this crop. `startJob` re-anchors `lastHash`/`lastPHash` on the pixels actually read and resets the quiet run, so the skip re-arms on the new anchor;
+  - else — the anchor was confirmed already — the crop skips on the anchor's text exactly as §3 measured.
+- "Confirmed" is `regionState.confirmed`: set only by a confirming read, cleared by every other read (`startJob` takes the flag), and cleared with the rest of the anchor memory wherever the perceptual memory goes. It says "the last read confirmed a perceptually-unchanged box", so a re-armed settle on further unread pixels does not start a second confirming read.
+- Net effect: Dolphin (identical repeats of a never-read final crop) gets exactly one read of the final pixels; the analog feed gets one extra read per settled box, then skips as today.
+
+### Validation
+
+- `TestRiddenFinalCropGetsExactlyOneRead` and `TestIdenticalCropsAfterRiddenReadSkip` (`internal/pipeline/ride_final_crop_test.go`, synthetic live clip: prefix crop, 300 ms read, final crop inside the 10-bit tolerance with a distinct exact hash, repeated identically): the final pixels are recognised exactly once, the region's emitted text ends as the final line, and the identical crops after the final read skip (no OCR storm).
+- `TestAnalogNoiseSettleCostsOneConfirmingRead` (`internal/pipeline/analog_noise_settle_test.go`): a static box for 60 frames whose every crop has a distinct exact hash yet sits inside the perceptual tolerance of the anchor (the band walks a few pixels on coprime periods — the analog feed's distinct-hash property in crop form), 300 ms engine at 100 ms frames. Before (main code): **1 settled OCR call, 56 skipped, 3 deferred**. The rejected always-owe cut: **15 settled OCR calls, 0 skipped** — the per-frame cost §3 removed, back on the board. With this amendment: **2 settled OCR calls (the first read, exactly one confirming read), 52 skipped, 6 deferred**; the test asserts settled calls stay bounded at ≤ 3 and the skip counter covers the rest.
+- Regressions: `go test -race -count=1 ./internal/pipeline/` clean; the replay gate (`make test-replay`) stays green — every historic replay test still passes, plus the three new tests; lint clean.
+
+### Consequences and reversal
+
+- The amendment is one flag (`confirmed`) and its bookkeeping in `internal/pipeline/dispatch.go`, plus the armed-settle branch of the perceptual case; the OpenAPI surface, counters, config and events are unchanged (the confirming read counts in `ocr_calls`, its rides in `ocr_deferred`, the skips in `ocr_skipped_by_hash`).
+- Reversal: delete the `confirmed` flag and its set/clear sites, restore the armed branch to the plain `phashSkip`; the §3 settle-gated skip returns to its prior semantics (the frozen-final-crop case above comes back).

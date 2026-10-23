@@ -68,6 +68,20 @@ type regionState struct {
 	// beyond tolerance arrives: the quiet run is about the current anchor.
 	quietRun int
 
+	// confirmed says the region's current anchor is a CONFIRMING read: a read
+	// started because the perceptual skip's settle armed on pixels that were
+	// never read — the final typewriter crop that rode a read of the prefix
+	// pixels (ADR-0115 §3, amendment 2026-10-23). While set, a crop that is
+	// perceptually unchanged but NOT the anchor's pixels skips on the anchor's
+	// text instead of starting another confirming read: on the analog feed the
+	// crops never repeat exactly, so "the skip armed again on unread pixels"
+	// is true every settle period, and re-confirming on each one would put the
+	// static box back on the engine's cadence — the per-frame cost §3 removed.
+	// The one confirming read per settled box is the bounded fix. Cleared when
+	// ANY read starts (a new anchor is not a confirming anchor) and with the
+	// rest of the anchor memory when it goes (cancelled/failed read, box gone).
+	confirmed bool
+
 	// inflight is the one recognition this region has outstanding. One, not a
 	// list: two concurrent reads of one box return two answers about a screen the
 	// player has already changed, and the reducer can only use the newest.
@@ -260,6 +274,7 @@ func (r *Runner) applyOutcome(regions []*regionState, o ocrOutcome) {
 				rs.lastPHash = 0
 				rs.havePHash = false
 				rs.quietRun = 0
+				rs.confirmed = false
 			}
 		}
 		return
@@ -294,6 +309,7 @@ func (r *Runner) applyOutcome(regions []*regionState, o ocrOutcome) {
 			rs.lastPHash = 0
 			rs.havePHash = false
 			rs.quietRun = 0
+			rs.confirmed = false
 			rs.inflight = nil
 			rs.lastOK = nil
 			rs.lastOKHash = ""
@@ -514,6 +530,7 @@ func (rs *regionState) accept(r *Runner, ctx context.Context, f capture.Frame, i
 		rs.lastPHash = 0
 		rs.havePHash = false
 		rs.quietRun = 0
+		rs.confirmed = false
 	case a.hash == rs.lastHash && rs.lastHash != "":
 		// Identical pixels: no OCR. If a read of these very pixels is in flight the
 		// observation attaches to it rather than starting a duplicate. The crop is
@@ -535,11 +552,44 @@ func (rs *regionState) accept(r *Runner, ctx context.Context, f capture.Frame, i
 		// Counted with the exact-hash skip: for the operator it is the same fact —
 		// "OCR was skipped because the box had not changed" — and the counter is
 		// where docs/spec/05's suppression is asserted.
+		//
+		// The confirming read (ADR-0115 §3, amendment 2026-10-23): this case only
+		// runs when the crop's exact hash is NOT the anchor read's (an identical
+		// crop is the case above), so "perceptually unchanged" here means the
+		// picture did not change but the pixels never were the read's — the final
+		// typewriter crop that rode a read of the PREFIX pixels. A settle that
+		// arms on pixels nobody read may not skip, or the box freezes on the
+		// anchor's text for the rest of the page: it starts ONE confirming read
+		// of this crop, which re-anchors the dedupe memory on the pixels actually
+		// read (startJob) and resets the quiet run so the skip re-arms on the
+		// new anchor. On the analog feed the crops differ every frame, so the
+		// settle arms again on unread pixels every settle period; the
+		// confirming-read flag keeps that to one read per settled box — after
+		// it, the re-armed skip rides the anchor's text, exactly as §3 measured.
+		// If a read is in flight the crop rides it instead, and the next quiet
+		// crop after it settles does the confirming read.
 		rs.quietRun++
 		if rs.quietRun > r.cfg.PerceptualSkipSettle {
-			p.job = rs.inflight
-			p.phashSkip = true
-			r.cnt.ocrSkipped()
+			if rs.inflight != nil {
+				// The read in flight may be of these pixels (a confirming read) or
+				// of an older anchor's: ride it either way, and the next quiet
+				// crop after it settles answers whether these pixels are read.
+				p.job = rs.inflight
+				p.lagging = true
+				r.cnt.ocrDeferred()
+			} else if !rs.confirmed {
+				// These pixels were never read: one confirming read, re-anchoring
+				// the dedupe memory on them (startJob also resets the quiet run
+				// and books the anchor confirmed).
+				p.job = rs.startJob(r, ctx, f.Seq, a, jobs, true)
+			} else {
+				// The anchor was confirmed already: the picture the box shows is
+				// the one the anchor read, however the noise moved the pixels —
+				// skip on its text.
+				p.job = rs.inflight
+				p.phashSkip = true
+				r.cnt.ocrSkipped()
+			}
 		} else if rs.inflight != nil {
 			// Quiet but the settle is not armed: the read already in flight is
 			// paying for this crop's pixels, so ride it rather than start a second —
@@ -553,7 +603,7 @@ func (rs *regionState) accept(r *Runner, ctx context.Context, f capture.Frame, i
 			// Quiet but the settle is not armed and nothing is in flight: this is
 			// the word-sized change the tolerance cannot see past, so read it. The
 			// new anchor follows the read (startJob) and the quiet run starts over.
-			p.job = rs.startJob(r, ctx, f.Seq, a, jobs)
+			p.job = rs.startJob(r, ctx, f.Seq, a, jobs, false)
 		}
 	case a.hash != "":
 		if rs.inflight != nil {
@@ -580,7 +630,7 @@ func (rs *regionState) accept(r *Runner, ctx context.Context, f capture.Frame, i
 			p.lagging = true
 			r.cnt.ocrDeferred()
 		} else {
-			p.job = rs.startJob(r, ctx, f.Seq, a, jobs)
+			p.job = rs.startJob(r, ctx, f.Seq, a, jobs, false)
 		}
 	}
 
@@ -612,7 +662,7 @@ func (rs *regionState) accept(r *Runner, ctx context.Context, f capture.Frame, i
 // budget is ReplayOCRTimeout rather than OCRTimeout: nothing supersedes a replay
 // read, so its deadline exists to bound a wedged engine, and the retry policy in
 // ocrWorker — not an early kill — is what decides a slow frame's fate.
-func (rs *regionState) startJob(r *Runner, ctx context.Context, frameSeq int64, a analysis, jobs chan<- *ocrJob) *ocrJob {
+func (rs *regionState) startJob(r *Runner, ctx context.Context, frameSeq int64, a analysis, jobs chan<- *ocrJob, confirmed bool) *ocrJob {
 	timeout := r.cfg.OCRTimeout
 	if r.cfg.Mode == ModeReplay {
 		timeout = r.cfg.ReplayOCRTimeout
@@ -634,6 +684,14 @@ func (rs *regionState) startJob(r *Runner, ctx context.Context, frameSeq int64, 
 	}
 	rs.inflight = job
 	rs.lastHash = a.hash
+	// Every read re-anchors the perceptual memory on its own pixels; only the
+	// one started by the armed settle's confirming read is a CONFIRMING anchor
+	// (confirmed), and the skip's "the anchor was already confirmed" ride on
+	// unread pixels is what keeps a settled box to one extra read (see the
+	// field). A plain read — first sight of a crop, a word that just landed —
+	// clears the flag: its anchor has not been confirmed, and the settle that
+	// arms on its quiet crops may owe one confirming read.
+	rs.confirmed = confirmed
 	// The perceptual memory is set at read start, like lastHash: frames that
 	// arrive during this read attach to it instead of racing a duplicate of it,
 	// and a crop that is perceptually identical to the one being read must not
