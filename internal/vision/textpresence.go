@@ -124,7 +124,10 @@ type PanelPresence struct {
 	// line" from "the scene is dark".
 	Text float64
 	// SaturatedDark is the fraction of the crop's dark pixels that are
-	// saturated (max(r,g,b)−min(r,g,b) at or above satFloor): the panel's
+	// saturated (channel spread at or above satFloor, measured as
+	// max(r,g)−min(r,g,b) by sat8 — the blue channel counts toward the
+	// minimum, a pre-existing quirk the ADR-0137 sea measurement stands on,
+	// left as-is by ADR-0169): the panel's
 	// colour. A dialogue panel is a translucent darkening of the scene, so
 	// its dark pixels are the panel's own desaturated tint. A saturated
 	// scene — the open sea: dark blue water, measured 0.93–0.97 on the
@@ -132,6 +135,15 @@ type PanelPresence struct {
 	// saturated, and a band like that is scene wearing through the band, not
 	// a panel.
 	SaturatedDark float64
+	// TopDark is the mean dark-pixel share of the crop's top band (its top
+	// ~1/8 of rows). A textbox region is a dark band that reaches the top
+	// edge of the crop, so its top band is dark (near 1) regardless of the
+	// text that rides lower down. An open-sea/sky band is bright at the top
+	// (the sky) and darkens toward the bottom, so its top band is nearly 0
+	// even when its overall dark share clears the floor (ADR-0169: the
+	// 2026-10-23 open-sea frame read 0.062 on its board band while every box
+	// read >= 0.78). A crop with no dark rows at all reads 0.
+	TopDark float64
 }
 
 // DefaultSatFloor is the saturation (max(r,g,b)−min(r,g,b)) at or above which
@@ -163,7 +175,38 @@ func PanelPresenceOf(img image.Image, darkLuma, brightLuma, satFloor uint8) Pane
 	if darkN > 0 {
 		sd = float64(satDarkN) / float64(darkN)
 	}
-	return PanelPresence{Dark: dark, Text: text, SaturatedDark: sd}
+	return PanelPresence{Dark: dark, Text: text, SaturatedDark: sd, TopDark: topBandDark(g, darkLuma)}
+}
+
+// topBandDark walks the crop's top ~1/8 of rows and reports their mean dark
+// share — the darkness of the band's top edge. It reuses the already-
+// converted gray g so it costs a partial luma pass, still negligible against
+// the OCR the gate steers (docs/spec/05). An empty crop reads 0.
+func topBandDark(g *image.Gray, darkLuma uint8) float64 {
+	if g == nil {
+		return 0
+	}
+	b := g.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if w <= 0 || h <= 0 || len(g.Pix) == 0 {
+		return 0
+	}
+	n := h / 8 // top band
+	if n < 1 {
+		n = 1
+	}
+	sum := 0.0
+	for y := 0; y < n; y++ {
+		row := g.Pix[y*g.Stride : (y+1)*g.Stride]
+		c := 0
+		for x := 0; x < w; x++ {
+			if row[x] < darkLuma {
+				c++
+			}
+		}
+		sum += float64(c) / float64(w)
+	}
+	return sum / float64(n)
 }
 
 // saturatedDarkPixels walks the colour source counting the crop's dark pixels

@@ -303,11 +303,14 @@ func TestZeroPresenceConfigTakesTheDefaults(t *testing.T) {
 	if cfg != DefaultPresence() {
 		t.Fatalf("zero config normalizes to %+v, want the defaults %+v", cfg, DefaultPresence())
 	}
-	board := vision.PanelPresence{Dark: 0.870, Text: 0.0208, SaturatedDark: 0.010}
+	board := vision.PanelPresence{Dark: 0.870, Text: 0.0208, SaturatedDark: 0.010, TopDark: 1.0}
 	if !cfg.Present(board) || !(PresenceConfig{}).Present(board) {
 		t.Fatal("the board's measured box crop reads absent under a zero (default) config")
 	}
-	sea := vision.PanelPresence{Dark: 0.84, Text: 0.0003, SaturatedDark: 0.95}
+	// TopDark: 1.0 on the sea row proves the dark-saturated clause alone
+	// is what rejects it (ADR-0169 added the open-sea/sky clause; this
+	// one must stand on its own).
+	sea := vision.PanelPresence{Dark: 0.84, Text: 0.0003, SaturatedDark: 0.95, TopDark: 1.0}
 	if cfg.Present(sea) {
 		t.Fatal("the sea reads present under the defaults")
 	}

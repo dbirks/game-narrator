@@ -142,15 +142,19 @@ var (
 // provides: the capture layer knows pixels, not semantics.
 //
 // The rule is deliberately crude and game-agnostic — the crop must look like
-// a PANEL carrying a LINE, in three measured shares (vision.PanelPresenceOf):
-// its dark share reaches MinDarkShare (a box is a translucent panel darker
-// than the scene), its text share reaches MinTextShare (the letters, which
-// are what a box exists to show), and its saturated-dark share stays under
-// MaxSaturatedDarkShare (the panel's dark is its own desaturated tint; a band
-// whose dark pixels are a saturated scene — the open sea, ADR-0137 amendment
-// — is the scene wearing through the band, not a panel). A profile that needs
-// a different detector supplies its own thresholds rather than a code path
-// (docs/spec/11 step 4 forbids fixture-specific branches).
+// a PANEL carrying a LINE: its dark share reaches MinDarkShare (a box is a
+// translucent panel darker than the scene), its text share reaches
+// MinTextShare (the letters, which are what a box exists to show), its
+// saturated-dark share stays under MaxSaturatedDarkShare (the panel's dark
+// is its own desaturated tint; a band whose dark pixels are a saturated
+// scene — the open sea, ADR-0137 amendment — is the scene wearing through
+// the band, not a panel), and it is not the open-sea/sky shape: a weakly
+// saturated scene whose top band is bright (TopDark under MinTopDark with
+// SaturatedDark over MinSeaSat, ADR-0169) is the sky over water, not a panel
+// — a box's panel reaches the top edge of its region, so a box never has a
+// bright top band. A profile that needs a different detector supplies its own
+// thresholds rather than a code path (docs/spec/11 step 4 forbids
+// fixture-specific branches).
 type PresenceConfig struct {
 	// DarkLuma is the luma below which a pixel counts as panel, in [0,255].
 	DarkLuma uint8
@@ -171,6 +175,25 @@ type PresenceConfig struct {
 	// dark sea bands and 0.000–0.053 on the box fixtures, the ceiling sits
 	// at 0.5 an order of magnitude from either side.
 	MaxSaturatedDarkShare float64
+	// MinTopDark is the floor on the crop's top-band dark share (the mean
+	// dark share of its top ~1/8 of rows, vision.PanelPresence's TopDark).
+	// A textbox region is a dark band that reaches the top edge of the crop;
+	// an open-sea/sky band is bright at the top (the sky) and its top band
+	// is nearly 0. Measured on the 2026-10-23 open-sea probe (ADR-0169): the
+	// no-box scene's board band read 0.062 while every box (probe, both
+	// synthetic corpora, and the bordered-HDMI replay) read >= 0.78, so the
+	// floor sits at 0.5 between the two. It is the sea clause's "bright top"
+	// half, never a stand-alone floor (a mis-mapped crop can have a bright
+	// top and still be a panel the tracker must OCR).
+	MinTopDark float64
+	// MinSeaSat is the floor on the crop's saturated-dark share that, WITH a
+	// bright top band (TopDark under MinTopDark), marks the open-sea/sky
+	// shape (ADR-0169): the sea's dark pixels carry a little saturation
+	// (measured 0.0274 on the 2026-10-23 probe) while a neutral panel or a
+	// mis-mapped scene reads near 0. It is deliberately low so it never
+	// touches the box fixtures (measured up to 0.053 saturated-dark, which
+	// carry a dark panel at the top and are cleared by the MinTopDark half).
+	MinSeaSat float64
 }
 
 // DefaultPresence is the panel detector described above. The dark and text
@@ -185,6 +208,8 @@ func DefaultPresence() PresenceConfig {
 		MinDarkShare:          0.30,
 		MinTextShare:          0.0002,
 		MaxSaturatedDarkShare: 0.5,
+		MinTopDark:            0.5,
+		MinSeaSat:             0.02,
 	}
 }
 
@@ -216,19 +241,45 @@ func (p PresenceConfig) normalize() PresenceConfig {
 	if p.MaxSaturatedDarkShare > 1 {
 		p.MaxSaturatedDarkShare = 1
 	}
+	if !(p.MinTopDark > 0) {
+		p.MinTopDark = DefaultPresence().MinTopDark
+	}
+	if p.MinTopDark > 1 {
+		p.MinTopDark = 1
+	}
+	if !(p.MinSeaSat > 0) {
+		p.MinSeaSat = DefaultPresence().MinSeaSat
+	}
+	if p.MinSeaSat > 1 {
+		p.MinSeaSat = 1
+	}
 	return p
 }
 
 // Present is the presence gate the pipeline applies to one crop's
 // PanelPresence read (roi.go's analyze, ADR-0137 Amendment: the sea false
-// positive): all three shares must agree — the crop is dark enough to be a
-// panel, carries a line, and is not a saturated scene wearing through the
-// band. One predicate here keeps the runner and the captured-fixture tests
-// on the same decision.
+// positive; ADR-0169: the open-sea/sky clause): the crop is dark enough to
+// be a panel, carries a line, is not a saturated scene wearing through the
+// band, and is not the open-sea/sky shape (a weakly saturated scene with a
+// bright top band — a box's panel reaches the top of its region, so a box
+// never has a bright top band).
+// One predicate here keeps the runner and the captured-fixture tests on the
+// same decision.
 func (p PresenceConfig) Present(pp vision.PanelPresence) bool {
-	return pp.Dark >= p.MinDarkShare &&
-		pp.Text >= p.MinTextShare &&
-		p.SaturatedDarkCeiling() >= pp.SaturatedDark
+	if pp.Dark < p.MinDarkShare || pp.Text < p.MinTextShare {
+		return false
+	}
+	if pp.SaturatedDark > p.SaturatedDarkCeiling() {
+		return false // the dark saturated sea (ADR-0137)
+	}
+	// The open-sea/sky shape (ADR-0169): a weakly saturated scene whose top
+	// band is bright. A panel reaches the top of its region, so this never
+	// fires for a box — it rejects the sky-over-water band the 2026-10-23
+	// probe exposed.
+	if pp.TopDark < p.MinTopDarkFloor() && pp.SaturatedDark > p.MinSeaSatFloor() {
+		return false
+	}
+	return true
 }
 
 // SaturatedDarkCeiling is MaxSaturatedDarkShare for the gate, with the
@@ -239,6 +290,26 @@ func (p PresenceConfig) SaturatedDarkCeiling() float64 {
 		return DefaultPresence().MaxSaturatedDarkShare
 	}
 	return p.MaxSaturatedDarkShare
+}
+
+// MinTopDarkFloor is MinTopDark for the gate, with the unset (zero) value
+// reading the default — the zero-value config gets the default gate, never a
+// floor of 0 that would make the clause vacuous.
+func (p PresenceConfig) MinTopDarkFloor() float64 {
+	if !(p.MinTopDark > 0) {
+		return DefaultPresence().MinTopDark
+	}
+	return p.MinTopDark
+}
+
+// MinSeaSatFloor is MinSeaSat for the open-sea/sky clause, with the unset
+// (zero) value reading the default — the zero-value config gets the default
+// gate, never a floor of 0 that would make the clause fire on any saturation.
+func (p PresenceConfig) MinSeaSatFloor() float64 {
+	if !(p.MinSeaSat > 0) {
+		return DefaultPresence().MinSeaSat
+	}
+	return p.MinSeaSat
 }
 
 // QueuePolicy selects the frame queue between the capture loop and the ROI
