@@ -545,11 +545,20 @@ test("the Traces screen: the line list, the strip, the actions and the UX-05 wal
         await request.get(`${origin}/api/v1/assistant/threads/${newestId}`)
       ).json()) as Thread;
     };
-    // The confirmed apply lands after the operator's confirm: under the full
-    // suite's load a single read could see only the staged card, so the
-    // thread is read until the run is terminal (bounded), not once.
+    // The confirmed apply is a second run, started by the operator's confirm;
+    // the first run (stage + suggestion) is already terminal, so the thread is
+    // read until the confirmed apply card exists and the run is terminal
+    // again (bounded). Under the full suite's load a single read, or a wait
+    // on the terminal state alone, saw only the staged card.
+    const appliesOf = (th: Thread) =>
+      th.tool_cards.filter((c) => c.name === "apply_speaker_fix").length;
     let thread = await readThread();
-    for (let i = 0; i < 30 && thread.state !== "succeeded" && thread.state !== "failed"; i++) {
+    for (
+      let i = 0;
+      i < 40 &&
+      (appliesOf(thread) < 2 || (thread.state !== "succeeded" && thread.state !== "failed"));
+      i++
+    ) {
       await page.waitForTimeout(500);
       thread = await readThread();
     }
