@@ -219,6 +219,7 @@ func TestSpeakerAtCommitAskAnswersWithinBudget(t *testing.T) {
 	e := newFenceEnv(t, 0.2, true, map[string]string{"msg-line-a": "character-aryll"})
 	e.w.speakerSlotByMessage = map[string]bool{"msg-line-a": true}
 	e.w.decision = w
+	e.w.speakerAskBudget = 5 * time.Second // the race detector slows the fake gateway past 300 ms
 	a, err := assets.NewLocal(t.TempDir())
 	if err != nil {
 		t.Fatalf("assets: %v", err)
@@ -258,6 +259,7 @@ func TestSpeakerAtCommitKindOnlyAnswerRoutesKindVoice(t *testing.T) {
 	e.w.speakerSlotByMessage = map[string]bool{"msg-line-a": true}
 	e.w.kindSpeakerByKey = map[string]string{"kind:boy": "character-boy"}
 	e.w.decision = w
+	e.w.speakerAskBudget = 5 * time.Second // the race detector slows the fake gateway past 300 ms
 	a, err := assets.NewLocal(t.TempDir())
 	if err != nil {
 		t.Fatalf("assets: %v", err)

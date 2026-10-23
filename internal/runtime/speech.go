@@ -476,6 +476,9 @@ type speechWiring struct {
 	askPending map[string]*askWait
 	askBudget  time.Duration
 	askTimes   []time.Time
+	// speakerAskBudget overrides DefaultSpeakerAskBudget when positive (tests
+	// under the race detector widen it so a fake gateway's answer lands).
+	speakerAskBudget time.Duration
 
 	// sem bounds the concurrent TTS workers (explicit backpressure).
 	sem chan struct{}
@@ -717,6 +720,14 @@ type synthSlot struct {
 // assigned voice (the ADR-0160 proposal's 300 ms). A session may tighten or
 // widen it through the ask's own options; zero takes this default.
 const DefaultSpeakerAskBudget = 300 * time.Millisecond
+
+// speakerAskWait is the ADR-0167 budget this wiring bounds a commit-time ask by.
+func (w *speechWiring) speakerAskWait() time.Duration {
+	if w.speakerAskBudget > 0 {
+		return w.speakerAskBudget
+	}
+	return DefaultSpeakerAskBudget
+}
 
 // maxSpeakerAsksPerMinute caps the speaker-at-commit asks per session per
 // minute: the global ask rate the ADR-0167 design bounds (the issue's "cap it
@@ -1605,7 +1616,7 @@ func (w *speechWiring) onCommit(e events.Envelope) {
 	// gates read (ADR-0156, ADR-0158).
 	if w.decision != nil && w.speakerSlotByMessage[d.MessageID] && !w.hasConfidentSpeaker(d) {
 		key := askKey(d.RegionID, d.Generation, d.MessageID)
-		if p := w.beginAsk(key, DefaultSpeakerAskBudget); p != nil {
+		if p := w.beginAsk(key, w.speakerAskWait()); p != nil {
 			u.speakerAskKey = key
 			go w.askSpeakerFor(d, key)
 		}
@@ -2867,7 +2878,7 @@ func (w *speechWiring) speak(u *utteranceInfo) {
 	character := u.character
 	if u.speakerAskKey != "" {
 		var attribution attributionAsk
-		if res, pending := w.waitAsk(ctx, u.speakerAskKey, DefaultSpeakerAskBudget); pending {
+		if res, pending := w.waitAsk(ctx, u.speakerAskKey, w.speakerAskWait()); pending {
 			attribution = res
 			// The answer overlays the committed line's own voice resolution:
 			// the adjudicator's confident speaker, else the confident apparent

@@ -100,3 +100,18 @@ func TestCuDecidePressOtherRegionAbsentKeepsTheBox(t *testing.T) {
 		t.Fatal("another region's absent reading cleared the box region's presence")
 	}
 }
+
+// TestCuDecidePressBetweenBoxGapDoesNotEndTheConversation: the box region
+// reads absent for a few seconds between boxes; that must not end the drive
+// (a run on 2026-10-23 stopped after 2 presses on it).
+func TestCuDecidePressBetweenBoxGapDoesNotEndTheConversation(t *testing.T) {
+	t0 := time.Now()
+	drv := cuStubObs(t, t0, cuStubBoxText)
+	drv.boxRegion = "box"
+	drv.commits = append(drv.commits, cuCommitInfo{})
+	drv.observe([]devEnvelope{{Name: "text.observed", Data: json.RawMessage(cuStubBoxAbsent)}})
+	drv.lastObs = t0
+	if press, why := drv.decidePress(nil, t0.Add(5*time.Second)); press || drv.done {
+		t.Fatalf("a 5 s between-box gap: press %v (%s), done %v; want no press and the conversation still on", press, why, drv.done)
+	}
+}

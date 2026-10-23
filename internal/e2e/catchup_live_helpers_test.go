@@ -660,19 +660,13 @@ func (d *cuDriver) decidePress(evs []devEnvelope, now time.Time) (bool, string) 
 	if d.done {
 		return false, ""
 	}
-	// The box is gone when the region last read empty (the closing box / the
-	// between-box gap), when the newest observation reported the region absent,
-	// or when no fresh observation arrived within the press-stability window: a
-	// conversation that ends stops producing observations, and the stale
-	// lastText must not read as a still-stable box (the 2026-10-22 run pressed A
-	// into gameplay off that stale text). The empty reads keep the box-gone
-	// threshold (cuConvGone); the freshness and the absence are the signals.
-	boxGone := false
-	if !d.boxEmpty.IsZero() {
-		boxGone = now.Sub(d.boxEmpty) >= cuConvGone // the empty reads keep their own gone gap
-	} else if !d.lastRegionPresent || now.Sub(d.lastObs) >= cuPressStable {
-		boxGone = true // the newest observation reported the box absent, or none arrived within the press window
-	}
+	// The conversation is over when the box region read empty for cuConvGone
+	// (the closing box), or when no observation of the box region arrived for
+	// cuConvGone. A shorter quiet or an absent reading is the normal ~1-9 s
+	// between-box gap and must not end the drive (that cut a run to 2 presses);
+	// it only suppresses the stall / lost-A fallback presses below, which must
+	// never fire on stale text (the 2026-10-22 run pressed A into gameplay).
+	boxGone := (!d.boxEmpty.IsZero() && now.Sub(d.boxEmpty) >= cuConvGone) || now.Sub(d.lastObs) >= cuConvGone
 	if boxGone {
 		if len(d.commits) >= 1 {
 			d.done = true // the conversation is over
@@ -702,6 +696,11 @@ func (d *cuDriver) decidePress(evs []devEnvelope, now time.Time) (bool, string) 
 			d.instPresses++
 			return true, "rapid: line " + shortID(c.MessageID) + " (gen " + itoa(c.Generation) + ") committed — press while the speech is still busy"
 		}
+	}
+	if !d.lastRegionPresent || now.Sub(d.lastObs) >= cuPressStable {
+		// The box region is not being observed right now (absent, or no fresh
+		// reading): the stale lastText is not a still-stable box.
+		return false, "box not observed (no fallback press on stale text)"
 	}
 	textStable := now.Sub(d.textChanged) >= cuPressStable
 	// The fallback presses only fire when the OCR actually sees box text
