@@ -1,8 +1,16 @@
 {
   "save_state": "states/windwaker-deck-aryll.state",
   "steps": [
-    {"mark": "walk-away", "stick": [0.0, 1.0], "ms": 3000},
-    {"mark": "approach-aryll", "approach": true, "max_steps": 6},
-    {"mark": "talk-aryll", "press": "A"}
+    {"mark": "idle-start", "wait_ms": 2000},
+    {"mark": "walk-away", "stick": [0.0, -1.0], "ms": 2500},
+    {"wait_ms": 1000},
+    {"mark": "approach-aryll", "approach": true, "max_steps": 14},
+    {"mark": "talk-aryll", "press": "A"},
+    {"wait_ms": 6000},
+    {"press": "A"},
+    {"wait_ms": 6000},
+    {"press": "A"},
+    {"wait_ms": 6000},
+    {"mark": "idle-end", "wait_ms": 4000}
   ]
 }
