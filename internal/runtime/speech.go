@@ -21,6 +21,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/audio"
 	"github.com/dbirks/game-narrator/internal/events"
 	"github.com/dbirks/game-narrator/internal/games"
+	"github.com/dbirks/game-narrator/internal/games/textnorm"
 	"github.com/dbirks/game-narrator/internal/matcher"
 	"github.com/dbirks/game-narrator/internal/pipeline"
 	"github.com/dbirks/game-narrator/internal/providers/systemone"
@@ -604,6 +605,17 @@ type speechWiring struct {
 	// documented default); the settings route moves it mid-session.
 	// w.mu.
 	unmatchedReadThrough bool
+
+	// The session's learned player name (ADR-0165, #48): the name a "{player}"
+	// slot speaks under — trusted once two agreeing OCR reads of the slot
+	// have voted for one candidate, and "" while the session has not earned
+	// one, in which case the slot's line speaks the dropped placeholder form.
+	// w.mu.
+	playerName string
+	// The player-name slot's per-session votes (ADR-0165): candidate name →
+	// agreeing-read count, while the session has not yet trusted a name.
+	// w.mu.
+	playerVotes map[string]int
 }
 
 // utteranceInfo is one committed line's audio correlation record.
@@ -725,6 +737,7 @@ func (m *Manager) newSpeechWiring(id string, speakerByMessage map[string]string,
 		}
 	}
 	w.initPrewarm(idx, prewarmTexts, prewarmPages, opts.Prewarm)
+	w.playerVotes = map[string]int{}
 	endCtx, endCancel := context.WithCancel(runCtx)
 	w.endCtx, w.endCancel = endCtx, endCancel
 
@@ -1098,6 +1111,112 @@ func (w *speechWiring) pause() {
 	}
 }
 
+// playerPlaceholder is textnorm's placeholder for a configured player-name
+// spelling: the matcher folds the names onto it before indexing, and the
+// runtime's speech text carries it to the TTS stage, which resolves it onto
+// the name the player actually speaks (ADR-0165, #48). The literal lives in
+// textnorm so every layer spells one thing.
+const playerPlaceholder = textnorm.Placeholder
+
+// playerNameVotesNeeded is how many agreeing reads of one player-name
+// candidate trust it for the session (ADR-0165): one OCR read is a guess, two
+// agreeing reads of the same slot are the name.
+const playerNameVotesNeeded = 2
+
+// playerNameMinLen is the shortest plausible spoken player name (ADR-0165):
+// below two letters it is address, not a name.
+const playerNameMinLen = 2
+
+// playerNameMaxLen is the longest plausible spoken player name (ADR-0165).
+const playerNameMaxLen = 12
+
+// resolvePlayerPlaceholder resolves one text the narrator speaks onto the
+// player's name (ADR-0165, #48): with a name it substitutes the "{player}"
+// slot; without one it drops the slot and tidies the punctuation the drop
+// orphans — "Hurry, {player}!" → "Hurry!", "{player}, wait." → "Wait.",
+// "It's you, {player}." → "It's you.". The caller resolves with the
+// session's learned name; the empty answer is the dropped form.
+func resolvePlayerPlaceholder(text, name string) string {
+	if !strings.Contains(text, playerPlaceholder) {
+		return text
+	}
+	if name != "" {
+		return strings.ReplaceAll(text, playerPlaceholder, name)
+	}
+	return dropPlayerPlaceholder(text)
+}
+
+// dropPlayerPlaceholder removes the player-name slot and tidies the
+// punctuation the removal orphans: the vocative comma the address wore goes
+// with the slot, a sentence terminator the slot carried keeps its place, and
+// a slot that opened the sentence leaves the sentence to speak itself.
+func dropPlayerPlaceholder(text string) string {
+	s := strings.TrimSpace(strings.ReplaceAll(text, playerPlaceholder, ""))
+	s = strings.Join(strings.Fields(s), " ")
+	s = tidyPlayerPunctuation(s)
+	s = strings.TrimLeft(s, ",;:!?")
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	r := []rune(s)
+	if unicode.IsLower(r[0]) {
+		r[0] = unicode.ToUpper(r[0])
+	}
+	return string(r)
+}
+
+// tidyPlayerPunctuation drops the spacing and commas the placeholder drop
+// orphaned: a sentence terminator never keeps the separator the removed slot
+// left in front of it ("Hurry, {player}!" → "Hurry!"), and the vocative comma
+// the address wore in front of the slot goes with the slot itself
+// ("It's you, {player}." → "It's you.").
+func tidyPlayerPunctuation(s string) string {
+	for _, t := range []string{".", "!", "?", "…"} {
+		s = strings.ReplaceAll(s, " "+t, t)
+		s = strings.ReplaceAll(s, ","+t, t)
+	}
+	return strings.TrimSpace(s)
+}
+
+// playerNameCandidate is the OCR read's word for one player-name slot: the
+// slot's position in the script text counts the words before it, and the
+// spoken name is the read's word at that index.
+func playerNameCandidate(canon, read string) string {
+	slot := -1
+	wordsBefore := 0
+	for _, f := range strings.Fields(canon) {
+		if strings.Contains(f, playerPlaceholder) {
+			slot = wordsBefore
+			break
+		}
+		wordsBefore++
+	}
+	if slot < 0 {
+		return ""
+	}
+	var words []string
+	for _, t := range strings.Fields(read) {
+		if core := wordCore(t); core != nil {
+			words = append(words, string(core))
+		}
+	}
+	if slot >= len(words) {
+		return ""
+	}
+	return words[slot]
+}
+
+// validPlayerName reports whether s is a plausible spoken player name: two
+// to twelve letters, capitalised in the read.
+func validPlayerName(s string) bool {
+	r := []rune(s)
+	if len(r) < playerNameMinLen || len(r) > playerNameMaxLen {
+		return false
+	}
+	return unicode.IsUpper(r[0])
+}
+
 // onCommit is the commit watcher's handoff: it runs on the pipeline's
 // reducer goroutine and must stay fast — the fence, the cancel and the event
 // are the synchronous half; the TTS work is the worker's.
@@ -1193,6 +1312,14 @@ func (w *speechWiring) onCommit(e events.Envelope) {
 	if canon := strings.TrimSpace(w.prewarmTexts[d.MessageID]); canon != "" && pageKey == d.MessageID {
 		text = canon
 	}
+
+	// ADR-0165 (issue #48): a matched line whose canonical text carries the
+	// player-name placeholder speaks the name the player actually has — the
+	// session's learned name once two agreeing OCR reads trusted one, the
+	// dropped form meanwhile. The substituted text is the utterance's speech
+	// text, so the cache key the prewarm and the commit compute follows it.
+	w.learnPlayerName(text, d.RawText)
+	text = resolvePlayerPlaceholder(text, w.knownPlayerName())
 
 	character, route := w.commitVoice(d)
 	u := &utteranceInfo{
@@ -1725,6 +1852,49 @@ const (
 	// spokenRing caps recentSpoken.
 	spokenRing = 8
 )
+
+// knownPlayerName is the session's learned player name (ADR-0165, #48):
+// the name a "{player}" slot speaks under, "" while the session has not
+// trusted one yet.
+func (w *speechWiring) knownPlayerName() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.playerName
+}
+
+// learnPlayerName records one matched commit's OCR read for the player-name
+// slot and returns the name the line speaks under (ADR-0165, #48): "" while
+// the session has not trusted a name, the dropped placeholder form meanwhile.
+// The vote is per-session and per candidate, under w.mu, and trusts a
+// candidate after playerNameVotesNeeded agreeing reads of it.
+func (w *speechWiring) learnPlayerName(canon, read string) string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.playerName != "" {
+		return w.playerName
+	}
+	if !strings.Contains(canon, playerPlaceholder) {
+		return ""
+	}
+	cand := playerNameCandidate(canon, read)
+	if !validPlayerName(cand) {
+		return ""
+	}
+	// A word the script itself says is not the name: a partial read (the
+	// box still typing, a cropped line) shifts the slot's index onto a
+	// script word ("{player}, wait." read as "Wait." would vote "Wait").
+	for _, w := range strings.Fields(canon) {
+		if strings.EqualFold(foldWord(w), foldWord(cand)) {
+			return ""
+		}
+	}
+	w.playerVotes[cand]++
+	if w.playerVotes[cand] >= playerNameVotesNeeded {
+		w.playerName = cand
+		w.playerVotes = map[string]int{}
+	}
+	return w.playerName
+}
 
 // noteSpoken records a matched line routed to speech for the echo check.
 func (w *speechWiring) noteSpoken(text string) {
@@ -3301,6 +3471,11 @@ func (w *speechWiring) prewarmWorker(batch context.Context, messageID string) {
 		if len(pages) > 1 {
 			pageID = pageMessageID(messageID, i+1)
 		}
+		// The prewarm speaks the same text a later commit of this line would:
+		// the player-name slot resolved onto the session's learned name (the
+		// dropped form while the session has not trusted one, ADR-0165), so
+		// the key below is the one the commit path computes for the same line.
+		pageText = resolvePlayerPlaceholder(pageText, w.knownPlayerName())
 		key, err := w.lineCacheKey(rv, pageID, pageText)
 		if err != nil {
 			return

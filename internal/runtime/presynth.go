@@ -635,7 +635,13 @@ func (m *Manager) PruneUnreachableSpeechCache(ctx context.Context, dryRun bool) 
 // presynthOne is one line under the live commit path's key identity (the
 // prewarmWorker's: same speaker resolution, canonical text, voice and
 // backend identity), at background priority. skipped = no approved voice.
+// The text is resolved onto the player name before the key and the
+// generation: the pre-synthesis has no session to have learned one yet, so
+// it takes the dropped placeholder form (ADR-0165, #48) — the live commit
+// path resolves with the session's learned name, and the key follows the
+// substituted text.
 func (w *speechWiring) presynthOne(ctx context.Context, messageID, text string) (hit bool, n int64, skipped bool, err error) {
+	text = resolvePlayerPlaceholder(text, "")
 	// The voice a plain matched commit of this line resolves (ADR-0156): a
 	// line on a shared speaker slot speaks the neutral voice unless the
 	// adjudicator names its speaker, so pre-synthesis voices it that way too
