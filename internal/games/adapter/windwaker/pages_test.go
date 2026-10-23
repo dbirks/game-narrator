@@ -47,6 +47,9 @@ func TestMessagePagesDerivesBoxes(t *testing.T) {
 		{"four lines fit one box", []string{"L1", "L2", "L3", "L4"}, []string{"L1 L2 L3 L4"}},
 		{"five lines split into two boxes", []string{"L1", "L2", "L3", "L4", "L5"}, []string{"L1 L2 L3 L4", "L5"}},
 		{"nine lines split into three boxes", []string{"L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9"}, []string{"L1 L2 L3 L4", "L5 L6 L7 L8", "L9"}},
+		// The script's own box break: a blank line (two or more wraps). The
+		// board's three-box message had boxes of 2, 3 and 3 lines.
+		{"blank lines are box breaks", []string{"L1", "L2", "", "", "L3", "L4", "L5", "", "L6", "L7", "L8"}, []string{"L1 L2", "L3 L4 L5", "L6 L7 L8"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

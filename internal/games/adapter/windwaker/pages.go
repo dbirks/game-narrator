@@ -31,10 +31,10 @@ const MaxBoxLines = 4
 func displayLines(m bmg.Message, rules *Rules) []string {
 	var lines []string
 	var line strings.Builder
+	// An empty display line is kept (as "") because it is meaningful: two
+	// or more consecutive wraps are the script's box break (messagePages).
 	flush := func() {
-		if t := collapseSpaces(line.String()); t != "" {
-			lines = append(lines, t)
-		}
+		lines = append(lines, collapseSpaces(line.String()))
 		line.Reset()
 	}
 	for _, t := range m.Tokens {
@@ -85,10 +85,19 @@ func messagePages(m bmg.Message, rules *Rules) []string {
 		pages = append(pages, box)
 		box = nil
 	}
+	// A blank line between text lines is the script's own box break (the
+	// game draws the next box): observed on the UNO Q, a three-box message of
+	// 2, 3 and 3 lines whose first box this packing once filled with four.
+	blank := false
 	for _, l := range lines {
-		if len(box) >= MaxBoxLines {
+		if l == "" {
+			blank = true
+			continue
+		}
+		if blank || len(box) >= MaxBoxLines {
 			closeBox()
 		}
+		blank = false
 		box = append(box, l)
 	}
 	closeBox()

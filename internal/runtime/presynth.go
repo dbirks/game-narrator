@@ -74,10 +74,14 @@ func profileSpeechMaps(content store.ProfileContent, resolveSpeaker func(string)
 		}
 		if _, ok := pages[msg.ID]; !ok {
 			// ADR-0155 fallback: a profile that carries no page rows for the
-			// message gets the runtime's split of its canonical text, so the
-			// session and the pre-synthesis speak reached pages without a
-			// re-import.
-			if pt := splitCanonicalPages(t); len(pt) > 0 {
+			// message gets the runtime's own pages, so the session and the
+			// pre-synthesis speak reached pages without a re-import. The
+			// script's own box breaks (blank lines in the original text) are
+			// the truth when they align onto the canonical text; the
+			// sentence packing is the last resort.
+			if pt := boxPagesFromOriginal(msg.OriginalText, t); len(pt) > 0 {
+				pages[msg.ID] = pt
+			} else if pt := splitCanonicalPages(t); len(pt) > 0 {
 				pages[msg.ID] = pt
 			}
 		}

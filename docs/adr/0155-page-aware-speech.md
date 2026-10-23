@@ -83,3 +83,18 @@ than as a new utterance of its own page.
 Revert the page-scoped key and the commit-time page choice; the adapter's
 page derivation becomes inert because `message_pages` rows simply stop being
 written, and the fallback keeps older profiles speaking full messages again.
+
+## Amendment 2026-10-22: pages follow the script's box breaks; tolerant page choice
+
+**What the board showed:** on the UNO Q, a villager's three-box message (boxes of 2, 3 and 3 lines) was spoken whole, all 269 characters and 15 s, while the first box was on screen. Two defects caused it:
+
+1. **Blank-line box breaks were ignored.** The script marks a box break with a blank line (two or more consecutive wraps). Both page derivations dropped blank lines:
+   - the adapter (`messagePages`) packed display lines four at a time;
+   - the runtime fallback (`splitCanonicalPages`, used for profiles imported before page rows existed, including the board's) packed four sentences at a time.
+
+   Now `messagePages` breaks a box at a blank line. The runtime fallback first derives boxes from the original text (`boxPagesFromOriginal`) and aligns each box's last word into the canonical speech text. Sentence packing is the last resort.
+2. **Page choice was brittle.** `choosePage` required the whole OCR read to be a substring of a page, so edge noise ("…all right? 4 = ae") matched no page, and the message was spoken whole. It now falls back to the page holding the largest share (≥ 0.5) of the read's words, each within one edit.
+
+Tests:
+- `TestMessagePagesDerivesBoxes/blank_lines_are_box_breaks`;
+- `TestBoxPagesFromOriginal`, covering both escape forms and a junk-suffixed read.

@@ -385,3 +385,33 @@ func TestReadThroughEcho(t *testing.T) {
 		t.Error("withinOneEdit(home, hollow) = true")
 	}
 }
+
+// TestBoxPagesFromOriginal: the script's blank-line box breaks are the pages
+// (the board's three-box message spoke all of it for its first box), and a
+// read with OCR junk on the edge still picks its page. Invented text.
+func TestBoxPagesFromOriginal(t *testing.T) {
+	original := `Gulls startle easily. Just take my word on\x0athis one, all right?\x0a\x0a\x0aThe old pier creaks at night and the boats\x0aknock together. {tag g=0 t=14 a=0000a} You can hear\x0athem from the hill.\x0a\x0aSo stay near the {tag g=255 t=0 a=ff000001}lantern{tag g=255 t=0 a=ff000000} when\x0ayou walk back, and mind the\x0asteps.`
+	canonical := "Gulls startle easily. Just take my word on this one, all right? The old pier creaks at night and the boats knock together. You can hear them from the hill. So stay near the lantern when you walk back, and mind the steps."
+	pages := boxPagesFromOriginal(original, canonical)
+	want := []string{
+		"Gulls startle easily. Just take my word on this one, all right?",
+		"The old pier creaks at night and the boats knock together. You can hear them from the hill.",
+		"So stay near the lantern when you walk back, and mind the steps.",
+	}
+	if len(pages) != len(want) {
+		t.Fatalf("pages = %q, want %d pages", pages, len(want))
+	}
+	for i := range want {
+		if pages[i] != want[i] {
+			t.Errorf("page %d = %q, want %q", i+1, pages[i], want[i])
+		}
+	}
+	if got := boxPagesFromOriginal("One box only.\x0aStill one box.", "One box only. Still one box."); len(got) != 1 {
+		t.Errorf("single-box pages = %q, want one page", got)
+	}
+	w := &speechWiring{}
+	ord, page, ok := choosePage(w, pages, commitPayload{RawText: "this one, all right? 4 = ae"})
+	if !ok || ord != 1 || page != want[0] {
+		t.Errorf("choosePage(junk-suffixed read) = %d %q %v, want page 1", ord, page, ok)
+	}
+}

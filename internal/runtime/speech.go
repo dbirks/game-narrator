@@ -1286,6 +1286,35 @@ func choosePage(w *speechWiring, pages []string, d commitPayload) (ordinal int, 
 			return i + 1, pages[i], true
 		}
 	}
+	// No page contains the read verbatim — OCR noise on the box edge ("…all
+	// right? 4 = ae") is the usual reason. The page holding the largest share
+	// of the read's words (within one edit) is the box on screen, if that
+	// share is at least half; otherwise the read names no page and the caller
+	// speaks the whole message (the historic behaviour) — a read that cannot
+	// place the box must not guess.
+	readWords := echoWords(read)
+	if len(readWords) == 0 {
+		return 0, "", false
+	}
+	best, bestShare := -1, 0.0
+	for i, p := range pages {
+		pw := echoWords(p)
+		found := 0
+		for _, rw := range readWords {
+			for _, w := range pw {
+				if withinOneEdit(rw, w) {
+					found++
+					break
+				}
+			}
+		}
+		if share := float64(found) / float64(len(readWords)); share > bestShare {
+			best, bestShare = i, share
+		}
+	}
+	if best >= 0 && bestShare >= 0.5 {
+		return best + 1, pages[best], true
+	}
 	return 0, "", false
 }
 
@@ -1316,6 +1345,105 @@ func (w *speechWiring) pagesFor(messageID string) []string {
 // page split packs against — the same observed Wind Waker box geometry the
 // adapter's derivation packs against (internal/games/adapter/windwaker).
 const maxBoxLines = 4
+
+// boxPagesFromOriginal derives a message's display pages from the script's
+// own box breaks: the original text's display lines (the 0x0A wrap, stored
+// either as a newline or as the literal "\\x0a" escape) group into boxes
+// separated by a blank line (two or more consecutive wraps), at most
+// maxBoxLines lines a box. Each box's last word is then located in the
+// canonical speech text and the canonical text is cut there, so a page speaks
+// the speech form (the player placeholder, the folded tags) of exactly the
+// box the game draws. It returns nil when the original has no text or a box
+// cannot be aligned — the caller falls back to the sentence packing. On the
+// board a three-box message (2, 3 and 3 lines) spoke all 269 characters for
+// its first box: the sentence packing put four sentences on page one.
+func boxPagesFromOriginal(original, canonical string) []string {
+	if strings.TrimSpace(original) == "" || strings.TrimSpace(canonical) == "" {
+		return nil
+	}
+	text := strings.ReplaceAll(original, `\x0a`, "\n")
+	var boxes [][]string
+	var box []string
+	blank := 0
+	closeBox := func() {
+		if len(box) > 0 {
+			boxes = append(boxes, box)
+			box = nil
+		}
+	}
+	for _, line := range strings.Split(text, "\n") {
+		words := boxWords(line)
+		if len(words) == 0 {
+			blank++
+			continue
+		}
+		if blank > 0 || len(box) >= maxBoxLines {
+			closeBox()
+		}
+		blank = 0
+		box = append(box, strings.Join(words, " "))
+	}
+	closeBox()
+	if len(boxes) <= 1 {
+		return []string{strings.TrimSpace(canonical)}
+	}
+	tokens := strings.Fields(canonical)
+	var pages []string
+	start := 0
+	for i, b := range boxes {
+		if i == len(boxes)-1 {
+			if start >= len(tokens) {
+				return nil
+			}
+			pages = append(pages, strings.Join(tokens[start:], " "))
+			break
+		}
+		lastLine := strings.Fields(b[len(b)-1])
+		last := foldWord(lastLine[len(lastLine)-1])
+		cut := -1
+		for j := start; j < len(tokens); j++ {
+			if foldWord(tokens[j]) == last {
+				cut = j
+				break
+			}
+		}
+		if cut < 0 {
+			return nil
+		}
+		pages = append(pages, strings.Join(tokens[start:cut+1], " "))
+		start = cut + 1
+	}
+	return pages
+}
+
+// boxWords returns one original display line's words with the control tags
+// ("{tag …}") removed.
+func boxWords(line string) []string {
+	var b strings.Builder
+	depth := 0
+	for _, r := range line {
+		switch {
+		case r == '{':
+			depth++
+		case r == '}' && depth > 0:
+			depth--
+		case depth == 0:
+			b.WriteRune(r)
+		}
+	}
+	return strings.Fields(b.String())
+}
+
+// foldWord lowercases a word and keeps only its letters and digits.
+func foldWord(w string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(w) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
 
 // splitCanonicalPages splits one message's canonical speech text into display
 // pages (ADR-0155's runtime fallback). The canonical text is already folded to
