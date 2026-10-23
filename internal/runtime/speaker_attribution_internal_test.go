@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 	"unicode"
 
 	"github.com/dbirks/game-narrator/internal/games"
@@ -55,10 +56,10 @@ func TestCommitSpeakerConfidentAdjudicatorWins(t *testing.T) {
 	}
 }
 
-// TestCommitSpeakerLowConfidenceFallsBackToNeutral: a shared slot whose
-// adjudicator answer is below the confidence floor is not a name — the line
-// must fall back to the neutral voice, never to the slot's linked character.
-func TestCommitSpeakerLowConfidenceFallsBackToNeutral(t *testing.T) {
+// TestCommitSpeakerLowConfidenceKeepsAssigned: a shared slot whose
+// adjudicator answer is below the confidence floor is not a name, so the
+// line keeps the slot's assigned character (ADR-0156 amendment 3).
+func TestCommitSpeakerLowConfidenceKeepsAssigned(t *testing.T) {
 	w := newSpeakerGateWiring(map[string]string{"msg-1": "character-aryll"}, map[string]bool{"msg-1": true})
 	d := commitPayload{
 		MessageID:         "msg-1",
@@ -66,18 +67,18 @@ func TestCommitSpeakerLowConfidenceFallsBackToNeutral(t *testing.T) {
 		SpeakerKnown:      true,
 		SpeakerConfidence: 0.2,
 	}
-	if got := w.commitSpeaker(d); got != narratorCharacter {
-		t.Fatalf("commitSpeaker = %q, want the neutral voice %q when the shared slot's answer is unconfident", got, narratorCharacter)
+	if got := w.commitSpeaker(d); got != "character-aryll" {
+		t.Fatalf("commitSpeaker = %q, want the assigned character when the shared slot's answer is unconfident", got)
 	}
 }
 
-// TestCommitSpeakerUnknownFallsBackToNeutral: an answer that named no
-// speaker at all lands the same fallback.
-func TestCommitSpeakerUnknownFallsBackToNeutral(t *testing.T) {
+// TestCommitSpeakerUnknownKeepsAssigned: an answer that named no speaker at
+// all keeps the assignment too.
+func TestCommitSpeakerUnknownKeepsAssigned(t *testing.T) {
 	w := newSpeakerGateWiring(map[string]string{"msg-1": "character-aryll"}, map[string]bool{"msg-1": true})
 	d := commitPayload{MessageID: "msg-1", SpeakerID: "", SpeakerKnown: false}
-	if got := w.commitSpeaker(d); got != narratorCharacter {
-		t.Fatalf("commitSpeaker = %q, want the neutral voice %q when no speaker was named", got, narratorCharacter)
+	if got := w.commitSpeaker(d); got != "character-aryll" {
+		t.Fatalf("commitSpeaker = %q, want the assigned character when no speaker was named", got)
 	}
 }
 
@@ -166,7 +167,7 @@ func TestSharedSpeakerSlots(t *testing.T) {
 // kind, whose roster carries a generic kind character — the line's voice is
 // the kind character, not the narrator.
 func TestCommitVoiceKindConfidentRouted(t *testing.T) {
-	w := newKindGateWiring(map[string]string{"msg-1": "character-aryll"}, map[string]bool{"msg-1": true},
+	w := newKindGateWiring(map[string]string{}, map[string]bool{"msg-1": true},
 		map[string]string{"kind:adult_male": "character-adult-male"})
 	d := commitPayload{
 		MessageID:             "msg-1",
@@ -188,7 +189,7 @@ func TestCommitVoiceKindConfidentRouted(t *testing.T) {
 // TestCommitVoiceKindUnconfidentFallsBackToNarrator: a kind below the
 // confidence floor is not a kind — the narrator fallback stands (ADR-0158).
 func TestCommitVoiceKindUnconfidentFallsBackToNarrator(t *testing.T) {
-	w := newKindGateWiring(map[string]string{"msg-1": "character-aryll"}, map[string]bool{"msg-1": true},
+	w := newKindGateWiring(map[string]string{}, map[string]bool{"msg-1": true},
 		map[string]string{"kind:adult_male": "character-adult-male"})
 	d := commitPayload{
 		MessageID:             "msg-1",
@@ -210,7 +211,7 @@ func TestCommitVoiceKindUnconfidentFallsBackToNarrator(t *testing.T) {
 // TestCommitVoiceKindUnknownFallsBackToNarrator: the unknown kind option is
 // the answer the kind question's fallback carries — no kind is routed.
 func TestCommitVoiceKindUnknownFallsBackToNarrator(t *testing.T) {
-	w := newKindGateWiring(map[string]string{"msg-1": "character-aryll"}, map[string]bool{"msg-1": true},
+	w := newKindGateWiring(map[string]string{}, map[string]bool{"msg-1": true},
 		map[string]string{"kind:adult_male": "character-adult-male"})
 	d := commitPayload{
 		MessageID:             "msg-1",
@@ -230,7 +231,7 @@ func TestCommitVoiceKindUnknownFallsBackToNarrator(t *testing.T) {
 // character carries the kind key — the profile has no generic kind voice for
 // that kind, and the narrator fallback stands.
 func TestCommitVoiceKindWithoutRosterCharacterFallsBackToNarrator(t *testing.T) {
-	w := newKindGateWiring(map[string]string{"msg-1": "character-aryll"}, map[string]bool{"msg-1": true},
+	w := newKindGateWiring(map[string]string{}, map[string]bool{"msg-1": true},
 		map[string]string{"kind:adult_female": "character-adult-female"})
 	d := commitPayload{
 		MessageID:             "msg-1",
@@ -354,5 +355,33 @@ func TestSpeakable(t *testing.T) {
 		if got := speakable(text); got != want {
 			t.Errorf("speakable(%q) = %v, want %v", text, got, want)
 		}
+	}
+}
+
+// TestReadThroughEcho: a garbled re-read of a line just spoken is an echo
+// (the A/V harness phantom), an unrelated read is not, and an old line no
+// longer counts. Invented text.
+func TestReadThroughEcho(t *testing.T) {
+	w := &speechWiring{}
+	w.noteSpoken("You should probably head back and see what the baker wants.")
+	if !w.isRecentEcho("You probzbly back and what") {
+		t.Error("a garbled re-read of the spoken line was not an echo")
+	}
+	if w.isRecentEcho("The lighthouse keeper waves from the pier") {
+		t.Error("an unrelated read counted as an echo")
+	}
+	w.mu.Lock()
+	w.recentSpoken[0].at = time.Now().Add(-2 * echoWindow)
+	w.mu.Unlock()
+	if w.isRecentEcho("You probzbly back and what") {
+		t.Error("a line spoken long ago still counted as the echo reference")
+	}
+	for a, b := range map[string]string{"probzbly": "probably", "and": "and", "see": "sea"} {
+		if !withinOneEdit(a, b) {
+			t.Errorf("withinOneEdit(%q, %q) = false", a, b)
+		}
+	}
+	if withinOneEdit("home", "hollow") {
+		t.Error("withinOneEdit(home, hollow) = true")
 	}
 }

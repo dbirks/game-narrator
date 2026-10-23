@@ -141,3 +141,19 @@ A confident local match skips Clef, so ADR-0160 asks the speaker question early 
 Test: the speaker-link case in `TestSharedSpeakerSlots`.
 
 Evidence: `make test-av` passed on this change (settled→audio p50/p95 243/384 ms, voice gate green).
+
+## Amendment 3 (2026-10-22): a shared slot keeps its assigned voice
+
+The narrator default for shared slots took the voice away from the cast. Amendment 2's merge rule marks 13 of the 29 board characters as shared, including Aryll, Tetra, Medli and Grandma. A confident local match never asks Clef, and the early speaker question (ADR 0160) was reverted, so those characters' lines almost never get a confident speaker answer.
+
+On the board (0.1.0-8058189, 2026-10-22 evening), every line spoken in a three-hour session went to the narrator, including Medli's, although Medli has her own approved voice.
+
+**Decision:**
+- A shared-slot line keeps its assigned character unless the adjudicator confidently names a different speaker; that override is unchanged.
+- The kind voice (ADR 0158) and the narrator stay the fallback for unattributed lines only.
+
+**Tradeoff:** a villager on a slot the curator linked to a named character can speak in that character's voice again. That is the original complaint, but it is the rarer case. Most lines on such a slot are the named character's own lines.
+
+The fix for that case is a per-occurrence speaker answer that doesn't stall commits: the redesign tracked in #54.
+
+Tests: `TestCommitSpeakerLowConfidenceKeepsAssigned` and `TestCommitSpeakerUnknownKeepsAssigned`. The kind-route tests now use unattributed lines.

@@ -310,7 +310,7 @@ func TestResolveVoiceKindCharacter(t *testing.T) {
 	kindVoiceID := seedFallbackVoice(t, st, a, kindChar)
 	_ = seedFallbackVoice(t, st, a, narratorCharacter)
 
-	w := newFallbackWiring(t, st, a, map[string]string{"line-1": "character-aryll"}, true)
+	w := newFallbackWiring(t, st, a, map[string]string{}, true)
 	w.speakerSlotByMessage = map[string]bool{"line-1": true} // the shared-slot shape
 	w.kindSpeakerByKey = map[string]string{"kind:adult_male": kindChar}
 
@@ -341,7 +341,7 @@ func TestResolveVoiceKindCharacter(t *testing.T) {
 	}
 
 	// An unconfident kind keeps the narrator fallback for the same line.
-	w2 := newFallbackWiring(t, st, a, map[string]string{"line-1": "character-aryll"}, true)
+	w2 := newFallbackWiring(t, st, a, map[string]string{}, true)
 	w2.speakerSlotByMessage = map[string]bool{"line-1": true}
 	w2.kindSpeakerByKey = map[string]string{"kind:adult_male": kindChar}
 	d2 := commitPayload{
@@ -380,7 +380,7 @@ func TestKindVoiceKeyWithoutRosterCharacter(t *testing.T) {
 	kindVoiceID := seedFallbackVoice(t, st, a, "kind:adult_male")
 	_ = seedFallbackVoice(t, st, a, narratorCharacter)
 
-	w := newFallbackWiring(t, st, a, map[string]string{"line-1": "character-aryll"}, true)
+	w := newFallbackWiring(t, st, a, map[string]string{}, true)
 	w.speakerSlotByMessage = map[string]bool{"line-1": true}
 	w.kindSpeakerByKey = map[string]string{} // no roster kind character
 	w.addKindVoiceKeys(ctx)

@@ -488,6 +488,10 @@ type speechWiring struct {
 	// routing both spoke the line twice (merged into one catch-up run) and
 	// pushed the next line behind it. w.mu.
 	recentRouted map[string]routedMark
+	// recentSpoken is a short ring of the matched lines routed to speech
+	// (text + when), the reference the read-through echo check compares a
+	// garbled re-read against. Guarded by mu.
+	recentSpoken []spokenMark
 	prewarmCfg   prewarmConfig
 	// prewarmCancel cancels the in-flight batch; the next batch replaces it
 	// (and cancels it) on a new speakable commit or a scene change. w.mu.
@@ -1233,6 +1237,7 @@ func (w *speechWiring) onCommit(e events.Envelope) {
 	if w.crossRegionDuplicate(pageKey, u) {
 		return
 	}
+	w.noteSpoken(text)
 	w.routeUtterance(u)
 }
 
@@ -1540,6 +1545,16 @@ func (w *speechWiring) maybeUnmatchedReadThrough(e events.Envelope, d commitPayl
 			"reason", "readthrough_implausible", "text", cleaned)
 		return
 	}
+	if w.isRecentEcho(cleaned) {
+		// A garbled re-read of a line the narrator just spoke (the box closing
+		// or the camera cutting while OCR still reads it): the matcher cannot
+		// name the garbage, the read-through would speak it a second time.
+		// Seen in the A/V harness as a phantom "You probzbly home and what".
+		w.log("speech: unmatched read-through is an echo of a line just spoken",
+			"session_id", w.id, "occurrence", d.Occurrence,
+			"reason", "readthrough_echo", "text", cleaned)
+		return
+	}
 	character, route := w.commitVoice(d)
 	u := &utteranceInfo{
 		occurrence:  d.Occurrence,
@@ -1564,6 +1579,112 @@ func (w *speechWiring) maybeUnmatchedReadThrough(e events.Envelope, d commitPayl
 		return
 	}
 	w.routeUtterance(u)
+}
+
+// spokenMark is one recentSpoken entry.
+type spokenMark struct {
+	words []string
+	at    time.Time
+}
+
+const (
+	// echoWindow is how long a spoken matched line stays the reference for
+	// the read-through echo check.
+	echoWindow = 15 * time.Second
+	// echoShare is the share of a read-through's words that must appear in
+	// a recent spoken line for the read to count as its echo.
+	echoShare = 0.6
+	// spokenRing caps recentSpoken.
+	spokenRing = 8
+)
+
+// noteSpoken records a matched line routed to speech for the echo check.
+func (w *speechWiring) noteSpoken(text string) {
+	words := echoWords(text)
+	if len(words) == 0 {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.recentSpoken = append(w.recentSpoken, spokenMark{words: words, at: time.Now()})
+	if len(w.recentSpoken) > spokenRing {
+		w.recentSpoken = w.recentSpoken[len(w.recentSpoken)-spokenRing:]
+	}
+}
+
+// isRecentEcho reports whether a read-through's words are mostly (echoShare)
+// found, within one edit each, in a matched line spoken in the last
+// echoWindow.
+func (w *speechWiring) isRecentEcho(text string) bool {
+	words := echoWords(text)
+	if len(words) == 0 {
+		return false
+	}
+	w.mu.Lock()
+	recent := append([]spokenMark(nil), w.recentSpoken...)
+	w.mu.Unlock()
+	now := time.Now()
+	for _, m := range recent {
+		if now.Sub(m.at) > echoWindow {
+			continue
+		}
+		found := 0
+		for _, rw := range words {
+			for _, sw := range m.words {
+				if withinOneEdit(rw, sw) {
+					found++
+					break
+				}
+			}
+		}
+		if float64(found) >= echoShare*float64(len(words)) {
+			return true
+		}
+	}
+	return false
+}
+
+// echoWords folds a text to its lowercase words of three or more letters.
+func echoWords(text string) []string {
+	var out []string
+	for _, f := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool { return !unicode.IsLetter(r) }) {
+		if len([]rune(f)) >= 3 {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// withinOneEdit reports whether a and b differ by at most one substitution,
+// insertion or deletion.
+func withinOneEdit(a, b string) bool {
+	if a == b {
+		return true
+	}
+	ra, rb := []rune(a), []rune(b)
+	if len(ra) < len(rb) {
+		ra, rb = rb, ra
+	}
+	if len(ra)-len(rb) > 1 {
+		return false
+	}
+	i, j, edits := 0, 0, 0
+	for i < len(ra) && j < len(rb) {
+		if ra[i] == rb[j] {
+			i++
+			j++
+			continue
+		}
+		edits++
+		if edits > 1 {
+			return false
+		}
+		if len(ra) == len(rb) {
+			j++
+		}
+		i++
+	}
+	return edits+(len(ra)-i) <= 1
 }
 
 // routeUtterance routes one committed line through the audio pipeline:
@@ -3239,17 +3360,12 @@ func (w *speechWiring) commitVoice(d commitPayload) (character string, route str
 	if d.SpeakerKnown && d.SpeakerID != "" && d.SpeakerConfidence >= SpeakerConfidenceFloor {
 		return d.SpeakerID, voiceRouteSpeaker
 	}
-	if w.speakerSlotByMessage[d.MessageID] {
-		// The slot is shared and the adjudicator could not name the speaker:
-		// do not voice the line through the slot's linked character — speak
-		// the neutral voice instead (ADR-0101's fallback shape, ADR-0156), or,
-		// when the frame did establish the speaker's apparent kind (ADR-0158),
-		// the generic kind voice for that kind.
-		if ch, ok := w.kindSpeakerFor(d); ok {
-			return ch, voiceRouteSpeakerKind
-		}
-		return narratorCharacter, voiceRouteNarrator
-	}
+	// A shared slot keeps its assigned character unless the adjudicator
+	// confidently names someone else (above): ADR-0156 amendment 3. Speaking
+	// shared-slot lines through the narrator took the voice away from 13 of
+	// the 29 cast characters (Aryll, Tetra, Medli, Grandma...) on the board,
+	// since a confident local match never asks Clef, to fix the occasional
+	// villager on a slot the curator linked to a named character.
 	character = w.speakerFor(d.MessageID)
 	if character == narratorCharacter {
 		// Unattributed (no assignment the slot did not settle): the kind may
