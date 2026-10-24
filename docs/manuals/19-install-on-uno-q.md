@@ -637,6 +637,12 @@ inherited pin; unset means the current behaviour (inherit). The board's 4 A53
 cores are a reasonable upper bound to test (n = 2 and n = 4); one variable at
 a time, measured per the protocol. Revert by removing the line.
 
+The frame-level panel finder (ADR 0172) reads a dialogue box wherever it
+appears on screen, not only inside the profile's regions; it is on by
+default and scans only frames where no region reports a box. If it ever
+reads something that is not a box, set `GAME_NARRATOR_PANEL_FIND=off` in the
+environment file (Step 5) and restart the service.
+
 ### Measurement protocol (run before/after each single change)
 
 ```sh

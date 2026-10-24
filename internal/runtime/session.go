@@ -772,6 +772,10 @@ func (m *Manager) pipelineConfig(req StartRequest, published games.Profile, sess
 		// readings with that class — the pipeline derives the per-region hint
 		// from games.RegionType.TextKindHint (docs/spec/04 "Visual profiles").
 		TextKindHint: games.TextDialogue,
+		// The frame-level panel finder (ADR-0172 amendment 1, issue #53) is on
+		// for every session: a box at any height must be read, and the finder
+		// only scans frames where no configured region reports a box.
+		PanelFind: panelFindConfig(),
 	}
 	if fb := m.opts.OCRFallback; fb != nil && fb.Secondary != nil {
 		// One FallbackEngine per session (its rate limiter and crop cache are

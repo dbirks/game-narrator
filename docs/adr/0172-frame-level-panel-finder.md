@@ -219,3 +219,23 @@ Delete `internal/pipeline/panelfind*.go`, the ADR-0172-marked block in
 `rectsOverlap`, `lastPresent`) and the `PanelFind` config field. Nothing
 else references the finder: with `Enabled=false` (the default) the
 pipeline is already the fixed-region path unchanged.
+
+## Amendment 1 (2026-10-24): on by default in the runtime
+
+The owner made reading a box at any height a requirement (#53), so the
+runtime enables the finder for every session (`internal/runtime/panelfind.go`);
+`GAME_NARRATOR_PANEL_FIND=off` (or `0`/`false`) turns it off for an operator
+diagnosing a false panel. `pipeline.DefaultPanelFind()` keeps `Enabled=false`
+so pipeline-level tests and other embedders opt in explicitly.
+
+Evidence for the default:
+- the private board-sailing capture (20 real HDMI frames, the scene behind
+  the 2026-10-21 false positives): 0 frames with a panel;
+- the private legend-dense capture (1085 Dolphin frames): the bottom box
+  ranked first on every box frame, ~1.1 ms per scan;
+- the finder only scans frames where no configured region reports a box,
+  every 4th frame;
+- `make test-av` before/after on the emulator: phantom read-throughs are
+  recorded in the acceptance notes for this change.
+
+Reversal: set the env var on the board, or flip `panelFindConfig`'s default.
