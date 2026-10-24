@@ -76,9 +76,11 @@ func TestScenarios(t *testing.T) {
 			switch res.Status {
 			case "blocked":
 				blocked = append(blocked, sc.ID)
-				// A blocked scenario is reported, not passed: the test
-				// records the registration and moves on.
-				t.Logf("BLOCKED (registered in docs/status/blocked.md): %s", res.Reason)
+				// A blocked scenario is reported, not passed (ADR-0037): it is a
+				// SKIP carrying the registration, never a PASS in the JUnit
+				// summary. Not "NOT RUN": the row is a known, registered gap,
+				// not a missing environment.
+				t.Skipf("BLOCKED (registered in docs/status/blocked.md): %s", res.Reason)
 			case "passed":
 				passed = append(passed, sc.ID)
 			default:

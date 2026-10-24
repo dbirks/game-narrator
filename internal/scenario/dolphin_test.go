@@ -135,6 +135,15 @@ func TestDolphinScenarios(t *testing.T) {
 					notRun = append(notRun, sc.ID)
 				}
 				recs = append(recs, runRec{sc: sc, res: res})
+				// A blocked or unrun row must not read as PASS in the gate's
+				// JUnit summary (ADR-0037; AGENTS.md "do not mark pending
+				// targets green").
+				switch res.Status {
+				case "blocked":
+					t.Skipf("BLOCKED (registered in docs/status/blocked.md): %s", sc.Reason)
+				case "not_run":
+					t.Skipf("NOT RUN: %s", res.Summary())
+				}
 			})
 		}
 
