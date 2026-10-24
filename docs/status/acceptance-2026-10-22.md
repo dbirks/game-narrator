@@ -82,6 +82,9 @@ Running it found and fixed three defects in the new code:
     - After `0b5d52c`, that shared-slot line routes to the narrator instead of the slot-linked character. Verified on the board.
   - **Early speaker question (ADR 0160): merged, then reverted.** On the board it made 930 Clef calls in ~90 min, and matched lines stopped committing; details in ADR 0160 and #54.
   - **Box-anywhere (ADR 0154 step 2): deferred to #53** after three worker attempts. The board's real top/middle/bottom placements are covered by rev 5's regions and the full-frame Clef.
+    - 2026-10-24: done. The frame-level panel finder (ADR 0172, `1b12026`) is on for every session (`5303e84`, amendment 1; `GAME_NARRATOR_PANEL_FIND=off` is the operator switch). Emulator proof: with the profile's region moved off the box, the dynamic region read the box (198 OCR'd observations) and committed 2 lines. The private board-sailing capture gives 0 false panels in 20 frames.
+  - **2026-10-24 merges (`1b12026`):** one box is spoken once when two regions read it (ADR 0186; DUPLICATE gate issues 1→0 rapid, 2→0 slow), page-aware matching (ADR 0184), and A-mash catch-up speaks every passed page once, in order (ADR 0175 amendment 1; 0 stale or cap drops in 3 live mash runs).
+  - The board runs `0.1.0-809613b` with a live v4l2 session (`01M5QB5TJ9H7D4JZ74NV8442JW`).
 - [x] **The Dolphin A/V harness exists, runs from a make target, and reports per-line latency, missed or duplicate lines, ASR accuracy and voice correctness.**
   - `make test-av` writes `report.md`, `timeline.json`, `events.json`, `clips/*.mp4|wav` and `media/session.{mp4,wav}`.
   - Runs are tabled below. I inspected clip frames (montage) and per-clip RMS myself on `av-20261022T051337Z`: bottom and middle boxes, no OSD text, clips ending on the post-line cut-in.
@@ -91,7 +94,8 @@ Running it found and fixed three defects in the new code:
     - `hw-proof-20261024T035120Z` (`3f91310`): Clef answered, voice `kind:boy` (correct gender), but the line was unmatched (`COMMITTED_ABSTAINED`). The matcher scored the one box against the whole two-box message.
     - `hw-proof-20261024T064020Z` (`486619b`): matched (`MATCH_FUZZY`, the right message), but voiced by the slot's assigned character (a different child, `voice_route: assigned`). Every speaker-at-commit ask had failed as `bad_schema`, because the full roster exceeded Clef's 16-option cap. Fixed in `d3d9b3d` (ADR 0167 amendment 1).
     - `hw-proof-20261024T065348Z` (`d3d9b3d`): the ask works (no degraded event), and the line is voiced `kind:boy`. Unmatched again on a noisy read.
-  - **Still open:** a bundle that is both matched and character-voiced. It needs the page-aware matching fix (ADR 0184, in progress) deployed, then one more board read.
+  - `hw-proof-20261024T155742Z` (`5303e84`, a different box: the same boy NPC's second page, middle of the screen, read while the owner played): the local ranking put the right message first (p 0.9999) but scored it 0.45 with no page, so it abstained and Clef answered none. Cause: the message's first box ends in the player's-name tag, so the page split returned nothing and the line was scored as one page. Fixed in `809613b` (ADR 0184 amendment 1): unaligned multi-box messages on the real profile went from 96 to 1 of 1166.
+  - **Still open:** a bundle that is both matched and character-voiced, from one more board read on `809613b`. The collector now keeps only that case (matched message id, a named character's voice).
 - [ ] **#34, #37 and #5 are closed; #2 and #24 are closed or deferred with reasons; no new issue lacks an owner.**
   - #5, #34 and #37 are closed. #2 and #24 are deferred with reasons (table below).
   - **Re-verified on the board on 2026-10-24 (build `d3d9b3d`, real rev 5 profile):**
@@ -117,6 +121,8 @@ Running it found and fixed three defects in the new code:
 | av-20261023T035549Z | a83aa1b | 42/322 ms | 904/3997 ms | 10 | 0/0/0/0 | PASS; frames inspected (Aryll, bottom and middle boxes), child pitch on every spoken line |
 | av-20261023T043630Z | a83aa1b (sweep) | 3/147 ms | 276/303 ms | 3 | 0/0/0/0 | **FAIL, idle-sample gate (2 < 3).** The driver ended the drive on a silent static box; fixed in 7d2f096 |
 | av-20261023T051909Z | 7d2f096 (sweep) | 127/282 ms | 3855/9352 ms | 11 | 0/0/0/0 | PASS; the screen check kept the drive going |
+| av-20261024T153513Z | 1b12026 + 5303e84 change (merge tree) | 142/370 ms | 3261/7110 ms | 12 (9 spoken, 3 catch-up/dup skips) | 0/0/0/0 | PASS, rapid drive; 0 conversation gate issues. I inspected clip frames (bottom box on screen during speech; on the rapid drive the box can already be gone while its page is still spoken) and a spectrogram (child F0 about 360–420 Hz, clean decay, no cutoff) |
+| av-20261024T154111Z | same tree | 124/793 ms | 2346/17574 ms | 13 | 0/0/0/0 | PASS, slow drive; 0 conversation gate issues |
 | av-20261023T091038Z | 3f91310 (final sweep) | 102/182 ms | 2246/9005 ms | 9 (8 spoken, 1 catch-up skip) | 0/0/0/0 | PASS; WER 0.000 on 6/8 spoken lines (0.040, 0.048 on two). The box that stalled before the confirming read is spoken |
 
 The large appear→audio p95 comes from the box's own on-screen life, not from narration. Lost-A retries keep one box up for about 60 s, and its line spoke within 4 ms of the text settling.
