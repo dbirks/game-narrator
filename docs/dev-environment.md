@@ -30,7 +30,7 @@ A gate whose capabilities are not configured is never green, and
 | `diagnostics` | `game-narrator doctor --dev` on a fresh build | — |
 | `release-snapshot` | GoReleaser snapshot pipeline (no publishing) | `goreleaser` on PATH; docker optional |
 | `bench` | the synthetic holdout split through the real pipeline (real Tesseract, real matcher) plus the captured-Dolphin holdout (class b) from the external fixtures and the calibration fit, each reported separately | `tesseract` and `magick` on PATH; the captured part also needs `$GAME_NARRATOR_FIXTURE_DIR` (the `windwaker-newgame` and/or `windwaker-legend-dense` fixtures) and `GAME_NARRATOR_GAME_IMAGE_PATH` — absent, it reports NOT RUN with setup steps, never a pass or a failure of the synthetic part |
-| `test-replay` | synthetic scenario suite (fault injection; BLOCKED reported, never passed) plus pipeline replay tests, `-race` — the fixture-dependent placement replays are kept `-skip`ped here (they run in the `test-dolphin` captures phase) | `tesseract` on PATH, else the replay test reports NOT RUN |
+| `test-replay` | synthetic scenario suite (fault injection; BLOCKED reported, never passed) plus pipeline replay tests, `-race`, (the private-capture replay family is `-skip`ped here so a fixture-less CI host sees a clean exit 0; it runs in `test-dolphin`'s captures phase, ADR-0182); `TestDolphinScenarios` stays `-skip`ped (its own gate: the `test-dolphin` scenarios phase) | `tesseract` on PATH, else the replay tests report NOT RUN |
 | `test-dolphin` | real Dolphin tests (`-run Real`, one emulator at a time: `-p 1`, 45m timeout) plus the committed Dolphin scenarios replayed through the real recognition/runtime path (`TestDolphinScenarios`, 30m), writing the HTML report to `artifacts/scenarios/<run-id>/index.html`, plus the live play path through the real UI (task browser-live-play, class (d)+(e)): `TestLivePlayUI` (`internal/e2e`) serves the in-process API + embedded SPA on a real port with the dev Dolphin bridge wired, seeds the profile/region/voice from the disc image and runs the Playwright `live-play` project over the packaged /play and /developer pages (start with the Dolphin source, committed line + speech counters, the inspector's trace row chain, the Play page's Stop), asserting the docs/spec/12 live-E2E set and writing the evidence bundle (Playwright trace, screenshots, WAVs, timeline, manifest) to `artifacts/live-play-ui/<run-id>/` (60m) | `GAME_NARRATOR_GAME_IMAGE_PATH`; `dolphin-emu`, `Xvfb`, `ffmpeg`, `x11-utils`, `tesseract` and `xdotool` (savestate hotkeys, ADR 0043 am7) on PATH; the scenario phase also needs the external fixtures under `$GAME_NARRATOR_FIXTURE_DIR` (default `artifacts/fixtures/`) — absent or unverified fixtures report NOT RUN per scenario, never a pass; the captures phase also runs the captured-frame placement replays (`TestPlacementOnLiveCapture`, `TestPlacementOnDolphinProbe`, `TestPlacementOCRBeforeAfterFix`) against the live-capture bundle (`$GAME_NARRATOR_LIVE_CAPTURE_DIR`, else the `$GAME_NARRATOR_FIXTURE_DIR` fixture root's `live-capture/` subdirectory) — absent bundle reports NOT RUN, never a pass; the UI phase also needs `pnpm` + a Playwright chromium (`cd web && pnpm exec playwright install chromium`), the built web UI (`make web-build` — the SPA the in-process server embeds) and the live gateway + TTS env (`GAME_NARRATOR_GATEWAY_URL` + token, the voice-design/clone role models and the Base registry URL) — each absent capability reports NOT RUN (exit 2) with the setup line, never a pass |
 | `test-models` | live provider contract tests (`-run Live`), sequential (`-p 1`) | `GAME_NARRATOR_GATEWAY_URL` plus the token env (default `GAME_NARRATOR_GATEWAY_TOKEN`, name overridable via `GAME_NARRATOR_GATEWAY_TOKEN_ENV`); the vision tests run by default (the `GAME_NARRATOR_LIVE_VISION` opt-in was removed, ADR 0040); the VLM OCR fallback session test (`TestLiveOCRFallbackSession`) uses the configured `GAME_NARRATOR_ROLE_VISION_OCR_FALLBACK_MODEL` (standard dev value `qwen3-8-27b` over the shared gateway, `.env.example`) before falling back to `GAME_NARRATOR_LIVE_MODEL`; TTS registry tests `GAME_NARRATOR_TTS_BASE_DIRECT_URL` (or `GAME_NARRATOR_ROLE_VOICE_CLONE_REGISTRY_URL`) |
 | `test-hardware` | UNO Q hardware smoke (`internal/hwsmoke`, `TestHW*`): V4L2 capture grab through the app's FFmpeg path, consented audio-sink tone, controlled-image OCR, RAM/CPU/temperature/storage preflight + 60 s serve-session RSS budget, platform report — every absent capability is NOT RUN with the attach/configure instruction, never a vacuous pass | attach a UNO Q with capture source + audio sink (13-uno-q-hardware-smoke.md); `GAME_NARRATOR_HW_AUDIO_CONSENT=1` for the audio tone; `GAME_NARRATOR_CAPTURE_DEVICE` / `GAME_NARRATOR_AUDIO_DEVICE` to choose the node/sink |
@@ -70,14 +70,18 @@ is a maintenance action, not a gate item; run it on demand with
 `GN_GATE=test-dolphin GN_REOCR_FIXTURE=windwaker-newgame go test -count=1
 -timeout 30m -run 'TestRealReOCRFixture$' ./internal/dolphin/`. The hardware
 smoke family is gated separately by `GAME_NARRATOR_HW_SMOKE=1`, which only
-`make test-hardware` and `scripts/hw/run-on-device.sh` set. The fixture-dependent
-families are excluded from the gates that do not own them: `test-replay` keeps
-`-skip` for the recorded-scenario replay and the captured-frame placement replays
-(`TestPlacementOnLiveCapture`, `TestPlacementOnDolphinProbe`,
-`TestPlacementOCRBeforeAfterFix`) plus the ADR-0137 sea presence gate
-(`TestPresenceRejectsSeaAcceptsBoxes`) — they run in the `test-dolphin` captures
-phase instead (issue #47), and a fixture-less host sees a clean 0 instead of a
-NOT RUN exit 2.
+`make test-hardware` and `scripts/hw/run-on-device.sh` set. The
+recorded-scenario replay stays out of `test-replay` (`-skip
+TestDolphinScenarios`; it belongs to the test-dolphin gate's 30-minute
+scenarios phase). The private-capture replay family (the three captured-frame placement replays
+`TestPlacementOnLiveCapture`, `TestPlacementOnDolphinProbe`,
+`TestPlacementOCRBeforeAfterFix`, and the ADR-0137 sea presence gate
+`TestPresenceRejectsSeaAcceptsBoxes`) is also `-skip`ped from `test-replay`:
+its bundles are private and gitignored, so a CI host could only ever report it
+NOT RUN, which turns CI red. Its home gate is the `test-dolphin` captures
+phase (part of `make test-full` on a host with the private fixtures, ADR-0182,
+issue #47). There, each test reports `NOT RUN` with its setup line when its
+bundle is absent, never a silent skip or a pass without running.
 
 The go-test gates (`test-replay`, `test-dolphin`, `test-models`) run through
 `scripts/gates/run-go-gate.sh`, which parses `go test -json`, prints one

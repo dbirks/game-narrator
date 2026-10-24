@@ -230,18 +230,23 @@ bench:
 ## plus the pipeline replay tests (real Tesseract, deterministic
 ## three-identical-runs), race-enabled. BLOCKED and NOT RUN (e.g. tesseract
 ## missing) results are reported per test and never counted as a pass.
-## TestDolphinScenarios lives in internal/scenario and the private-capture
-## placement replays (TestPlacementOnLiveCapture, TestPlacementOnDolphinProbe,
-## TestPlacementOCRBeforeAfterFix) live in internal/pipeline; they need
-## external gitignored captures under $GAME_NARRATOR_FIXTURE_DIR or
-## artifacts/catch-up-live and report NOT RUN without them, so -skip keeps
-## them out of this gate and a fixture-less host (CI) sees a clean 0 instead
-## of a NOT RUN exit 2. TestPresenceRejectsSeaAcceptsBoxes (the ADR-0137 sea
-## amendment) runs in make test-dolphin's captures phase instead; the three
-## placement replays need a live-capture JPEG bundle as the fixture root and
-## currently run in no gate (issue filed 2026-10-21).
+## The private-capture replay family (ADR-0182, issue #47) needs gitignored
+## bundles a fixture-less host (CI) never has, so -skip keeps it out of this
+## gate (CI sees a clean 0, not a NOT RUN exit 2). Its home gate is make
+## test-dolphin's captures phase (part of make test-full on hosts with the
+## private fixtures), which runs TestPresenceRejectsSeaAcceptsBoxes,
+## TestPlacementOnLiveCapture, TestPlacementOnDolphinProbe and
+## TestPlacementOCRBeforeAfterFix and reports NOT RUN with the setup line
+## when a bundle is absent. Env contract (one var, one meaning):
+##   - the live-capture bundle (the two live-hdmi replays) is
+##     $GAME_NARRATOR_LIVE_CAPTURE_DIR, else $GAME_NARRATOR_FIXTURE_DIR/
+##     live-capture/ — NEVER the whole fixture root;
+##   - the Dolphin probe bundle is artifacts/catch-up-live/probe-*/ under
+##     this checkout, or the catch-up-live/ sibling of $GAME_NARRATOR_FIXTURE_DIR;
+##   - the named fixtures (board-sailing, windwaker-*) are read from
+##     $GAME_NARRATOR_FIXTURE_DIR's ids.
 test-replay:
-	@scripts/gates/run-go-gate.sh test-replay -race -count=1 -skip 'TestDolphinScenarios|TestPlacementOnLiveCapture|TestPlacementOnDolphinProbe|TestPlacementOCRBeforeAfterFix|TestPresenceRejectsSeaAcceptsBoxes' ./internal/scenario/... ./internal/pipeline/... ; \
+	@scripts/gates/run-go-gate.sh test-replay -race -count=1 -timeout 30m -skip 'TestDolphinScenarios|TestPlacementOnLiveCapture|TestPlacementOnDolphinProbe|TestPlacementOCRBeforeAfterFix|TestPresenceRejectsSeaAcceptsBoxes' ./internal/scenario/... ./internal/pipeline/... ; \
 	rc=$$?; echo $$rc > artifacts/gates/test-replay.rc ; exit $$rc
 
 ## test-ui: the real UI gate (docs/spec/09, docs/spec/12 "UI") — frontend
@@ -320,7 +325,7 @@ test-dolphin:
 	rc1=$$?; \
 	GN_GATE=test-dolphin scripts/gates/run-go-gate.sh test-dolphin-scenarios -count=1 -timeout 30m -run TestDolphinScenarios ./internal/scenario/... ; \
 	rc2=$$?; \
-	GN_GATE=test-dolphin scripts/gates/run-go-gate.sh test-dolphin-captures -count=1 -timeout 30m -run 'TestPresenceRejectsSeaAcceptsBoxes' ./internal/pipeline/... ; \
+	GN_GATE=test-dolphin scripts/gates/run-go-gate.sh test-dolphin-captures -count=1 -timeout 30m -run 'TestPresenceRejectsSeaAcceptsBoxes|TestPlacementOnLiveCapture|TestPlacementOnDolphinProbe|TestPlacementOCRBeforeAfterFix' ./internal/pipeline/... ; \
 	rc4=$$?; \
 	if command -v pnpm >/dev/null 2>&1; then \
 		$(MAKE) --no-print-directory web-build || { echo "web-build failed: the live play UI phase will report NOT RUN (the staged SPA was removed)" >&2; rm -rf internal/webassets/dist; } ; \

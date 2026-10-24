@@ -54,11 +54,18 @@ import (
 	"github.com/dbirks/game-narrator/internal/vision/ocr"
 )
 
-// probeRunDir finds the newest catch-up probe bundle under the repo's
-// gitignored artifacts/ (the e2e catch-up run's dev-trace frames), and the
-// PNG frame paths it holds. The test is NOT RUN when the bundle is absent.
+// probeRunDir finds the newest catch-up probe bundle under the gitignored
+// artifacts/ (the e2e catch-up run's dev-trace frames), and the PNG frame
+// paths it holds. The bundle lives in this checkout's artifacts/ — or, when
+// the external fixture root env var is set, in the catch-up-live/ sibling of
+// that root (the same artifacts/ tree the fixture root itself sits in, the
+// one-var-one-meaning layout of ADR-0182, issue #47). The test is NOT RUN
+// when the bundle is absent.
 func probeRunDir() (string, []string, bool) {
 	rel := filepath.Join("..", "..", "artifacts", "catch-up-live")
+	if v := os.Getenv("GAME_NARRATOR_FIXTURE_DIR"); v != "" {
+		rel = filepath.Join(filepath.Dir(v), "catch-up-live")
+	}
 	entries, err := os.ReadDir(rel)
 	if err != nil {
 		return "", nil, false
