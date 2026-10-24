@@ -1828,11 +1828,14 @@ func boxPagesFromOriginal(original, canonical string) []string {
 	}
 	text := strings.ReplaceAll(original, `\x0a`, "\n")
 	var boxes [][]string
+	var tagTail []bool // the box's last display line ends in a control tag
 	var box []string
+	lastRaw := ""
 	blank := 0
 	closeBox := func() {
 		if len(box) > 0 {
 			boxes = append(boxes, box)
+			tagTail = append(tagTail, endsInTag(lastRaw))
 			box = nil
 		}
 	}
@@ -1847,6 +1850,7 @@ func boxPagesFromOriginal(original, canonical string) []string {
 		}
 		blank = 0
 		box = append(box, strings.Join(words, " "))
+		lastRaw = line
 	}
 	closeBox()
 	if len(boxes) <= 1 {
@@ -1863,22 +1867,99 @@ func boxPagesFromOriginal(original, canonical string) []string {
 			pages = append(pages, strings.Join(tokens[start:], " "))
 			break
 		}
-		lastLine := strings.Fields(b[len(b)-1])
-		last := foldWord(lastLine[len(lastLine)-1])
-		cut := -1
-		for j := start; j < len(tokens); j++ {
-			if foldWord(tokens[j]) == last {
-				cut = j
-				break
+		// A box with no word of its own ("...", or a tag for the player's
+		// name and a "?") takes only the placeholder/punctuation tokens.
+		cut := start - 1
+		if last := lastBoxWord(b); last != "" {
+			cut = -1
+			for j := start; j < len(tokens); j++ {
+				if foldToken(tokens[j]) == last {
+					cut = j
+					break
+				}
+			}
+			if cut < 0 {
+				return nil
 			}
 		}
-		if cut < 0 {
+		// A box that ends in a control tag (a name the game fills in) has
+		// no word for it in the original; the canonical text renders it as
+		// a placeholder ("{player}?") or bare punctuation. Those tokens close
+		// this box, not open the next one.
+		for (tagTail[i] || cut < start) && cut+1 < len(tokens) && isBoxTailToken(tokens[cut+1]) {
+			cut++
+		}
+		if cut < start {
 			return nil
 		}
 		pages = append(pages, strings.Join(tokens[start:cut+1], " "))
 		start = cut + 1
 	}
 	return pages
+}
+
+// lastBoxWord is the last word of a box that folds to letters or digits:
+// a box line can end in a tag-only word ("today, {tag …}?" leaves "?").
+func lastBoxWord(box []string) string {
+	for i := len(box) - 1; i >= 0; i-- {
+		words := strings.Fields(box[i])
+		for j := len(words) - 1; j >= 0; j-- {
+			if w := foldWord(words[j]); w != "" {
+				return w
+			}
+		}
+	}
+	return ""
+}
+
+// endsInTag reports whether a display line's last word comes from a control
+// tag: after its last letter or digit there is a "{…}" ("today, {tag …}?").
+func endsInTag(line string) bool {
+	depth := 0
+	tagAfterWord := false
+	for _, r := range line {
+		switch {
+		case r == '{':
+			depth++
+		case r == '}' && depth > 0:
+			depth--
+			if depth == 0 {
+				tagAfterWord = true
+			}
+		case depth == 0 && (unicode.IsLetter(r) || unicode.IsDigit(r)):
+			tagAfterWord = false
+		}
+	}
+	return tagAfterWord
+}
+
+// isBoxTailToken reports a canonical token with no display word of its own:
+// a placeholder for a tag ("{player}?") or punctuation alone.
+func isBoxTailToken(tok string) bool {
+	return strings.HasPrefix(tok, "{") || foldToken(tok) == ""
+}
+
+// foldToken folds a canonical speech token for alignment, dropping the
+// bracketed markup the canonical text carries ("{player}", "[pause:250ms]")
+// that has no display word in the original.
+func foldToken(tok string) string {
+	var b strings.Builder
+	depth := 0
+	for _, r := range tok {
+		switch r {
+		case '{', '[':
+			depth++
+		case '}', ']':
+			if depth > 0 {
+				depth--
+			}
+		default:
+			if depth == 0 {
+				b.WriteRune(r)
+			}
+		}
+	}
+	return foldWord(b.String())
 }
 
 // boxWords returns one original display line's words with the control tags

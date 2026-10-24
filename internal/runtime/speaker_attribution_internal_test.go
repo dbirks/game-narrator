@@ -465,3 +465,56 @@ func TestCommitVoiceGenderConflictTakesKindVoice(t *testing.T) {
 		t.Errorf("an unmeasured voice = %q, want the assigned character", ch)
 	}
 }
+
+// TestBoxPagesFromOriginalTagEndsABox: a box whose last display line ends in
+// a control tag (a name the game fills in, here rendered "{player}" in the
+// canonical text) still splits on the script's box break — the board's
+// two-box line read on page 2 otherwise scored against the whole message
+// (2026-10-24 hardware bundle, COMMITTED_ABSTAINED).
+func TestBoxPagesFromOriginalTagEndsABox(t *testing.T) {
+	original := `Well? Well? Who is baking bread over\x0athere today, {tag g=0 t=0 a=000000}?\x0a\x0a\x0a{tag g=3 t=10 a=03000a}Will you meet me by the mill at dusk?`
+	canonical := "Well? Well? Who is baking bread over there today, {player}? Will you meet me by the mill at dusk?"
+	want := []string{
+		"Well? Well? Who is baking bread over there today, {player}?",
+		"Will you meet me by the mill at dusk?",
+	}
+	pages := boxPagesFromOriginal(original, canonical)
+	if len(pages) != len(want) {
+		t.Fatalf("pages = %q, want %q", pages, want)
+	}
+	for i := range want {
+		if pages[i] != want[i] {
+			t.Errorf("page %d = %q, want %q", i+1, pages[i], want[i])
+		}
+	}
+}
+
+// TestBoxPagesFromOriginalWordlessBoxes: a box with no word ("..." or a
+// name tag and a "?") and a word with pause markup glued on still align.
+func TestBoxPagesFromOriginalWordlessBoxes(t *testing.T) {
+	for _, tc := range []struct {
+		original, canonical string
+		want                []string
+	}{
+		{
+			`Who goes there?\x0a\x0a\x0a\x0a{tag g=0 t=0 a=000000}?\x0a\x0a\x0a\x0aWell, then, {tag g=0 t=0 a=000000}...\x0aCome in from the rain.`,
+			"Who goes there? {player}? Well, then, {player}... Come in from the rain.",
+			[]string{"Who goes there?", "{player}?", "Well, then, {player}... Come in from the rain."},
+		},
+		{
+			`...\x0a\x0a\x0a\x0aPerhaps the lamp oil will last the night.`,
+			"... Perhaps the lamp oil will last the night.",
+			[]string{"...", "Perhaps the lamp oil will last the night."},
+		},
+		{
+			`Ask me about {tag g=255 t=0 a=ff000001}knots{tag g=255 t=0 a=ff000000}{tag g=0 t=7 a=000007000a}.\x0a\x0a\x0aRemember that!`,
+			"Ask me about knots[pause:250ms]. Remember that!",
+			[]string{"Ask me about knots[pause:250ms].", "Remember that!"},
+		},
+	} {
+		got := boxPagesFromOriginal(tc.original, tc.canonical)
+		if strings.Join(got, "|") != strings.Join(tc.want, "|") {
+			t.Errorf("boxPagesFromOriginal(%q) = %q, want %q", tc.original, got, tc.want)
+		}
+	}
+}

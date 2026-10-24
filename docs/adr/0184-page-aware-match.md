@@ -118,3 +118,19 @@ whole-text path is untouched and remains the fallback), delete
 historical whole-message behaviour, which is a performance/recall loss, not a
 correctness change: speech's `choosePage` re-derivation still speaks the
 reached page for committed lines.
+
+## Amendment 1 (2026-10-24): box breaks around control tags
+
+First board run on the page-aware build (hardware bundle, real GameCube):
+a two-box line read on page 2 still scored against the whole message
+(text 0.45, no `page` component, `COMMITTED_ABSTAINED`). Its first box ends
+in the tag for the player's name, so the box's last display "word" was a
+bare "?" that aligned to nothing, the original-text split returned nil, and
+sentence packing made one page. The split now aligns on the box's last real
+word, folds `{…}`/`[…]` markup out of canonical tokens, lets a box that ends
+in a tag (or has no word at all, e.g. "...") take the placeholder and
+punctuation tokens that follow, and keeps those tokens off a box that does
+not. On the real profile (4331 messages, 1166 multi-box) unaligned
+multi-box messages fall from 96 to 1 (a shop total built only of tags).
+Tests: `TestBoxPagesFromOriginalTagEndsABox`,
+`TestBoxPagesFromOriginalWordlessBoxes` (invented strings).
