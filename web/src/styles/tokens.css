@@ -122,8 +122,8 @@
   --hair: #cbb894;
   --warn: #8a5a2a;
   --ok: var(--ink);
-  /* Failure-badge text: --coral darkened until it holds WCAG 1.4.3 (4.5:1)
-     at badge size on --paper and --card (the coral border stays). */
+  /* Failure text: --coral darkened until it holds WCAG 1.4.3 (4.5:1) on
+     --paper and --card (the coral fill stays). */
   --danger-text: #b24d2b;
 }
 
@@ -142,8 +142,8 @@
   --hair: #d8c39a;
   --warn: #8a5a2a;
   --ok: var(--ink);
-  /* Failure-badge text: --coral darkened until it holds WCAG 1.4.3 (4.5:1)
-     at badge size on --paper and --card (the coral border stays). */
+  /* Failure text: --coral darkened until it holds WCAG 1.4.3 (4.5:1) on
+     --paper and --card (the coral fill stays). */
   --danger-text: #995e49;
 }
 
@@ -163,6 +163,10 @@
   --hair: #4a3d66;
   --warn: #ffc78a;
   --ok: var(--ink);
+  /* Failure text on the dark ground: the theme's own --coral (the light
+     themes' darkened --danger-text inherits from :root and holds only
+     2.65:1 on --card here; --coral holds 8.63:1). */
+  --danger-text: var(--coral);
 }
 
 /* ── legacy remap (index.css tokens over the design set) ───────────────────
@@ -853,7 +857,7 @@ textarea:focus-visible,
 }
 
 .dock-tool-error {
-  color: var(--coral);
+  color: var(--danger-text, var(--danger));
   overflow-wrap: anywhere;
 }
 
@@ -1066,7 +1070,7 @@ textarea:focus-visible,
 }
 
 .palette-result-err {
-  color: var(--coral);
+  color: var(--danger-text, var(--danger));
 }
 
 .palette-result-meta {

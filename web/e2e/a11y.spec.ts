@@ -73,9 +73,47 @@ async function settled(page: Page, testid: string | RegExp, timeout = 20_000) {
   await expect(page.getByTestId(testid)).toBeVisible({ timeout });
 }
 
-/** Scan the current page and record it; the failure check happens once, over all routes. */
-async function scan(page: Page, name: string, report: Record<string, RouteReport>): Promise<void> {
+/**
+ * Theme sweeps for the walk (task: the axe walks ran mostly on the default
+ * theme, which is how the cast badge's 2.68:1 coral-on-cream slipped
+ * through): one dark theme (Lilac Night) and one other light theme
+ * (Sherbet — the lightest paper/card pair, the strongest regression
+ * signal). The theme is applied by setting `data-theme` on <html> (the
+ * same seam src/lib/theme.ts uses) directly before analyze and removed
+ * right after, so each route is scanned on all three themes without
+ * re-visiting it.
+ */
+const THEME_SWEEPS = ["lilac-night", "sherbet"] as const;
+
+async function setTheme(page: Page, theme: string | null): Promise<void> {
+  await page.evaluate((t) => {
+    // The e2e tsconfig has no DOM lib: the element is reached through a
+    // typed globalThis cast (the suite's pattern, settings-theme.spec.ts).
+    const html = (
+      globalThis as {
+        document?: {
+          documentElement?: {
+            setAttribute(name: string, value: string): void;
+            removeAttribute(name: string): void;
+          };
+        };
+      }
+    ).document?.documentElement;
+    if (html === undefined) return;
+    if (t === null) html.removeAttribute("data-theme");
+    else html.setAttribute("data-theme", t);
+  }, theme);
+}
+
+async function scanTheme(
+  page: Page,
+  name: string,
+  report: Record<string, RouteReport>,
+  theme: string | null,
+): Promise<void> {
+  if (theme !== null) await setTheme(page, theme);
   const results = await new AxeBuilder({ page }).withTags([...WCAG_21_A_AA]).analyze();
+  if (theme !== null) await setTheme(page, null);
   const violations = results.violations ?? [];
   const byRule: Record<string, number> = {};
   for (const violation of violations) {
@@ -84,11 +122,18 @@ async function scan(page: Page, name: string, report: Record<string, RouteReport
   report[name] = {
     url: page.url(),
     violations: Object.fromEntries(Object.entries(byRule).sort(([a], [b]) => a.localeCompare(b))),
+    // Every failing node is named (target + axe's failureSummary) so the
+    // failure message points at the element, not just the rule.
     serious: violations
       .filter((violation) => violation.impact === "serious" || violation.impact === "critical")
       .map(
         (violation) =>
-          `${violation.id} [${violation.impact}] ×${violation.nodes.length} — ${violation.help}`,
+          `${violation.id} [${violation.impact}] ×${violation.nodes.length} — ${violation.help} — at ${violation.nodes
+            .map(
+              (node) =>
+                `${node.target.join(" ")}: ${(node.failureSummary ?? "").replace(/\s+/g, " ").trim()}`,
+            )
+            .join(" | ")}`,
       ),
   };
   // A11Y_DEBUG=1 prints the violating nodes (targets + impacts) for triage.
@@ -102,6 +147,14 @@ async function scan(page: Page, name: string, report: Record<string, RouteReport
         );
       }
     }
+  }
+}
+
+/** Scan the current page and record it; the failure check happens once, over all routes. */
+async function scan(page: Page, name: string, report: Record<string, RouteReport>): Promise<void> {
+  await scanTheme(page, name, report, null);
+  for (const theme of THEME_SWEEPS) {
+    await scanTheme(page, `${name} [theme: ${theme}]`, report, theme);
   }
 }
 
