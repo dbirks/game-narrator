@@ -10,6 +10,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -66,6 +67,12 @@ func TestCastAuditEndpoint(t *testing.T) {
 	// MISMATCH. The other is expected male and carries a 110 Hz reference: OK.
 	plant(one, "a calm, steady adult woman with a warm voice", 110)
 	plant(two, "a broad-shouldered adult man with a deep voice", 110)
+
+	// The denial path (ADR-0171): the audit is viewer-scoped; an unauthenticated
+	// caller must get 401 (and a role below viewer none exists), not a report.
+	if rec := e.get(auth.RoleNone, "/api/v1/profiles/"+profileID+"/cast/audit"); rec.Code != http.StatusUnauthorized {
+		t.Errorf("unauthenticated cast audit = %d, want 401 (body %s)", rec.Code, rec.Body.String())
+	}
 
 	body := e.mustOK(auth.RoleViewer, "/api/v1/profiles/"+profileID+"/cast/audit")
 	if body["profile"] != profileID {

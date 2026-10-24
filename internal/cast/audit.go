@@ -54,16 +54,20 @@ var expectedWords = []struct {
 }
 
 // wordPattern guards the matching to whole words: "man" must not fire on
-// "woman", "child" on "children's wardrobe".
-var wordPattern = map[string]*regexp.Regexp{}
+// "woman", "child" on "children's wardrobe". The keyword set is closed, so
+// the table is built once at init and only ever read — the audit endpoint
+// calls ExpectedClass from concurrent request goroutines, and a lazily
+// filled package map races (and can panic on concurrent write).
+var wordPattern = func() map[string]*regexp.Regexp {
+	m := make(map[string]*regexp.Regexp, len(expectedWords))
+	for _, ew := range expectedWords {
+		m[ew.keyword] = regexp.MustCompile(`\b` + ew.keyword + `s?\b`)
+	}
+	return m
+}()
 
 func wordMatch(keyword string) *regexp.Regexp {
-	if re, ok := wordPattern[keyword]; ok {
-		return re
-	}
-	re := regexp.MustCompile(`\b` + keyword + `s?\b`)
-	wordPattern[keyword] = re
-	return re
+	return wordPattern[keyword]
 }
 
 // ExpectedClass classifies a character's expected voice class from its
