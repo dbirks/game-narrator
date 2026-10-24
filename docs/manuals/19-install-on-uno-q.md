@@ -579,6 +579,83 @@ yours to decide (docs/release.md §5). If you used Step 2's bind mount,
 disable and unmount it afterwards (`sudo systemctl disable --now
 gn-data.mount`).
 
+## CPU frequency tuning (issue #58)
+
+The UNO Q (QRB2210, 4× Cortex-A53, max 2.016 GHz) captures around 7.5 fps
+against the 10 fps target. Community characterization of the board shows the
+cause is clock, not compute: a light periodic workload (our ~10 fps tick with
+short OCR bursts) leaves the frequency policy modal at its ~614 MHz floor, while
+free-running work holds 2.016 GHz — a ~6x step-time difference between the two
+regimes, mostly clock. The board has thermal headroom (10-minute soak: 80.2 C
+peak, no throttling), so raising the clock floor is safe.
+
+### Read the current state (read-only)
+
+The doctor's `system.cpu_governor` row reports governor, min/max/current
+frequency per cpufreq policy and a thermal sample, and is DEGRADED (with the
+remedy below) when a non-performance governor can park the clock at the
+policy's floor:
+
+```sh
+ssh <board-user>@<uno-q-host> "sudo game-narrator doctor | grep -A3 cpu_governor"
+```
+
+### Tune, one variable at a time
+
+`scripts/board/cpu-tune.sh` writes the tuning into a systemd oneshot unit
+(`game-narrator-cpu.service`, applied at boot) and is **dry-run by default**:
+
+```sh
+# copy the script to the board
+scp scripts/board/cpu-tune.sh <board-user>@<uno-q-host>:$HOME/
+
+# 1) dry run (shows before-state, target, unit path; writes nothing)
+ssh <board-user>@<uno-q-host> "bash $HOME/cpu-tune.sh"
+
+# 2) apply: schedutil with the floor raised above 614 MHz
+ssh <board-user>@<uno-q-host> "sudo bash $HOME/cpu-tune.sh --min-freq 1600000 --apply"
+#   — or, more aggressive: pin the max clock outright
+# ssh <board-user>@<uno-q-host> "sudo bash $HOME/cpu-tune.sh --performance --apply"
+```
+
+Verify the after-state it prints, then re-run the measurement protocol below
+**before and after each single change** — change one thing (governor *or*
+floor *or* OCR threads), measure, record, then move on.
+
+Reverting the governor/floor tuning is the same script with `--apply` and the
+previous values (e.g. `--governor powersave` with no `--min-freq` restores the
+default policy behaviour); the oneshot unit stays installed and idempotent.
+
+### Per-call OCR threads
+
+The Tesseract child runs OpenMP when its build has it, and the service env on
+the board pins `OMP_THREAD_LIMIT=1`, which bounds that parallelism. To test a
+per-process thread budget for one tesseract child only, set
+`GAME_NARRATOR_OCR_THREADS=<n>` in the environment file (Step 5) — the wrapper
+sets `OMP_NUM_THREADS`/`OMP_THREAD_LIMIT` to `<n>` on the child, overriding the
+inherited pin; unset means the current behaviour (inherit). The board's 4 A53
+cores are a reasonable upper bound to test (n = 2 and n = 4); one variable at
+a time, measured per the protocol. Revert by removing the line.
+
+### Measurement protocol (run before/after each single change)
+
+```sh
+# 1) fps — sustained capture over 60 s, from the doctor/UI capture stats or a
+#    session log; record the steady-state mean, not the first-second spike.
+# 2) per-call OCR latency — from the session log / developer UI timeline:
+#    min, median, p95 of the OCR call duration over the same 60 s.
+# 3) temperature — sample the thermal zones every 5 s during the run and
+#    record the peak:
+# ssh <board-user>@<uno-q-host> "for i in \$(seq 12); do cat /sys/class/thermal/thermal_zone*/temp; sleep 5; done"
+# 4) record: governor/min/cur as printed by cpu-tune.sh "after" state, plus
+#    the three numbers above, into the issue — before/after, one row per change.
+```
+
+Pass criteria are recorded in issue #58 (the 10 fps capture/OCR target and
+the per-call OCR latency baseline from the dev-host bench). Do not stack
+changes: fps and OCR latency are measured after *each single* change so the
+effect of the governor floor and of the OCR thread budget are separated.
+
 ## Starting at boot (user-level install)
 
 A hand-started `setsid` narrator does not survive a reboot. On 2026-10-22 the board power-cycled, and nothing was narrating until it was started by hand. For the `~/gn-live` user-level install, install the user unit once:

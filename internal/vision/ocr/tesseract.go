@@ -14,6 +14,42 @@ import (
 	"time"
 )
 
+// EnvOCRThreads is the knob that gives the tesseract children their own
+// OpenMP thread budget (issue #58 / ADR-0183). The engine wrapper execs the
+// binary directly, so the per-process env is the whole mechanism: when the
+// variable is set to a positive integer, OMP_NUM_THREADS and OMP_THREAD_LIMIT
+// are set to that value on the tesseract child only, overriding what the
+// service environment inherits (the board pins OMP_THREAD_LIMIT=1, which
+// bounds Tesseract 5.x's OpenMP parallelism too). Unset (or invalid) means
+// exactly the current behaviour: the child inherits the parent environment
+// untouched.
+const EnvOCRThreads = "GAME_NARRATOR_OCR_THREADS"
+
+// ocrThreadEnv returns the env entries a tesseract child must get from
+// EnvOCRThreads, or nil when the knob is unset or unparseable — nil is the
+// "current behaviour" default, where the child inherits its environment as
+// is.
+func ocrThreadEnv() []string {
+	raw := strings.TrimSpace(os.Getenv(EnvOCRThreads))
+	if raw == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return nil
+	}
+	return []string{"OMP_NUM_THREADS=" + raw, "OMP_THREAD_LIMIT=" + raw}
+}
+
+// applyOCRThreadEnv attaches the OMP budget to a tesseract child. When the
+// knob is unset it leaves cmd.Env nil so exec inherits the parent
+// environment — the pre-knob contract.
+func applyOCRThreadEnv(cmd *exec.Cmd) {
+	if extra := ocrThreadEnv(); len(extra) > 0 {
+		cmd.Env = append(os.Environ(), extra...)
+	}
+}
+
 // Tesseract runs the `tesseract` binary over a temporary file: the
 // preprocessed crop is encoded as PNG into a 0600 file in the system temp dir,
 // the TSV hypothesis stream comes back on stdout, and the file is removed when
@@ -106,6 +142,7 @@ func (t Tesseract) Recognize(ctx context.Context, img image.Image) (Result, erro
 
 	cmd := exec.CommandContext(runCtx, bin, append([]string{inFile, "stdout"}, t.args()...)...)
 	supervise(cmd)
+	applyOCRThreadEnv(cmd)
 	limit := t.StdoutCap
 	if limit <= 0 {
 		limit = DefaultStdoutCap
@@ -212,6 +249,7 @@ func (t Tesseract) probeSlotProtocol(ctx context.Context, pngBytes []byte, budge
 
 	cmd := exec.CommandContext(runCtx, bin, append([]string{"stdin", "stdout"}, t.args()...)...)
 	supervise(cmd)
+	applyOCRThreadEnv(cmd)
 	limit := t.StdoutCap
 	if limit <= 0 {
 		limit = DefaultStdoutCap

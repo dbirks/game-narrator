@@ -488,6 +488,7 @@ func (p *Pooled) spawnLocked() *pooledSlot {
 	args := append([]string{"stdin", "stdout"}, p.Tesseract.args()...)
 	cmd := exec.Command(bin, args...)
 	superviseSlot(cmd)
+	applyOCRThreadEnv(cmd)
 	cmd.Stderr = &tailWriter{limit: tail} // exec drains the engine's stderr into the bounded tail
 	// The TSV travels through a Wait-owned buffer, not a StdoutPipe the read
 	// drains: Wait closes a StdoutPipe's read end "after seeing the command

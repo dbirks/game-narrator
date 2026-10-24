@@ -387,6 +387,10 @@ func Run(ctx context.Context, o Options) Report {
 	// The listen-address row (ADR-0150): the two-install port collision is
 	// the deploy incident this check names before the crash loop starts.
 	r.add(ctx, "network.listen", r.opts.Timeout, func(ctx context.Context) Check { return r.checkListen(ctx) })
+	// The CPU DVFS row (issue #58 / ADR-0183): governor and frequency floor
+	// per policy plus a thermal sample — read-only; sysfs absence is
+	// NOT CONFIGURED, not a fault.
+	r.add(ctx, "system.cpu_governor", r.opts.Timeout, func(ctx context.Context) Check { return r.checkCPUGovernor(ctx) })
 
 	for _, tool := range defaultTools {
 		tool := tool

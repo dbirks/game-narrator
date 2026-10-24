@@ -302,6 +302,7 @@ func TestRunReportsEveryComponentExactlyOnce(t *testing.T) {
 
 	want := []string{
 		"storage.data_dir", "storage.database", "speech.cache_disk", "cast.voice_gender", "network.listen",
+		"system.cpu_governor",
 		"tools.ffmpeg", "tools.v4l2_ctl", "tools.tesseract",
 		"ocr.controlled_image", "capture.devices", "audio.sinks", "audio.selected",
 		"audio.hdmi_bridge", "audio.dsp", "audio.pipewire",
