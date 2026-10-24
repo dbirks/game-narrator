@@ -91,6 +91,7 @@ var (
 	ErrTooManyRedirects = &Error{Code: "too_many_redirects", Err: errors.New("redirect limit exceeded")}
 	ErrTimeout          = &Error{Code: "timeout", Err: errors.New("fetch timed out")}
 	ErrNoAddresses      = &Error{Code: "no_addresses", Err: errors.New("hostname resolved to no addresses")}
+	ErrUserinfo         = &Error{Code: "userinfo", Err: errors.New("url carries a user:password component")}
 )
 
 // CodeOf extracts the stable error code, or "unknown" if err is not a *Error.
@@ -197,6 +198,13 @@ func (p Policy) ValidURL(raw string) error {
 	host := u.Hostname()
 	if host == "" {
 		return errf(ErrScheme, "URL has no host: %q", raw)
+	}
+	// A user:password component must not reach the wire (net/http would
+	// turn it into an Authorization: Basic header) or the debug log (which
+	// records the raw URL). Reject it for the initial URL and every
+	// redirect hop alike, since both pass through here.
+	if u.User != nil {
+		return errf(ErrUserinfo, "URL carries a user:password component: %s", host)
 	}
 	port := u.Port()
 	var portN int
