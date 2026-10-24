@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -27,6 +28,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/assets"
 	"github.com/dbirks/game-narrator/internal/auth"
 	"github.com/dbirks/game-narrator/internal/events"
+	"github.com/dbirks/game-narrator/internal/games"
 	"github.com/dbirks/game-narrator/internal/games/adapter"
 	"github.com/dbirks/game-narrator/internal/games/adapter/generic"
 	"github.com/dbirks/game-narrator/internal/jobs"
@@ -849,5 +851,122 @@ func TestOnboardingAbandon(t *testing.T) {
 	decode(t, rec, &conflict)
 	if conflict["code"] != codeConflict {
 		t.Fatalf("conflict body = %v, want %q", conflict, codeConflict)
+	}
+}
+
+// TestOnboardingNamingRunScalesBudget (ADR-0187): the Cast page's "Name
+// speakers with the agent" button creates a dedicated naming run — the
+// request names task=name_speakers, the run's prompt is the naming prompt
+// (not the generic onboarding prompt), and its step budget scales with the
+// placeholder count. The placeholder seed is invented lines only.
+func TestOnboardingNamingRunScalesBudget(t *testing.T) {
+	e := newOnbEnv(t, &quietOnboardingModel{})
+	ctx := e.ctx
+
+	g := games.Game{
+		ID: games.NewID(), Slug: "coast-dump", Title: "Coast Dump",
+		Platform: "gamecube", UserTags: []byte(`["synthetic"]`),
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := e.st.CreateGame(ctx, g); err != nil {
+		t.Fatalf("CreateGame: %v", err)
+	}
+	ed := games.Edition{ID: games.NewID(), GameID: g.ID, Region: "US",
+		Language: "en", Revision: "v1", Locale: "en_US"}
+	if err := e.st.CreateEdition(ctx, ed); err != nil {
+		t.Fatalf("CreateEdition: %v", err)
+	}
+	p, err := e.st.CreateDraftProfile(ctx, ed.ID)
+	if err != nil {
+		t.Fatalf("CreateDraftProfile: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, key := range []string{"cc:spk:1", "cc:spk:2", "cc:spk:3"} {
+		ph := games.Character{
+			ID: games.NewID(), ProfileID: p.ID, Name: key,
+			Aliases:            json.RawMessage(`[]`),
+			VerifiedSourceRefs: json.RawMessage(`[]`),
+			Status:             games.CharacterProposed,
+			CreatedAt:          now,
+		}
+		msg := games.Message{
+			ID: games.NewID(), ProfileID: p.ID,
+			OriginalText: "invented line", NormalizedText: "invented line",
+			SpeechText: "invented line", TextKind: games.TextDialogue,
+			SpeakerID: ph.ID, AttributionStatus: games.AttributionProposed,
+			AttributionConfidence: 1.0, Revision: 1,
+			CreatedAt: now, UpdatedAt: now,
+		}
+		if err := e.st.PutCharacters(ctx, p.ID, []games.Character{ph}); err != nil {
+			t.Fatalf("PutCharacters: %v", err)
+		}
+		if err := e.st.PutMessages(ctx, p.ID, []games.Message{msg}, nil); err != nil {
+			t.Fatalf("PutMessages: %v", err)
+		}
+	}
+
+	// The naming run: 202, the payload carries the scaled ceiling (4 + 2 per
+	// placeholder) and the naming prompt, not the onboarding prompt.
+	rec := e.do(auth.RoleCurator, http.MethodPost, "/api/v1/onboarding/runs",
+		[]byte(fmt.Sprintf(`{"title":"Naming the cast","profile_id":%q,"use_web":false,"task":"name_speakers"}`, p.ID)))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("naming run create = %d, want 202 (body %s)", rec.Code, rec.Body.String())
+	}
+	var created map[string]any
+	decode(t, rec, &created)
+	jobID, _ := created["job_id"].(string)
+	job, err := e.js.GetJob(ctx, jobID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	var payload struct {
+		UserRequest string `json:"user_request"`
+		MaxSteps    int    `json:"max_steps"`
+	}
+	if err := json.Unmarshal(job.Payload, &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if payload.MaxSteps != 4+2*3 {
+		t.Errorf("naming run max_steps = %d, want %d (4 + 2 per placeholder)", payload.MaxSteps, 4+2*3)
+	}
+	if !strings.Contains(payload.UserRequest, "list_unnamed_speakers") || !strings.Contains(payload.UserRequest, "name_speaker") {
+		t.Errorf("naming run prompt is not the naming prompt: %q", payload.UserRequest)
+	}
+	if strings.Contains(payload.UserRequest, "Onboard the game") {
+		t.Errorf("naming run must not carry the generic onboarding prompt: %q", payload.UserRequest)
+	}
+
+	// The refusal matrix at creation.
+	rec = e.do(auth.RoleCurator, http.MethodPost, "/api/v1/onboarding/runs",
+		[]byte(`{"title":"Naming","task":"name_speakers"}`))
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("naming run without profile_id = %d, want 422 (body %s)", rec.Code, rec.Body.String())
+	}
+	rec = e.do(auth.RoleCurator, http.MethodPost, "/api/v1/onboarding/runs",
+		[]byte(fmt.Sprintf(`{"title":"X","profile_id":%q,"task":"polish_text"}`, p.ID)))
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("unknown task = %d, want 422 (body %s)", rec.Code, rec.Body.String())
+	}
+
+	// A generic run carries no override: the handler's frozen budget stands.
+	rec = e.do(auth.RoleCurator, http.MethodPost, "/api/v1/onboarding/runs",
+		[]byte(fmt.Sprintf(`{"title":"Generic onboarding","profile_id":%q,"use_web":false}`, p.ID)))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("generic run create = %d, want 202 (body %s)", rec.Code, rec.Body.String())
+	}
+	var created2 map[string]any
+	decode(t, rec, &created2)
+	job2, err := e.js.GetJob(ctx, created2["job_id"].(string))
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	var payload2 struct {
+		MaxSteps int `json:"max_steps"`
+	}
+	if err := json.Unmarshal(job2.Payload, &payload2); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if payload2.MaxSteps != 0 {
+		t.Errorf("generic run max_steps = %d, want 0 (the handler default)", payload2.MaxSteps)
 	}
 }

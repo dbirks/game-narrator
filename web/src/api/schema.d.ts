@@ -3788,6 +3788,11 @@ export interface components {
       profile_id?: string;
       /** @description The staged file's name, for provenance. */
       file_name?: string;
+      /**
+       * @description The run's job beyond generic onboarding: name_speakers names the import's unnamed speaker placeholders (the Cast page's naming run); it requires profile_id and always works on the existing draft.
+       * @enum {string}
+       */
+      task?: "name_speakers";
     };
     /** @description 202: the run is accepted and executing as a durable agent.run job; watch it at GET /api/v1/onboarding/runs/{id} and on the event stream. */
     OnboardingRunCreated: {

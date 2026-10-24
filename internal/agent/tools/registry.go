@@ -190,6 +190,25 @@ func DefaultTools(d Deps) (*agent.Registry, error) {
 			SideEffect:  agent.SideEffectDraft,
 			Handler:     d.publishProfile,
 		},
+		{
+			Name:            "list_unnamed_speakers",
+			Description:     "List the import's unnamed speaker placeholders on the profile: per placeholder its speaker key (e.g. ww:spk:12), roster id, line count and up to 5 sample lines. The sample lines are the evidence to reason from when naming speakers.",
+			InputSchema:     listUnnamedSpeakersSchema,
+			MinRole:         auth.RoleViewer,
+			Budget:          agent.Budget{MaxCallsPerRun: 5, Timeout: 60 * time.Second},
+			SideEffect:      agent.SideEffectNone,
+			UntrustedOutput: true,
+			Handler:         d.listUnnamedSpeakers,
+		},
+		{
+			Name:        "name_speaker",
+			Description: "Name one unnamed speaker placeholder on the DRAFT profile (ADR-0187): rename the placeholder row to the identified name (its lines keep pointing at it), fold the key into its aliases, and record the voice class and naming provenance in its personality summary. Draft-only; refuses a published or review revision. One call per identified speaker.",
+			InputSchema: nameSpeakerSchema,
+			MinRole:     auth.RoleCurator,
+			Budget:      agent.Budget{MaxCallsPerRun: 80, Timeout: 30 * time.Second},
+			SideEffect:  agent.SideEffectDraft,
+			Handler:     d.nameSpeaker,
+		},
 	}
 	for _, t := range tools {
 		if err := reg.Register(t); err != nil {

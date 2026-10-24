@@ -524,6 +524,7 @@ export function CastPage() {
         title: `Naming the cast of ${game.data?.title ?? gameId}`,
         profile_id: profileId,
         use_web: false,
+        task: "name_speakers",
       }),
     onSuccess: (run) => setNamingRun((run as { run_id: string }).run_id),
   });

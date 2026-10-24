@@ -67,6 +67,11 @@ const (
 // review and the run is not failed.
 const onbReviewPublishID = "publish"
 
+// onbTaskNameSpeakers is the naming run's job (ADR-0187): the Cast page's
+// "Name speakers with the agent" button. The switch in handleOnboardingCreate
+// and the enum literal test pin to this one constant.
+const onbTaskNameSpeakers = "name_speakers"
+
 type onbCreateRequest struct {
 	Title             string `json:"title"`
 	Platform          string `json:"platform"`
@@ -74,6 +79,10 @@ type onbCreateRequest struct {
 	StagedAssetSHA256 string `json:"staged_asset_sha256"`
 	ProfileID         string `json:"profile_id"`
 	FileName          string `json:"file_name"`
+	// Task is the run's job beyond generic onboarding (ADR-0187): the naming
+	// run ("name_speakers") names the import's placeholder speakers instead
+	// of importing; it always works on an existing draft profile.
+	Task string `json:"task,omitempty"`
 }
 
 type onbCreateResponse struct {
@@ -106,7 +115,12 @@ type onbPlan struct {
 	ProfileID         string `json:"profile_id"`
 	StagedAssetSHA256 string `json:"staged_asset_sha256,omitempty"`
 	FileName          string `json:"file_name,omitempty"`
-	CreatedAt         string `json:"created_at"`
+	// Task freezes the run's job (ADR-0187): a resumed attempt must keep
+	// doing the job it started, so the naming run's dedicated prompt
+	// survives a re-attempt on another process.
+	Task      string `json:"task,omitempty"`
+	MaxSteps  int    `json:"max_steps,omitempty"`
+	CreatedAt string `json:"created_at"`
 }
 
 // onbUnavailable is the 503 the onboarding routes answer when this process
@@ -185,7 +199,16 @@ func onbJobRunID(payload json.RawMessage) string {
 // API just appended) comes from the durable log, and Run's worklist is total
 // over it (ADR-0025).
 func (s *Server) onbEnqueueResume(ctx context.Context, run store.AgentRun) (*store.Job, bool, error) {
-	payload, err := json.Marshal(agent.JobPayload{RunID: run.ID, ProfileID: run.ProfileID})
+	// A resumed attempt keeps the run's own ceiling: the naming run's
+	// scaled budget (ADR-0187) lives in the frozen plan, not in the API
+	// process that queues the resume.
+	var plan struct {
+		MaxSteps int `json:"max_steps"`
+	}
+	if len(run.PlanJSON) > 0 {
+		_ = json.Unmarshal(run.PlanJSON, &plan)
+	}
+	payload, err := json.Marshal(agent.JobPayload{RunID: run.ID, ProfileID: run.ProfileID, MaxSteps: plan.MaxSteps})
 	if err != nil {
 		return nil, false, err
 	}
@@ -228,6 +251,19 @@ func (s *Server) handleOnboardingCreate(w http.ResponseWriter, r *http.Request) 
 	platform := strings.TrimSpace(req.Platform)
 	useWeb := req.UseWeb == nil || *req.UseWeb
 	profileID := strings.TrimSpace(req.ProfileID)
+	task := strings.TrimSpace(req.Task)
+	switch task {
+	case "", onbTaskNameSpeakers:
+	default:
+		s.writeCodeProblem(w, r, http.StatusUnprocessableEntity, "invalid-task", codeValidationFailed,
+			"Unprocessable Entity", fmt.Sprintf("task must be one of the known run jobs (name_speakers); got %q", req.Task))
+		return
+	}
+	if task == onbTaskNameSpeakers && profileID == "" {
+		s.writeCodeProblem(w, r, http.StatusUnprocessableEntity, "task-requires-profile", codeValidationFailed,
+			"Unprocessable Entity", "task name_speakers works on an existing draft profile; pass its profile_id")
+		return
+	}
 	sha := strings.ToLower(strings.TrimSpace(req.StagedAssetSHA256))
 	fileName := safeBaseName(req.FileName)
 
@@ -277,7 +313,23 @@ func (s *Server) handleOnboardingCreate(w http.ResponseWriter, r *http.Request) 
 		Title: title, Platform: platform, UseWeb: useWeb,
 		GameID: gameID, EditionID: editionID, ProfileID: profileID,
 		StagedAssetSHA256: sha, FileName: fileName,
-		CreatedAt: nowStamp(),
+		Task: task, CreatedAt: nowStamp(),
+	}
+	// The naming run's step budget scales with the work (ADR-0187): one
+	// round-trip to list, one to name per speaker the run is expected to
+	// reach, a headroom of four, capped so a whole-disc cast cannot eat the
+	// queue (the per-tool budget on name_speaker bounds the rest). The count
+	// is the shared scan the list_unnamed_speakers tool uses.
+	if task == onbTaskNameSpeakers {
+		speakers, err := tools.UnnamedSpeakers(r.Context(), s.store, profileID)
+		if err != nil {
+			s.storeProblem(w, r, err, "list unnamed speakers", "profile")
+			return
+		}
+		plan.MaxSteps = 4 + 2*len(speakers)
+		if plan.MaxSteps > 48 {
+			plan.MaxSteps = 48
+		}
 	}
 	runID := games.NewID()
 	planJSON, err := json.Marshal(plan)
@@ -306,6 +358,7 @@ func (s *Server) handleOnboardingCreate(w http.ResponseWriter, r *http.Request) 
 		ProfileID:   profileID,
 		UserRequest: onbUserRequest(plan),
 		Plan:        planJSON,
+		MaxSteps:    plan.MaxSteps,
 	})
 	if err != nil {
 		s.writeCodeProblem(w, r, http.StatusInternalServerError, "encode-fault", codeInternal,
@@ -324,7 +377,7 @@ func (s *Server) handleOnboardingCreate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.auditCatalogWrite(r, "onboarding.run.create", map[string]any{
-		"run_id": runID, "profile_id": profileID, "title": title, "use_web": useWeb,
+		"run_id": runID, "profile_id": profileID, "title": title, "use_web": useWeb, "task": task,
 	})
 	writeJSON(w, http.StatusAccepted, onbCreateResponse{
 		RunID: runID, JobID: job.ID, ProfileID: profileID,
@@ -413,6 +466,9 @@ func onbSlug(title string) string {
 // staged bytes, the web policy and the publish boundary in plain terms — and
 // it never carries secrets or gateway details (AGENTS.md).
 func onbUserRequest(p onbPlan) string {
+	if p.Task == onbTaskNameSpeakers {
+		return onbNamingRequest(p)
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Onboard the game %q.\n", p.Title)
 	fmt.Fprintf(&b, "Draft profile: %s", p.ProfileID)
@@ -442,6 +498,25 @@ func orDefault(v, d string) string {
 		return d
 	}
 	return v
+}
+
+// onbNamingRequest is the naming run's opening turn (ADR-0187): the Cast
+// page's "Name speakers with the agent" button. It names the exact job —
+// list the placeholders, name the ones the lines support with evidence,
+// leave the rest, stay on the draft — so the generic onboarding prompt (which
+// ends in identify/import/quality steps that name nobody) is never the
+// naming run's prompt.
+func onbNamingRequest(p onbPlan) string {
+	var b strings.Builder
+	b.WriteString("Name the unnamed speakers of this profile.\n")
+	fmt.Fprintf(&b, "Draft profile: %s.\n", p.ProfileID)
+	b.WriteString("Call list_unnamed_speakers to get the placeholders: per speaker its key, line count and sample lines. ")
+	b.WriteString("For every speaker the sample lines support with confidence, call name_speaker once, with the identified name, a gender_age, a short evidence sentence (which lines/context support the name) and a confidence 0..1. ")
+	b.WriteString("Leave the speakers you cannot identify: a guessed name is worse than an unnamed speaker, and the curator decides those in review. ")
+	b.WriteString("Do not name a speaker twice with different names, do not touch named characters, and do not use web tools. ")
+	b.WriteString("Finish with a summary listing the names you proposed and the evidence for each, and the speakers you left unnamed and why. ")
+	b.WriteString("Do not publish: the names are recorded on the draft and the run ends in review, where the curator approves each name.")
+	return b.String()
 }
 
 // handleOnboardingUpload serves POST /api/v1/onboarding/uploads: the staging

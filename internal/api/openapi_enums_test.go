@@ -85,6 +85,10 @@ var literalEnums = map[string][]string{
 	"CharacterDeleteReceipt.properties.status": {string(games.CharacterRetired)},
 	// internal/api/api.go's handleReady answers one of two words.
 	"HealthStatus.properties.status": {"ok", "fail"},
+	// The 202 of the onboarding create route (ADR-0187): the naming run's job
+	// the Cast page's button requests; handleOnboardingCreate refuses every
+	// other value.
+	"OnboardingRunRequest.properties.task": {onbTaskNameSpeakers},
 	// The 202 of the one route that enqueues this kind.
 	"ImportAccepted.properties.job_kind": {JobKindImportFile},
 	// The background queue's foreground pause (ADR-0119, issue #27): the

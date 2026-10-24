@@ -66,6 +66,10 @@ type JobPayload struct {
 	ProfileID   string          `json:"profile_id,omitempty"`
 	UserRequest string          `json:"user_request,omitempty"`
 	Plan        json.RawMessage `json:"plan,omitempty"`
+	// MaxSteps overrides the handler's frozen step ceiling for this attempt
+	// (ADR-0187): the naming run scales its budget with the number of
+	// placeholders (the handler's cfg.Budget stays the generic ceiling).
+	MaxSteps int `json:"max_steps,omitempty"`
 }
 
 // NewJobHandler returns the jobs.Handler for the agent.run kind. cfg's Model
@@ -83,6 +87,13 @@ func NewJobHandler(cfg JobConfig) (jobs.Handler, error) {
 		if p.RunID == "" {
 			return nil, jobs.Permanent(fmt.Errorf("agent.run: payload has no run_id"))
 		}
+		// Per-attempt step ceiling (a copy: cfg.Budget is the handler's,
+		// shared by every attempt it executes).
+		budget := cfg.Budget
+		if p.MaxSteps > 0 {
+			budget.MaxSteps = p.MaxSteps
+			budget.MaxToolCalls = p.MaxSteps * 4
+		}
 		out, err := Run(ctx, Options{
 			RunID:       p.RunID,
 			ProfileID:   p.ProfileID,
@@ -94,7 +105,7 @@ func NewJobHandler(cfg JobConfig) (jobs.Handler, error) {
 			TraceID:     job.TraceID,
 			UserRequest: p.UserRequest,
 			Plan:        anyPlan(p.Plan),
-			Budget:      cfg.Budget,
+			Budget:      budget,
 			Prompt:      cfg.Prompt,
 			ModelLabel:  cfg.ModelLabel,
 			SetupStages: cfg.SetupStages,

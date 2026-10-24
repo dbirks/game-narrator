@@ -11387,6 +11387,13 @@
             "type": "string",
             "maxLength": 512,
             "description": "The staged file's name, for provenance."
+          },
+          "task": {
+            "type": "string",
+            "enum": [
+              "name_speakers"
+            ],
+            "description": "The run's job beyond generic onboarding: name_speakers names the import's unnamed speaker placeholders (the Cast page's naming run); it requires profile_id and always works on the existing draft."
           }
         }
       },
