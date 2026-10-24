@@ -269,3 +269,76 @@ func TestBatchWindowDropFencesTheOldPrefix(t *testing.T) {
 		t.Errorf("zero-window drop = %d, want all three (the default window against a far-new line)", n)
 	}
 }
+
+func TestBacklogCapDropDropsTheOldestBeyondTheCap(t *testing.T) {
+	// Five-word pages: 2 s of estimated audio each.
+	line := func() CatchUpLine { return CatchUpLine{Text: "one two three four five"} }
+	pending := []CatchUpLine{line(), line(), line(), line(), line()}
+	// 10 s cap against 10 s of audio: nothing is beyond the cap.
+	if n := BacklogCapDrop(pending, 10*time.Second); n != 0 {
+		t.Errorf("drop prefix at the cap = %d, want 0 (the batch fits the cap)", n)
+	}
+	// 6 s cap against 10 s: the two oldest pages (4 s) are beyond it; the
+	// remainder (6 s) fits.
+	if n := BacklogCapDrop(pending, 6*time.Second); n != 2 {
+		t.Errorf("drop prefix = %d, want 2 (the oldest pages beyond the cap)", n)
+	}
+	// 4 s cap: two pages' audio fits, the oldest three (6 s) are beyond it —
+	// the drop trims oldest-first until the remainder is at or under the
+	// cap.
+	if n := BacklogCapDrop(pending, 4*time.Second); n != 3 {
+		t.Errorf("drop prefix = %d, want 3 (the oldest pages beyond the cap)", n)
+	}
+	// An empty batch drops nothing.
+	if n := BacklogCapDrop(nil, time.Second); n != 0 {
+		t.Errorf("empty batch drop = %d, want 0", n)
+	}
+	// A zero cap takes the default, the same unset rule the options apply.
+	if n := BacklogCapDrop(pending, 0); n != 0 {
+		t.Errorf("zero-cap drop = %d, want 0 (the default 45 s cap holds a 10 s batch)", n)
+	}
+	// The default cap holds a sustained mash's backlog: 45 s of audio.
+	long := make([]CatchUpLine, 0, 30)
+	for i := 0; i < 30; i++ {
+		long = append(long, line()) // 2 s each: 60 s total, 15 s over the cap
+	}
+	if n := BacklogCapDrop(long, 0); n != 8 {
+		t.Errorf("default-cap drop = %d, want 8 (45 s kept of the 60 s backlog)", n)
+	}
+}
+
+func TestEstimateCatchUpAudioDurationCountsWords(t *testing.T) {
+	if d := EstimateCatchUpAudioDuration(nil); d != 0 {
+		t.Errorf("empty estimate = %s, want 0", d)
+	}
+	// One five-word page: 2 s at the estimate's rate.
+	if d := EstimateCatchUpAudioDuration([]CatchUpLine{{Text: "one two three four five"}}); d != 2*time.Second {
+		t.Errorf("five-word estimate = %s, want 2 s", d)
+	}
+	// A blank page still counts as a page the player passed: at least
+	// one word.
+	if d := EstimateCatchUpAudioDuration([]CatchUpLine{{Text: ""}}); d != catchUpEstimatePerWord {
+		t.Errorf("blank-page estimate = %s, want the one-word bound", d)
+	}
+	// The estimate adds per page.
+	if d := EstimateCatchUpAudioDuration([]CatchUpLine{{Text: "a b c"}, {Text: "d e"}}); d != 5*catchUpEstimatePerWord {
+		t.Errorf("two-page estimate = %s, want 5 words", d)
+	}
+}
+
+func TestCatchUpOptionsBacklogCapNormalizes(t *testing.T) {
+	c, err := (CatchUpOptions{}).NormalizeCatchUpOptions()
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if c.BacklogCap != DefaultCatchUpBacklogCap {
+		t.Errorf("default backlog cap = %s, want %s", c.BacklogCap, DefaultCatchUpBacklogCap)
+	}
+	c, err = (CatchUpOptions{BacklogCap: 7 * time.Second}).NormalizeCatchUpOptions()
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if c.BacklogCap != 7*time.Second {
+		t.Errorf("set backlog cap = %s, want 7 s", c.BacklogCap)
+	}
+}

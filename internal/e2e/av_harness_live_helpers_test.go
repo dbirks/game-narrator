@@ -8,6 +8,7 @@ package e2e
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -32,6 +34,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/providers/router"
 	rt "github.com/dbirks/game-narrator/internal/runtime"
 	"github.com/dbirks/game-narrator/internal/speech"
+	"github.com/dbirks/game-narrator/internal/speech/pipewire"
 	"github.com/dbirks/game-narrator/internal/store"
 )
 
@@ -697,6 +700,14 @@ func avGateFailures(rep avTimelineReport, routeMode bool) []string {
 			fails = append(fails, fmt.Sprintf("line %d: ASR WER vs script = %.3f > 0.35 (a spoken line must track the script; the clip and the timeline row are the evidence)", l.Index, l.ASRWERvsScript))
 		}
 	}
+	// The ADR-0170 conversation invariants (the non-route conversation run
+	// only; the route mode's scripted play loop does not drive the
+	// conversation page by page, so the invariant rows are empty there):
+	// every gate issue fails the run. The PAGE_BREAK_GAP rows are report-
+	// only by design (ConvReportIssues) and never gate.
+	for _, is := range rep.ConvGateIssues {
+		fails = append(fails, "conversation invariant: "+is.String())
+	}
 	// The latency bounds: the ADR-0143 warm-run rule, only meaningful over
 	// the gate's idle-sample floor (a p50 over 0..2 samples is no estimate).
 	if rep.IdleSamples >= 3 {
@@ -734,5 +745,272 @@ func avAssertReport(t *testing.T, rep avTimelineReport) {
 	}
 	for _, f := range fails {
 		t.Errorf("av gate: %s", f)
+	}
+}
+
+// ── ADR-0170 (the conversation invariants): the slow-reader drive, the
+// synthesized-duration tap, and the page ground truth ─────────────────────
+
+// avSynthDurTracker is the harness's synthesized-duration tap (the
+// queue-don't-cut rule's "synthesized duration" side, ADR-0170 rule 4): it
+// wraps the session's pipewire sink through the runtime's SinkFactory test
+// seam and records each utterance's FULL audio duration — the WAV the
+// wiring actually handed the device, before any cut, stop or acoustic
+// capture. The map is keyed by the playback request's UtteranceID (a
+// line's own occurrence; a merged catch-up run's occurrence — the batched
+// lines' RunOccurrenceID).
+type avSynthDurTracker struct {
+	mu   sync.Mutex
+	durs map[string]int64 // utterance ID → synthesized duration, ms
+}
+
+// avSynthDurSink delegates every playback to the pipewire sink and taps
+// the WAV's duration on the way (the speech.AudioSink contract: Play
+// returns the inner handle as soon as the inner sink accepts the request).
+type avSynthDurSink struct {
+	inner speech.AudioSink
+	tr    *avSynthDurTracker
+}
+
+// Play implements speech.AudioSink (the duration tap + the inner play).
+func (s *avSynthDurSink) Play(ctx context.Context, req speech.PlayRequest) (speech.PlayHandle, error) {
+	if pcm, derr := speech.DecodeWAV(req.WAV); derr == nil {
+		if sr := pcm.SampleRate; sr > 0 && req.UtteranceID != "" {
+			dur := int64(float64(pcm.Frames()) * 1000 / float64(sr))
+			if dur > 0 {
+				s.tr.set(req.UtteranceID, dur)
+			}
+		}
+	}
+	return s.inner.Play(ctx, req)
+}
+
+// Close implements speech.AudioSink.
+func (s *avSynthDurSink) Close() error { return s.inner.Close() }
+
+// factory returns the runtime SinkFactory that builds the session's
+// pipewire sink under the tracker (the harness keeps SinkPipeWire's
+// observable audio; the tap only reads the WAV the wiring plays).
+func (tr *avSynthDurTracker) factory(target string) func() (speech.AudioSink, error) {
+	return func() (speech.AudioSink, error) {
+		inner, err := pipewire.New(target)
+		if err != nil {
+			return nil, err
+		}
+		return &avSynthDurSink{inner: inner, tr: tr}, nil
+	}
+}
+
+func (tr *avSynthDurTracker) set(id string, ms int64) {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	if tr.durs[id] < ms {
+		tr.durs[id] = ms
+	}
+}
+
+// snapshot copies the recorded synthesized durations (utterance ID → ms).
+func (tr *avSynthDurTracker) snapshot() map[string]int64 {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	out := make(map[string]int64, len(tr.durs))
+	for k, v := range tr.durs {
+		out[k] = v
+	}
+	return out
+}
+
+// pconvPageHash is the ADR-0170 evidence log's short page identity: the
+// first four SHA-256 bytes of a page text (the text itself is copyrighted
+// game data and never lands in a log — the hash is only the harness
+// cross-referencing its own evidence rows against the timeline's requested
+// texts).
+func pconvPageHash(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return string(sum[:4])
+}
+
+// avConvPages is the page ground truth the invariants read (ADR-0170
+// rule 2): the box text the player SAW at each page — the session's
+// committed pages in commit (stream) order, per message: each page turn
+// mints a new occurrence under the message id, and the timeline's committed
+// text for that occurrence is the box's OCR reading (the committed page +
+// the OCR/box timeline; the profile's canonical text is deliberately NOT
+// the ground truth here — the harness's conversation maps its boxes to
+// committed occurrences, and the page the player saw is what OCR read,
+// even where the matcher coalesces boxes under one message id). A line
+// with an empty committed text still occupies its ordinal (the row is
+// there, the text is absent: the invariant skips the line rather than
+// misalign the later pages).
+func avConvPages(lines []avLineRecord) map[string][]string {
+	pages := map[string][]string{}
+	for i := range lines {
+		msg := lines[i].MessageID
+		if msg == "" {
+			continue
+		}
+		pages[msg] = append(pages[msg], lines[i].CommittedText)
+	}
+	return pages
+}
+
+// avSlowDriveGap is the slow-reader drive's hold after the page's speech
+// ends (ADR-0170 rule 4's drive: the player reads the page — the press
+// lands after the speech terminal plus this buffer).
+const avSlowDriveGap = 500 * time.Millisecond
+
+// avDriveSlow is the ADR-0170 slow-reader drive (GN_AV_DRIVE=slow): the
+// cuDriver's box tracking (the text.observed readings, the commits, the
+// terminals) is shared with the rapid drive, but the press rule is its
+// inverse — A is pressed only after the current page's speech has ended +
+// avSlowDriveGap, so no page turn lands mid-playback (the queue-don't-cut
+// rule measures exactly this drive's page turns). The fallbacks are the
+// rapid drive's: a routed line that never terminals is waited on, not
+// pressed past; a line the wiring never routed (the Clef abstention — no
+// speech) advances on a stable box; a press that left the box unchanged
+// is retried, bounded. The settle phase is the rapid drive's (every
+// routed line terminal before the stream is collected).
+func avDriveSlow(t *testing.T, srv http.Handler, token, sessionID string, bridge dolphin.Bridge) ([]devEnvelope, []cuPress) {
+	t.Helper()
+	drv := cuNewDriver(time.Now())
+	termAt := map[string]time.Time{} // routed occurrence → terminal wall time
+	pressed := map[string]bool{}     // routed occurrences already pressed for
+	poll := time.NewTicker(250 * time.Millisecond)
+	defer poll.Stop()
+	driveCutoff := time.Now().Add(20 * time.Minute) // the slow drive is slow by design
+	var (
+		evs          []devEnvelope
+		cursor       int64
+		settleArmed  bool
+		settleCutoff time.Time
+		settledLog   int
+		presses      []cuPress
+	)
+	press := func(why string) {
+		t.Logf("av e2e (slow drive): A press (%s)", why)
+		p := cuPress{At: time.Now(), Reason: why}
+		actx, acancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := bridge.Inject(actx, dolphin.Buttons{A: true}, dolphin.Axes{}, cuPressHold)
+		acancel()
+		if err != nil {
+			t.Logf("av e2e (slow drive): A inject failed: %v (the box stays; the next poll's rules decide)", err)
+			return
+		}
+		presses = append(presses, p)
+	}
+	for {
+		<-poll.C
+		now := time.Now()
+		page, next, err := pcPollDevEvents(t, srv, token, sessionID, cursor)
+		if err != nil {
+			t.Fatalf("dev events: %v", err)
+		}
+		evs = append(evs, page...)
+		if len(page) > 0 {
+			cursor = next
+		}
+		drv.observe(page)
+		// The terminal wall times (the slow rule's wait: speech ended + gap).
+		for _, e := range page {
+			var p struct {
+				Occ    string `json:"dialogue_occurrence_id"`
+				Result string `json:"result"`
+			}
+			if len(e.Data) == 0 {
+				continue
+			}
+			if err := json.Unmarshal(e.Data, &p); err != nil || p.Occ == "" {
+				continue
+			}
+			if (e.Name == "speech.ended" && p.Result != "") || e.Name == "speech.cancelled" {
+				drv.noteTerminal(p.Occ)
+				if _, ok := termAt[p.Occ]; !ok {
+					termAt[p.Occ] = now
+				}
+			}
+		}
+		if !drv.done {
+			if now.After(driveCutoff) {
+				cuWritePartialBundle(t, sessionID, evs, "the slow drive deadline passed: the conversation did not end (a page's speech never terminalled or the presses never landed — the partial stream and the press timeline are the evidence)")
+				t.Fatalf("session %s: the slow-A drive did not finish the conversation within 20m (the partial stream is in the bundle)", sessionID)
+			}
+			if drv.needsScreen(now) {
+				sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
+				img, serr := bridge.Screenshot(sctx)
+				scancel()
+				if serr == nil {
+					box, _ := dolphin.BoxPresent()(context.Background(), img, nil)
+					drv.noteScreen(now, box)
+				}
+			}
+			// The same box-gone / transition signals as the rapid driver's
+			// decidePress (the conversation ends when the box region reads
+			// empty long enough; the between-box transition holds).
+			screenShowsBox := drv.screenBox && !drv.screenAt.IsZero() && now.Sub(drv.screenAt) < cuPressStable
+			boxGone := (!drv.boxEmpty.IsZero() && now.Sub(drv.boxEmpty) >= cuConvGone) || (now.Sub(drv.lastObs) >= cuConvGone && !screenShowsBox)
+			switch {
+			case boxGone && len(drv.commits) >= 1:
+				drv.done = true
+			case boxGone || !drv.boxEmpty.IsZero():
+				continue // no box (yet): no press
+			default:
+				// The slow rule: the FIRST unpressed matched commit whose
+				// speech has finished (terminal + gap) is the page to
+				// advance. An un-routed line (abstained: no speech) advances
+				// on a stable box, like the rapid drive's stall press.
+				want, why := "", ""
+				for i := range drv.matched {
+					c := drv.matched[i]
+					if pressed[c.Occurrence] {
+						continue
+					}
+					if drv.routed[c.Occurrence] {
+						if at, ok := termAt[c.Occurrence]; ok && now.Sub(at) >= avSlowDriveGap {
+							want, why = c.Occurrence, "slow: page "+shortID(c.Occurrence)+" speech ended "+now.Sub(at).Round(100*time.Millisecond).String()+" ago (> "+avSlowDriveGap.String()+")"
+						}
+						break // this page is still in flight: wait for it
+					}
+					if drv.lastText != "" && now.Sub(drv.textChanged) >= cuPressStable {
+						want, why = c.Occurrence, "slow: page "+shortID(c.Occurrence)+" routed no speech (abstained) — stable box, press to advance"
+					}
+					break
+				}
+				if want == "" && drv.instPresses > 0 && drv.instPresses < cuMaxPresses && drv.lastText != "" && now.Sub(drv.textChanged) >= cuLostA {
+					drv.instPresses++
+					why = fmt.Sprintf("lost-A retry %d/%d: the last press left the box unchanged for %s", drv.instPresses, cuMaxPresses, cuLostA)
+					want = "retry"
+				}
+				if want != "" {
+					if want != "retry" {
+						pressed[want] = true
+					}
+					drv.instPresses++
+					press(why)
+				}
+			}
+			continue
+		}
+		// The settle phase (the rapid drive's: every routed line terminal).
+		if !settleArmed {
+			settleArmed = true
+			settleCutoff = now.Add(cuDriveSettle)
+			t.Logf("av e2e (slow drive): the conversation ended (box cleared); settling the last committed lines (window %s)", cuDriveSettle)
+		}
+		if now.After(settleCutoff) {
+			settled, total := drv.allSettled()
+			if total > 0 && settled < total {
+				cuWritePartialBundle(t, sessionID, evs, fmt.Sprintf("the slow settle deadline passed with %d of %d routed lines unsettled", settled, total))
+				t.Fatalf("session %s: %d routed line(s) never reached a terminal speech event within %s of the conversation's end (the partial stream is in the bundle)", sessionID, total-settled, cuDriveSettle)
+			}
+		}
+		settled, total := drv.allSettled()
+		if total > 0 && settled != settledLog {
+			t.Logf("av e2e (slow drive): settling: %d/%d routed lines terminal", settled, total)
+			settledLog = settled
+		}
+		if total > 0 && settled == total {
+			t.Logf("av e2e (slow drive): all %d routed lines settled — collecting the rest of the stream", total)
+			return evs, presses
+		}
 	}
 }

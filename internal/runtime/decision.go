@@ -24,10 +24,12 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/events"
+	"github.com/dbirks/game-narrator/internal/matcher"
 	"github.com/dbirks/game-narrator/internal/pipeline"
 	"github.com/dbirks/game-narrator/internal/providers"
 	"github.com/dbirks/game-narrator/internal/providers/router"
@@ -96,6 +98,10 @@ type decisionWiring struct {
 	id    string // the session id the events are stamped with
 	opts  DecisionOptions
 	texts map[string]string // message id → the text the model sees (display text)
+	// pages is the session's display-page view (profilePages, ADR-0155): the
+	// candidate the model is offered carries the box on screen when the
+	// matcher's ranking scored one (ADR-0184), not the message's whole text.
+	pages map[string][]string
 	// speakers are the declared speaker options for the adjudication's speaker
 	// and speaker_kind questions — the ADR-0167 speaker-at-commit ask passes
 	// the committed line's speaker candidates to AskSpeaker.
@@ -123,7 +129,7 @@ type decisionWiring struct {
 // the candidate options are rendered with (the canonical original text,
 // falling back to the speech text); an empty map renders the stable
 // placeholder instead, which must never happen for a published message.
-func (m *Manager) newDecisionWiring(id string, texts map[string]string, speakers []systemone.Speaker) *decisionWiring {
+func (m *Manager) newDecisionWiring(id string, texts map[string]string, pages map[string][]string, speakers []systemone.Speaker) *decisionWiring {
 	opts := m.opts.Decision
 	if opts == nil || opts.Router == nil {
 		return nil
@@ -133,6 +139,7 @@ func (m *Manager) newDecisionWiring(id string, texts map[string]string, speakers
 		id:       id,
 		opts:     *opts,
 		texts:    texts,
+		pages:    pages,
 		speakers: speakers,
 	}
 	w.roleOK = w.opts.Role.Configured() && w.opts.Role.Protocol == providers.ProtocolSystemOne
@@ -196,7 +203,7 @@ func (w *decisionWiring) Decide(ctx context.Context, req pipeline.DecisionReques
 	scands := make([]systemone.Candidate, 0, len(cands))
 	ids := make([]string, 0, len(cands))
 	for _, c := range cands {
-		scands = append(scands, systemone.Candidate{ID: c.MessageID, Text: w.textFor(c.MessageID)})
+		scands = append(scands, systemone.Candidate{ID: c.MessageID, Text: w.optionText(c)})
 		ids = append(ids, c.MessageID)
 	}
 	reply.Candidates = ids
@@ -237,6 +244,7 @@ func (w *decisionWiring) Decide(ctx context.Context, req pipeline.DecisionReques
 		LastMessage: req.LastMessage,
 	}
 	bundle := systemone.BuildAdjudication(obs, scands, speakers)
+	w.noteBoxDisplay(bundle)
 	// The screenshot (ADR-0154): the model reads the whole frame, not only the
 	// OCR'd text, so a misplaced crop or a misread box is still decided from
 	// the picture. No frame (a source that delivered none yet) keeps the
@@ -476,6 +484,36 @@ func (w *decisionWiring) AskSpeaker(ctx context.Context, frame image.Image, cand
 	conf = adj.SpeakerConfidence
 	kindConf = adj.SpeakerKindConfidence
 	return speakerID, kind, conf, kindConf, nil
+}
+
+// optionText renders one candidate option's description (ADR-0184): the box
+// the player reached when the matcher's ranking scored one — the page text
+// the observation actually matched, which is what the question is about —
+// and the message's whole text otherwise. The model abstained "none of the
+// candidates" on the board when the whole two-page text was offered for a
+// single box on screen, because the candidate text did not equal the box.
+func (w *decisionWiring) optionText(c matcher.Candidate) string {
+	if page := c.Page; page >= 1 && w.pages != nil {
+		if pages := w.pages[c.MessageID]; page <= len(pages) {
+			if t := strings.TrimSpace(pages[page-1]); t != "" {
+				return t
+			}
+		}
+	}
+	return w.textFor(c.MessageID)
+}
+
+// noteBoxDisplay tells the candidate question that a message may be shown one
+// box (page) at a time (ADR-0184): the option texts already carry the page
+// the matcher scored, and the instruction makes the rule explicit so the
+// model compares the box on screen against the option it is.
+func (w *decisionWiring) noteBoxDisplay(bundle systemone.Request) {
+	for i := range bundle.Questions {
+		if bundle.Questions[i].ID == systemone.QCandidate {
+			bundle.Questions[i].Instructions += " A message may be displayed one box (page) at a time; a candidate may be the single box currently on screen of a longer message."
+			return
+		}
+	}
 }
 
 // textFor renders one candidate option's description: the canonical original

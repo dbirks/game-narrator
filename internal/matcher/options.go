@@ -39,6 +39,15 @@ type IndexOptions struct {
 	// the edition component neutral (1) for every candidate, which is correct for
 	// a single-edition profile and wrong to invent.
 	Edition string
+
+	// Pages carries a message's display pages, derived by the caller with the
+	// same paging speech uses (profile page rows or the box-break/sentence
+	// fallback) and precomputed at build time — never per frame (ADR-0184):
+	// message id → page texts in ordinal order. A message with two or more
+	// non-empty pages is scored against each page as well as its whole text, so
+	// a single-box read of a multi-box message scores like a one-box read.
+	// Empty (the zero value) keeps the historical whole-text-only scoring.
+	Pages map[string][]string
 }
 
 // foldOptions renders these options as textnorm options.

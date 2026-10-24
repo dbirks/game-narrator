@@ -171,8 +171,38 @@ func avWriteReport(t *testing.T, path string, rep avTimelineReport) {
 			avReportWER(l.asrScored, l.ASRWERvsScript),
 			avReportQueue(l), end)
 	}
+	// ADR-0170 (the conversation invariants): the owner's acceptance bar as
+	// findings — the gate issues (the run fails on any) and the report-only
+	// rows (the PAGE_BREAK_GAP flags, the READ-AHEAD-NOISE rows).
+	b.WriteString("## Conversation invariants (ADR-0170)\n\n")
+	drive := rep.ConvDrive
+	if drive == "" {
+		drive = "rapid (the default)"
+	}
+	fmt.Fprintf(&b, "Drive mode: `%s` (GN_AV_DRIVE). Bounds: duplicate = the same page twice (same message+page, or transcripts >= %.1f similar within %s); read-ahead = a word of a page not yet on screen at the audio start (utterance text must be within the page text); order = pages spoken in the order shown; queue-don't-cut (slow drive) = the page's audio is not cut (terminal `ended`, acoustic >= %d%% of the synthesized duration) — and, when the player advanced mid-playback (the next page queued behind the playing one), the next page starts within %s of the end; a gap on a waited advance is a QUEUE-GAP report row, not a gate; page-break gap > %s is flagged report-only.\n\n",
+		drive, 0.8, convDuplicateWindow, int(convQueueFloor*100), convQueueStartGap, convPageBreakGap)
+	b.WriteString("### Gate issues (fail the run)\n\n")
+	if len(rep.ConvGateIssues) == 0 {
+		b.WriteString("none.\n\n")
+	} else {
+		b.WriteString("| kind | line | message | detail |\n|------|------|---------|--------|\n")
+		for _, is := range rep.ConvGateIssues {
+			b.WriteString(fmt.Sprintf("| %s | %d | %s | %s |\n", is.Kind, is.Index, avReportCell(is.MessageID), avReportCell(is.Detail)))
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("### Report-only findings\n\n")
+	if len(rep.ConvReportIssues) == 0 {
+		b.WriteString("none.\n\n")
+	} else {
+		b.WriteString("| kind | line | message | detail |\n|------|------|---------|--------|\n")
+		for _, is := range rep.ConvReportIssues {
+			b.WriteString(fmt.Sprintf("| %s | %d | %s | %s |\n", is.Kind, is.Index, avReportCell(is.MessageID), avReportCell(is.Detail)))
+		}
+		b.WriteString("\n")
+	}
 	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
 		t.Fatalf("av report: write %s: %v", path, err)
 	}
-	t.Logf("av e2e: report.md written (%d lines, %d phantom utterances)", len(rep.Lines), rep.PhantomUtterances)
+	t.Logf("av e2e: report.md written (%d lines, %d phantom utterances, %d conversation gate issues, %d report-only)", len(rep.Lines), rep.PhantomUtterances, len(rep.ConvGateIssues), len(rep.ConvReportIssues))
 }

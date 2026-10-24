@@ -60,10 +60,7 @@ func profileSpeechMaps(content store.ProfileContent, resolveSpeaker func(string)
 		}
 	}
 	texts = make(map[string]string, len(content.Messages))
-	pages = make(map[string][]string, len(content.Messages))
-	for _, p := range content.Pages {
-		pages[p.MessageID] = append(pages[p.MessageID], p.PageText)
-	}
+	pages = profilePages(content)
 	for _, msg := range content.Messages {
 		if msg.SpeakerID != "" {
 			speakers[msg.ID] = resolveSpeaker(msg.SpeakerID)
@@ -72,21 +69,42 @@ func profileSpeechMaps(content store.ProfileContent, resolveSpeaker func(string)
 		if t != "" {
 			texts[msg.ID] = t
 		}
-		if _, ok := pages[msg.ID]; !ok {
-			// ADR-0155 fallback: a profile that carries no page rows for the
-			// message gets the runtime's own pages, so the session and the
-			// pre-synthesis speak reached pages without a re-import. The
-			// script's own box breaks (blank lines in the original text) are
-			// the truth when they align onto the canonical text; the
-			// sentence packing is the last resort.
-			if pt := boxPagesFromOriginal(msg.OriginalText, t); len(pt) > 0 {
-				pages[msg.ID] = pt
-			} else if pt := splitCanonicalPages(t); len(pt) > 0 {
-				pages[msg.ID] = pt
-			}
-		}
 	}
 	return speakers, aliasByID, texts, pages
+}
+
+// profilePages is the one display-page derivation a published profile goes
+// through (ADR-0155, shared by ADR-0184): message id → page texts in ordinal
+// order. The content's page rows when the profile carries them, else the
+// runtime's own split of the canonical text (the fallback for profiles
+// imported before paging was derived). Every consumer — the speech wiring's
+// pre-warm, the decision wiring's candidate rendering and the matcher index
+// (whose page rows are precomputed at build time, not per frame) — derives
+// the pages here, so a commit's page, the page the decision model is offered
+// and the page the matcher scored are the same page.
+func profilePages(content store.ProfileContent) map[string][]string {
+	pages := make(map[string][]string, len(content.Messages))
+	for _, p := range content.Pages {
+		pages[p.MessageID] = append(pages[p.MessageID], p.PageText)
+	}
+	for _, msg := range content.Messages {
+		if _, ok := pages[msg.ID]; ok {
+			continue
+		}
+		t := canonicalSpeechText(msg)
+		if t == "" {
+			continue
+		}
+		// The script's own box breaks (blank lines in the original text) are
+		// the truth when they align onto the canonical text; the sentence
+		// packing is the last resort.
+		if pt := boxPagesFromOriginal(msg.OriginalText, t); len(pt) > 0 {
+			pages[msg.ID] = pt
+		} else if pt := splitCanonicalPages(t); len(pt) > 0 {
+			pages[msg.ID] = pt
+		}
+	}
+	return pages
 }
 
 // sharedSpeakerSlots is the ADR-0156 speaker-attribution view of a published

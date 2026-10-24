@@ -104,6 +104,13 @@ type regionState struct {
 	lastOK      *ocr.Result
 	lastOKHash  string
 	deliveredOK bool
+
+	// lastPresent is this region's presence verdict for its most recently
+	// analysed frame (ADR-0172): the frame-level panel finder runs only
+	// while no configured region carries a present box — a region that sees
+	// a box owns that frame, and the fixed-region path is untouched.
+	// Touched only by the roiLoop goroutine, like the rest of regionState.
+	lastPresent bool
 }
 
 // roiLoop is the ROI stage: one goroutine, one select over frame arrivals, OCR
@@ -124,6 +131,23 @@ func (r *Runner) roiLoop(ctx context.Context, frames <-chan capture.Frame, in ch
 			rs.band = profileBandIndex(rs.textCands, vision.RectOf(reg))
 		}
 		regions = append(regions, rs)
+	}
+	// ADR-0172 (issue #53): the dynamic panel region. When the frame-level
+	// panel finder sees a dialogue panel no configured region covers, the
+	// panel becomes this region's rect and rides the SAME
+	// presence → OCR → tracker → matcher path as a configured one (same
+	// ids/events contract; its observations carry the fixed id
+	// dynamicPanelRegionID, which is the "dynamic placement" mark the
+	// reducer and dev UI read). It is born empty (an empty rect reads as
+	// absent) and stays a fixed-band region — its rect is what panelFindTick
+	// moves. Appended last: every consumer below (emitAll, ageOut, the
+	// frame loop) then sees it without any further change, and a finder that
+	// never fires leaves it permanently absent — the configured path is
+	// bit-for-bit what it was.
+	var dyn *regionState
+	if r.cfg.PanelFind.Enabled {
+		dyn = &regionState{region: games.Region{ID: dynamicPanelRegionID, RegionType: games.RegionTextbox}, gate: r.gates[dynamicPanelRegionID]}
+		regions = append(regions, dyn)
 	}
 	ticker := time.NewTicker(time.Second / time.Duration(r.cfg.FrameProbeHz))
 	defer ticker.Stop()
@@ -186,6 +210,12 @@ func (r *Runner) roiLoop(ctx context.Context, frames <-chan capture.Frame, in ch
 					return err
 				}
 			}
+			// ADR-0172: scan for a panel no configured region covers. Runs
+			// only on its cadence and only while the configured regions see
+			// no box — the fixed-region path pays nothing when it works.
+			if dyn != nil {
+				r.panelFindTick(regions, dyn, f)
+			}
 		case o := <-done:
 			r.applyOutcome(regions, o)
 			if err := r.emitAll(regions, ctx, in); err != nil {
@@ -216,6 +246,80 @@ func (r *Runner) emitAll(regions []*regionState, ctx context.Context, in chan<- 
 		}
 	}
 	return nil
+}
+
+// ADR-0172 (issue #53) — the frame-level panel finder's hook. The scan rule
+// itself is the pure FindPanels in panelfind.go; this is its scheduler on the
+// frame-ordered stage.
+
+// dynamicPanelRegionID is the dynamic panel region's id (ADR-0172): fixed so
+// the reducer's per-region tracker and the dev UI's region listing read its
+// observations as a finder-placed box, not a profile region. It is the
+// "dynamic placement" mark the task contract asks observations to carry.
+const dynamicPanelRegionID = "panel-anywhere"
+
+// panelFindTick runs after every configured region has looked at the frame
+// (roiLoop's frame case). It scans at most every PanelFind.EveryNFrames and
+// only while no configured region reports a present box — the gate that
+// keeps the fixed-region path bit-for-bit unchanged when it works (ADR-0172
+// §cost). A panel no configured region covers becomes the dynamic region's
+// rect; when the scan finds none, the dynamic region keeps its last rect (or
+// stays empty) and the ordinary presence path over that rect reports absent,
+// so a box the finder loses degrades to "no evidence", never to "wrong
+// text". Touched only by the roiLoop goroutine (no locks, same discipline as
+// the rest of the region state).
+func (r *Runner) panelFindTick(all []*regionState, dyn *regionState, f capture.Frame) {
+	if f.Image == nil {
+		return
+	}
+	n := int64(r.cfg.PanelFind.EveryNFrames)
+	if n < 1 {
+		n = 1
+	}
+	if f.Seq%n != 0 {
+		return
+	}
+	for _, rs := range all {
+		if rs != dyn && rs.lastPresent {
+			// A configured region carries a box: the fixed path owns the
+			// frame, and a panel near its bands is its domain anyway.
+			return
+		}
+	}
+	luma := panelLuma(f.Image, r.cfg.PanelFind.SampleW, r.cfg.PanelFind.SampleH)
+	cands := FindPanels(luma, r.cfg.PanelFind.SampleW, r.cfg.PanelFind.SampleH, r.cfg.PanelFind)
+	for _, p := range cands {
+		if panelCoveredBy(p, all, dyn) {
+			continue
+		}
+		dyn.region.RectX, dyn.region.RectY, dyn.region.RectW, dyn.region.RectH = p.X, p.Y, p.W, p.H
+		return
+	}
+}
+
+// panelCoveredBy reports whether the candidate sits where a configured region
+// (its stored band, or any of its placement-aware candidate bands) can crop:
+// such a panel is the region's domain, and the dynamic region stays out of it.
+func panelCoveredBy(p PanelRect, all []*regionState, dyn *regionState) bool {
+	for _, rs := range all {
+		if rs == dyn {
+			continue
+		}
+		if rectsOverlap(p, vision.RectOf(rs.region)) {
+			return true
+		}
+		for _, b := range rs.textCands {
+			if rectsOverlap(p, b) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// rectsOverlap is the unit-rect overlap the coverage check above needs.
+func rectsOverlap(p PanelRect, r vision.Rect) bool {
+	return p.X < r.X+r.W && r.X < p.X+p.W && p.Y < r.Y+r.H && r.Y < p.Y+p.H
 }
 
 // waitInflight is the Replay-mode half of the frame-order contract: while this
@@ -515,6 +619,8 @@ func (rs *regionState) accept(r *Runner, ctx context.Context, f capture.Frame, i
 	now := r.cfg.Now()
 	rect := rs.placeBand(r, f)
 	a := r.analyze(f, rs.region, rect)
+	// ADR-0172: the frame-level panel finder's run gate (lastPresent).
+	rs.lastPresent = a.present
 	p := &pending{frame: f, reg: rs.region, a: a, at: now}
 
 	switch {

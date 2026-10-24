@@ -56,6 +56,19 @@ const (
 	ComponentSourceReliability = "source_reliability"
 )
 
+// Page evidence keys (ADR-0184): diagnostic additions to Candidate.Components,
+// not weighted components. ComponentPage is the 1-based ordinal of the display
+// page that won the text component for a multi-box message (0 means the whole
+// text won, or the message carries no pages); ComponentPageTextScore is that
+// page's text score. They are reported outside ComponentOrder because they
+// carry no weight in the log-linear sum — the page score IS the text
+// component's value when it wins — so componentCount and the weights are
+// untouched.
+const (
+	ComponentPage          = "page"
+	ComponentPageTextScore = "page_text_score"
+)
+
 // componentCount is the fixed size of a candidate's component array; the array
 // is a fixed-size Go array rather than a map so scoring allocates nothing per
 // candidate. It must equal len(ComponentOrder); TestComponentCountMatchesOrder

@@ -1168,6 +1168,17 @@ func (r *Reducer) committedData(reg *region, rk rankedObservation, messageID str
 		speakerKind = ans.speakerKind
 		speakerKindConfidence = ans.speakerKindConfidence
 	}
+	// The display page the matcher scored for the committed message (ADR-0184):
+	// the speech wiring speaks exactly that page rather than re-deriving it
+	// from the OCR read. 0 means no page was recorded (page-less message or an
+	// "unknown" commit) and the historical page choice stands.
+	page := 0
+	for _, c := range rk.rank.Candidates {
+		if c.MessageID == messageID {
+			page = c.Page
+			break
+		}
+	}
 	return map[string]any{
 		"dialogue_occurrence_id":  reg.occurrenceID,
 		"message_id":              messageID,
@@ -1195,6 +1206,7 @@ func (r *Reducer) committedData(reg *region, rk rankedObservation, messageID str
 		"transitions":             trs,
 		"confidence":              reg.tr.Confidence(),
 		"text_kind":               r.commitKind(messageID),
+		"page":                    page,
 	}
 }
 

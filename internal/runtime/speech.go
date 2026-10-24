@@ -200,9 +200,10 @@ type SpeechOptions struct {
 	// prewarming (the "cap by scenes" in practice).
 	Prewarm *PrewarmOptions
 	// CatchUp tunes the session's catch-up narration and no-backlog speech
-	// policy (issue #25, ADR-0122): the catch_up/latest_only policy, the
-	// batch window and the per-utterance max age. nil takes the documented
-	// defaults (catch_up, 900 ms, 3 s).
+	// policy (issue #25, ADR-0122, amended by ADR-0175 amendment 1): the
+	// catch_up/latest_only policy, the batch window and the backlog cap.
+	// nil takes the documented
+	// defaults (catch_up, 900 ms window, the 45 s backlog cap).
 	CatchUp *CatchUpOptions
 }
 
@@ -321,20 +322,24 @@ type SpeechCounters struct {
 }
 
 // CatchUpStats are the session's catch-up policy decision counters
-// (issue #25, ADR-0122): what the policy batched, merged and fenced — the
-// "did it speak, and why not" reading for the catch-up decisions, in the
-// same surface as the speech counters.
+// (issue #25, ADR-0122; the backlog cap is the ADR-0175 amendment): what the
+// policy batched, spoke and dropped — the "did it speak, and why not"
+// reading for the catch-up decisions, in the same surface as the speech
+// counters.
 type CatchUpStats struct {
 	// Batched: lines a new commit took into the batch (the rescue) or the
 	// line itself joined the batch on a busy commit.
 	Batched int64 `json:"batched"`
-	// Dropped: lines the batch fenced as stale (the window's fence, the
-	// max age, the pause and stop) — the no-backlog policy's teeth
-	// (issue #25 item 1).
+	// Dropped: lines the batch dropped (the pause and the stop, the
+	// session's own decisions).
 	Dropped int64 `json:"dropped"`
-	// MergedRuns: merged utterances the batch spoke (one TTS request each,
-	// the merge budget the policy is for, ADR-0122 decision 3).
+	// MergedRuns: catch-up utterances the batch spoke (one per line since the
+	// ADR-0175 amendment: each page's own cached clip, back-to-back).
 	MergedRuns int64 `json:"merged_runs"`
+	// BacklogCapped: the oldest pages the backlog cap dropped (reason
+	// catch_up_backlog_cap) — the safety bound that keeps the narrator from
+	// lagging unboundedly behind a sustained mash (ADR-0175 amendment).
+	BacklogCapped int64 `json:"backlog_capped"`
 }
 
 // CatchUpInfo is the session's catch-up narration surface in the API
@@ -510,6 +515,13 @@ type speechWiring struct {
 	// routing both spoke the line twice (merged into one catch-up run) and
 	// pushed the next line behind it. w.mu.
 	recentRouted map[string]routedMark
+	// lastRoutedKey is the identity key (pageKey, "rt:"+text) of the most
+	// recent routing, "" before any routing. The cross-region duplicate
+	// guard (ADR-0186) only suppresses a same-page commit from another region
+	// while no different line routed in between — the box is still the same
+	// one; once a different line spoke, the other region's same page is a
+	// repeat line, not a double-read. w.mu.
+	lastRoutedKey string
 	// recentSpoken is a short ring of the matched lines routed to speech
 	// (text + when), the reference the read-through echo check compares a
 	// garbled re-read against. Guarded by mu.
@@ -589,7 +601,7 @@ type speechWiring struct {
 	catchUp speech.CatchUpOptions
 	// catchUpPending is the batch: the committed lines waiting to be merged,
 	// in commit order. A line lives here between its commit and its flush;
-	// the window-drop fences its old prefix at each newer line. The batcher
+	// the backlog cap drops its oldest prefix at each newer line. The batcher
 	// core's own line type, so the merge decision reads the same data the
 	// runtime's bookkeeping writes.
 	catchUpPending []speech.CatchUpLine
@@ -608,6 +620,15 @@ type speechWiring struct {
 	// and the settle bookkeeping is per run). A run leaves the table when
 	// it settles (its terminal event) or when a rescue takes it over.
 	catchUpRuns map[int64]*utteranceInfo
+	// runGenReserve is the next bookkeeping generation the catch-up runs may
+	// take (the ADR-0175 amendment's per-page runs are many, and booking the
+	// batch's newest commit generation plus the run's index collided with a
+	// commit that landed mid-flush: run and commit shared one generation, and
+	// the run's line terminal was lost on the collision). A flush books the
+	// runs from this pool and advances it, and every batched commit bumps it
+	// past its own generation, so a run generation never is a commit
+	// generation and no two flushes book the same run generation.
+	runGenReserve int64
 	// lineClaim is the owner of a pending or covered line's terminal:
 	// the run generation that speaks the line (the batch's flush claimed it
 	// when it built the run), 0 while the line waits in the batch with no
@@ -621,6 +642,10 @@ type speechWiring struct {
 	// The policy's decision counters (docs/spec/13 "did it speak, and why
 	// not"): w.mu.
 	catchUpBatched, catchUpMerged, catchUpDropped int64
+	// catchUpBacklogDropped is the backlog cap's counter (ADR-0175
+	// amendment): the oldest pending pages dropped when the batch's
+	// estimated audio ran past the cap (reason catch_up_backlog_cap).
+	catchUpBacklogDropped int64
 
 	// unmatchedReadThrough is the session's unmatched read-through policy
 	// (ADR-0136): when the box commits as a line the corpus cannot name (the
@@ -671,8 +696,8 @@ type utteranceInfo struct {
 	// reads it to wait for the answer before resolving the voice.
 	speakerAskKey string
 	// committedAt is the wall clock the line reached the speech side
-	// (issue #25, ADR-0122): the catch-up window and the max age measure
-	// from it.
+	// (issue #25, ADR-0122): the flush timer's window and the backlog cap's
+	// ordering measure from it.
 	committedAt time.Time
 	// rescued marks a line the catch-up batch took over from its standalone
 	// utterance (ADR-0122 decision 2): the worker that synthesises it skips
@@ -1232,6 +1257,13 @@ func (w *speechWiring) fenceAndCancel(generation int64) {
 	var staleSynth []*synthSlot
 	for g := range w.byGeneration {
 		if g < generation && !w.settled[g] {
+			if _, isRun := w.catchUpRuns[g]; isRun {
+				// A catch-up run's bookkeeping generation: its fate is the
+				// batch's (the rescue takes it over, the approval keeps it
+				// speakable), never the fence's cancel — cancelling it here
+				// would drop the pages the amendment must speak.
+				continue
+			}
 			if skipPlaying && g == w.playingGen {
 				continue
 			}
@@ -1524,6 +1556,13 @@ type commitPayload struct {
 	// voice the profile's roster carries for that apparent kind.
 	SpeakerKind           string  `json:"speaker_kind"`
 	SpeakerKindConfidence float64 `json:"speaker_kind_confidence"`
+	// Page is the 1-based display page the matcher scored for this commit
+	// (ADR-0184): the box the reading matched. When set it wins over
+	// choosePage's re-derivation from the OCR read — the matcher's comparison
+	// is the commitment's own evidence, and one misread word is enough to
+	// defeat a containment re-derivation. Zero keeps the historical page
+	// choice.
+	Page int `json:"page"`
 }
 
 func (w *speechWiring) onCommit(e events.Envelope) {
@@ -1569,7 +1608,17 @@ func (w *speechWiring) onCommit(e events.Envelope) {
 	// whole-message behaviour.
 	pageKey := d.MessageID // the utterance's cache identity: the message, or "<message>#p<ordinal>"
 	if pages := w.pagesFor(d.MessageID); len(pages) > 0 {
-		if ordinal, pageText, found := choosePage(w, pages, d); found {
+		var ordinal int
+		var pageText string
+		var found bool
+		if d.Page >= 1 && d.Page <= len(pages) {
+			// The matcher's page wins over choosePage's re-derivation (ADR-0184):
+			// the page the reading actually matched is the one to speak.
+			ordinal, pageText, found = d.Page, pages[d.Page-1], true
+		} else {
+			ordinal, pageText, found = choosePage(w, pages, d)
+		}
+		if found {
 			text = pageText
 			// A single-page message keeps the bare message id (the pre-change
 			// identity); a multi-box message's box is page-scoped (ADR-0155).
@@ -1948,18 +1997,25 @@ type routedMark struct {
 	at     time.Time
 }
 
-// crossRegionDupWindow bounds the cross-region duplicate guard: the same
-// line committed from a DIFFERENT region within this window is the same box
-// seen through two overlapping profile regions, not a repeat line (a
-// repeated line re-shows after a dismissal or an advance, seconds later and
-// from the region the box is in).
-const crossRegionDupWindow = 3 * time.Second
+// crossRegionDupWindow bounds the cross-region duplicate guard (ADR-0186):
+// the same page committed from a DIFFERENT region within this window, with
+// no different line routed in between, is the same box instance seen through
+// two overlapping profile regions — the second region reads the first box
+// slower (its own settle/commit latency), seconds after the first region's
+// commit — not a repeat line (a repeated line re-shows after a dismissal or
+// an advance, and a different line routes in between, resetting the guard).
+const crossRegionDupWindow = 20 * time.Second
 
-// crossRegionDuplicate reports whether u (identity key) duplicates a line
-// routed from another region inside crossRegionDupWindow, and records u's
-// routing otherwise. A duplicate is not routed — it does not fence, batch or
-// speak — and it gets its one terminal (speech.ended skipped,
-// duplicate_region) so the "did it speak, and why not" record is complete.
+// crossRegionDuplicate reports whether u (identity key) duplicates a page
+// routed from another region: the same key is the freshest routing (no
+// different line in between), inside crossRegionDupWindow, and u comes from
+// another region — and records u's routing otherwise. It also reports the
+// re-commit of a page that is STILL PLAYING, from any region (the ADR-0175
+// amendment's live finding: a slow typewriter partial→settled re-read of a
+// page the player has not left is not a new pass). A duplicate is not
+// routed — it does not fence, batch or speak — and it gets its one terminal
+// (speech.ended skipped, duplicate_region) so the "did it speak, and why
+// not" record is complete.
 func (w *speechWiring) crossRegionDuplicate(key string, u *utteranceInfo) bool {
 	if key == "" {
 		return false
@@ -1967,12 +2023,17 @@ func (w *speechWiring) crossRegionDuplicate(key string, u *utteranceInfo) bool {
 	now := time.Now()
 	w.mu.Lock()
 	m, ok := w.recentRouted[key]
-	dup := ok && m.region != u.regionID && now.Sub(m.at) < crossRegionDupWindow
+	dup := ok && m.region != u.regionID && w.lastRoutedKey == key && now.Sub(m.at) < crossRegionDupWindow
+	playingDup := !dup && w.playingPageIs(key)
+	if playingDup {
+		dup = true
+	}
 	if !dup {
 		if w.recentRouted == nil {
 			w.recentRouted = map[string]routedMark{}
 		}
 		w.recentRouted[key] = routedMark{region: u.regionID, at: now}
+		w.lastRoutedKey = key
 		// Bounded: drop marks older than the window once the table grows.
 		if len(w.recentRouted) > 256 {
 			for k, v := range w.recentRouted {
@@ -1984,9 +2045,10 @@ func (w *speechWiring) crossRegionDuplicate(key string, u *utteranceInfo) bool {
 	}
 	w.mu.Unlock()
 	if dup {
-		w.log("speech: duplicate commit of a line already routed from another region — not spoken twice",
+		w.log("speech: duplicate commit of a line already routed — not spoken twice",
 			"session_id", w.id, "message_id", u.messageID, "region_id", u.regionID,
-			"first_region_id", m.region, "since_ms", now.Sub(m.at).Milliseconds())
+			"first_region_id", m.region, "since_ms", now.Sub(m.at).Milliseconds(),
+			"still_playing", playingDup)
 		// The duplicate's one terminal, without moving the status bar's
 		// current utterance (the first copy may be playing right now).
 		w.mu.Lock()
@@ -2010,6 +2072,25 @@ func (w *speechWiring) crossRegionDuplicate(key string, u *utteranceInfo) bool {
 		}
 	}
 	return dup
+}
+
+// playingPageIs (the lock is held) reports whether the active playback
+// speaks the page key: the playing generation's utterance — standalone or a
+// catch-up run — carries the same message id. A re-commit of a page whose
+// first copy is still audible is a duplicate of that copy, not a new page.
+func (w *speechWiring) playingPageIs(key string) bool {
+	if w.playingGen == 0 {
+		return false
+	}
+	if ru := w.catchUpRuns[w.playingGen]; ru != nil {
+		return ru.messageID == key
+	}
+	occ, ok := w.byGeneration[w.playingGen]
+	if !ok {
+		return false
+	}
+	u := w.utterances[occ]
+	return u != nil && u.messageID == key
 }
 
 // maybeUnmatchedReadThrough is the unmatched read-through (ADR-0136): the box
@@ -2303,9 +2384,10 @@ func (w *speechWiring) routeUtterance(u *utteranceInfo) {
 	if batched {
 		// The batched line's commit is still a request (the counter and the
 		// event say the line was asked for), but the line's one terminal is
-		// the batch's outcome, not this commit's: the merged run that speaks
-		// it ends it (the run's result), and the window's fence, the pause
-		// or the max-age drop skips it (their reasons). The generation is
+		// the batch's outcome, not this commit's: the run that speaks
+		// it ends it (the run's result), and the backlog cap's drop, the
+		// pause
+		// or a session end skips it (their reasons). The generation is
 		// settled with the batch's claim, so the fence never cancels — and
 		// re-emits a terminal for — it again.
 		w.mu.Lock()
@@ -2463,57 +2545,8 @@ func truncateReadThrough(s string, n int) string {
 // (ADR-0122 decision 2), taken under w.mu: it reports whether u goes into
 // the batch (true) instead of the immediate path (false), and does the
 // bookkeeping of the decision — the rescue of the older generations the
-// batch takes over, the window-drop of the pending batch's old prefix, the
-// line's append and the flush timer's arm.
-//
-// false — the immediate path: the policy is latest_only, or speech is not
-// busy (nothing playing, no batch pending, no immediate utterance in its
-// TTS round trip: the fast path keeps the first line's commit→voice
-// latency). No rescue, no batch, no timer.
-//
-// true — the line joins the batch. The older unsettled generations are
-// rescued first, in the order the player left them: the one that is
-// PLAYING is spared (its lines are being heard; that is the behaviour the
-// issue asked for), and every other one — in its TTS round trip or queued
-// for the scheduler — is taken over: settled here (the batch owns the
-// lines' fate from here, so the fence's cancel list is built around the
-// rescue, not under it), its in-flight synthesis cancelled at the source
-// (the worker, flagged rescued, emits no terminal of its own) and the line
-// appended to the pending batch under its own committed clock. A pending
-// line the new line is more than the batch window after is fenced on the
-// spot (terminal skipped, catch_up_stale) — the issue's "Fencing (ADR 0092)
-// still applies to anything older than the batch window", made local.
-// catchUpBatchCommit is the catch-up policy's commit-side decision
-// (ADR-0122 decision 2), taken under w.mu: it reports whether u goes into
-// the batch (true) instead of the immediate path (false), and does the
-// bookkeeping of the decision — the rescue of the older generations the
-// batch takes over, the window-drop of the pending batch's old prefix, the
-// line's append and the flush timer's arm.
-//
-// false — the immediate path: the policy is latest_only, or speech is not
-// busy (nothing playing, no batch pending, no immediate utterance in its
-// TTS round trip: the fast path keeps the first line's commit→voice
-// latency). No rescue, no batch, no timer.
-//
-// true — the line joins the batch. The older unsettled generations are
-// rescued first, in the order the player left them: the one that is
-// PLAYING is spared (its lines are being heard; that is the behaviour the
-// issue asked for), and every other one — in its TTS round trip or queued
-// for the scheduler — is taken over: settled here (the batch owns the
-// lines' fate from here, so the fence's cancel list is built around the
-// rescue, not under it), its in-flight synthesis cancelled at the source
-// (the worker, flagged rescued, emits no terminal of its own) and the line
-// appended to the pending batch under its own committed clock. A pending
-// line the new line is more than the batch window after is fenced on the
-// spot (terminal skipped, catch_up_stale) — the issue's "Fencing (ADR
-// 0092) still applies to anything older than the batch window", made
-// local.
-// catchUpBatchCommit is the catch-up policy's commit-side decision
-// (ADR-0122 decision 2), taken under w.mu: it reports whether u goes into
-// the batch (true) instead of the immediate path (false), and does the
-// bookkeeping of the decision — the rescue of the older generations the
-// batch takes over, the window-drop of the pending batch's old prefix, the
-// line's append and the flush timer's arm.
+// batch takes over, the backlog-cap drop of the pending batch's oldest
+// prefix beyond the bound, the line's append and the flush timer's arm.
 //
 // false — the immediate path: the policy is latest_only, or speech is not
 // busy (nothing playing, no batch pending, no immediate utterance in its
@@ -2529,14 +2562,16 @@ func truncateReadThrough(s string, n int) string {
 // list is built around the rescue, not under it), its in-flight synthesis
 // cancelled at the source (the worker, flagged rescued, emits no terminal
 // of its own) and the covered lines appended to the pending batch under
-// their own committed clocks. A pending line the new line is more than the
-// batch window after is fenced on the spot (terminal skipped, catch_up
-// stale) — the issue's "Fencing (ADR 0092) still applies to anything older
-// than the batch window", made local.
+// their own committed clocks. The backlog's cap (ADR-0175 amendment) fences
+// on the spot the OLDEST pages whose estimated audio, beyond the cap, would
+// leave the narrator lagging unboundedly (terminal skipped,
+// catch_up_backlog_cap, counted and logged): the old window's staleness
+// fence is gone — a page the player passed is spoken, not dropped.
 //
 // The terminal accounting (ADR-0092, one terminal per generation): the
 // rescue emits none — a rescued line's terminal is the batch's outcome
-// (the merged run's settled line event, the window-drop, or the pause and
+// (the merged run's settled line event, the backlog cap's drop, or the
+// pause and
 // stop), so the line's generation reaches exactly one terminal. What the
 // rescue does emit is only the merged run's own run-level terminal when it
 // takes a merged run over (its requested already went out at the flush).
@@ -2555,6 +2590,15 @@ func (w *speechWiring) catchUpBatchCommit(u *utteranceInfo) bool {
 		return false
 	}
 	busy := w.playingGen != 0 || len(w.catchUpPending) > 0 || len(w.genCancel) > 0
+	if !busy && w.catchUpRuns[u.generation] != nil {
+		// The commit's generation is occupied by an in-flight run's
+		// bookkeeping generation (the run pool and the commit counter can
+		// meet on one number): the immediate path would register the line
+		// over the run's correlation entry, and the next commit's fence would
+		// cancel it — a page the player passed, lost. The batch is the only
+		// path that cannot lose the page, so the collision routes it there.
+		busy = true
+	}
 	if !busy {
 		w.mu.Unlock()
 		return false
@@ -2643,15 +2687,21 @@ func (w *speechWiring) catchUpBatchCommit(u *utteranceInfo) bool {
 	for g := range w.catchUpRuns {
 		rescue(g)
 	}
-	// The window: the new line fences the pending prefix it is more than the
-	// window after (oldest first — the prefix property, the batcher's own
-	// rule), and the fenced lines' terminal names the fence.
-	if n := speech.BatchWindowDrop(w.catchUpPending, u.committedAt, w.catchUp.BatchWindow); n > 0 {
+	// The backlog cap (ADR-0175 amendment, the owner's "say all that"): the
+	// player no longer loses a page to staleness — every passed page is
+	// spoken once, in order — but the narrator must not lag unboundedly:
+	// the OLDEST pages beyond the cap's audio budget are fenced on the spot
+	// (terminal skipped, catch_up_backlog_cap, counted and logged), and the
+	// rest keep waiting to be spoken.
+	if n := speech.BacklogCapDrop(w.catchUpPending, w.catchUp.BacklogCap); n > 0 {
+		w.log("speech: catch-up backlog past the cap — the oldest pending pages are dropped so the narrator does not lag unboundedly",
+			"session_id", w.id, "dropped", n, "remaining", len(w.catchUpPending)-n,
+			"cap", w.catchUp.BacklogCap.String())
 		for i := 0; i < n; i++ {
-			w.catchUpDropped++
+			w.catchUpBacklogDropped++
 			line := w.lineTerminalInfo(w.catchUpPending[i])
 			delete(w.lineClaim, w.catchUpPending[i].Occurrence)
-			terminals = append(terminals, terminal{line, "skipped", "catch_up_stale"})
+			terminals = append(terminals, terminal{line, "skipped", "catch_up_backlog_cap"})
 		}
 		w.catchUpPending = w.catchUpPending[n:]
 	}
@@ -2662,6 +2712,9 @@ func (w *speechWiring) catchUpBatchCommit(u *utteranceInfo) bool {
 	w.lineClaim[u.occurrence] = 0
 	w.settled[u.generation] = true // the batch owns the line from here
 	delete(w.byGeneration, u.generation)
+	if w.runGenReserve <= u.generation {
+		w.runGenReserve = u.generation + 1
+	}
 	if w.playingGen == 0 {
 		// Nothing is audible (the batch is busy only with pending lines or
 		// an in-flight synthesis it just rescued): there is no playback to
@@ -3221,9 +3274,10 @@ func (w *speechWiring) flushCatchUp(trigger string) {
 	go w.runCatchUpBatch(batch, trigger)
 }
 
-// runCatchUpBatch is the flush: the batcher's own decisions (split, max-age
-// drop) on the shared core, then one TTS request per speaker run, in
-// commit order (ADR-0122 decision 3). The runs share the batch's newest
+// runCatchUpBatch is the flush (ADR-0175 amendment): the batch's lines
+// speak as their OWN utterances, in commit order, so each page's cached
+// clip plays back-to-back (the merged re-synthesis would be a cache miss
+// and slow). The runs share the batch's newest
 // committed generation as their bookkeeping base — run i books generation
 // base+i — and the fence approves every one of them (decision 4) BEFORE the
 // first submit, so a commit that lands mid-flush cannot fence a run that
@@ -3244,13 +3298,18 @@ func (w *speechWiring) runCatchUpBatch(batch []speech.CatchUpLine, trigger strin
 		return
 	}
 	now := time.Now().UTC()
-	var batchBase int64
+	// ADR-0175 amendment (the owner's "say all that", the evidence is the
+	// rapid-aaa live finding): a passed page is never dropped for staleness
+	// any more — no max-age drop, no window fence. Every line flushes as its
+	// OWN utterance, in commit order, so each page's own cached clip
+	// (presynth makes nearly every page a cache hit) plays back-to-back
+	// instead of a re-synthesis of a merged text (the merge is a cache miss
+	// and slow). The backlog stays bounded by the cap's drop at the commit
+	// side (reason catch_up_backlog_cap).
+	runs := make([]speech.CatchUpRun, 0, len(batch))
 	for _, l := range batch {
-		if l.Generation > batchBase {
-			batchBase = l.Generation
-		}
+		runs = append(runs, speech.CatchUpRun{Speaker: l.Speaker, Text: l.Text, Lines: []speech.CatchUpLine{l}})
 	}
-	runs := speech.SplitRuns(batch)
 
 	type mergedRun struct {
 		u   *utteranceInfo
@@ -3258,27 +3317,7 @@ func (w *speechWiring) runCatchUpBatch(batch []speech.CatchUpLine, trigger strin
 		gen int64
 	}
 	var merged []mergedRun
-	// The per-utterance max age (issue #25 item 1): a run whose audio would
-	// not be ready until after the newest line it covers committed plus the
-	// max age is dropped before it starts (the ready instant is the flush
-	// instant — the TTS latency lands on top of it, which is why the bound
-	// is a bound and not a target). This is the dismiss-without-successor
-	// backstop ADR-0092 deferred: the box is gone, no commit moved the
-	// fence, and only the age bound keeps the late audio off the sink.
-	for i, run := range runs {
-		if now.Sub(run.LatestCommittedAt()) > w.catchUp.MaxUtteranceAge {
-			// The drop's terminal goes out under the claim the batch holds
-			// (claim 0, still held: finishLineTerminal emits and releases it
-			// — deleting it first would leave the line without its terminal,
-			// the one-terminal rule the claim exists to enforce).
-			w.mu.Lock()
-			w.catchUpDropped += int64(len(run.Lines))
-			w.mu.Unlock()
-			for _, l := range run.Lines {
-				w.finishLineTerminal(l, "skipped", "catch_up_stale", 0)
-			}
-			continue
-		}
+	for _, run := range runs {
 		first := run.Lines[0]
 		var traceID string
 		if lu := w.lookupUtterance(first.Occurrence); lu != nil {
@@ -3288,22 +3327,32 @@ func (w *speechWiring) runCatchUpBatch(batch []speech.CatchUpLine, trigger strin
 			occurrence:  games.NewID(),
 			messageID:   speech.MergedOriginalID(run.MessageIDs()),
 			regionID:    first.RegionID,
-			generation:  batchBase + int64(i),
 			text:        run.Text,
 			traceID:     traceID,
 			character:   run.Speaker,
 			committedAt: now,
 			mergedLines: append([]speech.CatchUpLine(nil), run.Lines...),
 		}
-		merged = append(merged, mergedRun{u: u, run: run, gen: u.generation})
+		merged = append(merged, mergedRun{u: u, run: run})
 	}
 	if len(merged) == 0 {
 		return
 	}
 	// Register the merged utterances (the correlation tables the speech
 	// events join on) and the bookkeeping generations, and approve the
-	// fence — all before the first submit.
+	// fence — all before the first submit. The generations come from the run
+	// pool (runGenReserve), not the batch's newest commit generation: the
+	// pool is bumped past every commit by catchUpBatchCommit, so a run
+	// generation can never be a commit generation — a commit that lands
+	// mid-flush books a different generation instead of colliding with a run
+	// the flush is registering.
 	w.mu.Lock()
+	base := w.runGenReserve
+	for i := range merged {
+		merged[i].gen = base + int64(i)
+		merged[i].u.generation = merged[i].gen
+	}
+	w.runGenReserve = base + int64(len(merged))
 	for _, m := range merged {
 		if _, ok := w.utterances[m.u.occurrence]; !ok {
 			w.utterances[m.u.occurrence] = m.u
@@ -3321,8 +3370,17 @@ func (w *speechWiring) runCatchUpBatch(batch []speech.CatchUpLine, trigger strin
 		w.catchUpMerged++
 	}
 	w.mu.Unlock()
+	// The fence's approved set evicts from the front at its cap: a flush's
+	// runs are all approved before the first submit, so the cap is the
+	// larger of the default bound and this flush's run count — a flush
+	// beyond the default cap (the backlog's) must not fence its own
+	// oldest queued run.
+	approveCap := speech.DefaultCatchUpApprovedCap
+	if len(merged) > approveCap {
+		approveCap = len(merged)
+	}
 	for _, m := range merged {
-		w.fence.approve(m.gen, speech.DefaultCatchUpApprovedCap)
+		w.fence.approve(m.gen, approveCap)
 	}
 	for _, m := range merged {
 		w.emitSpeech(events.SpeechRequested, m.u, map[string]any{
@@ -3337,9 +3395,21 @@ func (w *speechWiring) runCatchUpBatch(batch []speech.CatchUpLine, trigger strin
 			"merged":                 len(m.run.Lines) > 1,
 			"trigger":                trigger,
 		})
-		w.wg.Add(1)
-		go w.speakMerged(m.u, m.run)
 	}
+	// The runs speak in commit order, one at a time: the back-to-back clip
+	// the owner asked for (ADR-0175 amendment). Each worker's submit is
+	// gated behind the previous run's submit, so a TTS round trip that
+	// finishes early cannot reorder the playback — the clips play in the
+	// order the player passed the pages, and each clip starts as soon as
+	// the one before it ends.
+	w.wg.Add(1)
+	go func() {
+		defer w.wg.Done()
+		for _, m := range merged {
+			w.wg.Add(1)
+			w.speakMerged(m.u, m.run)
+		}
+	}()
 }
 
 // speakMerged is the TTS worker of one merged run: the same stages as speak
@@ -4374,9 +4444,10 @@ func (w *speechWiring) audioInfo() *AudioInfo {
 		CatchUp: CatchUpInfo{
 			Policy: w.catchUp.Policy,
 			CatchUpStats: CatchUpStats{
-				Batched:    w.catchUpBatched,
-				Dropped:    w.catchUpDropped,
-				MergedRuns: w.catchUpMerged,
+				Batched:       w.catchUpBatched,
+				Dropped:       w.catchUpDropped,
+				MergedRuns:    w.catchUpMerged,
+				BacklogCapped: w.catchUpBacklogDropped,
 			},
 		},
 		Speech: SpeechCounters{

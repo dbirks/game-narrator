@@ -111,10 +111,19 @@ func New(cfg Config) (*Runner, error) {
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
+	gates := newGates(c.Regions)
+	// ADR-0172: the dynamic panel region needs its retrieval gate like any
+	// region — maybeRank closes the gate before dispatching, and a nil gate
+	// closes to false forever (the finder would read the box and never rank
+	// it). Created here, not in roiLoop, because the reducer reads gates
+	// concurrently from its own goroutine.
+	if c.PanelFind.Enabled {
+		gates[dynamicPanelRegionID] = &rankGate{}
+	}
 	return &Runner{
 		cfg:               c,
 		cnt:               newCounters(c.Trace, c.TraceMax),
-		gates:             newGates(c.Regions),
+		gates:             gates,
 		kindHints:         newKindHints(c),
 		metrics:           c.Metrics,
 		mLabels:           telemetry.Labels{Game: c.MetricsGame, ProfileRevision: c.ProfileRevision},

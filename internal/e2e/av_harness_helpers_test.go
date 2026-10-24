@@ -79,6 +79,17 @@ type avLineRecord struct {
 	// the report stays counts/timings-only (AGENTS.md rule 5).
 	ASRTranscript string `json:"asr_transcript,omitempty"`
 	CommittedText string `json:"committed_text,omitempty"`
+	// ADR-0170 (the conversation invariants): the text the wiring actually
+	// asked the voice to speak (the speech.requested payload's text — the
+	// page's canonical form with the player placeholder resolved): the
+	// no-read-ahead rule's deterministic side (the ASR transcript is its
+	// acoustic side). Bundle-only, like ASRTranscript/CommittedText.
+	RequestedText string `json:"requested_text,omitempty"`
+	// ADR-0170: the utterance's synthesized duration in ms — the file
+	// sink's per-utterance WAV (the audio the wiring played, in full):
+	// the queue-don't-cut rule's duration bound compares the acoustic
+	// span against 85% of this. Zero when the run left no file-sink WAV.
+	SynthDurMS int64 `json:"synth_dur_ms,omitempty"`
 	// ADR-0162: the pitch measurement — the median F0 (Hz) over the clip's
 	// voiced frames (YIN, pure Go, internal/speech) and the voice class it
 	// names (low/mid/high by the ADR-0162 thresholds).
@@ -140,6 +151,17 @@ type avTimelineReport struct {
 	IdleSamples              int   `json:"idle_samples"`
 	QueuedCommitToAudioP50MS int64 `json:"queued_commit_to_audio_p50_ms"`
 	QueuedCommitToAudioP95MS int64 `json:"queued_commit_to_audio_p95_ms"`
+	// ADR-0170 (the conversation invariants): the drive mode (GN_AV_DRIVE:
+	// "rapid" the default, "slow" the slow-reader) and the invariant
+	// findings over this timeline — ConvGateIssues fail the run
+	// (DUPLICATE / READ-AHEAD / OUT-OF-ORDER, and CUT-OFF on the slow
+	// drive); ConvReportIssues are report-only (the PAGE_BREAK_GAP rows
+	// and the READ-AHEAD-NOISE rows the ASR WER gate judges). Both are
+	// log-safe (ids, ordinals, timings — never page text, AGENTS.md
+	// rule 5).
+	ConvDrive        string      `json:"conv_drive,omitempty"`
+	ConvGateIssues   []convIssue `json:"conv_gate_issues,omitempty"`
+	ConvReportIssues []convIssue `json:"conv_report_issues,omitempty"`
 }
 
 // avDetectRMSOnsetMS scans a 16-bit PCM WAV in 20 ms windows from
@@ -256,6 +278,10 @@ type avSpeechData struct {
 	StartedAt  string   `json:"started_at"`
 	EndedAt    string   `json:"ended_at"`
 	Character  string   `json:"character_id"`
+	// Text is the speech.requested payload's text (the wiring's asked text;
+	// ADR-0170 captures it per line as the requested side of the read-ahead
+	// rule). Empty on the other speech events.
+	Text string `json:"text"`
 }
 
 // avExpectedVoices are the voices the session resolves lines to (the
@@ -357,6 +383,7 @@ func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvel
 	type comRec struct {
 		at                      time.Time
 		trace, occ, msg, region string
+		text                    string // the box's OCR reading (the page the player saw; the conversation invariants' page ground truth, ADR-0170)
 		lifetime                uint64
 		gen, seq                int64
 		speaker                 string
@@ -404,6 +431,7 @@ func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvel
 				Eligible     *bool  `json:"speech_eligible"`
 				SpeakerID    string `json:"speaker_id"`
 				SpeakerKnown bool   `json:"speaker_known"`
+				Text         string `json:"text"`
 			}
 			if len(e.Data) == 0 || json.Unmarshal(e.Data, &d) != nil || d.Occ == "" || d.Msg == "" {
 				continue
@@ -415,7 +443,7 @@ func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvel
 			if d.Eligible != nil && !*d.Eligible {
 				continue
 			}
-			coms = append(coms, comRec{at: at, trace: e.TraceID, occ: d.Occ, msg: d.Msg, region: d.Region, lifetime: d.Lifetime, gen: d.Generation, seq: d.ObsSeq, speaker: d.SpeakerID, speakerKnown: d.SpeakerKnown})
+			coms = append(coms, comRec{at: at, trace: e.TraceID, occ: d.Occ, msg: d.Msg, region: d.Region, text: d.Text, lifetime: d.Lifetime, gen: d.Generation, seq: d.ObsSeq, speaker: d.SpeakerID, speakerKnown: d.SpeakerKnown})
 		case "decision.resolved":
 			var d struct {
 				Region     string `json:"region_id"`
@@ -467,6 +495,7 @@ func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvel
 			ExpectedVoiceID: expected,
 			BoxPosition:     avBoxPosition(centreY, geoKnown),
 			Character:       charID,
+			CommittedText:   c.text,
 		}
 		// The box's readings at/before the commit: in a live session each page
 		// turn mints its own trace_id on StateAdvancing (internal/session/apply.go),
@@ -620,6 +649,13 @@ func avBuildTimeline(runID, sessionID string, recStart time.Time, evs []devEnvel
 		for _, i := range targets {
 			line := &rep.Lines[i]
 			switch e.Name {
+			case "speech.requested":
+				// ADR-0170: the wiring's asked text for this line (the page's
+				// canonical form, the placeholder resolved) — the no-read-ahead
+				// rule's deterministic side. Bundle-only (rule 5).
+				if line.RequestedText == "" {
+					line.RequestedText = d.Text
+				}
 			case "speech.ready":
 				if line.TTSReadyMS == 0 {
 					if at, ok := avParseAt(e.OccurredAt); ok {

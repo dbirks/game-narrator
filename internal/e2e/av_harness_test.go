@@ -39,6 +39,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,6 +93,22 @@ func TestLiveDolphinAVHarness(t *testing.T) {
 	// ── the isolated null sink (before the runtime, for the speech target) ─
 	sinkName := avCreateNullSink(t, runID)
 
+	// ADR-0170 (the conversation invariants): the drive mode — "rapid" the
+	// default (make test-av, the fast-advancing player), "slow" the
+	// slow-reader (A only after the page's speech ended + 500 ms; the
+	// queue-don't-cut rule measures this drive's page turns). The
+	// synthesized-duration tap keeps the pipewire sink (the observable
+	// audio) and records each utterance's full WAV duration on the way.
+	driveMode := strings.TrimSpace(os.Getenv("GN_AV_DRIVE"))
+	if driveMode == "" {
+		driveMode = "rapid"
+	}
+	if driveMode != "rapid" && driveMode != "slow" {
+		t.Fatalf("GN_AV_DRIVE must be rapid or slow (got %q)", os.Getenv("GN_AV_DRIVE"))
+	}
+	slowDrive := driveMode == "slow"
+	synthDurs := &avSynthDurTracker{durs: map[string]int64{}}
+
 	// ── session runtime: pipewire sink, VLM OCR fallback, Clef, Dolphin ────
 	var bridge dolphin.Bridge
 	devDolphin := func() (capture.Source, error) {
@@ -112,11 +129,10 @@ func TestLiveDolphinAVHarness(t *testing.T) {
 		Jobs:       runner,
 		AssetsRoot: filepath.Join(dataDir, "dev-trace"),
 		Speech: &runtime.SpeechOptions{
-			Voices:         cuV.service,
-			Assets:         as,
-			Sink:           runtime.SinkPipeWire,
-			PipeWireTarget: sinkName,
-			FileSinkDir:    filepath.Join(dataDir, "audio"),
+			Voices:      cuV.service,
+			Assets:      as,
+			SinkFactory: synthDurs.factory(sinkName),
+			FileSinkDir: filepath.Join(dataDir, "audio"),
 		},
 		OCRFallback: cuOCRFallback(t, pc.roles),
 		Decision:    avDecisionOpts(t, pc.roles),
@@ -167,6 +183,24 @@ func TestLiveDolphinAVHarness(t *testing.T) {
 	// ── warm the TTS cache (the ADR-0143 design) ──────────────────────────
 	prewarm, prewarmIDs := avPreSynthesize(t, ctx, st, cuV.service, s.profileID, pc.fdDir, cuV.char, cuV.narr)
 	avRuntimePresynth(t, ctx, sessions, s.profileID, prewarmIDs)
+	// ADR-0170 evidence: the session profile's page rows the speech wiring
+	// reads at commit time — per page, the ordinal, the word count and a
+	// short hash (never the game text itself, AGENTS.md rule 5). Where the
+	// game drew two boxes for one message and the rows disagree with the
+	// boxes, the page the wiring spoke on box two shows up against these.
+	if pcContent, cerr := st.GetProfileContent(ctx, s.profileID); cerr == nil {
+		for _, msg := range pcContent.Messages {
+			var rows []string
+			for _, p := range pcContent.Pages {
+				if p.MessageID == msg.ID {
+					rows = append(rows, fmt.Sprintf("p%d w%d sha%x", p.Ordinal, len(strings.Fields(p.PageText)), pconvPageHash(p.PageText)))
+				}
+			}
+			if len(rows) > 1 {
+				t.Logf("av e2e: profile pages ..%s: canonical w%d %s", shortID(msg.ID), len(strings.Fields(msg.SpeechText)), rows)
+			}
+		}
+	}
 
 	// ── the live session: bridge from the route's savestate (the ADR-0162
 	//    play loop) or the first-dialogue fixture state ─────────────────────
@@ -205,6 +239,8 @@ func TestLiveDolphinAVHarness(t *testing.T) {
 	var marks []avMark
 	if route != nil {
 		evs, presses, marks = avRunRoute(t, ctx, srv, token, sessionID, bridge, route)
+	} else if slowDrive {
+		evs, presses = avDriveSlow(t, srv, token, sessionID, bridge)
 	} else {
 		evs, presses = cuDriveConversation(t, srv, token, sessionID, bridge)
 	}
@@ -236,10 +272,37 @@ func TestLiveDolphinAVHarness(t *testing.T) {
 	rep := avBuildTimeline(runID, sessionID, recStart, evs, sessionWAV, expectedVoices, regionGeos, marks)
 	rep.SessionMP4 = filepath.Join(mediaDir, "session.mp4")
 	rep.SessionWAV = filepath.Join(mediaDir, "session.wav")
+
+	// ADR-0170 (the conversation invariants): the synthesized durations the
+	// tap recorded (each line's own occurrence; a merged run's occurrence —
+	// the batched lines' RunOccurrenceID) are written onto the lines and the
+	// invariant findings run AFTER the ASR scoring (below): the duplicate
+	// and read-ahead rules read the transcript side, and the page ground
+	// truth is the corpus's expected text the scoring writes onto each line
+	// — the box the player SAW, not the OCR's noisy reading (an OCR drop
+	// must not read as read-ahead). The conversation run only: the route
+	// mode's scripted play loop does not drive the conversation page by
+	// page, so it runs no invariants.
 	clipsDir := filepath.Join(bundle, "clips")
 	avSliceClips(t, filepath.Join(mediaDir, "session.mp4"), filepath.Join(mediaDir, "session.wav"), clipsDir, &rep.Lines)
 	expected := avCorpusTexts(t, ctx, st, s.profileID)
 	avASRScore(t, ctx, pc.asrCfg, &rep.Lines, expected)
+
+	if route == nil {
+		durs := synthDurs.snapshot()
+		for i := range rep.Lines {
+			l := &rep.Lines[i]
+			id := l.OccurrenceID
+			if l.Batched && l.RunOccurrenceID != "" {
+				id = l.RunOccurrenceID
+			}
+			if d, ok := durs[id]; ok {
+				l.SynthDurMS = d
+			}
+		}
+		rep.ConvDrive = driveMode
+		rep.ConvGateIssues, rep.ConvReportIssues = convCheckConversation(rep.Lines, avConvPages(rep.Lines), slowDrive)
+	}
 
 	// The evidence lands before the assertions: a failed gate still leaves
 	// the timeline + the report + the media to diagnose against.
@@ -253,8 +316,9 @@ func TestLiveDolphinAVHarness(t *testing.T) {
 
 	avAssertReport(t, rep)
 
-	t.Logf("LIVE A/V HARNESS (Dolphin + real providers): PASS — %d committed lines (%d idle samples), %d A presses, settled→audio p50/p95 = %d/%d ms, appear→audio p50/p95 = %d/%d ms, %d cache hits, %d phantom utterances, %d stale starts, %d duplicate commits; bundle %s (%s)",
+	t.Logf("LIVE A/V HARNESS (Dolphin + real providers): PASS — %d committed lines (%d idle samples), %d A presses, settled→audio p50/p95 = %d/%d ms, appear→audio p50/p95 = %d/%d ms, %d cache hits, %d phantom utterances, %d stale starts, %d duplicate commits, conversation invariants: %d gate issues, %d report-only (%s drive); bundle %s (%s)",
 		len(rep.Lines), rep.IdleSamples, len(presses), rep.SettledToAudioP50MS, rep.SettledToAudioP95MS,
 		rep.AppearToAudioP50MS, rep.AppearToAudioP95MS, rep.CacheHits, rep.PhantomUtterances, rep.StaleStarts, rep.DuplicateCommits,
+		len(rep.ConvGateIssues), len(rep.ConvReportIssues), rep.ConvDrive,
 		bundle, time.Since(startAll).Round(time.Second))
 }

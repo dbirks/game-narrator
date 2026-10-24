@@ -163,3 +163,159 @@ func TestCuDecidePressSilentNoBoxOnScreenEndsTheDrive(t *testing.T) {
 		t.Fatalf("the drive did not end (%q) after %s of silence with no box on screen", why, cuConvGone)
 	}
 }
+
+// cuStubCommit appends one settled (matched) line to the driver's view —
+// the box's progress the mash gate waits on before the first cadence
+// press (the commit is the evidence the session recognises boxes).
+func cuStubCommit(drv *cuDriver, msg string) {
+	drv.matched = append(drv.matched, cuCommitInfo{Occurrence: "occ-" + msg, MessageID: msg, Generation: 1, CommittedAt: time.Now()})
+	drv.commits = append(drv.commits, cuCommitInfo{Occurrence: "occ-" + msg, MessageID: msg, Generation: 1})
+}
+
+// TestCuMashNoPressBeforeFirstCommit pins the mash gate: with no commit
+// yet the cadence does not start (the commit is the evidence the session
+// recognises boxes); the box just sits, no press.
+func TestCuMashNoPressBeforeFirstCommit(t *testing.T) {
+	t0 := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	drv := cuStubObs(t, t0, cuStubBoxText)
+	drv.boxRegion = "box"
+	drv.mash = true
+	// Well past the settle gate, still no commit: no press.
+	if press, why := drv.decidePress(nil, t0.Add(cuMashSettle+time.Second)); press {
+		t.Fatalf("mash pressed (%q) before the first line committed; the cadence starts on the first commit", why)
+	}
+}
+
+// TestCuMashGrowthHoldsTheSettleGate pins the growth read: while the box
+// text is still growing (a new reading keeps refreshing textChanged), no
+// mash press lands — the gate waits for the growth to STOP, not for the
+// instance's appearance.
+func TestCuMashGrowthHoldsTheSettleGate(t *testing.T) {
+	t0 := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	drv := cuStubObs(t, t0, cuStubBoxText)
+	drv.boxRegion = "box"
+	drv.mash = true
+	cuStubCommit(drv, "m-1")
+	// The typewriter's next reading lands 0.6 s in: the settle gate now
+	// runs from that instant, not from the box's appearance.
+	growth := `{"dialogue_occurrence_id":"occ-1","region_id":"box","generation":1,"text":"Greetings, brave sailor, the sea calls out to you!","region_present":true}`
+	drv.observe([]devEnvelope{{Name: "text.observed", Data: json.RawMessage(growth)}})
+	drv.textChanged = t0.Add(600 * time.Millisecond) // pin the stub obs's stamp (observe stamps the wall clock)
+	drv.lastObs = t0.Add(600 * time.Millisecond)
+	// t0+1.2 s is settled from the APPEARANCE but not from the last growth.
+	if press, why := drv.decidePress(nil, t0.Add(cuMashSettle)); press {
+		t.Fatalf("mash pressed (%q) while the growth's settle gate is still open", why)
+	}
+	// Past the growth's gate the first press lands.
+	if press, why := drv.decidePress(nil, t0.Add(600*time.Millisecond+cuMashSettle)); !press {
+		t.Fatalf("mash did not press (%q) once the text stopped growing for %s", why, cuMashSettle)
+	}
+}
+
+// TestCuMashPressesOnFastCadenceAfterSettle pins the cadence: a settled
+// (silent, growth unobservable) box gets the first mash press at the
+// fixed 1.2 s from the instance's appearance, then presses at most every
+// 350 ms on the same box instance — independent of any speech state (the
+// driver has no speech input at all).
+func TestCuMashPressesOnFastCadenceAfterSettle(t *testing.T) {
+	t0 := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	drv := cuStubObs(t, t0, cuStubBoxText)
+	drv.boxRegion = "box"
+	drv.mash = true
+	cuStubCommit(drv, "m-1")
+	// Before the settle gate: no press.
+	if press, why := drv.decidePress(nil, t0.Add(cuMashSettle-time.Second)); press {
+		t.Fatalf("mash pressed (%q) before the %s text-settle gate", why, cuMashSettle)
+	}
+	// The gate opens: press 1. The cadence arms from this instant.
+	want, why := drv.decidePress(nil, t0.Add(cuMashSettle))
+	if !want {
+		t.Fatalf("mash did not press (%q) at the settle gate on a settled box", why)
+	}
+	if !strings.Contains(why, "mash 1/"+itoa(int64(cuMashMaxPresses))) {
+		t.Fatalf("first mash press reason = %q, want the 1/bound mash shape", why)
+	}
+	// Mid-cadence: held (the next press is allowed at +cuMashGap).
+	if press, why := drv.decidePress(nil, t0.Add(cuMashSettle+200*time.Millisecond)); press {
+		t.Fatalf("mash pressed (%q) inside the %s cadence", why, cuMashGap)
+	}
+	// On the cadence: press 2, then press 3 on the next tick.
+	for i, at := range []time.Duration{cuMashSettle + cuMashGap, cuMashSettle + 2*cuMashGap} {
+		if press, why := drv.decidePress(nil, t0.Add(at)); !press {
+			t.Fatalf("mash did not press (%q) on the %s cadence tick %d", why, cuMashGap, i+2)
+		}
+	}
+	if drv.instPresses != 3 {
+		t.Fatalf("instPresses = %d, want 3 (one per cadence tick landed)", drv.instPresses)
+	}
+}
+
+// TestCuMashBoundedPerBox pins the bound: after cuMashMaxPresses cadence
+// presses on one box instance the cadence stops (the stall press covers
+// the never-committing box, separately — not now).
+func TestCuMashBoundedPerBox(t *testing.T) {
+	t0 := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	drv := cuStubObs(t, t0, cuStubBoxText)
+	drv.boxRegion = "box"
+	drv.mash = true
+	cuStubCommit(drv, "m-1")
+	at := t0.Add(cuMashSettle)
+	for i := 0; i < cuMashMaxPresses; i++ {
+		if press, why := drv.decidePress(nil, at); !press {
+			t.Fatalf("mash press %d did not land (%q)", i+1, why)
+		}
+		at = at.Add(cuMashGap)
+	}
+	press, why := drv.decidePress(nil, at.Add(cuMashGap))
+	if press {
+		t.Fatalf("mash pressed a %dth time on the same box instance (%q); the per-box bound is %d", cuMashMaxPresses+1, why, cuMashMaxPresses)
+	}
+	if !strings.Contains(why, "bound is spent") {
+		t.Fatalf("no-press reason = %q, want the spent-bound shape", why)
+	}
+	// A NEW box resets the instance: the next settled box gets the cadence
+	// again (the drive walks the whole conversation, box by box).
+	next := `{"dialogue_occurrence_id":"occ-9","region_id":"box","generation":9,"text":"The tide is turning, sailor; trust your course.","region_present":true}`
+	drv.observe([]devEnvelope{{Name: "text.observed", Data: json.RawMessage(next)}})
+	drv.textChanged = at.Add(cuMashGap)
+	drv.lastObs = at.Add(cuMashGap)
+	cuStubCommit(drv, "m-9")
+	if drv.instPresses != 0 {
+		t.Fatalf("instPresses = %d on the new box, want 0 (the instance resets on the new text)", drv.instPresses)
+	}
+	if press, why := drv.decidePress(nil, at.Add(cuMashGap+cuMashSettle)); !press || !strings.Contains(why, "mash 1/") {
+		t.Fatalf("mash on the new box = %v (%q), want the cadence running again from press 1", press, why)
+	}
+}
+
+// TestCuMashHoldsDuringTransition pins the transition hold: the box region
+// reads empty (the between-box gap) — no mash press lands on it (a press
+// into a closed box would skip the next box's line), and the settle gate
+// of the NEXT box restarts from that box's own appearance.
+func TestCuMashHoldsDuringTransition(t *testing.T) {
+	t0 := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	drv := cuStubObs(t, t0, cuStubBoxText)
+	drv.boxRegion = "box"
+	drv.mash = true
+	cuStubCommit(drv, "m-1")
+	drv.observe([]devEnvelope{{Name: "text.observed", Data: json.RawMessage(cuStubBoxAbsent)}})
+	at := t0.Add(cuMashSettle + cuMashGap)
+	if press, why := drv.decidePress(nil, at); press {
+		t.Fatalf("mash pressed (%q) while the box region reads empty (the transition); a press there skips the next box's line", why)
+	}
+}
+
+// TestCuMashEndsWhenBoxGone pins the stop rule: after the conversation
+// ends (the box gone — the ADR-0163 box-gone + screen-check rules), the
+// mash cadence does not press into gameplay; the drive ends.
+func TestCuMashEndsWhenBoxGone(t *testing.T) {
+	t0 := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	drv := cuStubObs(t, t0, cuStubBoxText)
+	drv.boxRegion = "box"
+	drv.mash = true
+	cuStubCommit(drv, "m-1")
+	at := t0.Add(cuConvGone + time.Second) // past cuConvGone with no fresh observation
+	if press, why := drv.decidePress(nil, at); press || !drv.done {
+		t.Fatalf("decidePress = (%v, %q), done = %v on a box gone for %s; want no press and the drive ended (the box-gone rules govern the mash drive)", press, why, drv.done, cuConvGone)
+	}
+}

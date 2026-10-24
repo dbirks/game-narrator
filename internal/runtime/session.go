@@ -302,7 +302,12 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 	if len(content.Regions) == 0 {
 		return Info{}, fmt.Errorf("%w: %s", ErrProfileNotRunnable, req.ProfileID)
 	}
-	idx, err := matcher.Build(content.Messages, content.Edges, matcher.IndexOptions{})
+	// Display pages (ADR-0155, ADR-0184): one derivation, precomputed here so
+	// the matcher index scores a multi-box message against each box, the
+	// decision wiring offers the box on screen as the candidate text, and the
+	// speech wiring speaks the page the commit names — the same pages.
+	pages := profilePages(content)
+	idx, err := matcher.Build(content.Messages, content.Edges, matcher.IndexOptions{Pages: pages})
 	if err != nil {
 		return Info{}, fmt.Errorf("runtime: build candidate index: %w", err)
 	}
@@ -402,7 +407,7 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (Info, error) {
 		for _, sp := range speakers {
 			sysSpeakers = append(sysSpeakers, systemone.Speaker{ID: sp.ID, Description: sp.Description})
 		}
-		if w := m.newDecisionWiring(id, texts, sysSpeakers); w != nil {
+		if w := m.newDecisionWiring(id, texts, pages, sysSpeakers); w != nil {
 			cfg.Decider = w
 		}
 	}

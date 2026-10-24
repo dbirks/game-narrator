@@ -105,6 +105,58 @@ func (r *ranker) scoreOne(c *candidate) {
 		}
 	}
 
+	// Page-aware scoring (ADR-0184): a multi-box message is read box by box, so
+	// the observation is compared against each stored page key as well — the
+	// same blend and the same fragment containment as the whole-text term, with
+	// the containment scaled by the read's share of the *page* (a box read of a
+	// box scores like a one-box read, which is the whole point). The best page
+	// wins; the whole text stays the floor so a read spanning the message
+	// boundary still falls back to it. Page-less messages (pageRowOff flat) take
+	// exactly the pre-change path.
+	if lo, hi := idx.pageRowOff[c.ord], idx.pageRowOff[c.ord+1]; lo < hi {
+		best := text
+		bestOrd := 0
+		// The ambiguity count (fragN) is per candidate: the whole-key fragment
+		// block above already counted this candidate when it fired, and a page
+		// that covers the reading must not count it a second time.
+		counted := c.frag > 0
+		for pi := lo; pi < hi; pi++ {
+			pkey := idx.pageKeys[pi]
+			pRunes := []rune(pkey)
+			pCand := sortUniqueKeys(trigramKeys(pRunes, r.pageTriScratch))
+			r.pageTriScratch = pCand[:0]
+			pToks := idx.pageTokensOf(int(pi))
+			ptext := unit(trigramWeight*dice(intersectCount(r.qKeys, pCand), len(r.qKeys), int(idx.pageTriCount[pi])) +
+				tokenWeight*dice(intersectCount(r.qToks, pToks), len(r.qToks), len(pToks)) +
+				levenshteinWeight*levenshteinSimilarity(r.obsRunes, levRunes(pkey)))
+			if len(r.obsIntKeys) > 0 && len(pRunes) > len(r.obsRunes) {
+				pInt := interiorTrigramKeys(pRunes, r.pageIntScratch)
+				r.pageIntScratch = pInt[:0]
+				if fragmentFloor(r.obsIntKeys, pInt) >= fragmentCoverageFloor {
+					if cov := r.fragmentWindowCoverage(pRunes); cov >= fragmentCoverageFloor {
+						if !counted {
+							r.fragN++
+							counted = true
+						}
+						if cov > c.frag {
+							c.frag = cov
+						}
+						ratio := float64(len(r.obsRunes)) / float64(len(pRunes))
+						if f := cov * (fragmentFloorScale + (1-fragmentFloorScale)*ratio); f > ptext {
+							ptext = f
+						}
+					}
+				}
+			}
+			if ptext > best {
+				best, bestOrd = ptext, int(pi-lo)+1
+			}
+		}
+		if best > text {
+			text, c.page, c.pageScore = best, bestOrd, best
+		}
+	}
+
 	prefix := 0.0
 	if c.prefix {
 		prefix = unit(c.prefixCov)
@@ -252,11 +304,21 @@ func (r *ranker) decide() Ranking {
 		for i, name := range ComponentOrder {
 			comps[name] = c.comps[i]
 		}
+		// Page evidence (ADR-0184): reported as diagnostic components only when a
+		// display page actually won — then exactly the two page keys appear
+		// alongside ComponentOrder, so a page-less corpus keeps the historical
+		// component set (and the component-count invariants) verbatim.
+		if c.page > 0 {
+			comps[ComponentPage] = float64(c.page)
+			comps[ComponentPageTextScore] = c.pageScore
+		}
 		out = append(out, Candidate{
-			MessageID:   r.idx.ids[c.ord],
-			Score:       c.raw,
-			Probability: c.prob,
-			Components:  comps,
+			MessageID:     r.idx.ids[c.ord],
+			Score:         c.raw,
+			Probability:   c.prob,
+			Components:    comps,
+			Page:          c.page,
+			PageTextScore: c.pageScore,
 		})
 	}
 

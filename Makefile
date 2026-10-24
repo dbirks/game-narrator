@@ -236,7 +236,8 @@ bench:
 ## test-dolphin's captures phase (part of make test-full on hosts with the
 ## private fixtures), which runs TestPresenceRejectsSeaAcceptsBoxes,
 ## TestPlacementOnLiveCapture, TestPlacementOnDolphinProbe and
-## TestPlacementOCRBeforeAfterFix and reports NOT RUN with the setup line
+## TestPlacementOCRBeforeAfterFix and TestFindPanelsCapturedProbe (ADR-0172,
+## GN_PANEL_PROBE_DIR) and reports NOT RUN with the setup line
 ## when a bundle is absent. Env contract (one var, one meaning):
 ##   - the live-capture bundle (the two live-hdmi replays) is
 ##     $GAME_NARRATOR_LIVE_CAPTURE_DIR, else $GAME_NARRATOR_FIXTURE_DIR/
@@ -246,7 +247,7 @@ bench:
 ##   - the named fixtures (board-sailing, windwaker-*) are read from
 ##     $GAME_NARRATOR_FIXTURE_DIR's ids.
 test-replay:
-	@scripts/gates/run-go-gate.sh test-replay -race -count=1 -timeout 30m -skip 'TestDolphinScenarios|TestPlacementOnLiveCapture|TestPlacementOnDolphinProbe|TestPlacementOCRBeforeAfterFix|TestPresenceRejectsSeaAcceptsBoxes' ./internal/scenario/... ./internal/pipeline/... ; \
+	@scripts/gates/run-go-gate.sh test-replay -race -count=1 -timeout 30m -skip 'TestDolphinScenarios|TestPlacementOnLiveCapture|TestPlacementOnDolphinProbe|TestPlacementOCRBeforeAfterFix|TestPresenceRejectsSeaAcceptsBoxes|TestFindPanelsCapturedProbe' ./internal/scenario/... ./internal/pipeline/... ; \
 	rc=$$?; echo $$rc > artifacts/gates/test-replay.rc ; exit $$rc
 
 ## test-ui: the real UI gate (docs/spec/09, docs/spec/12 "UI") — frontend
@@ -303,13 +304,19 @@ test-ui:
 ## the catch-up narration E2E: the same first-dialogue savestate, the
 ## session's catch_up policy, the rapid-A drive (faster than the speech) and
 ## the no-backlog/merge/voice assertions against the correlated stream, the
-## bundle under artifacts/catch-up-live/<run-id>/. It boots its own Dolphin
+## bundle under artifacts/catch-up-live/<run-id>/. Its deterministic
+## sibling (ADR-0175, the rapid-aaa brief): TestLiveCatchUpMash — the
+## fixed-cadence mash drive (press A every 350 ms once the box text stops
+## growing, through the whole conversation, independent of the speech
+## state) and the pages-spoken-exactly-once-in-order / stale-drop-policy /
+## merge-timings assertions: the gate's stable half, the rapid test's
+## commit-fired presses being timing-lucky. It boots its own Dolphin
 ## sequentially in the phase (one emulator at a time: it runs before
 ## TestLivePlayUI, in file order) and NOT RUNs on the same missing env. The
-## phase budget is 115 m: 45 m for the catch-up test's internal budget (the
-## voice design, the drive and the settle) plus TestLivePlayUI's 60 m (the
-## voice auditions and the screen-driven walk to the opening legend take
-## minutes each).
+## phase budget is 180 m: 45 m internal budget each for the two
+## catch-up tests (the voice design, the drive and the settle) plus
+## TestLivePlayUI's 60 m (the voice auditions and the screen-driven walk to
+## the opening legend take minutes each) plus margin.
 ## The liveui phase needs the packaged SPA go:embedded into the test
 ## binary (webassets.Built()); the recipe builds it between the scenario
 ## and liveui phases (make web-build) so the phase RUNS on a host with pnpm
@@ -325,14 +332,14 @@ test-dolphin:
 	rc1=$$?; \
 	GN_GATE=test-dolphin scripts/gates/run-go-gate.sh test-dolphin-scenarios -count=1 -timeout 30m -run TestDolphinScenarios ./internal/scenario/... ; \
 	rc2=$$?; \
-	GN_GATE=test-dolphin scripts/gates/run-go-gate.sh test-dolphin-captures -count=1 -timeout 30m -run 'TestPresenceRejectsSeaAcceptsBoxes|TestPlacementOnLiveCapture|TestPlacementOnDolphinProbe|TestPlacementOCRBeforeAfterFix' ./internal/pipeline/... ; \
+	GN_GATE=test-dolphin scripts/gates/run-go-gate.sh test-dolphin-captures -count=1 -timeout 30m -run 'TestPresenceRejectsSeaAcceptsBoxes|TestPlacementOnLiveCapture|TestPlacementOnDolphinProbe|TestPlacementOCRBeforeAfterFix|TestFindPanelsCapturedProbe' ./internal/pipeline/... ; \
 	rc4=$$?; \
 	if command -v pnpm >/dev/null 2>&1; then \
 		$(MAKE) --no-print-directory web-build || { echo "web-build failed: the live play UI phase will report NOT RUN (the staged SPA was removed)" >&2; rm -rf internal/webassets/dist; } ; \
 	else \
 		echo "(web-build skipped: pnpm not on PATH - the live play UI phase reports NOT RUN)" >&2; \
 	fi ; \
-	GN_GATE=test-dolphin scripts/gates/run-go-gate.sh test-dolphin-liveui -count=1 -p 1 -timeout 115m -run 'TestLivePlayUI$$|TestLiveCatchUpRapidDialogue$$' ./internal/e2e/... ; \
+	GN_GATE=test-dolphin scripts/gates/run-go-gate.sh test-dolphin-liveui -count=1 -p 1 -timeout 180m -run 'TestLivePlayUI$$|TestLiveCatchUpRapidDialogue$$|TestLiveCatchUpMash$$' ./internal/e2e/... ; \
 	rc3=$$?; \
 	if [ $$rc1 -eq 1 ] || [ $$rc2 -eq 1 ] || [ $$rc3 -eq 1 ] || [ $$rc4 -eq 1 ]; then rc=1; elif [ $$rc1 -eq 2 ] || [ $$rc2 -eq 2 ] || [ $$rc3 -eq 2 ] || [ $$rc4 -eq 2 ]; then rc=2; else rc=0; fi; \
 	echo $$rc > artifacts/gates/test-dolphin.rc ; exit $$rc

@@ -64,7 +64,16 @@ type Candidate struct {
 	// produced it (RankOptions.Temperature; see CalibrationRevision).
 	Probability float64
 	// Components holds one entry per key in ComponentOrder, each in [0,1].
+	// When Page is nonzero it also carries the page evidence keys
+	// ComponentPage and ComponentPageTextScore (ADR-0184): the display page
+	// that won the text component for a multi-box message.
 	Components map[string]float64
+	// Page is the 1-based ordinal of the display page whose key scored the
+	// text component for this candidate (ADR-0184); 0 means the whole text
+	// won or the message carries no pages.
+	Page int
+	// PageTextScore is the winning page's text score; 0 when Page is 0.
+	PageTextScore float64
 }
 
 // Ranking is the answer to one observation.
@@ -124,6 +133,11 @@ type ranker struct {
 	// containment reads (fragment.go): per-candidate, reused, never retained.
 	intScratch []uint32
 
+	// pageTriScratch / pageIntScratch are the same per-page buffers for the
+	// page-aware text component (ADR-0184): per-page, reused, never retained.
+	pageTriScratch []uint32
+	pageIntScratch []uint32
+
 	// winCount is the fragment window counter (fragment.go), dense over
 	// obsIntKeys: winCount[i] is how often the observation's i-th interior
 	// trigram occurs in the window being slid, and winPresent counts the
@@ -157,6 +171,11 @@ type candidate struct {
 	edgePrior float64
 	graph     bool
 	fallback  bool
+	// page is the display page (1-based) whose key beat the whole-message key
+	// for the text component (ADR-0184); 0 means the whole text won or the
+	// message carries no pages. pageScore is that page's text score.
+	page      int
+	pageScore float64
 	// frag is this candidate's windowed containment of the reading
 	// (fragment.go): the fraction of the reading's interior trigrams a single
 	// window of the candidate contains, when the candidate is strictly longer

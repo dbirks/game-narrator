@@ -18,6 +18,8 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -289,14 +291,16 @@ func lineTerminals(evs []events.Envelope) map[string][2]string {
 
 // ── tests -------------------------------------------------------------------
 
-// TestSpeechCatchUpMergesPerSpeaker is the issue's replay shape in white-box
-// form: four rapid boxes from two speakers (A, A, B, B). The first line
-// speaks immediately (nothing is playing when it commits); the next three
-// commit while audio is still in the air, so they batch; the flush merges
-// them per speaker — one TTS request for the second A line, one request
-// carrying both B lines with the core's sentence spacing — and every line
-// settles exactly once with the run's outcome.
-func TestSpeechCatchUpMergesPerSpeaker(t *testing.T) {
+// TestSpeechCatchUpSpeaksEachPageOnItsOwn is the ADR-0175 amendment's
+// white-box form of the issue's replay shape: four rapid boxes from two
+// speakers (A, A, B, B). The first line speaks immediately (nothing is
+// playing when it commits); the next three commit while audio is still in
+// the air, so they batch. The flush speaks EVERY page as its own
+// utterance, in commit order — each page's own cached clip, back-to-back —
+// never a re-synthesis of a merged text (the merge is a cache miss), and
+// never a stale drop of a page the player passed. Every line settles
+// exactly once with result ended.
+func TestSpeechCatchUpSpeaksEachPageOnItsOwn(t *testing.T) {
 	speakers := map[string]string{
 		"line-a1": "keeper",
 		"line-a2": "keeper",
@@ -305,8 +309,7 @@ func TestSpeechCatchUpMergesPerSpeaker(t *testing.T) {
 	}
 	// A long window (2 s) so the window's own timer cannot flush between the
 	// commits: the flush the test asserts on is the playback terminal
-	// (the first line's 1.2 s tone running out), and the merge decision is
-	// the batcher's, not the timer's.
+	// (the first line's 1.2 s tone running out), not the timer.
 	e := newCatchUpEnv(t, 1.2, "catch_up", 2*time.Second, 0, speakers)
 
 	texts := map[string]string{
@@ -327,8 +330,8 @@ func TestSpeechCatchUpMergesPerSpeaker(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	e.commit(t, "occ-b2", "line-b2", "bottom", 4, texts["line-b2"])
 
-	// Every line settles: four line terminals, each result ended (the run's
-	// outcome the line was spoken with), no skipped and no failed.
+	// Every line settles: four line terminals, each result ended, no
+	// skipped and no failed — nothing is lost to staleness anymore.
 	evs := e.waitEvents(t, "all four lines settled", 15*time.Second, func(evs []events.Envelope) bool {
 		term := lineTerminals(evs)
 		for _, occ := range []string{"occ-a1", "occ-a2", "occ-b1", "occ-b2"} {
@@ -339,68 +342,70 @@ func TestSpeechCatchUpMergesPerSpeaker(t *testing.T) {
 		return true
 	})
 
-	// The merge: three TTS requests, not four — the two B lines are one
-	// request with the core's join (sentence-final closure + single space).
-	// The first request is the immediate line (it committed before the batch
-	// existed); the two run requests speak in parallel workers, so their
-	// order is the workers' — the assertion is on the set, not the order.
+	// One TTS request per page, each carrying the page's OWN text — no
+	// merged text anywhere (the per-page key is the presynth's cache key:
+	// a hit, not a re-synthesis). The requests land in no guaranteed order
+	// (the per-page workers synthesise in parallel) — the order is the
+	// playback's, asserted on the sink below — so the batch's texts are
+	// checked as a set, each exactly once.
 	textsOut, _ := e.tts.requests()
-	if len(textsOut) != 3 {
-		t.Fatalf("TTS requests = %d (%v), want 3 (one per speaker run)", len(textsOut), textsOut)
+	if len(textsOut) != 4 {
+		t.Fatalf("TTS requests = %d (%v), want 4 (one per page, unmerged)", len(textsOut), textsOut)
 	}
 	if textsOut[0] != texts["line-a1"] {
-		t.Errorf("first request = %q, want the first line spoken at once", textsOut[0])
+		t.Errorf("first request = %q, want the first page spoken at once", textsOut[0])
 	}
-	got := map[string]bool{textsOut[1]: true, textsOut[2]: true}
-	wantMerged := speech.JoinSpeechText([]string{texts["line-b1"], texts["line-b2"]})
-	if !got[texts["line-a2"]] || !got[wantMerged] {
-		t.Errorf("run requests = %v, want the second A line and the merged B text %q", textsOut[1:], wantMerged)
+	seen := map[string]int{}
+	for _, txt := range textsOut[1:] {
+		seen[txt]++
+	}
+	for _, want := range []string{texts["line-a2"], texts["line-b1"], texts["line-b2"]} {
+		if seen[want] != 1 {
+			t.Errorf("batch texts %v: %q missing or doubled (one unmerged request per page, in commit order at playback)", seen, want)
+		}
 	}
 
-	// The merged request names the covered lines: the versioned merged id in
-	// the speech.requested payload, with both B message ids as segments.
-	// (The per-line requests of the commits ride the same event name: the
-	// count here is over the run's requests, of which exactly one is merged.)
-	reqs := requestedEvents(evs)
-	var mergedReq *events.Envelope
-	mergedCount := 0
-	for _, r := range reqs {
+	// No merged request: every speech.requested carries the page's own bare
+	// message id, the presynth cache key form, and merged=false.
+	for _, r := range requestedEvents(evs) {
 		var p struct {
-			Merged bool `json:"merged"`
+			Merged    bool   `json:"merged"`
+			MessageID string `json:"message_id"`
 		}
-		_ = json.Unmarshal(r.Data, &p)
+		if err := json.Unmarshal(r.Data, &p); err != nil {
+			t.Fatalf("unmarshal request: %v", err)
+		}
 		if p.Merged {
-			mergedReq = &r
-			mergedCount++
+			t.Errorf("a speech.requested is merged (%q): the amendment speaks per-page clips, not merged re-syntheses", p.MessageID)
 		}
-	}
-	if mergedCount != 1 {
-		t.Fatalf("merged speech.requested = %d, want 1 (the B run)", mergedCount)
-	}
-	var p struct {
-		MessageID string   `json:"message_id"`
-		IDs       []string `json:"message_ids"`
-	}
-	if err := json.Unmarshal(mergedReq.Data, &p); err != nil {
-		t.Fatalf("unmarshal merged request: %v", err)
-	}
-	if !speech.IsMergedOriginalID(p.MessageID) {
-		t.Errorf("merged request message_id = %q, want the versioned merged form", p.MessageID)
-	}
-	if len(p.IDs) != 2 || p.IDs[0] != "line-b1" || p.IDs[1] != "line-b2" {
-		t.Errorf("merged request message_ids = %v, want [line-b1 line-b2]", p.IDs)
+		if speech.IsMergedOriginalID(p.MessageID) {
+			t.Errorf("request message_id = %q, want the page's own bare id (the presynth cache key)", p.MessageID)
+		}
 	}
 
-	// One playback per request (the scheduler's one-active-playback holds):
-	// three starts, and the merged playback carries the run's text, not a
-	// per-line one.
-	if n := e.sink.Starts(); n != 3 {
-		t.Fatalf("the sink started %d playbacks, want 3 (one per request)", n)
+	// One playback per page, in commit order (the sink's record per
+	// generation: a1 is generation 1, the batch's pages ride on
+	// increasing generations in commit order).
+	if n := e.sink.Starts(); n != 4 {
+		t.Fatalf("the sink started %d playbacks, want 4 (one per page)", n)
+	}
+	byGen := map[int64]bool{}
+	for _, rec := range e.sink.Records() {
+		if rec.Started.IsZero() {
+			continue
+		}
+		if _, dup := byGen[rec.Generation]; dup {
+			t.Errorf("two playbacks of generation %d: a page spoke more than once", rec.Generation)
+		}
+		byGen[rec.Generation] = true
+	}
+	if len(byGen) != 4 {
+		t.Fatalf("playback generations = %v, want 4 distinct pages", byGen)
 	}
 
 	// Every line settles exactly once, and as spoken (ended): the
-	// one-terminal-per-line rule (ADR-0092, carried onto the batch's lines by
-	// the line's claim).
+	// one-terminal-per-line rule (ADR-0092, carried onto the batch's lines
+	// by the line's claim).
 	for _, occ := range []string{"occ-a1", "occ-a2", "occ-b1", "occ-b2"} {
 		n := 0
 		for _, ev := range evs {
@@ -424,39 +429,91 @@ func TestSpeechCatchUpMergesPerSpeaker(t *testing.T) {
 	}
 }
 
-// TestSpeechCatchUpMaxAge is the no-backlog half (issue #25 item 1): a line
-// whose audio would not be ready until after its max age is dropped before
-// it starts — the batch's window (2 s) outlives the line's max age (100 ms),
-// so the flush that would have spoken it lands stale, and the line settles
-// skipped with the stale reason instead of starting late. The control
-// (the same shape with a generous max age) speaks the line.
-func TestSpeechCatchUpMaxAge(t *testing.T) {
-	t.Run("stale_drop", func(t *testing.T) {
-		e := newCatchUpEnv(t, 0.4, "catch_up", 2*time.Second, 100*time.Millisecond, nil)
+// TestSpeechCatchUpMashSixPagesClipsBackToBack is the owner's mash in
+// white-box form: six cached pages committed on a fast cadence through the
+// whole conversation, independent of the speech state. Every page is spoken
+// exactly once, in commit order, as its own clip — none dropped — and the
+// gap between one clip's end and the next clip's start stays under 150 ms:
+// the back-to-back playback behind "cue up all the speech really quick, and
+// then just say all that".
+func TestSpeechCatchUpMashSixPagesClipsBackToBack(t *testing.T) {
+	e := newCatchUpEnv(t, 0.3, "catch_up", 2*time.Second, 0, nil)
+	for i := 1; i <= 6; i++ {
+		e.commit(t, fmt.Sprintf("occ-m%d", i), fmt.Sprintf("line-m%d", i), "bottom", int64(i), fmt.Sprintf("Page %d of the mash.", i))
+		if i < 6 {
+			time.Sleep(150 * time.Millisecond)
+		}
+	}
+	evs := e.waitEvents(t, "all six pages settled", 15*time.Second, func(evs []events.Envelope) bool {
+		term := lineTerminals(evs)
+		for i := 1; i <= 6; i++ {
+			if term[fmt.Sprintf("occ-m%d", i)][0] != "ended" {
+				return false
+			}
+		}
+		return true
+	})
+	// None dropped, in order, as its own clip: six distinct playbacks on
+	// increasing generations in commit order, gaps under the bound.
+	records := e.sink.Records()
+	byGen := map[int64]dummy.Record{}
+	for _, rec := range records {
+		if !rec.Started.IsZero() {
+			byGen[rec.Generation] = rec
+		}
+	}
+	if len(byGen) != 6 {
+		t.Fatalf("playback generations = %d, want 6 (every page's own clip, none dropped)", len(byGen))
+	}
+	var gens []int64
+	for g := range byGen {
+		gens = append(gens, g)
+	}
+	sort.Slice(gens, func(i, j int) bool { return gens[i] < gens[j] })
+	for i := 1; i < len(gens); i++ {
+		if !byGen[gens[i]].Started.After(byGen[gens[i-1]].Started) {
+			t.Fatalf("page generation %d started before %d: the pages must play in commit order", gens[i], gens[i-1])
+		}
+		if gap := byGen[gens[i]].Started.Sub(byGen[gens[i-1]].Ended); gap > 150*time.Millisecond {
+			t.Errorf("gap between clip %d and clip %d = %s, want at most 150 ms (back-to-back)", gens[i-1], gens[i], gap)
+		}
+	}
+	_ = evs
+}
+
+// TestSpeechCatchUpNoStaleDrop is the ADR-0175 amendment's half of the old
+// no-backlog policy: a line the player passed is NEVER dropped for
+// staleness. The shapes that used to drop — a commit more than the batch
+// window after the pending line, and a flush that lands more than the
+// per-utterance max age after the commit — now both speak the line.
+func TestSpeechCatchUpNoStaleDrop(t *testing.T) {
+	t.Run("window_stale_spoken", func(t *testing.T) {
+		// The window (300 ms) is shorter than the gap between the commits:
+		// the old window's fence would have dropped b1 as catch_up_stale on
+		// the newer commit's arrival; the amendment speaks it instead.
+		e := newCatchUpEnv(t, 0.4, "catch_up", 300*time.Millisecond, 0, nil)
 		e.commit(t, "occ-a1", "line-a1", "bottom", 1, "The first line holds the playback.")
 		time.Sleep(150 * time.Millisecond)
 		// Batches: the first line's tone (0.4 s) is still playing.
 		e.commit(t, "occ-b1", "line-b1", "bottom", 2, "The second line waits in the batch.")
+		time.Sleep(250 * time.Millisecond)
+		// More than the window after b1, while b1 is still pending.
+		e.commit(t, "occ-c1", "line-c1", "bottom", 3, "A third line arrives past the window.")
 
-		evs := e.waitEvents(t, "the batch settled", 8*time.Second, func(evs []events.Envelope) bool {
-			return lineTerminals(evs)["occ-b1"][0] != ""
+		e.waitEvents(t, "the batch spoke every line", 8*time.Second, func(evs []events.Envelope) bool {
+			term := lineTerminals(evs)
+			return term["occ-b1"][0] == "ended" && term["occ-c1"][0] == "ended"
 		})
-		term := lineTerminals(evs)
-		if term["occ-b1"] != [2]string{"skipped", "catch_up_stale"} {
-			t.Fatalf("stale line terminal = %v, want skipped/catch_up_stale (no late start)", term["occ-b1"])
+		if n := e.sink.Starts(); n != 3 {
+			t.Fatalf("the sink started %d playbacks, want 3 (no stale drop)", n)
 		}
-		textsOut, _ := e.tts.requests()
-		if len(textsOut) != 1 {
-			t.Fatalf("TTS requests = %d (%v), want 1 (the stale run was dropped before synthesis)", len(textsOut), textsOut)
-		}
-		if n := e.sink.Starts(); n != 1 {
-			t.Fatalf("the sink started %d playbacks, want 1 (the first line only)", n)
-		}
-		_ = evs
 	})
 
-	t.Run("fresh_speaks", func(t *testing.T) {
-		e := newCatchUpEnv(t, 0.4, "catch_up", 2*time.Second, 30*time.Second, nil)
+	t.Run("flush_past_max_age_spoken", func(t *testing.T) {
+		// The flush lands more than the (tiny) max age after the commit:
+		// the old flush's age drop would have fenced it; the amendment
+		// speaks it.
+		e := newCatchUpEnv(t, 0.4, "catch_up", 2*time.Second, 100*time.Millisecond, nil)
 		e.commit(t, "occ-a1", "line-a1", "bottom", 1, "The first line holds the playback.")
 		time.Sleep(150 * time.Millisecond)
 		e.commit(t, "occ-b1", "line-b1", "bottom", 2, "The second line waits in the batch.")
@@ -468,6 +525,95 @@ func TestSpeechCatchUpMaxAge(t *testing.T) {
 			t.Fatalf("the sink started %d playbacks, want 2", n)
 		}
 	})
+}
+
+// TestSpeechCatchUpBacklogCap is the amendment's safety bound: a page the
+// player passed is spoken, but the narrator must not lag unboundedly. The
+// cap (4 s of estimated audio) bounds the pending batch: the OLDEST pages
+// beyond it are dropped as skipped/catch_up_backlog_cap, counted and
+// logged; the rest speak in order.
+func TestSpeechCatchUpBacklogCap(t *testing.T) {
+	e := newCatchUpEnv(t, 1.2, "catch_up", 30*time.Second, 0, nil)
+	e.w.catchUp.BacklogCap = 4 * time.Second // ten words at the estimate's 400 ms/word
+	// Five-word pages: 2 s of estimated audio each. c1 holds playback with
+	// its 1.2 s tone while c2..c6 commit, so all five take the batch.
+	e.commit(t, "occ-c1", "line-c1", "bottom", 1, "first page of the backlog cap test")
+	for i := 2; i <= 6; i++ {
+		time.Sleep(20 * time.Millisecond)
+		e.commit(t, fmt.Sprintf("occ-c%d", i), fmt.Sprintf("line-c%d", i), "bottom", int64(i),
+			fmt.Sprintf("page %d five words in length", i))
+	}
+	evs := e.waitEvents(t, "the backlog settled", 12*time.Second, func(evs []events.Envelope) bool {
+		term := lineTerminals(evs)
+		return term["occ-c2"][0] != "" && term["occ-c6"][0] == "ended" && term["occ-c5"][0] == "ended"
+	})
+	term := lineTerminals(evs)
+	// The oldest pages beyond the cap are the cap's drops — and no other
+	// page is lost: every commit re-measures the pending batch (five
+	// words = 2 s of estimate each, cap 4 s), so c4's arrival caps c2,
+	// c5's caps c3 and c6's caps c4; c5 and c6 stay inside the bound and
+	// speak, c1 played from the start.
+	for _, occ := range []string{"occ-c2", "occ-c3", "occ-c4"} {
+		if term[occ] != [2]string{"skipped", "catch_up_backlog_cap"} {
+			t.Errorf("%s terminal = %v, want skipped/catch_up_backlog_cap (the cap's oldest-first drop)", occ, term[occ])
+		}
+	}
+	for _, occ := range []string{"occ-c1", "occ-c5", "occ-c6"} {
+		if term[occ][0] != "ended" {
+			t.Errorf("%s terminal = %v, want ended (within the cap, or already playing)", occ, term[occ])
+		}
+	}
+	if n := int(e.w.catchUpBacklogDropped); n != 3 {
+		t.Fatalf("backlog cap drops = %d, want 3 (counted)", n)
+	}
+	// The capped pages were never synthesised; the in-bound ones spoke.
+	textsOut, _ := e.tts.requests()
+	for _, txt := range textsOut {
+		if strings.Contains(txt, "page 2 ") || strings.Contains(txt, "page 3 ") || strings.Contains(txt, "page 4 ") {
+			t.Errorf("TTS requested the capped page in %q: the cap drops before synthesis", txt)
+		}
+	}
+	if n := e.sink.Starts(); n != 3 {
+		t.Fatalf("the sink started %d playbacks, want 3 (c1 and c5..c6)", n)
+	}
+	_ = evs
+}
+
+// TestSpeechCatchUpRecommitWhilePlayingIsADuplicate is the ADR-0175
+// amendment's live finding (the 2026-10-24 catch-up bundle, run
+// catchup-mash-20261024T035836Z): a page whose first copy is still AUDIBLE
+// is not passed again — its re-commit (the typewriter's partial→settled
+// re-read, 3.3 s past the 3 s cross-region window) skips as
+// duplicate_region and speaks nothing. The window alone cannot catch it
+// (it is a time bound, and the live re-commits landed past it — the second
+// one from the same region no less).
+func TestSpeechCatchUpRecommitWhilePlayingIsADuplicate(t *testing.T) {
+	e := newCatchUpEnv(t, 4, "catch_up", 30*time.Second, 0, nil)
+	e.commit(t, "occ-a1", "line-a1", "bottom", 1, "The first copy of the page holds the playback.")
+	e.waitEvents(t, "the first copy started", 5*time.Second, func(evs []events.Envelope) bool {
+		for _, ev := range evs {
+			if ev.Name == events.SpeechStarted {
+				return true
+			}
+		}
+		return false
+	})
+	// Past the 3 s cross-region window, while the tone still plays.
+	time.Sleep(3200 * time.Millisecond)
+	e.commit(t, "occ-b1", "line-a1", "bottom", 2, "The re-commit of the same page while its copy still plays.")
+	ev := e.waitEvents(t, "the re-commit settled", 8*time.Second, func(evs []events.Envelope) bool {
+		return lineTerminals(evs)["occ-b1"][0] != ""
+	})
+	if term := lineTerminals(ev)["occ-b1"]; term != [2]string{"skipped", "duplicate_region"} {
+		t.Fatalf("re-commit terminal = %v, want skipped/duplicate_region (the page is still audible — the player did not pass it again)", term)
+	}
+	// The tone runs to its end (the sink records the record at the end).
+	e.waitEvents(t, "the first copy ended", 8*time.Second, func(evs []events.Envelope) bool {
+		return lineTerminals(evs)["occ-a1"][0] == "ended"
+	})
+	if n := e.sink.Starts(); n != 1 {
+		t.Fatalf("the sink started %d playbacks, want 1 (the duplicate speaks nothing)", n)
+	}
 }
 
 // TestSpeechCatchUpBoxChangeFlushes is the box-change priority hook

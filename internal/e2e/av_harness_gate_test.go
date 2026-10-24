@@ -155,6 +155,26 @@ func TestAVHarnessGateRules(t *testing.T) {
 		rep.Lines[0].VoiceMatch = false
 		avGateWantsExactly(t, rep, 3, []string{"1 missed line(s)", "1 phantom utterance(s)", "line 0: spoken in voice"})
 	})
+	t.Run("a conversation-invariant gate issue fails the run", func(t *testing.T) {
+		// ADR-0170: every ConvGateIssues finding fails the run, one failure
+		// per issue; the report-only rows never gate.
+		rep := avGateBaselineReport()
+		rep.ConvDrive = "slow"
+		rep.ConvGateIssues = []convIssue{
+			{Kind: "DUPLICATE", Index: 0, MessageID: "msg-a#p1", Detail: "page msg-a#p1 has 2 own-audio utterances"},
+			{Kind: "CUT-OFF", Index: 1, MessageID: "msg-b#p2", Detail: "the page's terminal is \"interrupted\""},
+		}
+		rep.ConvReportIssues = []convIssue{{Kind: "PAGE_BREAK_GAP", Index: 2, MessageID: "msg-c#p1", Detail: "the gap to the next utterance is 1800 ms"}}
+		avGateWantsExactly(t, rep, 2, []string{"conversation invariant: DUPLICATE", "conversation invariant: CUT-OFF"})
+	})
+	t.Run("report-only conversation findings never gate", func(t *testing.T) {
+		rep := avGateBaselineReport()
+		rep.ConvDrive = "rapid"
+		rep.ConvReportIssues = []convIssue{{Kind: "PAGE_BREAK_GAP", Index: 0, MessageID: "msg-a#p1", Detail: "the gap to the next utterance is 1800 ms"}}
+		if fails := avGateFailures(rep, false); len(fails) != 0 {
+			t.Fatalf("report-only findings: %d failure(s), want 0:\n%s", len(fails), strings.Join(fails, "\n"))
+		}
+	})
 }
 
 func TestAVHarnessBoxPosition(t *testing.T) {

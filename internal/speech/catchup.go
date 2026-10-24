@@ -69,6 +69,15 @@ const (
 	// of generations at most, and the cap keeps the fence's extra state
 	// bounded the way the wiring's own cancel tables are.
 	DefaultCatchUpApprovedCap = 16
+	// DefaultCatchUpBacklogCap is the catch-up backlog safety cap (ADR-0175
+	// amendment, the owner's "say all that"): a page the player passed is
+	// never dropped for staleness any more — every passed page is spoken
+	// once, in order — but the narrator must not lag unboundedly. The
+	// pending batch's estimated audio beyond this budget is dropped from
+	// the OLDEST pages (reason catch_up_backlog_cap, counted and logged),
+	// so a sustained mash keeps speaking the newest ~45 s of the backlog
+	// instead of queueing minutes.
+	DefaultCatchUpBacklogCap = 45 * time.Second
 )
 
 // CatchUpOptions is one session's catch-up policy tuning. Zero fields take
@@ -80,8 +89,16 @@ type CatchUpOptions struct {
 	// DefaultCatchUpBatchWindow).
 	BatchWindow time.Duration
 	// MaxUtteranceAge: the per-utterance max age (0 selects
-	// DefaultCatchUpMaxUtteranceAge).
+	// DefaultCatchUpMaxUtteranceAge). The catch_up policy no longer drops on
+	// it (ADR-0175 amendment): a passed page is spoken, however late it
+	// flushes — the bound remains for the sidecars that keep the no-backlog
+	// answer.
 	MaxUtteranceAge time.Duration
+	// BacklogCap: the catch-up backlog safety cap — the oldest pending pages
+	// beyond this much estimated audio are dropped (reason
+	// catch_up_backlog_cap) so the narrator never lags unboundedly (0
+	// selects DefaultCatchUpBacklogCap).
+	BacklogCap time.Duration
 }
 
 // NormalizeCatchUpOptions resolves the zero fields to the documented
@@ -103,6 +120,11 @@ func (o CatchUpOptions) NormalizeCatchUpOptions() (CatchUpOptions, error) {
 		c.MaxUtteranceAge = o.MaxUtteranceAge
 	} else {
 		c.MaxUtteranceAge = DefaultCatchUpMaxUtteranceAge
+	}
+	if o.BacklogCap > 0 {
+		c.BacklogCap = o.BacklogCap
+	} else {
+		c.BacklogCap = DefaultCatchUpBacklogCap
 	}
 	return c, nil
 }
@@ -324,6 +346,46 @@ func BatchWindowDrop(pending []CatchUpLine, committedAt time.Time, window time.D
 	}
 	n := 0
 	for n < len(pending) && committedAt.Sub(pending[n].CommittedAt) > window {
+		n++
+	}
+	return n
+}
+
+// catchUpEstimatePerWord is the backlog-cap estimate's speech rate: 150 wpm
+// (400 ms per word) — the conservative side of ordinary speech, so a batch
+// that fits the cap at the estimate fits it in practice at a faster voice.
+const catchUpEstimatePerWord = 400 * time.Millisecond
+
+// EstimateCatchUpAudioDuration estimates a batch's total playback from its
+// texts (the backlog cap's input, where the audio is not synthesised yet —
+// the estimate rides on the text, so it is deterministic on the synthetic
+// event pages the tests drive). Every line counts at least one word: a
+// blank text is still a page the player passed.
+func EstimateCatchUpAudioDuration(lines []CatchUpLine) time.Duration {
+	var total time.Duration
+	for _, l := range lines {
+		words := len(strings.Fields(l.Text))
+		if words < 1 {
+			words = 1
+		}
+		total += time.Duration(words) * catchUpEstimatePerWord
+	}
+	return total
+}
+
+// BacklogCapDrop reports which of the pending lines (commit order, oldest
+// first) fall beyond the backlog cap (ADR-0175 amendment): the oldest-first
+// prefix whose removal leaves the remainder's estimated audio at or under
+// the cap. The caller terminalises exactly those lines (reason
+// catch_up_backlog_cap, counted and logged); the rest keep waiting to be
+// spoken. A zero cap takes the default, the same unset rule
+// NormalizeCatchUpOptions applies.
+func BacklogCapDrop(pending []CatchUpLine, limit time.Duration) int {
+	if limit <= 0 {
+		limit = DefaultCatchUpBacklogCap
+	}
+	n := 0
+	for n < len(pending) && EstimateCatchUpAudioDuration(pending[n:]) > limit {
 		n++
 	}
 	return n

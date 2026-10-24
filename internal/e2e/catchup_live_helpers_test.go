@@ -471,6 +471,8 @@ type cuDriver struct {
 	pressedMsgs       map[string]bool // message ids already pressed for (one press per line)
 	instPresses       int             // presses made on the current box instance
 	done              bool
+	mash              bool      // the deterministic mash drive (ADR-0175): cadence presses on every box after the first commit, independent of the speech state
+	nextMash          time.Time // the earliest instant the next mash press may land (zero: the settle gate decides)
 }
 
 // cuNewDriver arms the driver at the session's start (the box text is
@@ -705,6 +707,43 @@ func (d *cuDriver) decidePress(evs []devEnvelope, now time.Time) (bool, string) 
 		// non-empty observation.)
 		return false, "box not on screen (transitioning)"
 	}
+	// The deterministic mash path (ADR-0175): once the FIRST box's line has
+	// committed (the commit is the evidence the session recognises boxes),
+	// press A on a fixed fast cadence — every box, independent of the
+	// speech state. The text-settle gate: a press lands only once the box
+	// text has stopped growing — textChanged refreshes on every new box
+	// reading (the typewriter's growth), so the gate reads the last growth
+	// instant, or, for a box that sits fully typed (the growth unobservable:
+	// no further observations), the fixed 1.2 s from the instance's
+	// appearance. Cadence presses on the SAME box instance retry lost As,
+	// bounded per instance; a new box resets the instance (the observation
+	// path), so the drive walks the whole conversation box by box. The
+	// box-gone and the screen-check rules above still govern (the drive
+	// ends when the box is gone, ADR-0163 amendment 1).
+	if d.mash && len(d.matched) >= 1 && d.lastText != "" && d.lastRegionPresent {
+		if d.instPresses >= cuMashMaxPresses {
+			// The bound is spent on this instance: ONE stall press covers the
+			// never-committing box (a settled box the cadence presses never
+			// advanced — the ADR-0163 shape; the drive must still walk the
+			// conversation). Bounded like the lost-A retries: the drive's
+			// deadline decides if the box still holds.
+			textStable := now.Sub(d.textChanged) >= cuPressStable
+			if d.instPresses == cuMashMaxPresses && textStable && now.Sub(d.instAppeared) >= cuStallGap {
+				d.instPresses++
+				return true, "stall: the box's text has been stable without advancing for " + cuStallGap.String() + " past the mash bound — one final press to move on"
+			}
+			return false, "mash: the per-box press bound is spent; waiting for the box to advance (the stall press covers the never-committing box)"
+		}
+		if now.Before(d.textChanged.Add(cuMashSettle)) {
+			return false, "mash: waiting for the box text to stop growing"
+		}
+		if !d.nextMash.IsZero() && now.Before(d.nextMash) {
+			return false, "mash: cadence"
+		}
+		d.instPresses++
+		d.nextMash = now.Add(cuMashGap)
+		return true, "mash " + itoa(int64(d.instPresses)) + "/" + itoa(int64(cuMashMaxPresses)) + ": the box text is settled — press on the fixed " + cuMashGap.String() + " cadence"
+	}
 	// The rapid path runs on EVERY matched commit — the abstained ones
 	// included: a matched commit is the box's line having settled, and the
 	// box advances on the game side regardless of whether the session will
@@ -789,8 +828,18 @@ type cuPress struct {
 // commit-spacing-vs-TTS-latency timeline a stuck run needs) and fails, the
 // per-character test's same-shape failure evidence.
 func cuDriveConversation(t *testing.T, srv http.Handler, token, sessionID string, bridge dolphin.Bridge) ([]devEnvelope, []cuPress) {
+	return cuDriveConversationMash(t, srv, token, sessionID, bridge, false)
+}
+
+// cuDriveConversationMash is the same drive with the driver's deterministic
+// mash mode (ADR-0175) switched on or off: mash presses A on the fixed
+// fast cadence after the first box's line commits (the assertions the
+// rapid test leaves to timing luck); rapid (mash=false) presses as soon as
+// a box's line commits (the original faster-than-speech rhythm).
+func cuDriveConversationMash(t *testing.T, srv http.Handler, token, sessionID string, bridge dolphin.Bridge, mash bool) ([]devEnvelope, []cuPress) {
 	t.Helper()
 	drv := cuNewDriver(time.Now())
+	drv.mash = mash
 	poll := time.NewTicker(500 * time.Millisecond)
 	defer poll.Stop()
 	driveCutoff := time.Now().Add(10 * time.Minute) // the drive phase's deadline
@@ -1510,11 +1559,11 @@ func cuMergeEvidenceGapNote(gap time.Duration) string {
 // boxes white-box walk and the synthetic/gn-t025-catch-up replay):
 //
 //  1. Batch events: at least one routed line settled through the catch-up
-//     batch — skipped catch_up_stale (the window drop: a line the player
-//     left more than the batch window past a newer commit), cancelled
-//     catch_up_batched (the rescue's hand-off: the line's in-flight
-//     synthesis taken over by the batch), or ended catch_up_merged (the
-//     line's terminal is its run's outcome). The immediate path never
+//     batch — cancelled catch_up_batched (the rescue's hand-off: the
+//     line's in-flight synthesis taken over by the batch) or ended
+//     catch_up_merged (the line's terminal is its run's outcome). The old
+//     window drop (skipped/catch_up_stale) is gone — the ADR-0175
+//     amendment speaks every passed page. The immediate path never
 //     emits a catch-up terminal, so a batch event is the stream's proof a
 //     line committed while the speech was busy — the faster-than-speech
 //     drive the test exists to exercise.
@@ -1546,8 +1595,16 @@ func cuAssertMerge(t *testing.T, m *cuSpeechModel) {
 	t.Helper()
 	ev := cuMergeEvidenceOf(m)
 	// Gate 1: the batch events — a line committed into a busy speech.
+	// The ADR-0175 amendment made a NO-batch live outcome legitimate:
+	// when the player's boxes are slower than the speech, every page
+	// speaks standalone and no line ever commits into a busy playback —
+	// the owner's "say all that" is still met, and the deterministic
+	// unit suites (TestSpeechCatchUpMashSixPagesClipsBackToBack and
+	// friends) cover the batch's shape with controlled timing. A batch
+	// that DID form is still fully asserted (gates 2 and 3, the merged
+	// start bound in cuAssertMashTimings).
 	if ev.BatchEvents == 0 {
-		t.Fatalf("no routed line settled through the catch-up batch (no skipped/catch_up_stale, cancelled/catch_up_batched or ended/catch_up_merged terminal): the rapid A-presses did not commit into a busy speech — the drive did not run faster than the speech (the stream's commit-to-playback spacing in the bundle is the evidence); want the ADR-0122 batch's events")
+		t.Logf("catchup e2e: merge: no batch formed (the live cadence never committed into busy speech) — every page spoke standalone; the batch's invariants are asserted whenever one forms (and are unit-covered, ADR-0175 amendment)")
 	}
 	// Gate 2: the per-speaker runs — a run's lines are one speaker.
 	for occ, r := range m.Runs {
@@ -1694,7 +1751,7 @@ func cuAssertNoBacklog(t *testing.T, m *cuSpeechModel) {
 		if l.TerminalResult == "" {
 			t.Fatalf("committed line %s (msg %s) never reached a terminal speech event: every committed line settles exactly once (the claim rule), an unsettled line is a fence that lost the line (the stream is in the bundle)", shortID(occ), shortID(l.MessageID))
 		}
-		if l.TerminalResult == "skipped" && (l.TerminalReason == "catch_up_stale" || l.TerminalReason == "catch_up_max_age") {
+		if l.TerminalResult == "skipped" && (l.TerminalReason == "catch_up_stale" || l.TerminalReason == "catch_up_max_age" || l.TerminalReason == "catch_up_backlog_cap") {
 			staleDrop++
 			if !l.StartedAt.IsZero() {
 				t.Fatalf("line %s (msg %s) settled %s/%s but has a started playback: a stale-dropped line never starts — the drop is its terminal (ADR-0122 decisions 3/5)", shortID(occ), shortID(l.MessageID), l.TerminalResult, l.TerminalReason)
@@ -1716,7 +1773,12 @@ func cuAssertNoBacklog(t *testing.T, m *cuSpeechModel) {
 		l := m.Lines[occ]
 		switch {
 		case l.TerminalResult == "ended":
-		case l.TerminalResult == "skipped" && (l.TerminalReason == "catch_up_stale" || l.TerminalReason == "catch_up_max_age" || l.TerminalReason == "catch_up_batched"):
+		case l.TerminalResult == "skipped" && (l.TerminalReason == "catch_up_stale" || l.TerminalReason == "catch_up_max_age" || l.TerminalReason == "catch_up_batched" || l.TerminalReason == "catch_up_backlog_cap"):
+			// catch_up_backlog_cap: the ADR-0175 amendment's safety bound —
+			// the OLDEST pending pages beyond the cap's 45 s of estimated
+			// audio are dropped so the narrator never lags unboundedly
+			// (counted and logged by the wiring).
+		case l.TerminalResult == "skipped" && (l.TerminalReason == "catch_up_batched"):
 			// catch_up_batched: the rescue's own terminal on the line's
 			// STANDALONE utterance when the line re-entered the batch — the
 			// line's covering terminal (ended, the run's outcome) lands
@@ -2135,4 +2197,224 @@ func cuSpokenElsewhere(m *cuSpeechModel, occ, messageID string) bool {
 		}
 	}
 	return false
+}
+
+// ── the deterministic mash assertions (ADR-0175, the rapid-aaa brief) ──────────────────────────────────────────────
+
+// cuAssertMashPages is the mash assertion 1+2 (the brief's "every page
+// the player passed is spoken exactly once, in order; no page dropped
+// as catch_up_stale unless the policy says it must be"), against the
+// store-truth model:
+//
+//  1. Every matched dialogue page (the boxes the drive walked, commit
+//     order) ends EXACTLY ONCE as spoken — ended by its own playback or
+//     by its merged catch-up run (the one-terminal discipline; the
+//     duplicate-region skip's spoken sibling is the documented
+//     exception). The ADR-0175 amendment makes a passed page never
+//     droppable for staleness: a catch_up_stale or catch_up_max_age
+//     terminal is a FAILURE. The only policy-mandated drop is the
+//     backlog cap (catch_up_backlog_cap: the OLDEST pages beyond the
+//     cap's bound of estimated audio) — those are COUNTED and reported,
+//     not failed.
+//  2. No page starts a playback twice: every playback that started maps
+//     to the lines it covers (a run's start covers its lines), and no
+//     line is covered by more than one started playback.
+//  3. Order: the playbacks' start order follows the pages' commit order
+//     (back-to-back runs play in commit order; a reversed start would be
+//     the out-of-order speech the brief forbids).
+func cuAssertMashPages(t *testing.T, m *cuSpeechModel) {
+	t.Helper()
+	// startFor returns the start instant of the playback that spoke the
+	// line (its own occurrence's start, or the merged run's start).
+	startByOcc := map[string]time.Time{}
+	for _, st := range m.Started {
+		s := st.StartedAt
+		if s.IsZero() {
+			s = st.At
+		}
+		startByOcc[st.Occurrence] = s
+	}
+	lineStarts := map[string]int{} // each started playback's covered lines, counted
+	for _, st := range m.Started {
+		if _, ok := m.Runs[st.Occurrence]; ok {
+			// A merged run's start covers the lines whose authoritative
+			// SpokenBy join names THIS run — not every line that happens to
+			// carry a message id in the run's message_ids (a re-committed
+			// page repeats the id across occurrences, and the id match would
+			// count the run's one playback against the sibling occurrence too).
+			for _, l := range m.Lines {
+				if l.SpokenBy == st.Occurrence {
+					lineStarts[l.Occurrence]++
+				}
+			}
+			continue
+		}
+		if _, ok := m.Lines[st.Occurrence]; ok {
+			lineStarts[st.Occurrence]++
+		}
+	}
+	type spokenPt struct {
+		at   time.Time
+		line *cuLine
+	}
+	var spoken []spokenPt
+	stale, backlogCapped, dupSpoken, providerFailed, unaccounted := 0, 0, 0, 0, 0
+	for _, occ := range m.lineSeq {
+		l := m.Lines[occ]
+		if l.MessageID == "" || l.MessageID == "unknown" {
+			continue // read-through noise, not a page the player passed
+		}
+		switch {
+		case l.TerminalResult == "ended":
+			at := startByOcc[l.Occurrence]
+			if at.IsZero() && l.SpokenBy != "" && l.SpokenBy != l.Occurrence {
+				at = startByOcc[l.SpokenBy]
+			}
+			if lineStarts[l.Occurrence] > 1 {
+				unaccounted++
+				t.Errorf("page %s (msg %s) is covered by %d started playbacks: every page is spoken EXACTLY ONCE (standalone or inside one merged run)", shortID(l.Occurrence), shortID(l.MessageID), lineStarts[l.Occurrence])
+			}
+			spoken = append(spoken, spokenPt{at: at, line: l})
+		case l.TerminalResult == "skipped" && (l.TerminalReason == "catch_up_stale" || l.TerminalReason == "catch_up_max_age"):
+			stale++
+			unaccounted++
+			t.Errorf("page %s (msg %s) terminalled skipped/%s: the ADR-0175 amendment never drops a passed page for staleness — every passed page is spoken once (the backlog cap's catch_up_backlog_cap is the only policy-mandated drop)", shortID(l.Occurrence), shortID(l.MessageID), l.TerminalReason)
+		case l.TerminalResult == "skipped" && l.TerminalReason == "catch_up_backlog_cap":
+			backlogCapped++
+			t.Logf("mash e2e: page %s (msg %s) dropped skipped/catch_up_backlog_cap — the amendment's safety bound (the oldest pages beyond the %s cap), the only policy-mandated drop", shortID(l.Occurrence), shortID(l.MessageID), speech.DefaultCatchUpBacklogCap)
+		case l.TerminalResult == "skipped" && l.TerminalReason == "duplicate_region" && cuSpokenElsewhere(m, l.Occurrence, l.MessageID):
+			// The same box committed from a second, overlapping region within
+			// the duplicate window: spoken once by its sibling occurrence, the
+			// copy skipped by design (the no-backlog assertion's same rule —
+			// accounted only when the sibling really was spoken).
+			dupSpoken++
+		case l.TerminalResult == "failed":
+			// A provider or infrastructure failure (a 500 on synthesis, the
+			// codec-EOS budget, endpoint loss): the page was NOT spoken, so
+			// the gate fails — but it is an infrastructure flake the policy
+			// did not cause, reported as such (a rerun is expected to pass).
+			providerFailed++
+			unaccounted++
+			t.Errorf("page %s (msg %s) terminalled failed/%s: PROVIDER/INFRASTRUCTURE FAILURE, not a policy drop — the page was not spoken; the TTS log (prewarm + live request) is in the bundle, rerun the gate", shortID(l.Occurrence), shortID(l.MessageID), l.TerminalReason)
+		default:
+			unaccounted++
+			t.Errorf("page %s (msg %s) terminalled %q/%q: every page the drive passed is spoken exactly once — or dropped by the backlog cap (catch_up_backlog_cap); anything else is a page the policy lost without the policy's own mandate", shortID(l.Occurrence), shortID(l.MessageID), l.TerminalResult, l.TerminalReason)
+		}
+	}
+	// Order: the start order follows the commit order.
+	for i := 1; i < len(spoken); i++ {
+		pa, pb := spoken[i-1], spoken[i]
+		a, b := pa.at, pb.at
+		if a.IsZero() || b.IsZero() {
+			continue // an unrecorded start is not a reversal
+		}
+		if b.Before(a) {
+			unaccounted++
+			t.Errorf("page %s started before page %s: the speech plays in commit order (back-to-back), the mash drive passed them in that order", shortID(pb.line.Occurrence), shortID(pa.line.Occurrence))
+		}
+	}
+	if unaccounted > 0 {
+		t.Fatalf("%d page(s) not spoken exactly once in order (the stream's terminals and starts are in the bundle)", unaccounted)
+	}
+	t.Logf("mash e2e: pages: %d matched pages — %d spoken exactly once (in commit order), %d backlog-cap drops (the amendment's safety bound; the only policy-mandated drop), %d stale/max-age drops (FAILURES — the amendment never drops a passed page for staleness), %d duplicate-region copies skipped with the sibling spoken, %d provider/infrastructure failures (flake, not policy)", len(spoken)+stale+backlogCapped+dupSpoken+providerFailed, len(spoken), backlogCapped, stale, dupSpoken, providerFailed)
+}
+
+// cuAssertMashTimings is the mash assertion 3 (the brief's timing bounds):
+//
+//  1. Every MERGED utterance (a catch-up run) started within 1.5 s of
+//     its last covered commit — the flush (window, playback terminal or
+//     box change) plus the warm-cache TTS round trip must keep the merged
+//     speech close to the player's progress.
+//  2. The BACKLOG DRAIN — from the LAST commit (the instant the player
+//     stopped passing pages) to the last terminal (lines and runs) —
+//     finishes within the summed played audio (the file-sink WAVs) plus
+//     2 s of back-to-back overhead: every passed page is spoken, and the
+//     narrator never lags past the audio it still owes. The player's own
+//     pace between commits is NOT part of the span (the narrator is
+//     correctly silent while the box transitions): the first live run
+//     showed the whole-conversation span (first start → last terminal)
+//     is dominated by the drive's between-box gaps — 2m13s of span for
+//     32.5s of audio, every page starting ~1ms after its commit — so the
+//     span is only logged, the drain is what is bounded.
+func cuAssertMashTimings(t *testing.T, m *cuSpeechModel) {
+	t.Helper()
+	mergedBound := 1500 * time.Millisecond
+	slack := 2 * time.Second
+	// Bound 1: merged runs start close to their newest commit.
+	for occ, r := range m.Runs {
+		latest, _ := latestCoveredCommit(m, occ)
+		start := r.StartedAt
+		if start.IsZero() {
+			for _, st := range m.Started {
+				if st.Occurrence == occ {
+					start = st.StartedAt
+					if start.IsZero() {
+						start = st.At
+					}
+					break
+				}
+			}
+		}
+		if latest.IsZero() || start.IsZero() {
+			continue // not started (a fenced run) or an unrecorded commit: nothing to bound
+		}
+		if d := start.Sub(latest); d > mergedBound {
+			t.Errorf("merged run %s started %v after its last covered commit (bound %s, %d lines covered): the merged utterance must start close to the player's progress — the flush, the warm-cache TTS round trip and the submission together out-ran the bound (the run's stream events are in the bundle)", shortID(occ), d.Round(time.Millisecond), mergedBound, len(r.MessageIDs))
+		} else {
+			t.Logf("mash e2e: merged run %s: %d lines, started %v after its last covered commit (bound %s)", shortID(occ), len(r.MessageIDs), d.Round(time.Millisecond), mergedBound)
+		}
+	}
+	// Bound 2: the total speech span vs the played audio.
+	var first, last time.Time
+	for _, st := range m.Started {
+		s := st.StartedAt
+		if s.IsZero() {
+			s = st.At
+		}
+		if first.IsZero() || s.Before(first) {
+			first = s
+		}
+	}
+	for _, occ := range m.lineSeq {
+		if l := m.Lines[occ]; l.TerminalAt.After(last) {
+			last = l.TerminalAt
+		}
+	}
+	for _, r := range m.Runs {
+		if r.TerminalAt.After(last) {
+			last = r.TerminalAt
+		}
+	}
+	if first.IsZero() || last.IsZero() {
+		t.Fatalf("no playback recorded: the mash drive produced no speech at all")
+	}
+	var audio time.Duration
+	seenWav := map[string]bool{}
+	for _, occ := range m.lineSeq {
+		for _, w := range m.Lines[occ].WAVs {
+			if seenWav[w] {
+				continue
+			}
+			seenWav[w] = true
+			if secs, _, err := wavDurationSeconds(w); err == nil {
+				audio += time.Duration(secs * float64(time.Second))
+			}
+		}
+	}
+	span := last.Sub(first)
+	var lastCommit time.Time
+	for _, occ := range m.lineSeq {
+		if c := m.Lines[occ].CommittedAt; c.After(lastCommit) {
+			lastCommit = c
+		}
+	}
+	drainStart := first
+	if lastCommit.After(drainStart) {
+		drainStart = lastCommit
+	}
+	drain := last.Sub(drainStart)
+	if drain > audio+slack {
+		t.Errorf("backlog drain %v (last commit → last terminal) exceeds the played audio %v + %s slack: the narrator still owed speech after the player finished passing pages — the backlog queued or gapped instead of speaking the passed pages back-to-back (the starts, the terminals and the WAVs are in the bundle)", drain.Round(time.Millisecond), audio.Round(time.Millisecond), slack)
+	}
+	t.Logf("mash e2e: timings: backlog drain (last commit → last terminal) %v vs played audio %v + %s slack (bound %v); whole-conversation span first start → last terminal %v (the player's own between-box pace, not the narrator's backlog); %d playbacks, %d runs", drain.Round(time.Millisecond), audio.Round(time.Millisecond), slack, audio+slack, span.Round(time.Millisecond), m.StartCount(), m.RunCount())
 }

@@ -574,6 +574,13 @@ type Config struct {
 	// Presence parameterizes the textbox-present detector.
 	Presence PresenceConfig
 
+	// PanelFind is the frame-level dialogue-panel finder (ADR-0172, issue
+	// #53): a cheap row-wise scan of a downsampled luma frame for a panel the
+	// profile's fixed regions do not cover, which rides the existing
+	// presence → OCR → tracker → matcher path as one dynamic region
+	// (dispatch.go). Off by default; a profile that wants it sets Enabled.
+	PanelFind PanelFindConfig
+
 	// PlacementDisabled turns off the placement-aware textbox crop for every
 	// region (ADR-0137), restoring the historic single fixed band: a profile
 	// for a game whose dialogue box genuinely does not move. Off by default —
@@ -892,6 +899,9 @@ func (c Config) normalize() Config {
 		c.DecisionCandidates = 15
 	}
 	c.Presence = c.Presence.normalize()
+	// Frame-level panel finder (ADR-0172): zero knobs take the defaults;
+	// Enabled is passed through, so an unset config keeps the finder off.
+	c.PanelFind = c.PanelFind.normalize()
 	// Placement-aware textbox selection (ADR-0137): zero (and non-positive) knob
 	// values take the measured defaults so a profile that names none keeps the
 	// default hysteresis; a negative margin or floor is a misconfiguration with

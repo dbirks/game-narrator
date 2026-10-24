@@ -19,6 +19,18 @@
 # lines are pre-synthesised into the speech cache (both voices) so the
 # latency gate measures the session's own stages, not a TTS round trip.
 #
+# ADR-0170 (the conversation invariants): the report also carries a
+# conversation-invariants section and the run gates on it — each page the
+# player saw spoken exactly once (DUPLICATE), no read-ahead past the page
+# on screen at the audio start (READ-AHEAD), pages spoken in the order
+# shown (OUT-OF-ORDER), and — on the slow-reader drive — queue-don't-cut
+# (CUT-OFF: the page's audio is not cut; and, when the player advanced
+# mid-playback so the next page queued behind the playing one, it starts
+# within 800 ms of the end — a waited advance's gap is a QUEUE-GAP report
+# row, never a gate). The page-break gap rows (PAGE_BREAK_GAP) are report-only.
+# GN_AV_DRIVE selects the drive: "rapid" (the default) or "slow" (A only
+# after the current page's speech has ended + 500 ms).
+#
 # Exit codes (the gate convention, scripts/gates/run-go-gate.sh):
 #   0  the run passed
 #   1  the run failed (a gate assertion, or go test itself failed)

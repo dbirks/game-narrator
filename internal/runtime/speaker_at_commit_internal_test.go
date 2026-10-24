@@ -184,7 +184,7 @@ func newSpeakerAtCommitWiring(t *testing.T, g *speakerAtCommitClef, decisionOpts
 	t.Cleanup(func() { _ = st.Close() })
 	t.Cleanup(func() { _ = hub.Close() })
 	t.Cleanup(mgr.Close)
-	return mgr.newDecisionWiring("speaker-at-commit", map[string]string{}, []systemone.Speaker{
+	return mgr.newDecisionWiring("speaker-at-commit", map[string]string{}, nil, []systemone.Speaker{
 		{ID: "character-boy", Description: "a boy"},
 	})
 }

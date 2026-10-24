@@ -69,6 +69,20 @@ type Index struct {
 	outKind []uint8
 	outConf []float32
 
+	// Display pages (ADR-0184): message o's pages are the flat rows
+	// pageRow[pageRowOff[o]:pageRowOff[o+1]] — present only for messages the
+	// caller indexed with two or more pages, which is where whole-text scoring
+	// under-scores a single-box read. Each row holds the folded retrieval key
+	// (built once, at index build — not per frame) and its own trigram count and
+	// token set, in the same flat form as the whole-text columns, so a page
+	// scores with the same character/token/Levenshtein blend a one-box message
+	// would get.
+	pageRowOff   []int32
+	pageKeys     []string
+	pageTriCount []int32
+	pageTokOff   []int32
+	pageTokKeys  []uint32
+
 	stats Stats
 }
 
@@ -128,7 +142,7 @@ func Build(msgs []games.Message, edges []games.MessageEdge, opts IndexOptions) (
 	idx.editions = make([]string, 0, len(msgs))
 	idx.triCount = make([]int32, 0, len(msgs))
 
-	var scratch, tokScratch []uint32
+	var scratch, tokScratch, pageScratch []uint32
 	for i := range msgs {
 		m := &msgs[i]
 		if m.ID == "" {
@@ -146,6 +160,7 @@ func Build(msgs []games.Message, edges []games.MessageEdge, opts IndexOptions) (
 			idx.stats.SkippedMessages++
 			continue
 		}
+		idx.pageRowOff = append(idx.pageRowOff, int32(len(idx.pageKeys)))
 		ord := int32(len(idx.ids))
 		idx.ords[m.ID] = ord
 		idx.ids = append(idx.ids, m.ID)
@@ -166,7 +181,30 @@ func Build(msgs []games.Message, edges []games.MessageEdge, opts IndexOptions) (
 		idx.tokOff = append(idx.tokOff, int32(len(idx.tokKeys)))
 		idx.tokKeys = append(idx.tokKeys, tokScratch...)
 		idx.stats.Tokens += len(tokScratch)
+
+		// Display pages (ADR-0184): fold each page's retrieval key once here, at
+		// build time — the per-frame path only scores against the stored keys.
+		// Single-page and page-less messages keep no rows: their whole key is the
+		// only thing to score, exactly as before.
+		if pages := opts.Pages[m.ID]; len(pages) > 1 {
+			for _, p := range pages {
+				pkey := idx.fold.Normalize(truncateBounds(p, maxTextRunes))
+				if pkey == "" {
+					continue
+				}
+				pTri := messageTrigrams(pkey, pageScratch)
+				pageScratch = pTri[:0]
+				pTok := tokenHashes(pkey, pageScratch)
+				pageScratch = pTok[:0]
+				idx.pageTriCount = append(idx.pageTriCount, int32(len(pTri)))
+				idx.pageTokOff = append(idx.pageTokOff, int32(len(idx.pageTokKeys)))
+				idx.pageTokKeys = append(idx.pageTokKeys, pTok...)
+				idx.pageKeys = append(idx.pageKeys, pkey)
+			}
+		}
 	}
+	idx.pageRowOff = append(idx.pageRowOff, int32(len(idx.pageKeys)))    // end sentinel
+	idx.pageTokOff = append(idx.pageTokOff, int32(len(idx.pageTokKeys))) // end sentinel
 	if len(idx.ids) == 0 {
 		return nil, ErrNoMessages
 	}
@@ -309,6 +347,14 @@ func (x *Index) approxBytes() int64 {
 func (x *Index) Stats() Stats { return x.stats }
 
 // tokensOf returns message o's sorted unique token keys.
+// pageTokensOf returns the stored token set of page row pi (the flat index of
+// a row in pageKeys, not a message ordinal): one box's retrieval tokens, kept
+// at build time for the same allocation-free reason tokensOf keeps the
+// whole-text tokens.
+func (x *Index) pageTokensOf(pi int) []uint32 {
+	return x.pageTokKeys[x.pageTokOff[pi]:x.pageTokOff[pi+1]]
+}
+
 func (x *Index) tokensOf(o int32) []uint32 {
 	lo, hi := x.tokOff[o], x.tokOff[o+1]
 	return x.tokKeys[lo:hi]

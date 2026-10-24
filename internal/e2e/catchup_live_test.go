@@ -15,16 +15,17 @@
 //
 //  1. The session stays current — no backlog: no utterance starts more
 //     than the per-utterance max age (plus a bounded scheduler margin)
-//     after the newest line it covers committed; a line left more than
-//     the batch window after a newer commit settles skipped/catch_up_stale
-//     and never starts; and every committed eligible line settles exactly
-//     once (spoken by one utterance, or fenced with a catch-up reason).
+//     after the newest line it covers committed; a passed page is never
+//     dropped for staleness (the ADR-0175 amendment: the only catch-up
+//     drop is the backlog cap's catch_up_backlog_cap), and every
+//     committed eligible line settles exactly once (spoken by one
+//     utterance, or fenced with a catch-up reason).
 //  2. The rapid same-speaker boxes merge into fewer utterances (the
 //     catch_up batching events, the ADR-0122 live-validation's batch
 //     half): at least one line commits while the speech is busy and
-//     settles through the catch-up batch (the window drop, the rescue's
-//     hand-off or the run's outcome — the immediate path never emits a
-//     catch-up terminal), every catch-up run is one speaker (the merge's
+//     settles through the catch-up batch (the rescue's hand-off or the
+//     run's outcome — the immediate path never emits a catch-up
+//     terminal), every catch-up run is one speaker (the merge's
 //     same-speaker rule), the playback count never exceeds the line count
 //     (a multi-line run is one playback for its lines), and the manifest
 //     records the live commit cadence against the 900 ms batch window —
@@ -73,6 +74,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -120,6 +122,16 @@ const (
 	cuLostA          = 12 * time.Second       // a press that leaves the box text unchanged this long: lost, retry
 	cuMaxPresses     = 5                      // press attempts per box instance (1 + bounded lost-A retries)
 	cuMinDialogueBox = 3                      // the brief's "multi-box conversation"
+
+	// The deterministic mash drive (ADR-0175, the rapid-aaa brief): after
+	// the first box's line commits, press A on a fixed fast cadence, on
+	// EVERY box, independent of the speech state — the catch-up policy's
+	// live shape under a steady, policy-relevant cadence, with none of the
+	// rapid test's timing luck (its presses fire on commits, so a box that
+	// stalls lets the speech catch up and no batch ever forms).
+	cuMashGap        = 350 * time.Millisecond  // the mash cadence: one press at most this long apart
+	cuMashSettle     = 1200 * time.Millisecond // the text-settle gate: the box text must stop growing this long before a mash press lands (growth read from the box region's text.observed churn; the same fixed 1.2 s per box when the growth is unobservable — a box that sits fully typed produces no further observations)
+	cuMashMaxPresses = 6                       // bounded mash presses per box instance (the first advance + cadence retries on the same instance)
 )
 
 // cuEvidenceSub is this test's gitignored evidence subdir under the REPO
@@ -145,7 +157,37 @@ type cuVoiceState struct {
 
 var cuV cuVoiceState
 
-func TestLiveCatchUpRapidDialogue(t *testing.T) {
+// cuHarness is one live catch-up session fully armed and running: the
+// store/jobs/auth, the voice workflow (the two designed voices, the warm
+// TTS cache), the runtime with its Dolphin seam, the API, the scene
+// profile, the bridge from the first-dialogue savestate and the session
+// with the catch_up policy applied and snapshot-verified. Both live
+// drives share it — TestLiveCatchUpRapidDialogue (the press-per-commit
+// rhythm) and TestLiveCatchUpMash (the deterministic mash cadence,
+// ADR-0175) differ only in the drive mode and the assertions.
+type cuHarness struct {
+	runID       string
+	bundle      string
+	imageSHA    string
+	fdState     string
+	ctx         context.Context
+	st          *store.Store
+	srv         http.Handler
+	token       string
+	sessionID   string
+	bridge      dolphin.Bridge
+	scene       cuScene
+	dataDir     string
+	fileSinkDir string
+	startAll    time.Time
+}
+
+// cuLiveHarness builds the shared live setup (the rapid test's original
+// body, verbatim) and returns the armed, running session. The skip gates
+// are NOT RUN; an unproven stage is a failure with evidence, not a
+// silent skip (the test file's own rule).
+func cuLiveHarness(t *testing.T, runID, label string) *cuHarness {
+	t.Helper()
 	// The live catch-up e2e belongs to the test-dolphin gate (ADR-0065):
 	// it boots the real emulator AND calls the real gateway.
 	if os.Getenv(dolphin.EnvGate) != "test-dolphin" {
@@ -215,9 +257,8 @@ func TestLiveCatchUpRapidDialogue(t *testing.T) {
 	t.Cleanup(cancel)
 	startAll := time.Now()
 
-	runID := "catchup-" + time.Now().UTC().Format("20060102T150405Z")
 	bundle := filepath.Join(pcRepoRoot(t), "artifacts", cuEvidenceSub, runID)
-	t.Logf("catchup e2e: run %s; evidence bundle %s (class: real Dolphin + real providers; savestate verified by manifest sha)", runID, bundle)
+	t.Logf("catchup e2e (%s): run %s; evidence bundle %s (class: real Dolphin + real providers; savestate verified by manifest sha)", label, runID, bundle)
 
 	imageSHA := dolphinImageSHA(t, img)
 
@@ -301,7 +342,7 @@ func TestLiveCatchUpRapidDialogue(t *testing.T) {
 		}
 		src, err := bridge.FrameSource(10)
 		if err != nil {
-			t.Logf("catchup e2e: dev-dolphin frame source failed: %v (bridge state: %+v)", err, bridge.State())
+			t.Logf("catchup e2e (%s): dev-dolphin frame source failed: %v (bridge state: %+v)", label, err, bridge.State())
 		}
 		return src, err
 	}
@@ -355,8 +396,8 @@ func TestLiveCatchUpRapidDialogue(t *testing.T) {
 		cuScene.charID, "A young woman's bright, curious voice — the sea-raised heroine of the opening island scene. Lively, a little mischievous, clear enunciation.", designCfg.Model, cloneCfg.Model)
 	cuV.narr = cuDesignVoice(t, ctx, srv, token, st, as, cuV.registry,
 		"narrator", "An older storyteller's warm, unhurried voice — the legend narrator of an old kingdom's tale. Grave but kind, slow cadence.", designCfg.Model, cloneCfg.Model)
-	t.Logf("catchup e2e: voices ready: character %s (%s), narrator %s (%s)",
-		cuScene.charID, cuV.char.Registered, "narrator", cuV.narr.Registered)
+	t.Logf("catchup e2e (%s): voices ready: character %s (%s), narrator %s (%s)",
+		label, cuScene.charID, cuV.char.Registered, "narrator", cuV.narr.Registered)
 
 	// Warm the TTS cache the way production does (the profile presynth,
 	// ADR-0153) and the A/V harness does: without it the catch-up timing
@@ -364,13 +405,12 @@ func TestLiveCatchUpRapidDialogue(t *testing.T) {
 	// 2026-10-22), not the session's catch-up pacing the assertions are about.
 	warmed, warmedIDs := avPreSynthesize(t, ctx, st, cuV.service, cuScene.profileID, fdDir, cuV.char, cuV.narr)
 	avRuntimePresynth(t, ctx, sessions, cuScene.profileID, warmedIDs)
-	t.Logf("catchup e2e: prewarm: %d (voice, line-text) cache entries", warmed)
+	t.Logf("catchup e2e (%s): prewarm: %d (voice, line-text) cache entries", label, warmed)
 
 	// ── the live session: bridge from the first-dialogue savestate ───────
 	launchCtx, launchCancel := context.WithTimeout(context.Background(), cuLaunchTimeout)
 	defer launchCancel()
-	bridge = pcLaunchBridge(t, launchCtx, dataDir, "catchup", fdState)
-	fileSinkDir := filepath.Join(dataDir, "audio")
+	bridge = pcLaunchBridge(t, launchCtx, dataDir, label, fdState)
 
 	sessionID := pcStartSession(t, srv, token, cuScene.profileID)
 	// The session's catch-up policy, applied through the settings control
@@ -381,43 +421,97 @@ func TestLiveCatchUpRapidDialogue(t *testing.T) {
 	if cu := snapshotCatchUp(snap); cu != "catch_up" {
 		t.Fatalf("session %s snapshot catch_up = %q, want catch_up (the ADR-0122 default policy; the settings control applies it)", sessionID, cu)
 	}
-	t.Logf("catchup e2e: session %s running (profile %s, catch_up policy applied, snapshot verified)", sessionID, cuScene.profileID)
+	t.Logf("catchup e2e (%s): session %s running (profile %s, catch_up policy applied, snapshot verified)", label, sessionID, cuScene.profileID)
 
-	// Drive the conversation: rapid A presses (faster than the speech),
-	// then let the last committed lines settle.
-	evs, presses := cuDriveConversation(t, srv, token, sessionID, bridge)
-
-	// Reconcile the polled stream against the durable store read directly
-	// (the per-character test's gap check: the assertions run on the
-	// store's truth; a non-zero route gap is logged).
-	if direct, err := store.NewEventStore(st).After(ctx, 0, events.Filter{SessionID: sessionID}, 10000); err == nil {
-		evs = cuReconcileStream(t, sessionID, evs, direct)
+	return &cuHarness{
+		runID: runID, bundle: bundle, imageSHA: imageSHA, fdState: fdState,
+		ctx: ctx, st: st, srv: srv, token: token, sessionID: sessionID,
+		bridge: bridge, scene: cuScene, dataDir: dataDir,
+		fileSinkDir: filepath.Join(dataDir, "audio"), startAll: startAll,
 	}
+}
 
-	snapshot := pcStopSession(t, srv, token, sessionID)
-	bridge.Stop()
-
-	// ── the evidence bundle (artifacts/ is gitignored; private) ───────────
+// cuDriveCollect runs one drive (rapid or mash) over the harness's session,
+// reconciles the polled stream against the store, stops the session and
+// writes the evidence bundle — and returns the store-truth stream, the
+// press timeline and the parsed speech model (both tests' assertions run
+// on the same shape).
+func (h *cuHarness) cuDriveCollect(t *testing.T, mash bool) ([]devEnvelope, []cuPress, *cuSpeechModel) {
+	t.Helper()
+	evs, presses := cuDriveConversationMash(t, h.srv, h.token, h.sessionID, h.bridge, mash)
+	if direct, err := store.NewEventStore(h.st).After(h.ctx, 0, events.Filter{SessionID: h.sessionID}, 10000); err == nil {
+		evs = cuReconcileStream(t, h.sessionID, evs, direct)
+	}
+	snapshot := pcStopSession(t, h.srv, h.token, h.sessionID)
+	h.bridge.Stop()
 	// The raw evidence lands BEFORE the assertions: a failed assertion still
 	// leaves the bundle (the stream, the frames and the WAVs) to diagnose
-	// against; the manifest and the model's records are written after the
-	// assertions pass (the failure's diagnosis is the stream, not the
-	// model's view of it).
-	cuWriteEvidence(t, bundle, sessionID, snapshot, evs, dataDir)
+	// against; the manifest lands after the assertions pass.
+	cuWriteEvidence(t, h.bundle, h.sessionID, snapshot, evs, h.dataDir)
+	model := cuParseSpeechModel(evs, h.fileSinkDir, h.sessionID)
+	return evs, presses, model
+}
 
-	// ── the assertions (against the store-truth stream) ───────────────────
-	model := cuParseSpeechModel(evs, fileSinkDir, sessionID)
-	cuAssertConversation(t, cuScene, model)
+// TestLiveCatchUpRapidDialogue is the original live catch-up E2E (issue
+// #25, ADR-0122): the rapid press-per-commit drive — A lands as soon as
+// the box's line commits, while the previous line's TTS round trip and
+// playback are still in the air — and the policy's no-backlog / merge /
+// voice assertions. Timing-lucky by construction (its presses fire on
+// commits: a box that stalls lets the speech catch up and no batch ever
+// forms) — the deterministic mash sibling (TestLiveCatchUpMash, ADR-0175)
+// is the gate's stable half.
+func TestLiveCatchUpRapidDialogue(t *testing.T) {
+	h := cuLiveHarness(t, "catchup-"+time.Now().UTC().Format("20060102T150405Z"), "catchup")
+	_, presses, model := h.cuDriveCollect(t, false)
+	cuAssertConversation(t, h.scene, model)
 	cuAssertMerge(t, model)
 	cuAssertNoBacklog(t, model)
-	cuAssertVoices(t, cuScene, model)
-
-	cuWriteManifest(t, bundle, runID, imageSHA, fdState, cuScene, sessionID,
-		model, presses, startAll)
-
+	cuAssertVoices(t, h.scene, model)
+	cuWriteManifest(t, h.bundle, h.runID, h.imageSHA, h.fdState, h.scene, h.sessionID,
+		model, presses, h.startAll)
 	ev := cuMergeEvidenceOf(model)
 	t.Logf("LIVE CATCH-UP E2E (Dolphin + real providers): PASS — %d committed lines over the rapid-A drive, %d playbacks, %d catch-up runs (largest %d lines, %d batch events), every line settled exactly once, no playback started past its max age, every run one speaker, every utterance in its speaker's voice (narrator for the unattributed); live commit cadence %s against the %s batch window; bundle %s (%s)",
 		model.LineCount(), model.StartCount(), model.RunCount(), model.LargestRun(), ev.BatchEvents,
-		cuMergeEvidenceGapNote(ev.MinCommitGap), ev.Window.String(), bundle,
-		time.Since(startAll).Round(time.Second))
+		cuMergeEvidenceGapNote(ev.MinCommitGap), ev.Window.String(), h.bundle,
+		time.Since(h.startAll).Round(time.Second))
+}
+
+// TestLiveCatchUpMash is the deterministic mash sibling (ADR-0175, the
+// rapid-aaa brief): after the first page commits, the driver presses A on
+// a fixed 350 ms cadence (the box text must first stop growing — read
+// from the box region's text.observed churn, or the fixed 1.2 s per box
+// when the growth is unobservable), through the whole conversation,
+// independent of the speech state, bounded per box, stopping on the
+// box-gone rules (ADR-0163 amendment 1). The gate no longer depends on
+// timing luck: the commit cadence the catch-up policy faces is the
+// drive's own, steady.
+//
+// The assertions (the brief's three):
+//
+//  1. Every page the player passed is spoken EXACTLY ONCE (standalone or
+//     inside a merged catch-up run), in commit order;
+//  2. No page is dropped as catch_up_stale UNLESS the policy says it must
+//     be (ADR-0122 §3: a newer commit more than the batch window past,
+//     while the line was still pending) — the policy-mandated drops under
+//     a long backlog are counted and reported (the finding), not failed;
+//  3. The merged utterance(s) start within 1.5 s of the last commit, and
+//     the total speech finishes within the played audio plus 2 s.
+//
+// The no-backlog and voice assertions (the rapid test's) run on the same
+// stream too — the policy's full live shape, under the steady cadence.
+func TestLiveCatchUpMash(t *testing.T) {
+	h := cuLiveHarness(t, "catchup-mash-"+time.Now().UTC().Format("20060102T150405Z"), "catchup-mash")
+	_, presses, model := h.cuDriveCollect(t, true)
+	cuAssertConversation(t, h.scene, model)
+	cuAssertMashPages(t, model)
+	cuAssertMashTimings(t, model)
+	cuAssertNoBacklog(t, model)
+	cuAssertMerge(t, model)
+	cuAssertVoices(t, h.scene, model)
+	cuWriteManifest(t, h.bundle, h.runID, h.imageSHA, h.fdState, h.scene, h.sessionID,
+		model, presses, h.startAll)
+	t.Logf("LIVE CATCH-UP MASH E2E (Dolphin + real providers, ADR-0175): PASS — %d routed lines, %d playbacks, %d catch-up runs (%d batch events), every page spoken exactly once in commit order (the policy-mandated stale drops counted, the merge's timings within bound); %d presses on the fixed %s cadence; bundle %s (%s)",
+		model.LineCount(), model.StartCount(), model.RunCount(), cuMergeEvidenceOf(model).BatchEvents,
+		len(presses), cuMashGap, h.bundle,
+		time.Since(h.startAll).Round(time.Second))
 }
