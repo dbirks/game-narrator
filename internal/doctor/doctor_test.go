@@ -67,7 +67,7 @@ func newFakeHost(t *testing.T) *fakeHost {
 		env:     map[string]string{},
 		answers: map[string]CommandResult{},
 	}
-	for _, name := range []string{"ffmpeg", "v4l2-ctl", "tesseract", "pactl", "aplay", "dolphin-emu", "Xvfb"} {
+	for _, name := range []string{"ffmpeg", "v4l2-ctl", "tesseract", "pactl", "aplay", "dolphin-emu", "Xvfb", "pw-metadata"} {
 		h.tools[name] = true
 	}
 	h.exec("ffmpeg", "ffmpeg version n9.0.2 test banner\nlibavutil 59\n")
@@ -77,6 +77,13 @@ func newFakeHost(t *testing.T) *fakeHost {
 	h.exec("tesseract", controlledText+"\n")
 	h.exec("tesseract --version", "tesseract 5.5.3\n leptonica-1.87.0\n")
 	h.exec("pactl", "0\tsink0\tlibpulse-simple protocol-native.c\t1\n1\tsink1\tlibpulse-simple\t0\n")
+	// The audio.pipewire check reads the daemon settings (issue #61); the
+	// fixture is the default.clock.* key form shipped by newer PipeWire.
+	h.exec("pw-metadata -n settings", "update: id:0 key:'default.clock.rate' value:'48000' type:''\nupdate: id:0 key:'default.clock.quantum' value:'1024' type:''\nupdate: id:0 key:'default.clock.min-quantum' value:'32' type:''\nupdate: id:0 key:'default.clock.max-quantum' value:'2048' type:''\n")
+	// The emulator.dolphin check probes the version banner display-free
+	// (issue #62); the probe must have run with the offscreen env to reach
+	// this answer at all on a real host.
+	h.exec("dolphin-emu --version", "Dolphin 2609\n")
 	h.exec("aplay", "card 0: Dummy [Dummy], device 0: Dummy HDMI [Dummy HDMI]\n  Subdevices: 1/1\n")
 	// The capture check's mode selection runs --list-formats-ext per capable
 	// node and reads the USB link from sysfs; both get fixture answers so the
@@ -97,6 +104,7 @@ func newFakeHost(t *testing.T) *fakeHost {
 		LookupEnv:    h.lookupEnv,
 		LookPath:     h.lookPath,
 		Exec:         h.runCommand,
+		ExecEnv:      h.runCommandEnv,
 		Glob:         h.glob,
 		DeviceOpen:   h.openDevice,
 		// The audio.selected check reads the output-device enumeration through
@@ -138,6 +146,26 @@ func (h *fakeHost) runCommand(_ context.Context, name string, args ...string) Co
 	h.calls = append(h.calls, line)
 	// Longest registered prefix wins, so "tesseract --version" can differ from
 	// the plain "tesseract" answer used by the OCR probe.
+	best, found := "", false
+	for key := range h.answers {
+		if (key == line || strings.HasPrefix(line, key+" ")) && (!found || len(key) > len(best)) {
+			best, found = key, true
+		}
+	}
+	if found {
+		return h.answers[best]
+	}
+	return CommandResult{Err: fmt.Errorf("unexpected call: %s", line), ExitCode: -1}
+}
+
+// runCommandEnv is the ExecEnv seam (issue #62): it answers like runCommand
+// but records the env lines the probe asked for, so tests can assert the
+// display-free contract was honoured.
+func (h *fakeHost) runCommandEnv(_ context.Context, name string, args []string, env []string) CommandResult {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	line := strings.Join(append([]string{name}, args...), " ")
+	h.calls = append(h.calls, line+" env="+strings.Join(env, ","))
 	best, found := "", false
 	for key := range h.answers {
 		if (key == line || strings.HasPrefix(line, key+" ")) && (!found || len(key) > len(best)) {
@@ -276,7 +304,7 @@ func TestRunReportsEveryComponentExactlyOnce(t *testing.T) {
 		"storage.data_dir", "storage.database", "speech.cache_disk", "cast.voice_gender", "network.listen",
 		"tools.ffmpeg", "tools.v4l2_ctl", "tools.tesseract",
 		"ocr.controlled_image", "capture.devices", "audio.sinks", "audio.selected",
-		"audio.hdmi_bridge", "audio.dsp",
+		"audio.hdmi_bridge", "audio.dsp", "audio.pipewire",
 		"bluetooth.audio", "updates.check",
 		"providers.agent_reasoning", "providers.fast_reasoning",
 		"providers.vision_ocr_fallback", "providers.decision",
@@ -317,7 +345,7 @@ func TestGroupsAreDerivedFromIDs(t *testing.T) {
 		"storage.data_dir": "Storage", "speech.cache_disk": "Speech", "tools.ffmpeg": "Tools",
 		"ocr.controlled_image": "OCR", "capture.devices": "Capture",
 		"audio.sinks": "Audio", "audio.selected": "Audio", "audio.hdmi_bridge": "Audio",
-		"audio.dsp":          "Audio",
+		"audio.dsp": "Audio", "audio.pipewire": "Audio",
 		"providers.decision": "Providers",
 	}
 	rep := h.run()
@@ -334,8 +362,8 @@ func TestRunAddsDevChecksOnlyWithDev(t *testing.T) {
 	rep := h.run()
 	mustStatus(t, h.check(rep, "emulator.dolphin"), StatusOK)
 	mustStatus(t, h.check(rep, "game.image"), StatusNotConfigured)
-	if got := h.check(rep, "emulator.dolphin").Summary; got != "present (rendering proven by scripts/spikes/dolphin)" {
-		t.Fatalf("emulator.dolphin summary = %q, want the documented wording", got)
+	if got := h.check(rep, "emulator.dolphin").Summary; got != "Dolphin 2609 (rendering proven by scripts/spikes/dolphin)" {
+		t.Fatalf("emulator.dolphin summary = %q, want the probed version plus the documented wording", got)
 	}
 
 	// On a production target those rows describe a developer box and would be

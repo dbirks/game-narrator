@@ -15,6 +15,7 @@ import (
 	devicex "github.com/dbirks/game-narrator/internal/capture/devices"
 	"github.com/dbirks/game-narrator/internal/capture/mode"
 	"github.com/dbirks/game-narrator/internal/capture/usb"
+	"github.com/dbirks/game-narrator/internal/dolphin"
 	"github.com/dbirks/game-narrator/internal/store"
 )
 
@@ -781,11 +782,14 @@ func nodeBasenames(nodes []string) []string {
 
 // --- developer host --------------------------------------------------------
 
-// checkEmulator is a --dev check. It probes presence only: the actual headless
+// checkEmulator is a --dev check. It probes presence plus the build version:
+// `dolphin-emu --version` core-dumps without a display server (issue #62,
+// build 2609), so the probe runs display-free through the dolphin package's
+// argv/env contract (dolphin.ProbeArgs under dolphin.ProbeEnv,
+// QT_QPA_PLATFORM=offscreen) rather than a bare launch. The actual headless
 // rendering and controller-input proof lives in scripts/spikes/dolphin and
-// docs/spikes/dolphin-capability.md, and `dolphin-emu --version` aborts on this
-// host, so launching it here would report a false BLOCKED.
-func (r *runner) checkEmulator(_ context.Context) Check {
+// docs/spikes/dolphin-capability.md.
+func (r *runner) checkEmulator(ctx context.Context) Check {
 	var missing []string
 	for _, bin := range []string{"dolphin-emu", "Xvfb"} {
 		if _, err := r.opts.LookPath(bin); err != nil {
@@ -799,12 +803,28 @@ func (r *runner) checkEmulator(_ context.Context) Check {
 			Remedy:  bootstrapRemedy + " (pacman -S dolphin-emu xorg-server-Xvfb), see docs/spikes/dolphin-capability.md",
 		}
 	}
-	dolphin, _ := r.opts.LookPath("dolphin-emu")
+	dolphinBin, _ := r.opts.LookPath("dolphin-emu")
 	xvfb, _ := r.opts.LookPath("Xvfb")
+
+	version, err := dolphin.HeadlessVersion(ctx, "dolphin-emu", func(ctx context.Context, name string, args []string, env []string) (string, error) {
+		res := r.opts.ExecEnv(ctx, name, args, env)
+		if res.Err != nil {
+			return string(res.Stdout), res.Err
+		}
+		return string(res.Stdout), nil
+	})
+	if err != nil {
+		return Check{
+			Status:  StatusDegraded,
+			Summary: "dolphin-emu present, but the display-free version probe failed",
+			Detail:  oneLine(fmt.Sprintf("dolphin-emu %s (env %s): %v", strings.Join(dolphin.ProbeArgs(), " "), strings.Join(dolphin.ProbeEnv(), " "), err), 240),
+			Remedy:  "probe the binary under a display instead: xvfb-run -a dolphin-emu --version (issue #62)",
+		}
+	}
 	return Check{
 		Status:  StatusOK,
-		Summary: "present (rendering proven by scripts/spikes/dolphin)",
-		Detail:  fmt.Sprintf("dolphin-emu at %s, Xvfb at %s", dolphin, xvfb),
+		Summary: version + " (rendering proven by scripts/spikes/dolphin)",
+		Detail:  fmt.Sprintf("dolphin-emu at %s, Xvfb at %s; display-free probe: %s", dolphinBin, xvfb, version),
 	}
 }
 

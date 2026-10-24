@@ -183,9 +183,14 @@ type Options struct {
 	ModelTimeout time.Duration
 
 	// LookupEnv, LookPath, Exec, Glob and DeviceOpen are the host seams.
-	LookupEnv  func(name string) (string, bool)
-	LookPath   func(name string) (string, error)
-	Exec       ExecFunc
+	LookupEnv func(name string) (string, bool)
+	LookPath  func(name string) (string, error)
+	Exec      ExecFunc
+	// ExecEnv is like Exec but appends explicit env lines to the child's
+	// environment. Commands that need a display-free environment (the
+	// dolphin-emu CLI probe, issue #62) run through this seam; tests inject
+	// it exactly like Exec. nil uses defaultExecEnv.
+	ExecEnv    func(ctx context.Context, name string, args []string, env []string) CommandResult
 	Glob       func(pattern string) ([]string, error)
 	DeviceOpen func(path string) error
 
@@ -288,6 +293,9 @@ func (o *Options) withDefaults() Options {
 	if d.Exec == nil {
 		d.Exec = defaultExec
 	}
+	if d.ExecEnv == nil {
+		d.ExecEnv = defaultExecEnv
+	}
 	if d.Glob == nil {
 		d.Glob = filepath.Glob
 	}
@@ -308,7 +316,16 @@ func (o *Options) withDefaults() Options {
 
 // defaultExec runs a command and captures its streams.
 func defaultExec(ctx context.Context, name string, args ...string) CommandResult {
+	return defaultExecEnv(ctx, name, args, nil)
+}
+
+// defaultExecEnv is defaultExec with explicit env additions appended to the
+// process environment (issue #62 probes, e.g. QT_QPA_PLATFORM=offscreen).
+func defaultExecEnv(ctx context.Context, name string, args []string, env []string) CommandResult {
 	cmd := exec.CommandContext(ctx, name, args...)
+	if env != nil {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	var out, errb strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
@@ -387,6 +404,10 @@ func Run(ctx context.Context, o Options) Report {
 	// card present? If absent with the deferred-probe signature, the row says
 	// why (APR never registered) and names the shipped recover oneshot.
 	r.add(ctx, "audio.dsp", r.opts.Timeout, func(ctx context.Context) Check { return r.checkAudioDSP(ctx) })
+	// The PipeWire clock row (issue #61): live quantum settings plus, for a
+	// Bluetooth default sink, the negotiated profile/codec — the two numbers
+	// that decide whether BT output will crackle at the stock min-quantum.
+	r.add(ctx, "audio.pipewire", r.opts.Timeout, func(ctx context.Context) Check { return r.checkAudioPipeWire(ctx) })
 	// The Bluetooth output row (ADR 0091): the radio plus the session
 	// prerequisites; it degrades rather than fails (a radio-less host is
 	// a DEGRADED appliance, not a broken one).
