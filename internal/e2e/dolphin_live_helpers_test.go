@@ -201,10 +201,14 @@ func dolphinCER(ocr, ref string) float64 {
 	return float64(dolphinLevenshtein(o, r)) / float64(len(r))
 }
 
-// strayDolphinProcs scans /proc for another dolphin-emu or Xvfb process
-// (the no-parallel rule the dolphin real tests enforce): two emulators on
-// one machine fight over the render-window lookup.
+// strayDolphinProcs scans /proc for another dolphin-emu or Xvfb process —
+// only when GN_DOLPHIN_EXCLUSIVE=1 (ADR-0177): each bridge owns a private
+// Xvfb display, user dir and audio sink, so concurrent runs no longer
+// collide; exclusivity is opt-in for latency-gated runs.
 func strayDolphinProcs() error {
+	if os.Getenv("GN_DOLPHIN_EXCLUSIVE") != "1" {
+		return nil
+	}
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return nil // no /proc (non-linux host); the launch itself will say so

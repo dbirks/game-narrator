@@ -244,6 +244,7 @@ func TestRealAbruptContextKill(t *testing.T) {
 		t.Fatalf("bridge never reached running (state %s: %s)", st.State, st.LastError)
 	}
 
+	runDisplay := b.State().Display
 	// The abrupt kill: the parent context is cancelled; Stop is NOT called.
 	// The bridge's lifetime watcher must signal both process groups itself.
 	t.Log("input: cancelling the run's context abruptly (no Stop call)")
@@ -251,15 +252,17 @@ func TestRealAbruptContextKill(t *testing.T) {
 
 	// Give the graceful path its budget (SIGTERM, then bounded SIGKILL),
 	// then assert on /proc that nothing of this run survives.
+	// Scoped to this run's own display (ADR-0177): other bridges may be
+	// running concurrently on their own displays.
 	cleanDeadline := time.Now().Add(60 * time.Second)
 	for {
-		left, err := liveDolphinOrXvfbPIDs()
-		if err == nil && len(left) == 0 {
-			t.Log("leftovers: none — no dolphin-emu or Xvfb process after the abrupt cancel")
+		left, err := countProcEntries(runDisplay)
+		if err == nil && left == 0 {
+			t.Logf("leftovers: none — no process references this run's display %s after the abrupt cancel", runDisplay)
 			break
 		}
 		if time.Now().After(cleanDeadline) {
-			t.Fatalf("after the abrupt context cancel: %d dolphin-emu/Xvfb process(es) still alive (pids %v); the children must die with their parent", len(left), left)
+			t.Fatalf("after the abrupt context cancel: %d process(es) still reference this run's display %s; the children must die with their parent", left, runDisplay)
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
@@ -303,29 +306,16 @@ func isSupervisedProc(pid string) bool {
 	return c == "dolphin-emu" || c == "Xvfb"
 }
 
-// liveDolphinOrXvfbPIDs scans /proc for any live dolphin-emu or Xvfb process
-// and returns their pids (the no-leftovers assertion the spec demands, in
-// process-table terms rather than `pgrep`).
-func liveDolphinOrXvfbPIDs() ([]string, error) {
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return nil, fmt.Errorf("cannot scan /proc (run on a host with /proc): %w", err)
-	}
-	var out []string
-	for _, e := range entries {
-		if !isPIDDir(e.Name()) {
-			continue
-		}
-		if isSupervisedProc(e.Name()) {
-			out = append(out, e.Name())
-		}
-	}
-	return out, nil
-}
-
 // strayDolphinProcesses reports an error when another Xvfb or Dolphin
-// process is already running (the no-parallel rule), via /proc.
+// process is already running, via /proc — only when GN_DOLPHIN_EXCLUSIVE=1
+// (ADR-0177). Each bridge starts its own private Xvfb on a free display, an
+// isolated --user dir and its own render-window lookup on that display, so
+// concurrent bridges no longer collide; exclusivity is now an opt-in for runs
+// whose timing must not share the CPU (the latency-gated sweeps).
 func strayDolphinProcesses() error {
+	if os.Getenv("GN_DOLPHIN_EXCLUSIVE") != "1" {
+		return nil
+	}
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return fmt.Errorf("cannot scan /proc (run on a host with /proc): %w", err)
