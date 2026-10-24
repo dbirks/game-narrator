@@ -97,7 +97,7 @@ inspectable HTML report — instead of reaching for the shell.
   fix goes through the editor + review path, and papering over a symptom
   without the evidence is how wrong speakers survive (manual 10).
 - Do not treat a `blocked` row as skipped-and-fine: the run is the verdict,
-  the reason is the work item (the two blocked dolphin scenarios carry
+  the reason is the work item (the blocked dolphin scenarios carry
   their unblock steps in the scenario YAML).
 - Do not open a report blob outside the sandbox (or "trust" it): the
   `sandbox=""` iframe is the boundary, and report content is a rendering of

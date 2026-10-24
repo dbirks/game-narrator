@@ -336,8 +336,8 @@ printf '%s' '<password>' | sudo -u game-narrator \
 
 (As the `game-narrator` user so the SQLite file it touches is owned by the
 service user.) Or, with the SSH tunnel from above, create it in the browser
-at `/setup`. Afterwards log in at `/login`; the diagnostics page is
-`/diagnostics`.
+at `/setup`. Afterwards log in at `/login`; the health/diagnostics page is
+`/health` (the old `/diagnostics` URL redirects there).
 
 ## Step 8 — Import a game
 
@@ -480,11 +480,14 @@ Verify the service path the same way the skill verifies the user path:
    ```
 
 3. The hardware gate (the machine-checked form of the same proof, under
-   consent): with a receiver on the hub HDMI,
+   consent): with a receiver on the hub HDMI, from the **dev host**
+   (the appliance has no repo checkout, so `make` runs there, not on the
+   board — 13-uno-q-hardware-smoke.md), with
+   `GAME_NARRATOR_HW_AUDIO_CONSENT=1` in `/etc/game-narrator/env` (the
+   script loads the service env and sets `GAME_NARRATOR_HW_SMOKE=1`):
 
    ```sh
-   sudo -u game-narrator GAME_NARRATOR_HW_SMOKE=1 \
-     GAME_NARRATOR_HW_AUDIO_CONSENT=1 make -C /opt/game-narrator test-hardware
+   scripts/hw/run-on-device.sh <user>@<uno-q-host>
    ```
 
    plays a 1 s 440 Hz tone into `hw:ArduinoImolaHPH,3` through the
@@ -713,7 +716,8 @@ Gotchas the script encodes (each one cost an incident on a real board):
   part of that check (the mixer route the ANX7625 bridge needs; a
   misroute is a `FAIL` naming the exact `amixer` fix).
 - The UI is reachable from another machine: the login page renders, the
-  admin account logs in, `/diagnostics` shows build version/commit and live
+  admin account logs in, `/health` (the old `/diagnostics` URL redirects
+  there) shows build version/commit and live
   readiness.
 - A disc import job ends `succeeded` and the profile's messages are visible
   in the UI; a replay session runs end-to-end with frames/OCR/commits

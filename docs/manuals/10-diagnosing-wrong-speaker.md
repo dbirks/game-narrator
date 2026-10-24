@@ -10,7 +10,7 @@ candidates → Clef decision → commit → voice → speech.
 
 ## Preconditions
 
-- A `developer`-role account (the `/developer` routes and the
+- A `developer`-role account (the `/traces` page and the
   `/api/v1/dev/*` endpoints require it; the role table is in
   docs/adr/0016-authentication-and-sessions.md).
 - The session's frames/OCR were retained for dev-trace sampling (the dev
@@ -19,7 +19,8 @@ candidates → Clef decision → commit → voice → speech.
 
 ## Steps
 
-1. **Find the occurrence.** Open `/developer` and select the session; in the
+1. **Find the occurrence.** Open `/traces` (the old `/developer` URL
+   redirects there) and select the session; in the
    event timeline find the wrong moment — the `message.committed` event with
    the wrong character (or the missing `speech.*` events for an abstained
    line). Pin it. The detail panel shows that occurrence's trace — its

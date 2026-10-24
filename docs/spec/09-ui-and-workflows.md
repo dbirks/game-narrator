@@ -21,14 +21,13 @@ The UI above is being restyled and reorganised under the "Plum & Peach" design s
 - `/games/:id/overview`: edition/coverage report; source provenance, imported text count, missing actors, unresolved errors, version history.
 - `/games/:id/dialogue`: searchable paginated message explorer; original/rendered/OCR example, control AST, neighbors and speaker candidates; manual correction and bulk annotate.
 - `/games/:id/graph`: virtualized scene/message graph, branch/loop/repeat edges, confidence and source labels; filter by speaker, message kind and scene.
-- `/games/:id/characters`: portrait, verified context, editable voice brief, pronunciations, assigned dialogues and conflict review.
-- `/games/:id/voices`: candidate auditions side by side, waveform/audio player, voice approval, version comparison, registry health and generation queue.
+- `/games/:id/cast`: the merged cast screen (ADR-0093 §4, ADR-0135) — the character roster (portraits, verified context, editable voice brief, pronunciations, assigned dialogues and conflict review) and voice work (candidate auditions side by side, waveform/audio player, voice approval, version comparison, registry health and generation queue) in one page; the old `/games/:id/characters` and `/games/:id/voices` paths redirect here.
 - `/games/:id/regions`: capture image, drag/select bounding boxes, preview OCR variants and textbox events, aspect/resolution presets and test-on-fixture.
 - `/games/:id/publish`: diff draft/published, provenance conflicts, source rights and voice approval gate, publish transaction and rollback to previous published revision.
 - `/play`: active session view, capture status, selected profile, volume/speech delay, pause/mute, narrated classes, conservative/predictive toggle.
-- `/developer`: rich real-time events and screenshot timeline, ranked candidates/Clef probability graphs, model payload inspector (redacted), audio waveform, decision/rule reasons, correction/fixture actions.
+- `/traces` (the old `/developer` path redirects here, ADR-0141): rich real-time events and screenshot timeline, ranked candidates/Clef probability graphs, model payload inspector (redacted), audio waveform, decision/rule reasons, correction/fixture actions.
 - `/tests`: scenario catalog/run controls, Arch Dolphin readiness, frame replay mode, live provider/hardware test status, HTML report viewer/download.
-- `/diagnostics`: video input modes, power/environment warnings, CPU/RAM/storage, network and each model role, voice registry replication, speaker test, system logs (redacted).
+- `/health` (the old `/diagnostics` path redirects here, ADR-0111): build/version info plus video input modes, power/environment warnings, CPU/RAM/storage, network and each model role, voice registry replication, speaker test, system logs (redacted).
 - `/settings`: model endpoints, storage limits, security, profiles/import policies, audio sinks, backup/export, software updates.
 
 ## Developer dashboard layout

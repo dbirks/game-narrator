@@ -37,18 +37,21 @@ M6 fixture factory (docs/spec/11 "Fixture origins"; ADR 0054) and the
    make test-dolphin
    ```
 
-   It has two phases (one emulator at a time, `-p 1`):
+   It has two fixture-recorder phases (one emulator at a time, `-p 1`;
+   after these the gate adds the pipeline presence test and the live play
+   UI phase):
    - **Phase 1 — real Dolphin tests** (`-run Real ./internal/dolphin/...`,
      45-minute budget): `TestRealDolphinBridge` (isolated boot, proven
      config, input over the pipe), `TestRealDriveToFirstDialogue` (cold
      boot to the opening legend through real Pipes input),
      `TestRealRecordFixture` (the new-game drive through the **fixture
      recorder**), `TestRealRecordLegendDense` (the dense ≥10 Hz legend
-     recording, ADR 0058 amendment 1), `TestRealAbruptContextKill` and
-     `TestLaunchRejectsRealUserDir`.
+     recording, ADR 0058 amendment 1), `TestRealAbruptContextKill` plus
+     the remaining `TestReal*` recording and savestate round-trip tests
+     (`TestRealReOCRFixture` runs on demand, not in the gate).
    - **Phase 2 — scenario replay** (`-run TestDolphinScenarios
      ./internal/scenario/...`, 30-minute budget): replays every committed
-     scenario under `testdata/scenarios/dolphin/` (16 today) through the
+     scenario under `testdata/scenarios/dolphin/` (17 today) through the
      real recognition/runtime path at the recorded capture cadence, with
      the **recorded** inference (decision + TTS replayed through the fake
      provider gateways — captured-frame replay, never live).
@@ -70,10 +73,10 @@ M6 fixture factory (docs/spec/11 "Fixture origins"; ADR 0054) and the
 3. **Read the replay report.** Phase 2 writes
    `artifacts/scenarios/<run-id>/index.html` (the gitignored evidence
    bundle): one section per scenario linking its frames, OCR, ranked
-   candidates, decisions and audio. The clean-tree replay passes 14 of the
-   16 scenarios; the two blocked rows (`first-gameplay-dialogue`,
-   `legend-press-skip`) are reported BLOCKED with their unblock steps —
-   both need a fixture re-recorded from a savestate (16-dolphin-savestates.md).
+   candidates, decisions and audio. The clean-tree replay passes 16 of the
+   17 scenarios; the blocked row (`sign-opened`) is reported BLOCKED with
+   its unblock steps — it needs a fixture re-recorded from a savestate
+   (16-dolphin-savestates.md).
 
 4. **Benchmark the captured holdout.** With the fixture and the image
    present, `make bench` also runs the fixture's frames through the real

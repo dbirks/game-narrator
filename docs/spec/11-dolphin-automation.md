@@ -45,7 +45,8 @@ The test driver should be independently testable; if an unverified input-pipe me
 4. Feed Dolphin video to same `FrameSource` consumer as production capture. No fixture-specific branches in OCR/matcher.
 5. Assert API emits `frame.observed`, `text.observed`, `message.candidates`, `decision.requested` and real `decision.resolved` when policy demands it. Cross-check model trace ID, timestamp, images and question IDs.
 6. Assert speech request references expected immutable `voice_revision`, goes to Base target and result WAV samples are nonempty/valid. ASR validates expected text; audio sink records start/end.
-7. Launch Playwright in browser, navigate `/developer`, verify screenshot/crop, OCR, candidates, Clef probabilities, speaker attribution and playback all show **same** occurrence/trace IDs. Correct a speaker and save it as reusable label/fixture.
+7. Launch Playwright in browser, navigate `/traces` (the old `/developer` URL
+   redirects there), verify screenshot/crop, OCR, candidates, Clef probabilities, speaker attribution and playback all show **same** occurrence/trace IDs. Correct a speaker and save it as reusable label/fixture.
 8. Advance text early and confirm cancellation/fading; reset/replay and assert cache hit without new TTS generation where valid.
 9. Build evidence bundle + machine-readable assertions + HTML report with links to time-aligned frame, OCR, raw decision (redacted), generated audio and ASR result.
 10. Repeat scenario after a code change and compare metric thresholds; preserve failed inputs and remediation note.

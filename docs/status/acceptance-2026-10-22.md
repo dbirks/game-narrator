@@ -48,7 +48,7 @@ Running it found and fixed three defects in the new code:
 - **Navigation.** Reaching a different NPC (and a top-of-screen box) needs navigation off the lookout: every committed savestate starts there. Dead-reckoned routes found the exit. The vision-guided step is #55, and owner-made savestates next to NPCs were requested.
 
 **Also fixed today:**
-- **Dolphin scenarios.** The truth OCR engine indexed only the base rect while the pipeline reads placement-aware bands, so 2 of 17 scenarios had been failing since before this session (`70527d9`). All 17 pass.
+- **Dolphin scenarios.** The truth OCR engine indexed only the base rect while the pipeline reads placement-aware bands, so 2 of 17 scenarios had been failing since before this session (`70527d9`). 16 now pass, and `sign-opened` is blocked (registered: no savestate reaches a sign). Until 2026-10-23 that blocked row was miscounted as a JUnit PASS; it now reports as SKIP (BLOCKED).
 - **Live OCR-fallback test.** Its synthetic band had no crisp edge for the presence text floor, found by bisecting to `6053975`. It now carries a panel marker (`6d3816d`). Live: primary confidence 0.19, then the vision model read the line at CER 0.
 - **Thinking leak and vision capability (ADR 0161).** flint leaks `<think>`, which is now split by tag, and takes no images, so vision legs use an image-capable model.
 - **Telescope walk.** The vision probe uses the vision model, and the walk now reaches Aryll by reading the SPEAK label (`6945fbb`).
@@ -161,7 +161,7 @@ So the model gates, a fresh `make test-av` and the Clef-backed criterion-4 bundl
 | bench | `make bench` | 3f91310 | PASS | |
 | test-models | `make test-models` | 3f91310 | PASS (34/0/0/0) | `david-birks/qwen3-8-27b` + clef-omni + qwen3-tts + qwen3-asr |
 | test-av | `make test-av` | 3f91310 | PASS (102/182 ms) | `av-20261023T091038Z` |
-| test-dolphin | `make test-dolphin` | 3f91310 | PASS with 1 NOT RUN (exit 2) | 8 real-bridge + 18 scenarios + 1 presence + catch-up and live UI. NOT RUN: `TestRealRecordTelescopeFixture` (BLOCKED, see above) |
+| test-dolphin | `make test-dolphin` | 3f91310 | PASS with 1 NOT RUN (exit 2) | 8 real-bridge, 17 Dolphin scenarios (16 pass and 1 blocked, which JUnit counted as PASS until the 2026-10-23 fix), 1 presence test, and the catch-up and live-UI tests. NOT RUN: `TestRealRecordTelescopeFixture` (BLOCKED, see above) |
 | CI | `ci` workflow | 3f91310 | PASS | |
 | hardware | `make test-hardware` | not run | NOT RUN | The board is exercised through deploy, presynth and the live session instead |
 

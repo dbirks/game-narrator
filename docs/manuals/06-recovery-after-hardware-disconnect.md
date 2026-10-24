@@ -63,7 +63,8 @@ crash and not stale audio.
 - `doctor` reports `capture.devices` and `audio.sinks` `OK` again (exit 0,
   no new `FAIL`).
 - The previously running session state is intact (`GET /api/v1/sessions`,
-  `/developer` timeline shows the offline window and the resumed frames).
+  the `/traces` timeline (old `/developer` URLs redirect there) shows the
+  offline window and the resumed frames).
 - A new frame observation and, where speech was flowing, new playback
   events appear after the reconnect.
 

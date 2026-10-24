@@ -17,22 +17,23 @@ Base `/api/v1`; JSON UTF-8; RFC3339 UTC timestamps; UUID/ULID identifiers; `Idem
 | `POST /api/v1/sessions`, `GET /api/v1/sessions/:id`, `POST .../stop` | session lifecycle |
 | `POST .../pause`, `POST .../resume`, `PUT .../settings` | capture/speech mode controls |
 | `GET /api/v1/games`, `POST /api/v1/games` | library and edition metadata |
-| `GET/POST /api/v1/games/:id/profiles` | versioned drafts |
-| `POST .../import`, `POST .../preview`, `POST .../publish` | staged source/profiles |
-| `POST .../export`, `GET .../download` | manifest export with rights filters |
+| `GET/POST /api/v1/editions/:id/profiles` | versioned drafts |
+| `POST /api/v1/editions/:id/profiles/import-manifest` | staged profile import |
+| `POST /api/v1/profiles/:id/import`, `POST .../import/disc`, `POST .../publish` | staged source/profiles |
+| `GET /api/v1/profiles/:id/export` | manifest export with rights filters |
 | `GET/PATCH /api/v1/profiles/:id/messages/:id` | original vs speech text edits, immutable source refs |
-| `GET/POST /api/v1/profiles/:id/characters` | characters and speaker assignments |
+| `GET /api/v1/profiles/:id/characters`, `POST .../characters/:cid/speaker-link` | characters and speaker assignments |
 | `GET/PUT /api/v1/profiles/:id/regions` | OCR layouts/region revisions |
 | `GET /api/v1/voices`, `POST /api/v1/voices/auditions` | voices, design candidates |
 | `POST /api/v1/voices/:id/approve`, `POST .../register`, `POST .../preview` | voice lifecycle |
 | `GET /api/v1/voices/:id/registrations` | replica-level registry state |
 | `POST /api/v1/onboarding/runs`, `POST .../messages` | start and chat with agent |
-| `GET .../state`, `POST .../pause`, `POST .../resume`, `POST .../approve` | durable job and review |
+| `GET .../{id}`, `GET .../board`, `POST .../pause`, `POST .../resume`, `POST .../approve` | durable job and review |
 | `GET /api/v1/jobs`, `GET /api/v1/jobs/:id`, `POST .../cancel`, `POST .../retry` | durable workflow queue |
 | `POST /api/v1/corrections`, `GET /api/v1/corrections` | user fixes become labels |
 | `GET /api/v1/dev/events`, `GET /api/v1/dev/traces/:id` | correlated dev inspection |
 | `POST /api/v1/dev/fixtures`, `GET /api/v1/dev/fixtures` | fixture recording and browsing |
-| `POST /api/v1/dev/test-runs`, `GET .../report` | run suite and inspect artifacts |
+| `POST /api/v1/dev/tests/scenarios/{rest...}`, `GET .../reports/{sha256}` | run suite and inspect artifacts |
 | `GET /api/v1/events` | SSE multiplex, Last-Event-ID |
 | `GET /api/v1/status` | one snapshot of what the box is doing (session, setup runs, health, device) plus the canonical status string the bar renders (ADR-0104) |
 | `GET /api/v1/status/stream` | the status snapshot's on-change push: SSE of `status.changed`, Last-Event-ID, ≤2 frames/s (ADR-0104) |

@@ -4,7 +4,7 @@
 
 Bring a fresh host to a running, honestly self-reporting Game Narrator:
 binary built with the UI embedded, database migrated, an admin account, the
-service serving `/diagnostics`, and `doctor` reporting every component as
+service serving `/health`, and `doctor` reporting every component as
 `OK` / `DEGRADED` / `BLOCKED` / `NOT CONFIGURED` / `FAIL`.
 
 ## Preconditions
@@ -50,7 +50,8 @@ admin-created, so upgrades preserve them (docs/release.md §3).
 ## Verification
 
 - `curl -s http://127.0.0.1:8080/api/v1/health/live` and `.../health/ready`
-  return 200; `/diagnostics` shows build version/commit, Go version,
+  return 200; `/health` (the old `/diagnostics` URL redirects there) shows
+  build version/commit, Go version,
   `os`/`arch` and readiness read live from the API.
 - `bin/game-narrator doctor` exits 0 (no check FAILed). Missing optional
   components are reported `NOT CONFIGURED`, which is not a failure.

@@ -26,7 +26,7 @@ matrix in [docs/status/ui-coverage.md](docs/status/ui-coverage.md).
 | M3 models and knowledge agent | **Partial** — router with circuit breakers, the Clef client and the onboarding chain (research → characters → voice briefs → auditions) are proven live; the ASR client is wired and verified live (`qwen3-asr-1-7b`, ADR 0061). |
 | M4 voice and playback | **Partial** — TTS (atomic + streamed with real mid-stream cancel), the voice registry, cache + fenced playback and the live play path (Dolphin frames → OCR → match → Clef → speech) are proven; the ASR QA read-back runs live (`qwen3-asr-1-7b`, WER 0.000 on the live line, ADR 0061). |
 | M5 React product | **Done** — every route covered by visible-state Playwright plus the axe a11y gate; settings/tests pages, corrections → regression fixtures, SSE reconnect, voice preview and the UI-only curation walk with manifest re-import. |
-| M6 Dolphin driver and fixture factory | **Done** — drive-to-dialogue, savestates over XTest hotkeys, the fixture recorder and 16 committed scenarios (14 pass, 2 blocked with unblock steps) with the linked HTML report; the two blocked rows stay reported, never passed. |
+| M6 Dolphin driver and fixture factory | **Done** — drive-to-dialogue, savestates over XTest hotkeys, the fixture recorder and 17 committed scenarios (16 pass, 1 blocked with unblock steps) with the linked HTML report; the blocked row stays reported, never passed. |
 | M7 live-model and adverse-condition validation | **Partial** — live Clef/TTS decisions, the streamed-cancel fault scenario and the captured-frame benchmark are committed (its 50% recall is reported as not met, ADR 0058); the hours-long soak passed (1 h replay +5.4% RSS, 2 h chaos +1.1% RSS, 6223 faults, 0 panics); the ASR read-back runs live and the evidence manifest carries the ASR model id + WER when ASR is enabled (ADR 0061). |
 | M8 UNO Q and distributable release | **Partial** — `.deb`/Arch/OCI packaging with cosign-signed GHCR images + SPDX SBOM attestations, and the on-device `.deb` lifecycle (install/upgrade/rollback/purge) are proven; UNO Q capture/audio is **BLOCKED** on the appliance. |
 
@@ -151,12 +151,13 @@ pnpm --dir web exec playwright install chromium        # browser used by make te
 
 make build                                             # Vite build -> embedded into bin/game-narrator
 bin/game-narrator migrate                              # apply pending SQLite migrations
-bin/game-narrator serve                                # http://127.0.0.1:8080/diagnostics
+bin/game-narrator serve                                # http://127.0.0.1:8080/health
 bin/game-narrator doctor --dev                         # same as: make diagnostics
 ```
 
-Then open <http://127.0.0.1:8080/diagnostics> — it shows build version/commit,
-Go version, `os`/`arch` and readiness read live from the API.
+Then open <http://127.0.0.1:8080/health> (the old `/diagnostics` URL
+redirects there) — it shows build version/commit, Go version, `os`/`arch`
+and readiness read live from the API.
 
 `bin/game-narrator doctor` (`make diagnostics`, which builds the binary first)
 probes storage, native tools, OCR, capture, audio and every model role, and
@@ -174,8 +175,8 @@ pnpm --dir web dev                                     # Vite on http://127.0.0.
 ```
 
 Vite listens on `127.0.0.1:5173` and proxies `/api` to `127.0.0.1:8080`, so you
-open <http://127.0.0.1:5173/diagnostics> while the Go server keeps running on
-8080 (set `GAME_NARRATOR_API` if the API is on another port).
+open <http://127.0.0.1:5173/health> while the Go server keeps running on
+8080 (set `GAME_NARRATOR_LISTEN` if the API is on another port).
 
 Verification gates that exist today (`make help` lists them all):
 
@@ -242,8 +243,8 @@ do not commit them, and do not commit screenshots that show copyrighted visuals.
 ## Repository layout
 
 ```
-cmd/game-narrator/      CLI (serve | migrate | admin | doctor | bench |
-                          import-disc | support-bundle | version)
+cmd/game-narrator/      CLI (serve | migrate | admin | doctor | support-bundle |
+                          import-disc | ocr | cache | bench | version)
 internal/api/           HTTP handlers, middleware, static SPA serving
 internal/bootstrap/     config, server lifecycle, build/version info
 internal/providers/     model-role registry + OpenAI-compatible chat adapter

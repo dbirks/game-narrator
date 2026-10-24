@@ -5,7 +5,7 @@
 Save and load Dolphin savestates from the dev bridge with a proven,
 deterministic method — keyboard hotkeys injected over XTest — and know
 exactly which dev-host packages make it work. Savestates are how the M6
-drives reach later game regions and how the two blocked dolphin scenarios
+drives reach later game regions and how the blocked dolphin scenario
 get unblocked (15-dolphin-fixture-recorder.md).
 
 ## Why hotkeys on the keyboard device (not the controller pipe)
