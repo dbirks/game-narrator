@@ -87,9 +87,20 @@ Running it found and fixed three defects in the new code:
   - Runs are tabled below. I inspected clip frames (montage) and per-clip RMS myself on `av-20261022T051337Z`: bottom and middle boxes, no OSD text, clips ending on the post-line cut-in.
 - [ ] **A criterion-4 hardware bundle with a character-voiced line exists outside git.**
   - Preliminary: `artifacts/hw-proof-20261022T031217Z`. It has a Clef request (`CLEF_DISAMBIGUATED`) and a manifest, but the frame and crop had been evicted (fixed since by #46), and the WAV was a whole-message, wrong-speaker clip.
-  - A re-capture on `3f91310` is pending. The board session is live and the collector is armed. It needs the owner to talk to NPCs on the real GameCube, so a line reaches Clef and plays in a character voice.
+  - 2026-10-24, the same real box (a boy NPC's page-2 box, bottom, real GameCube over HDMI) captured three times. Each bundle has a real frame, a crop, a Clef request ID, a WAV and a manifest:
+    - `hw-proof-20261024T035120Z` (`3f91310`): Clef answered, voice `kind:boy` (correct gender), but the line was unmatched (`COMMITTED_ABSTAINED`). The matcher scored the one box against the whole two-box message.
+    - `hw-proof-20261024T064020Z` (`486619b`): matched (`MATCH_FUZZY`, the right message), but voiced by the slot's assigned character (a different child, `voice_route: assigned`). Every speaker-at-commit ask had failed as `bad_schema`, because the full roster exceeded Clef's 16-option cap. Fixed in `d3d9b3d` (ADR 0167 amendment 1).
+    - `hw-proof-20261024T065348Z` (`d3d9b3d`): the ask works (no degraded event), and the line is voiced `kind:boy`. Unmatched again on a noisy read.
+  - **Still open:** a bundle that is both matched and character-voiced. It needs the page-aware matching fix (ADR 0184, in progress) deployed, then one more board read.
 - [ ] **#34, #37 and #5 are closed; #2 and #24 are closed or deferred with reasons; no new issue lacks an owner.**
   - #5, #34 and #37 are closed. #2 and #24 are deferred with reasons (table below).
+  - **Re-verified on the board on 2026-10-24 (build `d3d9b3d`, real rev 5 profile):**
+    - #5: `POST /audio/test-tone` played, and a monitor capture of the HDMI sink recorded about 1.1 s of 440 Hz at RMS 0.177, the expected 0.25-amplitude sine (`artifacts/board-evidence-20261024-hdmi-tone.wav`).
+    - #37: the board's Cast page (Playwright, 1440 px) shows "29 of 29 voiced", 0 unnamed, 52 retired, and 0 console errors.
+    - Speaker placeholders: every `ww:spk:N` slot is either an alias of a named, voiced character (for example Tetra carries five slots) or retired. Lines from unnamed slots speak through Clef's apparent-kind voices (ADR 0158), not the narrator.
+  - **Cast voice audit (ADR 0171) on the board:** 8 MISMATCH, 6 OK, 67 UNKNOWN. On review, five mismatches are wrong expectations from wrong briefs (the voices are right). Two are real and fixed: Baito 175 → 95 Hz and Mila's Father 187 → 129 Hz, adult male, pending the owner's approval.
+    - Two briefs belonged to other characters: Komali had Medli's description, and Garrickson had a woman's.
+    - Re-auditioned with correct briefs: Komali at 286 or 372 Hz (child), Garrickson at 165 or 140 Hz (male). These are pending the owner's approval.
   - Every issue filed in this session (#48–#52) has a suggested fix shape. #49 and #50 are closed.
 - [x] **All gates green on one SHA, CI green.**
   - On `3f91310`: lint, test-replay, bench, test-ui, test-models, test-av and test-dolphin pass. test-dolphin's only non-pass is the documented telescope NOT RUN.
