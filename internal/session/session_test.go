@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/events"
@@ -616,31 +617,32 @@ func TestCommitWhilePausedIsAnExplicitPolicyChoice(t *testing.T) {
 // TestWakeWakesTheRunLoop: Send already notifies, but the batched producer that
 // calls Wake itself must not have to poll.
 func TestWakeWakesTheRunLoop(t *testing.T) {
-	h := newHarness(t, DefaultConfig())
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- h.r.Run(ctx) }()
-	h.seq++
-	h.ts += int64(200 * time.Millisecond)
-	h.r.Send(ObservationMsg{
-		Header:   Header{SessionID: h.r.st.SessionID, ProfileRevision: h.profile},
-		RegionID: "bottom",
-		Observation: recognition.Observation{
-			FrameSeq: 1, CaptureTimestampNS: h.ts, SourceClock: "monotonic",
-			RegionID: "bottom", RegionPresent: true, RegionHash: "w", OCR: ocrResult("WOKEN TEXT", 0.9),
-		},
+	synctest.Test(t, func(t *testing.T) {
+		h := newHarness(t, DefaultConfig())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		done := make(chan error, 1)
+		go func() { done <- h.r.Run(ctx) }()
+		h.seq++
+		h.ts += int64(200 * time.Millisecond)
+		h.r.Send(ObservationMsg{
+			Header:   Header{SessionID: h.r.st.SessionID, ProfileRevision: h.profile},
+			RegionID: "bottom",
+			Observation: recognition.Observation{
+				FrameSeq: 1, CaptureTimestampNS: h.ts, SourceClock: "monotonic",
+				RegionID: "bottom", RegionPresent: true, RegionHash: "w", OCR: ocrResult("WOKEN TEXT", 0.9),
+			},
+		})
+		h.r.Wake()
+		deadline := time.Now().Add(5 * time.Second)
+		for h.r.Stats().Applied == 0 && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+		if h.r.Stats().Applied == 0 {
+			t.Fatal("the run loop never applied the queued observation")
+		}
 	})
-	h.r.Wake()
-	deadline := time.Now().Add(5 * time.Second)
-	for h.r.Stats().Applied == 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if h.r.Stats().Applied == 0 {
-		t.Fatal("the run loop never applied the queued observation")
-	}
 }
-
 func predictiveConfig() Config {
 	c := DefaultConfig()
 	c.PredictiveMode = true
@@ -1246,38 +1248,40 @@ func TestFlickerInsideACommittedBoxDoesNotReachTheWire(t *testing.T) {
 // end: producers Send, Run applies, and a Stop ends the loop cleanly (docs/spec/01
 // "One session event reducer").
 func TestRunDrainsTheInboxOnOneGoroutine(t *testing.T) {
-	h := newHarness(t, DefaultConfig())
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- h.r.Run(ctx) }()
+	synctest.Test(t, func(t *testing.T) {
+		h := newHarness(t, DefaultConfig())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		done := make(chan error, 1)
+		go func() { done <- h.r.Run(ctx) }()
 
-	for i := 0; i < 5; i++ {
-		h.ts += int64(200 * 1000 * 1000)
-		h.r.Send(ObservationMsg{
-			Header:   Header{SessionID: h.r.st.SessionID, Generation: 0, ProfileRevision: h.profile},
-			RegionID: "bottom",
-			Observation: recognition.Observation{
-				FrameSeq: int64(i + 1), CaptureTimestampNS: h.ts, SourceClock: "monotonic",
-				RegionID: "bottom", RegionPresent: true, RegionHash: fmt.Sprintf("run-%d", i),
-				OCR: ocrResult("RUN LOOP TEXT", 0.9),
-			},
-		})
-	}
-	h.r.Send(ControlMsg{Header: Header{SessionID: h.r.st.SessionID, ProfileRevision: h.profile}, Kind: ControlStop})
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Run returned %v, want a clean stop", err)
+		for i := 0; i < 5; i++ {
+			h.ts += int64(200 * 1000 * 1000)
+			h.r.Send(ObservationMsg{
+				Header:   Header{SessionID: h.r.st.SessionID, Generation: 0, ProfileRevision: h.profile},
+				RegionID: "bottom",
+				Observation: recognition.Observation{
+					FrameSeq: int64(i + 1), CaptureTimestampNS: h.ts, SourceClock: "monotonic",
+					RegionID: "bottom", RegionPresent: true, RegionHash: fmt.Sprintf("run-%d", i),
+					OCR: ocrResult("RUN LOOP TEXT", 0.9),
+				},
+			})
 		}
-	case <-timeoutAfter():
-		t.Fatal("Run did not return after the Stop")
-	}
-	if got := h.r.InboxDepth(); got != 0 {
-		t.Fatalf("inbox depth after stop = %d, want 0", got)
-	}
-	if got := h.r.Stats().Applied; got < 2 {
-		t.Fatalf("applied = %d, want the observation and the control", got)
-	}
+		h.r.Send(ControlMsg{Header: Header{SessionID: h.r.st.SessionID, ProfileRevision: h.profile}, Kind: ControlStop})
+
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("Run returned %v, want a clean stop", err)
+			}
+		case <-timeoutAfter():
+			t.Fatal("Run did not return after the Stop")
+		}
+		if got := h.r.InboxDepth(); got != 0 {
+			t.Fatalf("inbox depth after stop = %d, want 0", got)
+		}
+		if got := h.r.Stats().Applied; got < 2 {
+			t.Fatalf("applied = %d, want the observation and the control", got)
+		}
+	})
 }

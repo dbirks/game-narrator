@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/dbirks/game-narrator/internal/events"
@@ -393,128 +394,130 @@ func older(items []string, back int) string {
 // event — and answers it. That interleaving is the point: the answer frequently
 // arrives after the box has moved on, and it must be fenced rather than applied.
 func TestConcurrentSendersRaceFree(t *testing.T) {
-	h := newHarness(t, DefaultConfig())
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- h.r.Run(ctx) }()
+	synctest.Test(t, func(t *testing.T) {
+		h := newHarness(t, DefaultConfig())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		done := make(chan error, 1)
+		go func() { done <- h.r.Run(ctx) }()
 
-	const producers, each = 6, 150
-	var wg sync.WaitGroup
-	for p := 0; p < producers; p++ {
-		wg.Add(1)
-		go func(p int) {
-			defer wg.Done()
-			region := fmt.Sprintf("region-%d", p)
-			text := propTexts[p%len(propTexts)]
-			base := time.Now().UnixNano()
-			for i := 0; i < each; i++ {
-				// Seq is left 0 so Send assigns it from the reducer's own counter:
-				// that is the live path, and it is the only way several producers can
-				// share one dedupe cursor without stepping on each other.
-				h.r.Send(ObservationMsg{
-					Header:   Header{SessionID: h.r.st.SessionID, ProfileRevision: h.profile},
-					RegionID: region,
-					Observation: recognition.Observation{
-						FrameSeq: int64(i + 1), CaptureTimestampNS: base + int64(i)*int64(200*time.Millisecond),
-						SourceClock: "monotonic", RegionID: region, RegionPresent: true,
-						RegionHash: fmt.Sprintf("race-%d-%d", p, i), OCR: ocrResult(text, 0.9),
-					},
-				})
+		const producers, each = 6, 150
+		var wg sync.WaitGroup
+		for p := 0; p < producers; p++ {
+			wg.Add(1)
+			go func(p int) {
+				defer wg.Done()
+				region := fmt.Sprintf("region-%d", p)
+				text := propTexts[p%len(propTexts)]
+				base := time.Now().UnixNano()
+				for i := 0; i < each; i++ {
+					// Seq is left 0 so Send assigns it from the reducer's own counter:
+					// that is the live path, and it is the only way several producers can
+					// share one dedupe cursor without stepping on each other.
+					h.r.Send(ObservationMsg{
+						Header:   Header{SessionID: h.r.st.SessionID, ProfileRevision: h.profile},
+						RegionID: region,
+						Observation: recognition.Observation{
+							FrameSeq: int64(i + 1), CaptureTimestampNS: base + int64(i)*int64(200*time.Millisecond),
+							SourceClock: "monotonic", RegionID: region, RegionPresent: true,
+							RegionHash: fmt.Sprintf("race-%d-%d", p, i), OCR: ocrResult(text, 0.9),
+						},
+					})
+				}
+			}(p)
+		}
+
+		// The ranking side, driven from the test goroutine so it can read the reducer's
+		// reported observation seq the way a worker reads the event stream.
+		var rankWG sync.WaitGroup
+		rankWG.Add(1)
+		rankErr := make(chan string, 1)
+		go func() {
+			defer rankWG.Done()
+			for n := 0; n < 4000; n++ {
+				st := h.r.State()
+				if st.Stopped {
+					return
+				}
+				for _, reg := range st.Regions {
+					if reg.ObservationSeq == 0 || reg.Text == "" {
+						continue
+					}
+					// Seq 0: the reducer numbers it. A producer that stamps its own
+					// sequence is a replay tool replaying a recorded log, and mixing the
+					// two would make half of these look like duplicates.
+					res, err := h.r.Apply(ctx, RankingMsg{
+						Header:         Header{SessionID: h.r.st.SessionID, Generation: st.Generation, ProfileRevision: h.profile},
+						RegionID:       reg.RegionID,
+						ObservationSeq: reg.ObservationSeq,
+						Text:           reg.Text,
+						Ranking: matcher.Ranking{Reason: matcher.ReasonExact, Margin: 0.4,
+							Candidates: []matcher.Candidate{{MessageID: "msg-" + reg.RegionID, Probability: 0.9}}},
+					})
+					if err != nil {
+						rankErr <- fmt.Sprintf("ranking apply: %v", err)
+						return
+					}
+					_ = res
+				}
+				time.Sleep(time.Millisecond)
 			}
-		}(p)
-	}
+		}()
 
-	// The ranking side, driven from the test goroutine so it can read the reducer's
-	// reported observation seq the way a worker reads the event stream.
-	var rankWG sync.WaitGroup
-	rankWG.Add(1)
-	rankErr := make(chan string, 1)
-	go func() {
-		defer rankWG.Done()
-		for n := 0; n < 4000; n++ {
+		wg.Wait()
+		// Let the queue drain and the rankings land before stopping.
+		deadline := time.Now().Add(5 * time.Second)
+		for h.r.InboxDepth() > 0 && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+		for i := 0; i < 20; i++ {
 			st := h.r.State()
-			if st.Stopped {
-				return
-			}
 			for _, reg := range st.Regions {
 				if reg.ObservationSeq == 0 || reg.Text == "" {
 					continue
 				}
-				// Seq 0: the reducer numbers it. A producer that stamps its own
-				// sequence is a replay tool replaying a recorded log, and mixing the
-				// two would make half of these look like duplicates.
-				res, err := h.r.Apply(ctx, RankingMsg{
-					Header:         Header{SessionID: h.r.st.SessionID, Generation: st.Generation, ProfileRevision: h.profile},
-					RegionID:       reg.RegionID,
-					ObservationSeq: reg.ObservationSeq,
-					Text:           reg.Text,
+				if _, err := h.r.Apply(ctx, RankingMsg{
+					Header:   Header{SessionID: h.r.st.SessionID, Generation: st.Generation, ProfileRevision: h.profile},
+					RegionID: reg.RegionID, ObservationSeq: reg.ObservationSeq, Text: reg.Text,
 					Ranking: matcher.Ranking{Reason: matcher.ReasonExact, Margin: 0.4,
 						Candidates: []matcher.Candidate{{MessageID: "msg-" + reg.RegionID, Probability: 0.9}}},
-				})
-				if err != nil {
-					rankErr <- fmt.Sprintf("ranking apply: %v", err)
-					return
+				}); err != nil {
+					t.Fatalf("ranking apply: %v", err)
 				}
-				_ = res
 			}
-			time.Sleep(time.Millisecond)
+			time.Sleep(2 * time.Millisecond)
 		}
-	}()
+		select {
+		case msg := <-rankErr:
+			t.Fatal(msg)
+		default:
+		}
+		cancel()
+		rankWG.Wait()
+		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run: %v", err)
+		}
 
-	wg.Wait()
-	// Let the queue drain and the rankings land before stopping.
-	deadline := time.Now().Add(5 * time.Second)
-	for h.r.InboxDepth() > 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	for i := 0; i < 20; i++ {
-		st := h.r.State()
-		for _, reg := range st.Regions {
-			if reg.ObservationSeq == 0 || reg.Text == "" {
-				continue
-			}
-			if _, err := h.r.Apply(ctx, RankingMsg{
-				Header:   Header{SessionID: h.r.st.SessionID, Generation: st.Generation, ProfileRevision: h.profile},
-				RegionID: reg.RegionID, ObservationSeq: reg.ObservationSeq, Text: reg.Text,
-				Ranking: matcher.Ranking{Reason: matcher.ReasonExact, Margin: 0.4,
-					Candidates: []matcher.Candidate{{MessageID: "msg-" + reg.RegionID, Probability: 0.9}}},
-			}); err != nil {
-				t.Fatalf("ranking apply: %v", err)
-			}
+		st := h.r.Stats()
+		if st.Commits == 0 {
+			t.Fatalf("900 observations and hundreds of rankings committed nothing; stats %+v", st)
 		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	select {
-	case msg := <-rankErr:
-		t.Fatal(msg)
-	default:
-	}
-	cancel()
-	rankWG.Wait()
-	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
-		t.Fatalf("Run: %v", err)
-	}
-
-	st := h.r.Stats()
-	if st.Commits == 0 {
-		t.Fatalf("900 observations and hundreds of rankings committed nothing; stats %+v", st)
-	}
-	seen := map[string]bool{}
-	for _, e := range h.pub.byName(events.MessageCommitted) {
-		d := dataOf(t, e)
-		key := fmt.Sprintf("%v|%v|%v", d["region_id"], d["lifetime"], d["message_id"])
-		if seen[key] {
-			t.Fatalf("concurrent producers produced a duplicate commitment of %s", key)
+		seen := map[string]bool{}
+		for _, e := range h.pub.byName(events.MessageCommitted) {
+			d := dataOf(t, e)
+			key := fmt.Sprintf("%v|%v|%v", d["region_id"], d["lifetime"], d["message_id"])
+			if seen[key] {
+				t.Fatalf("concurrent producers produced a duplicate commitment of %s", key)
+			}
+			seen[key] = true
 		}
-		seen[key] = true
-	}
-	if got := h.r.Generation(); got != int64(len(seen)) {
-		t.Fatalf("generation %d does not equal the %d distinct committed occurrences", got, len(seen))
-	}
-	// The inbox is bounded and said so: whatever was shed under load is counted per
-	// class, which is what tells an operator a worker died instead of hiding it.
-	if st.DroppedInboxObservations+st.DroppedInboxRankings == 0 {
-		t.Log("nothing was dropped under load (the host kept up)")
-	}
+		if got := h.r.Generation(); got != int64(len(seen)) {
+			t.Fatalf("generation %d does not equal the %d distinct committed occurrences", got, len(seen))
+		}
+		// The inbox is bounded and said so: whatever was shed under load is counted per
+		// class, which is what tells an operator a worker died instead of hiding it.
+		if st.DroppedInboxObservations+st.DroppedInboxRankings == 0 {
+			t.Log("nothing was dropped under load (the host kept up)")
+		}
+	})
 }
