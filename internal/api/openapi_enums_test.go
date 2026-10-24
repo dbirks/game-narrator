@@ -22,6 +22,7 @@ import (
 	"github.com/dbirks/game-narrator/internal/audio"
 	"github.com/dbirks/game-narrator/internal/auth"
 	"github.com/dbirks/game-narrator/internal/capture/stack"
+	"github.com/dbirks/game-narrator/internal/cast"
 	"github.com/dbirks/game-narrator/internal/doctor"
 	"github.com/dbirks/game-narrator/internal/dolphin"
 	"github.com/dbirks/game-narrator/internal/games"
@@ -47,6 +48,10 @@ var domainEnums = map[string]string{
 	"GraphNode.properties.attribution_status": "AttributionStatus",
 	"Region.properties.detect_method":         "DetectMethod",
 	"Character.properties.status":             "CharacterStatus",
+	// The roster's direct write surface (GitHub #42, ADR-0180): the create
+	// and update bodies carry the row's status vocabulary verbatim.
+	"CharacterCreateRequest.properties.status": "CharacterStatus",
+	"CharacterUpdateRequest.properties.status": "CharacterStatus",
 	// The correction labels (ADR-0052): the kind of mistake, the table it
 	// labels and the review state each carry their own vocabulary.
 	"CorrectionKind":                "CorrectionKind",
@@ -75,6 +80,9 @@ var literalEnums = map[string][]string{
 	// The 202 of the restore upload answers exactly one word (the handler's
 	// view type writes it; the route's other answers are Problem objects).
 	"RestoreScheduled.properties.status": {"restart_scheduled"},
+	// The roster delete's receipt (GitHub #42, ADR-0180) answers the one
+	// state the delete moves the row to: retired.
+	"CharacterDeleteReceipt.properties.status": {string(games.CharacterRetired)},
 	// internal/api/api.go's handleReady answers one of two words.
 	"HealthStatus.properties.status": {"ok", "fail"},
 	// The 202 of the one route that enqueues this kind.
@@ -125,6 +133,10 @@ var literalEnums = map[string][]string{
 	// per-instance registration states the registry reconciliation writes.
 	"VoiceRevision.properties.state":     {store.VoiceStateDraft, store.VoiceStateAuditioning, store.VoiceStateApproved, store.VoiceStateRetired},
 	"VoiceRegistration.properties.state": {store.VoiceRegPending, store.VoiceRegReady, store.VoiceRegInvalid},
+	// The generic kind voices (issue #51, ADR-0185): the coverage state
+	// internal/cast/kinds.go writes per kind — nothing else answers these
+	// words on this route.
+	"KindRow.properties.state": {cast.KindStateMissing, cast.KindStatePending, cast.KindStateApproved},
 	// The audition ASR QA verdict (FR-10, ADR 0061): internal/api/voices.go's
 	// auditionQAStateName writes exactly these three words; "unknown" is the
 	// not-run state of the documented degraded mode.

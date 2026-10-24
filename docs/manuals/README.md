@@ -33,6 +33,7 @@ AGENTS.md rule 12.
 | HDMI capture bring-up on the UNO Q (dongle + hub) | [18-hdmi-capture-on-uno-q.md](18-hdmi-capture-on-uno-q.md) |
 | Install and run on an Arduino UNO Q | [19-install-on-uno-q.md](19-install-on-uno-q.md) |
 | Cast voice-gender audit (find/fix mismatched voices) | [20-cast-voice-gender-audit.md](20-cast-voice-gender-audit.md) |
+| Generic kind voices (one-click create for unnamed speakers) | [21-generic-kind-voices.md](21-generic-kind-voices.md) |
 
 Blocked items these manuals point at are tracked in
 [docs/status/blocked.md](../status/blocked.md); the release runbook is

@@ -764,8 +764,36 @@ export interface paths {
     /** A revision's roster. */
     get: operations["listCharacters"];
     put?: never;
-    post?: never;
+    /**
+     * Mint one roster row.
+     * @description The roster's direct create (GitHub #42, ADR-0180): before it, a curator over HTTP could add a row only through speaker-link's name half (a row with exactly name + status), leaving the role and the voice brief empty. The id and created_at are the service's; the body carries the editorial half. Draft-only: a non-draft revision answers 409. If-Match carries the revision's row version like every profile write: 428 when absent, 412 when stale. A body that fails the row's constraints answers 422.
+     */
+    post: operations["createCharacter"];
     delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/profiles/{id}/characters/{cid}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /**
+     * Update one roster row in place.
+     * @description The roster's direct update (GitHub #42, ADR-0180): the fields the body names replace the row's values, the rest keep theirs, and the merged row must pass the characters table's constraints (422 when it does not). Draft-only: a non-draft revision answers 409. If-Match carries the revision's row version: 428 when absent, 412 when stale. A row the revision does not have answers 404.
+     */
+    put: operations["updateCharacter"];
+    post?: never;
+    /**
+     * Retire one roster row, when unreferenced.
+     * @description The roster's delete (GitHub #42, ADR-0180): the row leaves the roster by retiring, the move speaker-link makes to a placeholder's own row — the schema keeps retired rows for history, so the delete is the status move, not a drop. It refuses with 409 while anything still points at the row: a line that speaks it, an attribution that claims it, or a voice profile keyed by its name (the voice surface's own identity), and again for an already-retired row. Draft-only and If-Match-guarded like the other roster writes.
+     */
+    delete: operations["deleteCharacter"];
     options?: never;
     head?: never;
     patch?: never;
@@ -1333,6 +1361,46 @@ export interface paths {
     get: operations["listVoices"];
     put?: never;
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/voices/kinds": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Coverage of the seven generic kind voices (the kind:* roster keys, ADR-0158).
+     * @description One row per kind: missing / pending / approved plus the take's measured median F0 and its voice class (the cast audit's classifier, ADR-0171).
+     */
+    get: operations["listKindVoices"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/voices/kinds/create-missing": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * One-click create for every missing kind voice (issue #51, ADR-0185).
+     * @description Auditions each missing kind with its fixed brief, measures the take's pitch with the cast audit's classifier, retries up to 2 times while the measured class is wrong, and leaves the passing takes PENDING for the operator's approve click. Synchronous: one take per missing kind, per-kind failures on the rows.
+     */
+    post: operations["createMissingKindVoices"];
     delete?: never;
     options?: never;
     head?: never;
@@ -2936,7 +3004,8 @@ export interface components {
       profile_id: string;
       name: string;
       aliases: string[];
-      visual_descriptors: Record<string, never>[];
+      /** @description The row's appearance descriptors; the cast audit reads the character's gender/age description from here. Carried as the importer's own JSON — strings today ("an elderly woman"), objects the import carries verbatim. */
+      visual_descriptors: (string | Record<string, never>)[];
       personality_summary: string;
       role: string;
       verified_source_refs: string[];
@@ -3231,6 +3300,47 @@ export interface components {
       target_name?: string;
       /** @description True when the link created the target character from the request's name (ADR-0135) rather than linking an existing row. */
       created?: boolean;
+    };
+    /** @description The row POST mints (GitHub #42, ADR-0180). name is the display name the roster shows; every other field is optional and carries the row's editorial half. status defaults to proposed (the row is unaudited until a curator confirms it). */
+    CharacterCreateRequest: {
+      /** @description The character's display name. */
+      name: string;
+      /** @description Alternative spellings the import's roster match folds. */
+      aliases?: string[];
+      /** @description The roster's role column (lead, supporting, minor, narrator; free text, the schema's constraint only). */
+      role?: string;
+      /** @description The voice brief: the editorial prose the Cast page shows and analyze_character grounds on. */
+      personality_summary?: string;
+      /** @description The row's appearance descriptors; the cast audit reads the character's gender/age description from here. */
+      visual_descriptors?: unknown[];
+      /** @description Source citations the review verified. */
+      verified_source_refs?: string[];
+      /** @description A content hash, not a path: the bytes live in the asset store (ADR-0014). */
+      portrait_asset_id?: string;
+      /**
+       * @description characters.status. Defaults to proposed.
+       * @enum {string}
+       */
+      status?: "proposed" | "confirmed" | "retired";
+    };
+    /** @description The fields PUT applies to one roster row (GitHub #42, ADR-0180): absent fields keep their stored values, present ones replace them. At least one must be set; a body that names none answers 400. */
+    CharacterUpdateRequest: {
+      name?: string;
+      aliases?: string[];
+      role?: string;
+      personality_summary?: string;
+      visual_descriptors?: unknown[];
+      verified_source_refs?: string[];
+      portrait_asset_id?: string;
+      /** @enum {string} */
+      status?: "proposed" | "confirmed" | "retired";
+    };
+    /** @description DELETE's receipt (GitHub #42, ADR-0180): which row left the roster and where it sits now (retired — the schema keeps retired rows for history, so the delete is the status move, not a drop). */
+    CharacterDeleteReceipt: {
+      profile_id: string;
+      character_id: string;
+      /** @enum {string} */
+      status: "retired";
     };
     /** @description One revision's region set — every rectangle text is read from, with the values that may be null because the source did not state them. */
     RegionList: {
@@ -3826,6 +3936,30 @@ export interface components {
       file_name: string;
       media_type?: string;
       detail?: string;
+    };
+    /** @description One generic kind voice's state (the kind:* roster keys, ADR-0158). state: missing (no voice at all), pending (a take waiting on the operator's approve click), approved (the runtime speaks the kind with it). */
+    KindRow: {
+      /** @description The ADR-0158 speaker-kind id. */
+      kind: string;
+      /** @description The roster character key (kind:<kind>). */
+      character: string;
+      /** @enum {string} */
+      state: "missing" | "pending" | "approved";
+      /** @description The revision the state refers to (the pending take or the approved voice). */
+      voice_id?: string;
+      revision?: number;
+      /** @description The take's measured median F0 in Hz (0 = unmeasurable). */
+      measured_f0_hz: number;
+      /** @description The measured voice class (low (adult male) / mid (adult female) / high (child) / unmeasured). */
+      measured: string;
+      /** @description The create-missing run's attempts for this kind. */
+      attempts?: number;
+      /** @description The run's note on the take (in class, out of class, failed). */
+      note?: string;
+    };
+    /** @description The coverage of the seven generic kind voices. */
+    KindCoverage: {
+      kinds: components["schemas"]["KindRow"][];
     };
     /** @description One voice revision. A revision is immutable once approved: the reference bytes, transcript, design model and consent record are frozen (docs/spec/07, ADR-0005). States move forward only: draft → auditioning → approved → retired. */
     VoiceRevision: {
@@ -6766,6 +6900,105 @@ export interface operations {
       default: components["responses"]["Problem"];
     };
   };
+  createCharacter: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: components["parameters"]["ProfileId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CharacterCreateRequest"];
+      };
+    };
+    responses: {
+      /** @description Minted. ETag is the revision's new token. */
+      201: {
+        headers: {
+          ETag?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Character"];
+        };
+      };
+      400: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
+      412: components["responses"]["Problem"];
+      422: components["responses"]["Problem"];
+      428: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  updateCharacter: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: components["parameters"]["ProfileId"];
+        /** @description The roster row the write applies to. */
+        cid: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CharacterUpdateRequest"];
+      };
+    };
+    responses: {
+      /** @description Updated. ETag is the revision's new token. */
+      200: {
+        headers: {
+          ETag?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Character"];
+        };
+      };
+      400: components["responses"]["Problem"];
+      404: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
+      412: components["responses"]["Problem"];
+      422: components["responses"]["Problem"];
+      428: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  deleteCharacter: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: components["parameters"]["ProfileId"];
+        /** @description The roster row the delete applies to. */
+        cid: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Retired. ETag is the revision's new token. */
+      200: {
+        headers: {
+          ETag?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CharacterDeleteReceipt"];
+        };
+      };
+      404: components["responses"]["Problem"];
+      409: components["responses"]["Problem"];
+      412: components["responses"]["Problem"];
+      428: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
   linkSpeaker: {
     parameters: {
       query?: never;
@@ -7734,6 +7967,66 @@ export interface operations {
         };
       };
       403: components["responses"]["Problem"];
+      default: components["responses"]["Problem"];
+    };
+  };
+  listKindVoices: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The coverage. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["KindCoverage"];
+        };
+      };
+      /** @description The voice subsystem is not wired in this process. */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      default: components["responses"]["Problem"];
+    };
+  };
+  createMissingKindVoices: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The coverage after the run. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["KindCoverage"];
+        };
+      };
+      /** @description The voice subsystem is not wired in this process. */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
       default: components["responses"]["Problem"];
     };
   };

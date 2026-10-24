@@ -166,6 +166,11 @@ func DefaultPolicy() *Policy {
 		// data. Which voices exist at all is a read (a viewer page has to label the
 		// voice it is about to play), so the list stays at viewer.
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/voices", Access: Require(RoleViewer)},
+		// The generic kind voices (issue #51, ADR-0185): reading the kind
+		// coverage is a read like the voice list; the create-missing run is
+		// curation — it starts design work and takes land for the operator.
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/voices/kinds", Access: Require(RoleViewer)},
+		Grant{Method: http.MethodPost, Pattern: "/api/v1/voices/kinds/create-missing", Access: Require(RoleCurator)},
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/voices/{id}", Access: Require(RoleViewer)},
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/voices/{id}/registrations", Access: Require(RoleCurator)},
 		Grant{Method: http.MethodPost, Pattern: "/api/v1/voices/{id}/register", Access: Require(RoleOperator)},
@@ -268,6 +273,14 @@ func DefaultPolicy() *Policy {
 		// the wildcard so first-match keeps the boundary in the table, not in
 		// the handler.
 		Grant{Method: http.MethodPost, Pattern: "/api/v1/profiles/{id}/purge", Access: Require(RoleAdmin)},
+		// The roster's direct writes (GitHub #42, ADR-0180): they touch every
+		// editorial field at once — including the voice brief the speech
+		// pipeline grounds on — so they sit a tier above the curator wildcard
+		// that the same prefix would otherwise answer with. The GET stays
+		// viewer, listed above.
+		Grant{Method: http.MethodPost, Pattern: "/api/v1/profiles/{id}/characters", Access: Require(RoleOperator)},
+		Grant{Method: http.MethodPut, Pattern: "/api/v1/profiles/{id}/characters/{cid}", Access: Require(RoleOperator)},
+		Grant{Method: http.MethodDelete, Pattern: "/api/v1/profiles/{id}/characters/{cid}", Access: Require(RoleOperator)},
 		// The speech-cache prune (ADR-0159, issue #49): removes the transient
 		// cache entries no current published profile revision can hit. It is a
 		// content-tier maintenance verb like pre-synthesis, so curator — the

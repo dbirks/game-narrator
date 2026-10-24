@@ -898,6 +898,12 @@ func (s *Server) Handler() http.Handler {
 	// row — the voice gender/age check that finds a male voice on a female
 	// character.
 	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/cast/audit", s.handleCastAudit)
+	// The roster's direct write surface (GitHub #42, ADR-0180): mint a row,
+	// update one row's editorial fields in place, and retire one row when
+	// unreferenced. Operator-tier in the scope table.
+	routes.register(mux, http.MethodPost, "/api/v1/profiles/{id}/characters", s.handleCreateCharacter)
+	routes.register(mux, http.MethodPut, "/api/v1/profiles/{id}/characters/{cid}", s.handleUpdateCharacter)
+	routes.register(mux, http.MethodDelete, "/api/v1/profiles/{id}/characters/{cid}", s.handleDeleteCharacter)
 	// The curator's speaker-link action (ADR-0070): the identification of a
 	// placeholder the import created for an opaque source speaker id, with
 	// its lines, assertions, alias fold and retirement in one transaction.
@@ -933,6 +939,11 @@ func (s *Server) Handler() http.Handler {
 	// approve/register/preview). The 202 audition job runs as voices.JobKind;
 	// which role each route needs is the scope table's business.
 	routes.register(mux, http.MethodGet, "/api/v1/voices", s.handleVoiceList)
+	// The generic kind voices (ADR-0158, issue #51, ADR-0185): coverage of
+	// the seven kind:* roster keys and the one-click create-missing run.
+	// Registered before /{id}: the literal wins the ServeMux dispatch.
+	routes.register(mux, http.MethodGet, "/api/v1/voices/kinds", s.handleKindVoices)
+	routes.register(mux, http.MethodPost, "/api/v1/voices/kinds/create-missing", s.handleKindVoicesCreateMissing)
 	routes.register(mux, http.MethodPost, "/api/v1/voices/auditions", s.handleVoiceAuditionsCreate)
 	routes.register(mux, http.MethodGet, "/api/v1/voices/{id}", s.handleVoiceGet)
 	routes.register(mux, http.MethodGet, "/api/v1/voices/{id}/auditions/{aid}", s.handleVoiceAuditionAudio)

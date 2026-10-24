@@ -20,6 +20,7 @@ export type VoiceDetail = Schemas["VoiceDetail"];
 export type VoiceAudition = Schemas["VoiceAudition"];
 export type VoiceRegistration = Schemas["VoiceRegistration"];
 export type CastAuditRow = Schemas["CastAuditRow"];
+export type KindRow = Schemas["KindRow"];
 
 /**
  * The cast audit (ADR-0171): each roster row's expected vs measured voice
@@ -31,6 +32,26 @@ export async function castAudit(
   signal?: AbortSignal,
 ): Promise<{ profile: string; rows: CastAuditRow[] }> {
   return api.get("/api/v1/profiles/{id}/cast/audit", { params: { id: profileId }, signal });
+}
+
+/**
+ * The generic kind voices (ADR-0158, issue #51): the seven `kind:*` roster
+ * keys an unnamed speaker of a confident apparent kind speaks with. Coverage
+ * carries one row per kind — missing / pending / approved, the take's
+ * measured median F0 and its pitch class.
+ */
+export async function kindVoices(signal?: AbortSignal): Promise<{ kinds: KindRow[] }> {
+  return api.get("/api/v1/voices/kinds", { signal });
+}
+
+/**
+ * The one-click "Create missing" (ADR-0185): auditions each missing kind with
+ * its fixed brief, measures the take's pitch, retries up to 2 times while the
+ * class is wrong, and leaves the passing takes PENDING for the operator's
+ * approve click. Synchronous — the answer is the coverage after the run.
+ */
+export async function createMissingKindVoices(signal?: AbortSignal): Promise<{ kinds: KindRow[] }> {
+  return api.post("/api/v1/voices/kinds/create-missing", { body: {}, signal });
 }
 
 /** One audition clip's audio, addressed by its content identity. */

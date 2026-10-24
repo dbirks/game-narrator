@@ -2653,6 +2653,53 @@ pre.muted {
   color: var(--muted);
 }
 
+/* The generic kind voices section (ADR-0158, issue #51, ADR-0185): the
+   seven kind:* keys below the roster, one row per kind (state + measured
+   pitch) and the one-click create. */
+.kind-voices {
+  margin-top: var(--sp-16);
+  padding: var(--sp-12);
+  border: 1px dashed var(--hair);
+  border-radius: var(--radius-card);
+}
+
+.kind-voices-head h2 {
+  font-size: 14px;
+  margin-bottom: var(--sp-4);
+}
+
+.kind-voices-head p {
+  font-size: 12px;
+  margin-bottom: var(--sp-8);
+}
+
+.kind-voices-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.kind-voices-table th,
+.kind-voices-table td {
+  text-align: left;
+  padding: var(--sp-6) var(--sp-8);
+  border-top: 1px solid var(--hair);
+}
+
+.kind-voices-table tbody th[scope="row"] {
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.kind-voices-action {
+  margin-top: var(--sp-12);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-12);
+}
+
 /* The roster's filter chips (ADR-0135): All hides the retired rows by
    default (the Retired chip is where they live); each chip carries its own
    count. The name search sits at the row's end. */

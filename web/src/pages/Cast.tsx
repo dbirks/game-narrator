@@ -37,7 +37,7 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
 
 import {
@@ -45,6 +45,7 @@ import {
   catalogApi,
   jobsApi,
   type Character,
+  type CharacterWriteRequest,
   type Edition,
   type Message,
   type Profile,
@@ -52,7 +53,15 @@ import {
 import { onboardingApi } from "../api/onboarding";
 import { fetchAllMessages } from "../api/profiles";
 import { fetchSettings } from "../api/settings";
-import { castAudit, voicesApi, type CastAuditRow, type VoiceRevision } from "../api/voices";
+import {
+  castAudit,
+  createMissingKindVoices,
+  kindVoices,
+  voicesApi,
+  type CastAuditRow,
+  type KindRow,
+  type VoiceRevision,
+} from "../api/voices";
 import { useAuth } from "../auth/auth-context";
 import { setAgentEnrichment } from "../components/agent/agentContext";
 import { DitherCover, NameTab, Segmented, Switch, readSegmented } from "../components/kit";
@@ -192,6 +201,25 @@ export function CastPage() {
     if (profileId !== "" && allVoicesData) void castAuditQ.refetch();
   }, [profileId, allVoicesData, castAuditQ]);
   const auditRows = castAuditQ.data?.rows ?? [];
+
+  // The generic kind voices (ADR-0158, issue #51, ADR-0185): the seven
+  // kind:* roster keys an unnamed speaker of a confident apparent kind
+  // speaks with — the appliance-wide voice workflow, its own section below
+  // the roster. The run leaves the passing takes pending: the approve
+  // click is the operator's (AGENTS.md rule 6).
+  const kindVoicesQ = useQuery({
+    queryKey: ["voices", "kinds"],
+    queryFn: ({ signal }) => kindVoices(signal),
+  });
+  const kindCreate = useMutation({
+    mutationFn: () => createMissingKindVoices(),
+    onSuccess: () => void kindVoicesQ.refetch(),
+  });
+  const kindRows = kindVoicesQ.data?.kinds ?? [];
+  const kindUnavailable =
+    kindVoicesQ.isError &&
+    kindVoicesQ.error instanceof ApiError &&
+    kindVoicesQ.error.status === 503;
   // The voice workflow may be unwired on this appliance (503
   // SUBSYSTEM_UNAVAILABLE, docs/spec/13): the roster is still the script's
   // characters — the voice column degrades to "no voice" and the panel says
@@ -448,6 +476,47 @@ export function CastPage() {
     }
     return null;
   })();
+  // The roster's direct write (GitHub #42, ADR-0180): mint a row with its
+  // editorial half in place — the role, the voice brief and the appearance
+  // descriptors (the cast audit reads the character's gender/age description
+  // from here). Draft-only and operator-tier, the same gate the API enforces.
+  const canOperate = atLeast("operator");
+  const [adding, setAdding] = useState(false);
+  const [addName, setAddName] = useState("");
+  const [addRole, setAddRole] = useState("");
+  const [addBrief, setAddBrief] = useState("");
+  const [addAliases, setAddAliases] = useState("");
+  const [addAppearance, setAddAppearance] = useState("");
+  const addCharacter = useMutation({
+    mutationFn: (body: CharacterWriteRequest) => catalogApi.createCharacter(profileId, body),
+    onSuccess: (row) => {
+      void queryClient.invalidateQueries({ queryKey: ["characters"] });
+      setAdding(false);
+      setAddName("");
+      setAddRole("");
+      setAddBrief("");
+      setAddAliases("");
+      setAddAppearance("");
+      setCharacter((row as Character).name);
+    },
+  });
+  const splitList = (text: string): string[] =>
+    text
+      .split(",")
+      .map((part) => part.trim())
+      .filter((part) => part !== "");
+  const submitAddCharacter = (event: FormEvent) => {
+    event.preventDefault();
+    addCharacter.mutate({
+      name: addName.trim(),
+      role: addRole || undefined,
+      personality_summary: addBrief.trim() || undefined,
+      aliases: splitList(addAliases).length > 0 ? splitList(addAliases) : undefined,
+      visual_descriptors:
+        splitList(addAppearance).length > 0 ? splitList(addAppearance) : undefined,
+    });
+  };
+
   const [namingRun, setNamingRun] = useState<string | null>(null);
   const startNaming = useMutation({
     mutationFn: () =>
@@ -655,6 +724,85 @@ export function CastPage() {
         </div>
       ) : null}
 
+      {/* The roster's direct create (GitHub #42, ADR-0180): mint a row with
+          its editorial half instead of waiting for an import's speaker
+          column. Draft-only and operator-tier, the same gate the API has. */}
+      {profile?.status === "draft" && canOperate ? (
+        <div className="cast-add-character" data-testid="cast-add-character">
+          {adding ? (
+            <form
+              className="cast-add-character-form"
+              onSubmit={submitAddCharacter}
+              data-testid="cast-add-character-form"
+            >
+              <input
+                type="text"
+                required
+                placeholder="Name"
+                aria-label="Character name"
+                value={addName}
+                onChange={(event) => setAddName(event.target.value)}
+                data-testid="cast-add-name"
+              />
+              <select
+                aria-label="Character role"
+                value={addRole}
+                onChange={(event) => setAddRole(event.target.value)}
+                data-testid="cast-add-role"
+              >
+                <option value="">role…</option>
+                <option value="lead">lead</option>
+                <option value="supporting">supporting</option>
+                <option value="minor">minor</option>
+                <option value="narrator">narrator</option>
+              </select>
+              <textarea
+                aria-label="Voice brief"
+                placeholder="Voice brief"
+                value={addBrief}
+                onChange={(event) => setAddBrief(event.target.value)}
+                data-testid="cast-add-brief"
+              />
+              <input
+                type="text"
+                placeholder="Aliases (comma-separated)"
+                aria-label="Character aliases"
+                value={addAliases}
+                onChange={(event) => setAddAliases(event.target.value)}
+                data-testid="cast-add-aliases"
+              />
+              <input
+                type="text"
+                placeholder="Appearance, e.g. an elderly woman, about seventy (comma-separated)"
+                aria-label="Appearance descriptors"
+                value={addAppearance}
+                onChange={(event) => setAddAppearance(event.target.value)}
+                data-testid="cast-add-appearance"
+              />
+              <button type="submit" data-testid="cast-add-submit">
+                Add character
+              </button>
+              {addCharacter.isError ? (
+                <span className="muted" role="alert" data-testid="cast-add-error">
+                  {addCharacter.error instanceof ApiError
+                    ? addCharacter.error.message
+                    : "the row was not added"}
+                </span>
+              ) : null}
+            </form>
+          ) : (
+            <button
+              type="button"
+              className="kit-pill"
+              data-testid="cast-add-character-toggle"
+              onClick={() => setAdding(true)}
+            >
+              + Add a character
+            </button>
+          )}
+        </div>
+      ) : null}
+
       {roster.length > 0 ? (
         <div className="cast-layout">
           <section className="cast-roster" aria-label="Cast roster" data-testid="voice-characters">
@@ -751,6 +899,16 @@ export function CastPage() {
           )}
         </div>
       ) : null}
+
+      <CastKindVoices
+        rows={kindRows}
+        loading={kindVoicesQ.isPending}
+        unavailable={kindUnavailable}
+        canCurate={canCurate}
+        creating={kindCreate.isPending}
+        createError={kindCreate.error}
+        onCreate={() => kindCreate.mutate()}
+      />
     </main>
   );
 }
@@ -969,5 +1127,118 @@ function RosterCards({ roster, messages, voices, auditRows, selectedName, onSele
         );
       })}
     </div>
+  );
+}
+
+/**
+ * The generic kind voices section (ADR-0158, issue #51, ADR-0185): the seven
+ * `kind:*` roster keys an unnamed speaker of a confident apparent kind speaks
+ * with. One row per kind — the state (missing / pending / approved) and the
+ * take's measured pitch (median F0 plus the cast audit's class). The
+ * one-click "Create missing" runs the audition for every missing kind, the
+ * pitch check retries the out-of-class takes, and the passing takes stay
+ * pending: the approve click is the operator's (AGENTS.md rule 6).
+ */
+function CastKindVoices({
+  rows,
+  loading,
+  unavailable,
+  canCurate,
+  creating,
+  createError,
+  onCreate,
+}: {
+  rows: KindRow[];
+  loading: boolean;
+  unavailable: boolean;
+  canCurate: boolean;
+  creating: boolean;
+  createError: Error | null;
+  onCreate: () => void;
+}) {
+  const missing = rows.filter((r) => r.state === "missing").length;
+  if (unavailable) {
+    return null;
+  }
+  return (
+    <section
+      className="kind-voices"
+      aria-label="Generic kind voices"
+      data-testid="kind-voices-section"
+    >
+      <div className="kind-voices-head">
+        <h2>Generic kind voices</h2>
+        <p className="muted">
+          Unnamed speakers of a confident apparent kind speak with a voice per kind (ADR-0158). The
+          pitch is measured from each take; an out-of-class take is retried, never auto-approved.
+        </p>
+      </div>
+      {loading ? (
+        <p className="muted" data-testid="kind-voices-loading">
+          Reading the kind voices…
+        </p>
+      ) : rows.length === 0 ? null : (
+        <table className="kind-voices-table">
+          <thead>
+            <tr>
+              <th scope="col">Kind</th>
+              <th scope="col">State</th>
+              <th scope="col">Measured pitch</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.kind} data-testid={`kind-voice-row-${row.kind}`}>
+                <th scope="row" data-testid={`kind-voice-kind-${row.kind}`}>
+                  {row.kind.replace(/_/g, " ")}
+                </th>
+                <td data-testid={`kind-voice-state-${row.kind}`}>
+                  <span
+                    className={`badge badge-${
+                      row.state === "approved"
+                        ? "published"
+                        : row.state === "pending"
+                          ? "draft"
+                          : "plain"
+                    }`}
+                  >
+                    {row.state}
+                  </span>
+                </td>
+                <td data-testid={`kind-voice-pitch-${row.kind}`}>
+                  {row.measured_f0_hz > 0 ? (
+                    <span>
+                      {row.measured} · {Math.round(row.measured_f0_hz)} Hz
+                    </span>
+                  ) : (
+                    <span className="muted">not measured</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {canCurate && !loading && missing > 0 ? (
+        <div className="kind-voices-action">
+          <button
+            type="button"
+            className="kit-pill kit-pill-ink"
+            data-testid="kind-voices-create-missing"
+            disabled={creating}
+            onClick={onCreate}
+          >
+            {creating
+              ? `Auditioning ${missing} kind${missing === 1 ? "" : "s"}…`
+              : `Create missing (${missing})`}
+          </button>
+          {createError ? (
+            <span className="muted" role="alert" data-testid="kind-voices-error">
+              the create run did not finish: {createError.message}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
   );
 }

@@ -2527,6 +2527,199 @@
             "$ref": "#/components/responses/Problem"
           }
         }
+      },
+      "post": {
+        "operationId": "createCharacter",
+        "tags": [
+          "profiles"
+        ],
+        "summary": "Mint one roster row.",
+        "description": "The roster's direct create (GitHub #42, ADR-0180): before it, a curator over HTTP could add a row only through speaker-link's name half (a row with exactly name + status), leaving the role and the voice brief empty. The id and created_at are the service's; the body carries the editorial half. Draft-only: a non-draft revision answers 409. If-Match carries the revision's row version like every profile write: 428 when absent, 412 when stale. A body that fails the row's constraints answers 422.",
+        "x-required-role": "operator",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProfileId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CharacterCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Minted. ETag is the revision's new token.",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Character"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "409": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "412": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "422": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "428": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/api/v1/profiles/{id}/characters/{cid}": {
+      "put": {
+        "operationId": "updateCharacter",
+        "tags": [
+          "profiles"
+        ],
+        "summary": "Update one roster row in place.",
+        "description": "The roster's direct update (GitHub #42, ADR-0180): the fields the body names replace the row's values, the rest keep theirs, and the merged row must pass the characters table's constraints (422 when it does not). Draft-only: a non-draft revision answers 409. If-Match carries the revision's row version: 428 when absent, 412 when stale. A row the revision does not have answers 404.",
+        "x-required-role": "operator",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProfileId"
+          },
+          {
+            "name": "cid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The roster row the write applies to."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CharacterUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated. ETag is the revision's new token.",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Character"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "409": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "412": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "422": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "428": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteCharacter",
+        "tags": [
+          "profiles"
+        ],
+        "summary": "Retire one roster row, when unreferenced.",
+        "description": "The roster's delete (GitHub #42, ADR-0180): the row leaves the roster by retiring, the move speaker-link makes to a placeholder's own row — the schema keeps retired rows for history, so the delete is the status move, not a drop. It refuses with 409 while anything still points at the row: a line that speaks it, an attribution that claims it, or a voice profile keyed by its name (the voice surface's own identity), and again for an already-retired row. Draft-only and If-Match-guarded like the other roster writes.",
+        "x-required-role": "operator",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProfileId"
+          },
+          {
+            "name": "cid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The roster row the delete applies to."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Retired. ETag is the revision's new token.",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CharacterDeleteReceipt"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "409": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "412": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "428": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
       }
     },
     "/api/v1/profiles/{id}/characters/{cid}/speaker-link": {
@@ -4294,6 +4487,78 @@
           },
           "403": {
             "$ref": "#/components/responses/Problem"
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/api/v1/voices/kinds": {
+      "get": {
+        "operationId": "listKindVoices",
+        "tags": [
+          "voices"
+        ],
+        "summary": "Coverage of the seven generic kind voices (the kind:* roster keys, ADR-0158).",
+        "description": "One row per kind: missing / pending / approved plus the take's measured median F0 and its voice class (the cast audit's classifier, ADR-0171).",
+        "x-required-role": "viewer",
+        "responses": {
+          "200": {
+            "description": "The coverage.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KindCoverage"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The voice subsystem is not wired in this process.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/api/v1/voices/kinds/create-missing": {
+      "post": {
+        "operationId": "createMissingKindVoices",
+        "tags": [
+          "voices"
+        ],
+        "summary": "One-click create for every missing kind voice (issue #51, ADR-0185).",
+        "description": "Auditions each missing kind with its fixed brief, measures the take's pitch with the cast audit's classifier, retries up to 2 times while the measured class is wrong, and leaves the passing takes PENDING for the operator's approve click. Synchronous: one take per missing kind, per-kind failures on the rows.",
+        "x-required-role": "curator",
+        "responses": {
+          "200": {
+            "description": "The coverage after the run.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KindCoverage"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The voice subsystem is not wired in this process.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           },
           "default": {
             "$ref": "#/components/responses/Problem"
@@ -8797,8 +9062,17 @@
           },
           "visual_descriptors": {
             "type": "array",
+            "description": "The row's appearance descriptors; the cast audit reads the character's gender/age description from here. Carried as the importer's own JSON — strings today (\"an elderly woman\"), objects the import carries verbatim."
+            ,
             "items": {
-              "type": "object"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "object"
+                }
+              ]
             }
           },
           "personality_summary": {
@@ -9756,6 +10030,128 @@
           "created": {
             "type": "boolean",
             "description": "True when the link created the target character from the request's name (ADR-0135) rather than linking an existing row."
+          }
+        }
+      },
+      "CharacterCreateRequest": {
+        "type": "object",
+        "description": "The row POST mints (GitHub #42, ADR-0180). name is the display name the roster shows; every other field is optional and carries the row's editorial half. status defaults to proposed (the row is unaudited until a curator confirms it).",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "The character's display name."
+          },
+          "aliases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Alternative spellings the import's roster match folds."
+          },
+          "role": {
+            "type": "string",
+            "maxLength": 100,
+            "description": "The roster's role column (lead, supporting, minor, narrator; free text, the schema's constraint only)."
+          },
+          "personality_summary": {
+            "type": "string",
+            "maxLength": 4000,
+            "description": "The voice brief: the editorial prose the Cast page shows and analyze_character grounds on."
+          },
+          "visual_descriptors": {
+            "type": "array",
+            "description": "The row's appearance descriptors; the cast audit reads the character's gender/age description from here."
+          },
+          "verified_source_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Source citations the review verified."
+          },
+          "portrait_asset_id": {
+            "type": "string",
+            "description": "A content hash, not a path: the bytes live in the asset store (ADR-0014)."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "proposed",
+              "confirmed",
+              "retired"
+            ],
+            "description": "characters.status. Defaults to proposed."
+          }
+        }
+      },
+      "CharacterUpdateRequest": {
+        "type": "object",
+        "description": "The fields PUT applies to one roster row (GitHub #42, ADR-0180): absent fields keep their stored values, present ones replace them. At least one must be set; a body that names none answers 400.",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "aliases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "role": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "personality_summary": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "visual_descriptors": {
+            "type": "array"
+          },
+          "verified_source_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "portrait_asset_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "proposed",
+              "confirmed",
+              "retired"
+            ]
+          }
+        }
+      },
+      "CharacterDeleteReceipt": {
+        "type": "object",
+        "description": "DELETE's receipt (GitHub #42, ADR-0180): which row left the roster and where it sits now (retired — the schema keeps retired rows for history, so the delete is the status move, not a drop).",
+        "required": [
+          "profile_id",
+          "character_id",
+          "status"
+        ],
+        "properties": {
+          "profile_id": {
+            "type": "string"
+          },
+          "character_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "retired"
+            ]
           }
         }
       },
@@ -11451,6 +11847,75 @@
             "type": "string"
           }
         }
+      },
+      "KindRow": {
+        "type": "object",
+        "description": "One generic kind voice's state (the kind:* roster keys, ADR-0158). state: missing (no voice at all), pending (a take waiting on the operator's approve click), approved (the runtime speaks the kind with it).",
+        "required": [
+          "kind",
+          "character",
+          "state",
+          "measured_f0_hz",
+          "measured"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "The ADR-0158 speaker-kind id."
+          },
+          "character": {
+            "type": "string",
+            "description": "The roster character key (kind:<kind>)."
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "missing",
+              "pending",
+              "approved"
+            ]
+          },
+          "voice_id": {
+            "type": "string",
+            "description": "The revision the state refers to (the pending take or the approved voice)."
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "measured_f0_hz": {
+            "type": "number",
+            "description": "The take's measured median F0 in Hz (0 = unmeasurable)."
+          },
+          "measured": {
+            "type": "string",
+            "description": "The measured voice class (low (adult male) / mid (adult female) / high (child) / unmeasured)."
+          },
+          "attempts": {
+            "type": "integer",
+            "description": "The create-missing run's attempts for this kind."
+          },
+          "note": {
+            "type": "string",
+            "description": "The run's note on the take (in class, out of class, failed)."
+          }
+        },
+        "unevaluatedProperties": true
+      },
+      "KindCoverage": {
+        "type": "object",
+        "description": "The coverage of the seven generic kind voices.",
+        "required": [
+          "kinds"
+        ],
+        "properties": {
+          "kinds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KindRow"
+            }
+          }
+        },
+        "unevaluatedProperties": true
       },
       "VoiceRevision": {
         "type": "object",

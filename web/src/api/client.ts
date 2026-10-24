@@ -586,6 +586,9 @@ export type Game = Schemas["Game"];
 export type GameLibrary = Schemas["GameLibrary"];
 export type Edition = Schemas["Edition"];
 export type Character = Schemas["Character"];
+/** The roster write's body (GitHub #42, ADR-0180): POST needs the name, every
+ *  field is optional so an absent one keeps the row's value on PUT. */
+export type CharacterWriteRequest = Schemas["CharacterCreateRequest"];
 export type SpeakerLinkResponse = Schemas["SpeakerLinkResponse"];
 export type Profile = Schemas["Profile"];
 export type ProfileStatus = Schemas["ProfileStatus"];
@@ -763,6 +766,34 @@ export const catalogApi = {
       params: { id: profileId },
       signal,
     }) as Promise<{ characters: Character[] }>;
+  },
+  /**
+   * The roster's direct create (GitHub #42, ADR-0180): mints one row with the
+   * body's editorial half; the id and created_at are the service's and the
+   * status defaults to proposed. Draft-only, If-Match like every profile
+   * write — the client sends the profile's cached ETag, so a stale page is
+   * a 412, not a second row.
+   */
+  createCharacter(profileId: string, body: CharacterWriteRequest, signal?: AbortSignal) {
+    return api.post("/api/v1/profiles/{id}/characters", {
+      params: { id: profileId },
+      body,
+      signal,
+    }) as Promise<Character>;
+  },
+  /** The roster's direct update (GitHub #42, ADR-0180): the fields named
+   *  replace the row's values, the rest keep theirs. */
+  updateCharacter(
+    profileId: string,
+    characterId: string,
+    body: Partial<CharacterWriteRequest>,
+    signal?: AbortSignal,
+  ) {
+    return api.put("/api/v1/profiles/{id}/characters/{cid}", {
+      params: { id: profileId, cid: characterId },
+      body,
+      signal,
+    }) as Promise<Character>;
   },
   /**
    * The curator's speaker-link action (ADR-0070, extended by ADR-0135): the

@@ -115,7 +115,7 @@ export default defineConfig({
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
       testIgnore:
-        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|voices-qa\.spec\.ts|cast\.spec\.ts|cast-redesign\.spec\.ts|cast-voice-check\.spec\.ts|m5-part1\.spec\.ts|m5-graph-regions\.spec\.ts|corrections-fixtures\.spec\.ts|live-play\.spec\.ts|play-controls\.spec\.ts|audio-output\.spec\.ts|bluetooth-output\.spec\.ts|capture-device\.spec\.ts|restore-walk\.spec\.ts|a11y\.spec\.ts|setup-wizard\.spec\.ts|redesign-shell\.spec\.ts|library\.spec\.ts|ksearch\.spec\.ts|agent-dock\.spec\.ts|setup-board\.spec\.ts|traces\.spec\.ts|health\.spec\.ts|settings-theme\.spec\.ts|play-pc\.spec\.ts|second-game\.spec\.ts/,
+        /embedded\.spec\.ts|catalog\.spec\.ts|onboarding\.spec\.ts|voices\.spec\.ts|voices-qa\.spec\.ts|cast\.spec\.ts|cast-redesign\.spec\.ts|cast-voice-check\.spec\.ts|character-write\.spec\.ts|kind-voices\.spec\.ts|m5-part1\.spec\.ts|m5-graph-regions\.spec\.ts|corrections-fixtures\.spec\.ts|live-play\.spec\.ts|play-controls\.spec\.ts|audio-output\.spec\.ts|bluetooth-output\.spec\.ts|capture-device\.spec\.ts|restore-walk\.spec\.ts|a11y\.spec\.ts|setup-wizard\.spec\.ts|redesign-shell\.spec\.ts|library\.spec\.ts|ksearch\.spec\.ts|agent-dock\.spec\.ts|setup-board\.spec\.ts|traces\.spec\.ts|health\.spec\.ts|settings-theme\.spec\.ts|play-pc\.spec\.ts|second-game\.spec\.ts/,
     },
     {
       // The first-run wizard (G9, ADR-0087) on its own packaged-binary
@@ -173,7 +173,7 @@ export default defineConfig({
       // (ADR-0093, cast.spec.ts) runs on the same server: its auto-cast walk
       // needs the same speech roles to enqueue and auto-approve real jobs.
       testMatch:
-        /voices.*\.spec\.ts|cast\.spec\.ts|cast-redesign\.spec\.ts|cast-voice-check\.spec\.ts/,
+        /voices.*\.spec\.ts|cast\.spec\.ts|cast-redesign\.spec\.ts|cast-voice-check\.spec\.ts|character-write\.spec\.ts|kind-voices\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: voicesUrl },
     },
     {
@@ -610,7 +610,7 @@ export default defineConfig({
         // FAKE_ASR_FAIL_LINE is the planted mishearing the QA badge spec asserts
         // (the flagged audition).
         FAKE_ASR_BRIEF:
-          "A calm harbor voice, unhurried, with a slight salt air in it.;;A steadier take: slower, with the salt further out.;;A clear, warm narrator voice with a steady cadence, suited to original synthetic dialogue.;;An adult woman, warm and calm, with a steady mid-range voice.;;A bright young child, small and high-pitched.",
+          "A calm harbor voice, unhurried, with a slight salt air in it.;;A steadier take: slower, with the salt further out.;;A clear, warm narrator voice with a steady cadence, suited to original synthetic dialogue.;;An adult woman, warm and calm, with a steady mid-range voice.;;A bright young child, small and high-pitched.;;A mature adult man, a deep resonant voice, unmistakably male and low-pitched, plain and level.;;An adult woman, a mid-range voice, clearly female, low-key and unforced.;;An elderly man, a deep baritone, unmistakably male and low-pitched, unhurried and natural.;;An elderly woman, a mid-range voice with the weight of age, clearly female, clear and unhurried.;;A young boy, a small child's voice, high-pitched and bright, steady and warm.;;A young girl, a mid-range voice, clearly female and youthful, steady and warm.;;A non-human creature: an alien, inhuman timbre, neither a man's nor a woman's voice.",
         FAKE_ASR_FAIL_LINE: "3",
       },
       reuseExistingServer: false,

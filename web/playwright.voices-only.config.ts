@@ -41,7 +41,7 @@ export default defineConfig({
     {
       name: "voices",
       use: { ...devices["Desktop Chrome"], baseURL: voicesUrl },
-      testMatch: /cast-voice-check\.spec\.ts/,
+      testMatch: /cast-voice-check\.spec\.ts|kind-voices\.spec\.ts/,
     },
   ],
   webServer: [
@@ -60,7 +60,7 @@ export default defineConfig({
       url: `http://127.0.0.1:${ports.fakeASR}/healthz`,
       env: {
         FAKE_ASR_BRIEF:
-          "A calm harbor voice, unhurried, with a slight salt air in it.;;A steadier take: slower, with the salt further out.;;A clear, warm narrator voice with a steady cadence, suited to original synthetic dialogue.;;An adult woman, warm and calm, with a steady mid-range voice.;;A bright young child, small and high-pitched.",
+          "A calm harbor voice, unhurried, with a slight salt air in it.;;A steadier take: slower, with the salt further out.;;A clear, warm narrator voice with a steady cadence, suited to original synthetic dialogue.;;An adult woman, warm and calm, with a steady mid-range voice.;;A bright young child, small and high-pitched.;;A mature adult man, a deep resonant voice, unmistakably male and low-pitched, plain and level.;;An adult woman, a mid-range voice, clearly female, low-key and unforced.;;An elderly man, a deep baritone, unmistakably male and low-pitched, unhurried and natural.;;An elderly woman, a mid-range voice with the weight of age, clearly female, clear and unhurried.;;A young boy, a small child's voice, high-pitched and bright, steady and warm.;;A young girl, a mid-range voice, clearly female and youthful, steady and warm.;;A non-human creature: an alien, inhuman timbre, neither a man's nor a woman's voice.",
         FAKE_ASR_FAIL_LINE: "3",
       },
       reuseExistingServer: false,
