@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/dbirks/game-narrator/internal/assets"
 	"github.com/dbirks/game-narrator/internal/speech"
@@ -84,11 +85,7 @@ func (a *Auditor) Profile(ctx context.Context, profileID string) ([]Row, error) 
 			ch.HasVoice = true
 			ch.VoiceID = v.VoiceID
 			ch.ProfileText += " " + v.Brief
-			wav, err := a.referenceBytes(ctx, v.ReferenceSHA)
-			if err != nil {
-				return nil, err
-			}
-			p, err := speech.MeasurePitch(wav)
+			p, err := a.measureReference(ctx, v.ReferenceSHA)
 			if err != nil {
 				return nil, fmt.Errorf("cast audit: measure reference of %s's voice: %w", c.Name, err)
 			}
@@ -98,6 +95,46 @@ func (a *Auditor) Profile(ctx context.Context, profileID string) ([]Row, error) 
 		rows = append(rows, RowFor(ch))
 	}
 	return rows, nil
+}
+
+// pitchCache memoises measured reference pitch by the reference asset's
+// SHA-256. The asset store is content-addressed, so a SHA always names the same
+// bytes and its pitch never changes. Without it the Cast page's audit decoded
+// and pitch-tracked every reference on every view: 15 s on the UNO Q for the
+// 29-voice Wind Waker cast. Bounded; when full it is cleared, since a
+// re-measure is only a cost, never a wrong answer.
+var pitchCache = struct {
+	sync.Mutex
+	m map[string]speech.Pitch
+}{m: map[string]speech.Pitch{}}
+
+const pitchCacheMax = 4096
+
+// measurePitch is the measurement the cache wraps (a seam for tests).
+var measurePitch = speech.MeasurePitch
+
+func (a *Auditor) measureReference(ctx context.Context, sha string) (speech.Pitch, error) {
+	pitchCache.Lock()
+	p, ok := pitchCache.m[sha]
+	pitchCache.Unlock()
+	if ok {
+		return p, nil
+	}
+	wav, err := a.referenceBytes(ctx, sha)
+	if err != nil {
+		return speech.Pitch{}, err
+	}
+	p, err = measurePitch(wav)
+	if err != nil {
+		return speech.Pitch{}, err
+	}
+	pitchCache.Lock()
+	if len(pitchCache.m) >= pitchCacheMax {
+		pitchCache.m = map[string]speech.Pitch{}
+	}
+	pitchCache.m[sha] = p
+	pitchCache.Unlock()
+	return p, nil
 }
 
 func (a *Auditor) referenceBytes(ctx context.Context, sha string) ([]byte, error) {
