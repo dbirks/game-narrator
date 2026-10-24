@@ -63,3 +63,11 @@ Guard rails, so the narrowest condition is the only override:
 - a confident named speaker still wins over everything.
 
 Test: `TestCommitVoiceGenderConflictTakesKindVoice`.
+
+## Amendment 1 (2026-10-24): the ask's speaker list is capped
+
+Evidence: on the real UNO Q board (build 486619b, rev 5 profile with about 80 characters), every speaker-at-commit ask failed as `provider.degraded` `bad_schema`. A shared-slot line (a boy NPC whose BMG slot is linked to another child character) therefore kept the slot's assigned voice. The bundle `hw-proof-20261024T064020Z` records `voice_route: assigned` with `speaker_confidence: 0`. Reproduced live against the decision role: a speaker-only request passes with 5 declared speakers and is refused at 20, 40, 60 and 81 ("question speaker has N options, over the 16 option cap"). The main adjudication already capped its per-request speakers at `SpeakerOptions`; the commit-time ask passed the whole roster.
+
+Decision: `speakerAskOptions` narrows the roster to `SpeakerOptions` (at most `systemone.MaxOptions-1` declared speakers, plus "unknown"). The line's assigned character comes first, so the answer can confirm or overrule it; the rest keep roster order. Validation: `TestSpeakerAskOptionsCapsTheRoster`, plus the existing speaker-at-commit tests.
+
+Follow-up: roster order is a weak relevance signal. A better shortlist would take the scene's or recent speakers, or the characters whose voices match Clef's apparent kind.

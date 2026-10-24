@@ -883,6 +883,37 @@ func (w *speechWiring) hasConfidentSpeaker(d commitPayload) bool {
 	return d.SpeakerKnown && d.SpeakerID != "" && d.SpeakerConfidence >= SpeakerConfidenceFloor
 }
 
+// speakerAskOptions narrows the roster to the speaker question's option cap
+// (systemone.MaxOptions-1 declared speakers plus "unknown"): Clef rejects a
+// choice question with more options as bad_schema, and the real Wind Waker
+// roster has ~80 characters, so an uncapped ask failed on every board commit.
+// The line's assigned character (the shared slot's link) goes first so the
+// answer can confirm or overrule it; the rest keep roster order.
+func speakerAskOptions(roster []systemone.Speaker, assigned string, limit int) []systemone.Speaker {
+	if limit <= 0 || limit > systemone.MaxOptions-1 {
+		limit = systemone.MaxOptions - 1
+	}
+	out := make([]systemone.Speaker, 0, limit)
+	if assigned != "" {
+		for _, s := range roster {
+			if s.ID == assigned {
+				out = append(out, s)
+				break
+			}
+		}
+	}
+	for _, s := range roster {
+		if len(out) >= limit {
+			break
+		}
+		if s.ID == "" || s.ID == assigned {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
 // askSpeakerFor runs one speaker-at-commit ask (ADR-0167) for one committed
 // shared-slot occurrence: it asks the decision role through the decision
 // wiring's own client — the speaker + speaker_kind questions only, the frame
@@ -905,7 +936,8 @@ func (w *speechWiring) askSpeakerFor(d commitPayload, key string) {
 	}
 	var res attributionAsk
 	if w.decision != nil {
-		speakerID, kind, conf, kindConf, err := w.decision.AskSpeaker(ctx, frame, d.MessageID, w.decision.speakers)
+		opts := speakerAskOptions(w.decision.speakers, w.speakerByMessage[d.MessageID], w.decision.opts.SpeakerOptions)
+		speakerID, kind, conf, kindConf, err := w.decision.AskSpeaker(ctx, frame, d.MessageID, opts)
 		if err == nil {
 			res = attributionAsk{
 				speakerID:       speakerID,
