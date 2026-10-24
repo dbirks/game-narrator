@@ -365,6 +365,8 @@ func run(args []string, log *slog.Logger, ring *logbuf.Ring) (int, error) {
 		return runOCR(args[1:], log)
 	case "cache":
 		return runCache(args[1:], log)
+	case "cast":
+		return runCast(args[1:], log)
 	default:
 		fmt.Fprintf(os.Stderr, "game-narrator: unknown command %q\n\n%s%s", cmd, usageText, serveUsageText)
 		return 2, fmt.Errorf("%w: unknown command %q", errUsage, cmd)
@@ -1286,10 +1288,15 @@ func newVoiceWiring(st *store.Store, assetStore *assets.Local, log *slog.Logger,
 		InstanceID:    voices.DefaultInstanceID,
 		BaseModelID:   cloneCfg.Model,
 		BackendDigest: previewBackendDigest(cloneCfg.Model),
-		// The setup board's take/approval transitions (ADR-0108): the job's
-		// fill and the consent-gated approval are the voice workflow's real
-		// stage moments, and the emitter resolves the board they belong to.
-		StageObserver: stageBoard,
+	}
+	// The setup board's take/approval transitions (ADR-0108): the job's
+	// fill and the consent-gated approval are the voice workflow's real
+	// stage moments, and the emitter resolves the board they belong to. A
+	// nil emitter must stay a nil interface, not a typed-nil pointer:
+	// fillDraft's observer check would pass on a nil *Emitter and the
+	// transition would segfault (the cast --fix CLI wires no board).
+	if stageBoard != nil {
+		svc.StageObserver = stageBoard
 	}
 	// ASR QA (FR-10, ADR 0061): the speech_asr role is independent of the
 	// voice roles. Configured, the audition read-back and the generated-line

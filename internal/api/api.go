@@ -894,6 +894,10 @@ func (s *Server) Handler() http.Handler {
 	routes.register(mux, http.MethodGet, "/api/v1/corrections", s.handleCorrectionsList)
 	routes.register(mux, http.MethodPost, "/api/v1/corrections", s.handleCreateCorrection)
 	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/characters", s.handleProfileCharacters)
+	// The cast audit (ADR-0171): expected vs measured voice class per roster
+	// row — the voice gender/age check that finds a male voice on a female
+	// character.
+	routes.register(mux, http.MethodGet, "/api/v1/profiles/{id}/cast/audit", s.handleCastAudit)
 	// The curator's speaker-link action (ADR-0070): the identification of a
 	// placeholder the import created for an opaque source speaker id, with
 	// its lines, assertions, alias fold and retirement in one transaction.

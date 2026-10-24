@@ -52,7 +52,7 @@ import {
 import { onboardingApi } from "../api/onboarding";
 import { fetchAllMessages } from "../api/profiles";
 import { fetchSettings } from "../api/settings";
-import { voicesApi, type VoiceRevision } from "../api/voices";
+import { castAudit, voicesApi, type CastAuditRow, type VoiceRevision } from "../api/voices";
 import { useAuth } from "../auth/auth-context";
 import { setAgentEnrichment } from "../components/agent/agentContext";
 import { DitherCover, NameTab, Segmented, Switch, readSegmented } from "../components/kit";
@@ -175,6 +175,23 @@ export function CastPage() {
     queryFn: ({ signal }) => voicesApi.listVoices(undefined, signal),
     enabled: profileId !== "",
   });
+
+  // The cast audit (ADR-0171): each assigned voice's measured voice class
+  // against the character's expected class. It degrades to "no check" when
+  // the endpoint is unwired — the roster itself never fails for it.
+  const castAuditQ = useQuery({
+    queryKey: ["cast", "audit", profileId],
+    queryFn: ({ signal }) => castAudit(profileId, signal),
+    enabled: profileId !== "",
+  });
+  // A voice change (an auto-cast run finishing on another tab or device, a
+  // job the page did not enqueue) re-measures the cast: the audit reads the
+  // approved references, so it refetches whenever the voice list moves.
+  const allVoicesData = allVoices.data;
+  useEffect(() => {
+    if (profileId !== "" && allVoicesData) void castAuditQ.refetch();
+  }, [profileId, allVoicesData, castAuditQ]);
+  const auditRows = castAuditQ.data?.rows ?? [];
   // The voice workflow may be unwired on this appliance (503
   // SUBSYSTEM_UNAVAILABLE, docs/spec/13): the roster is still the script's
   // characters — the voice column degrades to "no voice" and the panel says
@@ -680,6 +697,7 @@ export function CastPage() {
                 roster={rows}
                 messages={messages.data ?? []}
                 voices={voices}
+                auditRows={auditRows}
                 selectedName={selected?.name ?? ""}
                 onSelect={setCharacter}
               />
@@ -688,6 +706,7 @@ export function CastPage() {
                 roster={rows}
                 messages={messages.data ?? []}
                 voices={voices}
+                auditRows={auditRows}
                 selectedName={selected?.name ?? ""}
                 onSelect={setCharacter}
               />
@@ -740,6 +759,7 @@ interface RosterProps {
   roster: Character[];
   messages: Message[];
   voices: VoiceRevision[];
+  auditRows: CastAuditRow[];
   selectedName: string;
   onSelect: (name: string) => void;
 }
@@ -753,11 +773,31 @@ function gameTabUrl(gameId: string, tab: string, profileId: string): string {
 }
 
 /** List view (docs/design/plum-peach 2d, ADR-0135's compact row): avatar ·
- *  name (or "Unnamed speaker") · lines · state pill · voice state and
+ *  name · lines · state · voice state and
  *  brief · the row's one primary action. The row testids carry the former
  *  characters page's contract (ADR-0093 merge): the table, the rows, the
  *  line counts and the attribution cells keep their ids. */
-function RosterList({ roster, messages, voices, selectedName, onSelect }: RosterProps) {
+
+/** The cast audit's (ADR-0171) voice-check badge: a small verdict on the
+ *  roster row. OK reads as the row's voice matches the character; MISMATCH
+ *  is the one state an operator acts on (a male voice on a female character),
+ *  so it carries the failure tone; UNKNOWN (no gender in the profile data, or
+ *  no measurable F0) is a muted dash, not an alarm. */
+function VoiceCheckBadge({ row }: { row: CastAuditRow | undefined }) {
+  if (!row || row.verdict === "UNKNOWN") {
+    return (
+      <span className="muted cast-row-check-none" aria-hidden="true">
+        —
+      </span>
+    );
+  }
+  const label = row.verdict === "OK" ? "OK" : "mismatch";
+  return (
+    <span className={`badge badge-${row.verdict === "OK" ? "published" : "failed"}`}>{label}</span>
+  );
+}
+
+function RosterList({ roster, messages, voices, auditRows, selectedName, onSelect }: RosterProps) {
   // At phone width (<=600px) the table reflows into stacked row cards
   // (the index.css media query reads the td data-th labels): the design
   // allows no horizontal page scroll at 390px, and the wide Voice column
@@ -773,6 +813,7 @@ function RosterList({ roster, messages, voices, selectedName, onSelect }: Roster
             <th scope="col">Lines</th>
             <th scope="col">State</th>
             <th scope="col">Voice</th>
+            <th scope="col">Voice check</th>
             <th scope="col">
               <span className="sr-only">Action</span>
             </th>
@@ -854,6 +895,9 @@ function RosterList({ roster, messages, voices, selectedName, onSelect }: Roster
                   </span>
                   {brief ? <span className="muted cast-row-brief">{brief}</span> : null}
                 </td>
+                <td data-th="voice-check" data-testid={`character-voice-check-${slug}`}>
+                  <VoiceCheckBadge row={auditRows.find((r) => r.character === character.name)} />
+                </td>
                 <td data-th="action">
                   {action === "none" ? (
                     <span className="muted cast-row-action-none" aria-hidden="true">
@@ -881,7 +925,7 @@ function RosterList({ roster, messages, voices, selectedName, onSelect }: Roster
 
 /** Cards view (docs/design/plum-peach 2d): name tab over a dithered
  *  portrait strip, the line count and the state. */
-function RosterCards({ roster, messages, voices, selectedName, onSelect }: RosterProps) {
+function RosterCards({ roster, messages, voices, auditRows, selectedName, onSelect }: RosterProps) {
   return (
     <div className="cast-cards" data-testid="cast-cards">
       {roster.map((character) => {
@@ -917,6 +961,9 @@ function RosterCards({ roster, messages, voices, selectedName, onSelect }: Roste
               data-testid={`cast-card-state-${slug}`}
             >
               {state.label}
+            </span>
+            <span data-testid={`character-voice-check-${slug}`}>
+              <VoiceCheckBadge row={auditRows.find((r) => r.character === character.name)} />
             </span>
           </button>
         );

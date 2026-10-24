@@ -363,6 +363,10 @@ func Run(ctx context.Context, o Options) Report {
 	// data partition and the unreachable share the prune would take — the two
 	// numbers that decide whether the operator's `cache prune` has room to run.
 	r.add(ctx, "speech.cache_disk", r.opts.Timeout, func(ctx context.Context) Check { return r.checkSpeechCacheDisk(ctx) })
+	// The cast voice-gender row (ADR-0171): every assigned voice must read its
+	// character's expected voice class — a male voice on a female character
+	// shows up here, read-only, with the cast-audit fix as the remedy.
+	r.add(ctx, "cast.voice_gender", r.opts.Timeout, func(ctx context.Context) Check { return r.checkCastVoiceGender(ctx) })
 	// The listen-address row (ADR-0150): the two-install port collision is
 	// the deploy incident this check names before the crash loop starts.
 	r.add(ctx, "network.listen", r.opts.Timeout, func(ctx context.Context) Check { return r.checkListen(ctx) })

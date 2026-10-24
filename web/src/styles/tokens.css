@@ -100,6 +100,9 @@
      --paper at its usual small size (WCAG 1.4.3). */
   --warn: #8a5a2a;
   --ok: var(--ink);
+  /* Failure-badge text: --coral darkened until it holds WCAG 1.4.3 (4.5:1)
+     at badge size on --paper and --card (the coral border stays). */
+  --danger-text: #a35242;
 }
 
 /* ── theme: Ink Blue & Apricot (light) ─────────────────────────────────────
@@ -119,6 +122,9 @@
   --hair: #cbb894;
   --warn: #8a5a2a;
   --ok: var(--ink);
+  /* Failure-badge text: --coral darkened until it holds WCAG 1.4.3 (4.5:1)
+     at badge size on --paper and --card (the coral border stays). */
+  --danger-text: #b24d2b;
 }
 
 /* ── theme: Sherbet (light) ──────────────────────────────────────────────── */
@@ -136,6 +142,9 @@
   --hair: #d8c39a;
   --warn: #8a5a2a;
   --ok: var(--ink);
+  /* Failure-badge text: --coral darkened until it holds WCAG 1.4.3 (4.5:1)
+     at badge size on --paper and --card (the coral border stays). */
+  --danger-text: #995e49;
 }
 
 /* ── theme: Lilac Night (dark) ─────────────────────────────────────────────

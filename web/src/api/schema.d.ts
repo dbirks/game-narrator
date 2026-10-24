@@ -2639,6 +2639,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/profiles/{id}/cast/audit": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Audit each assigned voice's measured pitch against the character's expected voice class. */
+    get: operations["castAudit"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -5297,6 +5314,18 @@ export interface components {
       age_ms: number;
       /** @description The labelled test seam (ADR-0078): the answer is not the hardware of this machine. */
       synthetic: boolean;
+    };
+    CastAuditRow: {
+      character: string;
+      voice_id?: string;
+      expected: string;
+      measured_f0_hz: number;
+      measured: string;
+      verdict: string;
+    };
+    CastAuditReport: {
+      profile: string;
+      rows: components["schemas"]["CastAuditRow"][];
     };
   };
   responses: {
@@ -10010,6 +10039,30 @@ export interface operations {
           "application/problem+json": components["schemas"]["Problem"];
         };
       };
+      default: components["responses"]["Problem"];
+    };
+  };
+  castAudit: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: components["parameters"]["ProfileId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The audit report. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CastAuditReport"];
+        };
+      };
+      404: components["responses"]["Problem"];
       default: components["responses"]["Problem"];
     };
   };

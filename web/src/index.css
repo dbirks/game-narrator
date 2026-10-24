@@ -900,7 +900,7 @@ pre.muted {
 .badge-refused,
 .badge-timeout,
 .badge-cancelled {
-  color: var(--danger);
+  color: var(--danger-text, var(--danger));
   border-color: var(--danger);
 }
 

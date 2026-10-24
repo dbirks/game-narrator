@@ -581,7 +581,12 @@ test("the cast screen: screenshots and axe at the design's three widths", async 
         .filter((violation) => violation.impact === "serious" || violation.impact === "critical")
         .map(
           (violation) =>
-            `${violation.id} [${violation.impact}] ×${violation.nodes.length} — ${violation.help}`,
+            `${violation.id} [${violation.impact}] ×${violation.nodes.length} — ${violation.help} — at ${violation.nodes
+              .map(
+                (node) =>
+                  `${node.target.join(" ")}: ${(node.failureSummary ?? "").replace(/\s+/g, " ").trim()}`,
+              )
+              .join(" | ")}`,
         ),
     });
   }

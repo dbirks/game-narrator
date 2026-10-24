@@ -217,6 +217,9 @@ func DefaultPolicy() *Policy {
 		// caller's behalf.
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/profiles/{id}/export", Access: Require(RoleViewer)},
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/profiles/{id}/characters", Access: Require(RoleViewer)},
+		// The cast audit (ADR-0171): read-only, so a viewer may see the
+		// expected-vs-measured voice class per roster row.
+		Grant{Method: http.MethodGet, Pattern: "/api/v1/profiles/{id}/cast/audit", Access: Require(RoleViewer)},
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/profiles/{id}/regions", Access: Require(RoleViewer)},
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/profiles/{id}/graph", Access: Require(RoleViewer)},
 		Grant{Method: http.MethodGet, Pattern: "/api/v1/profiles/{id}/messages/{mid}", Access: Require(RoleViewer)},

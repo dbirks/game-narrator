@@ -19,6 +19,19 @@ export type VoiceRevision = Schemas["VoiceRevision"];
 export type VoiceDetail = Schemas["VoiceDetail"];
 export type VoiceAudition = Schemas["VoiceAudition"];
 export type VoiceRegistration = Schemas["VoiceRegistration"];
+export type CastAuditRow = Schemas["CastAuditRow"];
+
+/**
+ * The cast audit (ADR-0171): each roster row's expected vs measured voice
+ * class, measured from the assigned voice's reference with the YIN estimator.
+ * `verdict` is "OK" | "MISMATCH" | "UNKNOWN".
+ */
+export async function castAudit(
+  profileId: string,
+  signal?: AbortSignal,
+): Promise<{ profile: string; rows: CastAuditRow[] }> {
+  return api.get("/api/v1/profiles/{id}/cast/audit", { params: { id: profileId }, signal });
+}
 
 /** One audition clip's audio, addressed by its content identity. */
 export interface AuditionAudio {
