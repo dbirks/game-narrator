@@ -50,6 +50,13 @@ type RouteStep struct {
 	// MaxSteps bounds the approach loop (the approach's own step count; the
 	// runner's step deadline bounds it wall-clock on top).
 	MaxSteps int `json:"max_steps"`
+	// Goto is the RAM-driven closed-loop walk (ADR-0173): steer the stick
+	// toward the target world position until within its tolerance.
+	Goto *GotoTarget `json:"goto"`
+	// WaitState waits (stick neutral) until the player's RAM position is
+	// within tolerance of the target — e.g. after an event that moves the
+	// player, or to assert proximity to an NPC.
+	WaitState *StateTarget `json:"wait_state"`
 }
 
 // Route is one scripted play route: the savestate to boot from (relative
@@ -123,6 +130,14 @@ func (s RouteStep) Step() (Step, error) {
 		return st, nil
 	}
 	switch {
+	case s.Goto != nil:
+		st.Goto = s.Goto
+		st.Timeout = gotoTimeout(s.Goto.TimeoutMS)
+		return st, nil
+	case s.WaitState != nil:
+		st.WaitState = s.WaitState
+		st.Timeout = gotoTimeout(s.WaitState.TimeoutMS)
+		return st, nil
 	case s.Stick != nil:
 		if len(s.Stick) != 2 {
 			return st, fmt.Errorf("stick needs [x, y]")
@@ -148,7 +163,34 @@ func (s RouteStep) Step() (Step, error) {
 // stepInputName names a step for the trace when the route did not mark
 // it: the wire description ("A", "STICK(x=0.5, y=-1)", "A+B").
 func stepInputName(s Step) string {
+	switch {
+	case s.Goto != nil:
+		return fmt.Sprintf("GOTO(x=%.2f z=%.2f tol=%.2f)", s.Goto.X, s.Goto.Z,
+			orPositive(s.Goto.Tolerance, defaultGotoTolerance))
+	case s.WaitState != nil:
+		return fmt.Sprintf("WAIT_STATE(x=%.2f z=%.2f tol=%.2f)", s.WaitState.X, s.WaitState.Z,
+			orPositive(s.WaitState.Tolerance, defaultGotoTolerance))
+	}
 	return wireDescription(s)
+}
+
+func orPositive(v, def float64) float64 {
+	if v > 0 {
+		return v
+	}
+	return def
+}
+
+// gotoTimeout maps a route timeout_ms onto the step's wall-clock budget.
+func gotoTimeout(ms int64) time.Duration {
+	if ms <= 0 {
+		return defaultGotoTimeout
+	}
+	d := time.Duration(ms) * time.Millisecond
+	if d > maxGotoTimeout {
+		return maxGotoTimeout
+	}
+	return d
 }
 
 // clampStickAxis maps one stick axis into the pipe's -1..1 range.

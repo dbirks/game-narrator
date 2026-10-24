@@ -234,6 +234,45 @@ func runStep(ctx context.Context, b Bridge, s Script, idx int, step Step) StepTr
 		return st
 	}
 
+	// The RAM-driven steps (ADR-0173): the bridge must expose the emulated
+	// MEM1 arena (Mem1Provider). A bridge without it (a test fake, or no
+	// process) fails with a typed, NOT RUN-reportable message — never a
+	// silent skip to a fake position.
+	if step.Goto != nil || step.WaitState != nil {
+		provider, ok := b.(Mem1Provider)
+		var mem *Mem1
+		if ok {
+			mem, err = provider.Mem1()
+		}
+		if !ok || mem == nil {
+			st.OK = false
+			st.End = time.Now()
+			msg := "bridge does not expose the emulated MEM1 arena"
+			if ok && err != nil {
+				msg = err.Error()
+			}
+			st.Details = append(st.Details, "ram step: NOT RUN — "+msg)
+			st.lastErr = msg
+			finaliseStep(b, ctx, s, idx, step, &st)
+			return st
+		}
+		ok2 := true
+		var detail string
+		if step.Goto != nil {
+			ok2, detail = runGotoStep(ctx, b, mem, *step.Goto, &st, deadline)
+		} else {
+			ok2, detail = runWaitStateStep(ctx, mem, *step.WaitState, &st, deadline)
+		}
+		st.OK = ok2
+		st.End = time.Now()
+		st.Details = append(st.Details, detail)
+		if !ok2 {
+			st.lastErr = detail
+		}
+		finaliseStep(b, ctx, s, idx, step, &st)
+		return st
+	}
+
 	// A step with no checkpoint succeeds after (at most) one attempt.
 	if step.Until == nil {
 		st.Attempts, st.Wire = 0, ""

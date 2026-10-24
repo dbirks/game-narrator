@@ -56,6 +56,9 @@ type bridge struct {
 	emuLogF      *os.File
 	baseline     image.Image // pre-Dolphin screen grab (the "bare" reference)
 	baselineHash string
+
+	mem1    *Mem1 // cached read-only MEM1 arena (ADR-0173); nil = not opened
+	mem1PID int   // the Dolphin pid the cached arena belongs to
 }
 
 // Launch implements Bridge.Launch. It is the whole isolation contract in one

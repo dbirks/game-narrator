@@ -74,6 +74,12 @@ type Step struct {
 	// MaxSteps bounds the approach loop (the route's "approach_max_steps";
 	// the loop's own step budget on top of the runner's step deadline).
 	MaxSteps int
+	// Goto is the RAM-driven "goto" step (ADR-0173): steer the stick toward
+	// the target world position, closed-loop on the emulated player state.
+	Goto *GotoTarget
+	// WaitState is the RAM-driven "wait_state" step (ADR-0173): wait until
+	// the emulated player position is within tolerance of the target.
+	WaitState *StateTarget
 }
 
 // Script is a run: steps in order, one poll cadence, an optional evidence
