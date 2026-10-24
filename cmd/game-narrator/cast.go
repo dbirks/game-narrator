@@ -39,6 +39,7 @@ audit flags:
   --fix          redesign the MISMATCH voices (dry-run unless --apply)
   --apply        with --fix: execute the redesigns (default is dry-run)
   --approve      with --fix --apply: approve the fixed takes instead of leaving them pending
+  --only NAMES   with --fix: comma-separated character names to fix (default: every MISMATCH)
   --data-dir DIR durable data directory
 
 exit codes: 0 all rows OK or UNKNOWN; 1 mismatches remain; 2 bad usage.
@@ -82,6 +83,7 @@ func runCastAudit(args []string, log *slog.Logger) (int, error) {
 	fix := fs.Bool("fix", false, "redesign the MISMATCH voices (dry-run unless --apply)")
 	apply := fs.Bool("apply", false, "execute the --fix redesigns (default is dry-run)")
 	approve := fs.Bool("approve", false, "approve the fixed takes instead of leaving them pending")
+	only := fs.String("only", "", "with --fix: comma-separated character names to fix (default: every MISMATCH); the expected class comes from the profile data, so fix only rows whose expectation is right")
 	dataDir := fs.String("data-dir", "", "durable data directory; overrides "+bootstrap.EnvDataDir)
 	if err := fs.Parse(args); err != nil {
 		return 2, fmt.Errorf("%w: %v", errUsage, err)
@@ -116,14 +118,18 @@ func runCastAudit(args []string, log *slog.Logger) (int, error) {
 		return 1, err
 	}
 	mismatches := cast.Mismatches(rows)
+	toFix, err := cast.SelectFix(mismatches, *only)
+	if err != nil {
+		return 2, fmt.Errorf("%w: %v", errUsage, err)
+	}
 
-	if *fix && len(mismatches) > 0 {
+	if *fix && len(toFix) > 0 {
 		if !*apply {
-			for _, m := range mismatches {
+			for _, m := range toFix {
 				fmt.Printf("dry-run: %s (voice %s): expected %s, measured %.1f Hz (%s) — would redesign\n",
 					m.Character, m.VoiceID, m.Expected, m.MeasuredF0Hz, m.Measured)
 			}
-			fmt.Printf("re-run with --apply to redesign %d mismatched voice(s)\n", len(mismatches))
+			fmt.Printf("re-run with --apply to redesign %d mismatched voice(s)\n", len(toFix))
 			return 1, nil
 		}
 		svc, closer, err := newVoiceWiring(st, assetStore, log, nil)
@@ -135,7 +141,7 @@ func runCastAudit(args []string, log *slog.Logger) (int, error) {
 			return 1, fmt.Errorf("cast fix: the voice design endpoints are not configured (see the serve log's missing-role list)")
 		}
 		fixer := &cast.Fixer{Aud: aud, Svc: svc}
-		for _, m := range mismatches {
+		for _, m := range toFix {
 			res, err := fixer.FixCharacter(ctx, *profileID, m.Character, m.Expected, m.MeasuredF0Hz, *approve)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "fix %s: %v\n", m.Character, err)
